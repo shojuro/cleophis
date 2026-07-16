@@ -180,13 +180,148 @@ function simulateStubDownload(m, btn) {
   }, 220);
 }
 
-/* ---------------- chat (implemented in Task 10) ---------------- */
-function enterChat(m) { console.log('enterChat stub', m.id); }
-function exitChat() {}
-function sendMessage() {}
-function setComposerEnabled(_on) {}
+/* ---------------- chat ---------------- */
+function enterChat(m) {
+  state.chat.model = m;
+  $('chatModelName').textContent = m.name;
+  $('chatCover').src = m.coverUrl;
+  rebuildChatDom();
+  closeDrawer();
+  const views = $('views');
+  views.classList.add('in-chat');
+  views.addEventListener('transitionend', function onEnd(e) {
+    if (e.propertyName !== 'transform') return;
+    views.removeEventListener('transitionend', onEnd);
+    $('chatInput').focus();
+  });
+}
+
+function exitChat() {
+  $('views').classList.remove('in-chat');
+}
+
+function rebuildChatDom() {
+  const m = state.chat.model;
+  const box = $('chatMessages');
+  box.innerHTML = '';
+  appendBubble('assistant', m.greeting || 'Hi!');
+  for (const msg of state.chat.messages) appendBubble(msg.role, msg.content);
+}
+
+function appendBubble(role, text) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  $('chatMessages').appendChild(el);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return el;
+}
+
+function setComposerEnabled(on) {
+  $('chatInput').disabled = !on;
+  $('sendBtn').disabled = !on || state.chat.streaming;
+}
+
 function showEngineBanner(text) { const b = $('engineBanner'); b.hidden = false; b.textContent = text; }
 function hideEngineBanner() { $('engineBanner').hidden = true; }
+
+function pulseCost() {
+  const c = $('costCounter');
+  c.textContent = '$0.00';
+  c.classList.remove('pulse');
+  void c.offsetWidth; // restart animation
+  c.classList.add('pulse');
+}
+
+function sendMessage() {
+  const input = $('chatInput');
+  const text = input.value.trim();
+  if (!text || state.chat.streaming) return;
+  input.value = '';
+  state.chat.messages.push({ role: 'user', content: text });
+  appendBubble('user', text);
+  sendCompletion();
+}
+
+async function sendCompletion() {
+  const m = state.chat.model;
+  document.querySelectorAll('.retrychip').forEach((el) => el.remove());
+  state.chat.streaming = true;
+  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  const bubble = appendBubble('assistant', '');
+  bubble.classList.add('streaming');
+  let acc = '';
+  state.chat.aborter = new AbortController();
+  try {
+    const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: state.chat.aborter.signal,
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: m.systemPrompt },
+          { role: 'assistant', content: m.greeting },
+          ...state.chat.messages,
+        ],
+        stream: true,
+        max_tokens: 512,
+        temperature: 0.7,
+        cache_prompt: true,
+      }),
+    });
+    if (!res.ok) throw new Error(`engine returned ${res.status}`);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') { finishStream(bubble, acc); return; }
+        try {
+          const delta = JSON.parse(data).choices?.[0]?.delta?.content;
+          if (delta) {
+            acc += delta;
+            bubble.textContent = acc;
+            $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+          }
+        } catch (_) { /* partial line — ignored */ }
+      }
+    }
+    finishStream(bubble, acc);
+  } catch (err) {
+    if (err.name === 'AbortError') { finishStream(bubble, acc); return; }
+    bubble.remove();
+    state.chat.streaming = false;
+    $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+    try {
+      const info = await invoke('engine_info');
+      state.engine = info;
+      if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
+    } catch (_) {}
+    const retry = document.createElement('button');
+    retry.className = 'retrychip';
+    retry.textContent = '⟳ That didn\'t go through — tap to retry';
+    retry.onclick = () => { retry.remove(); sendCompletion(); };
+    $('chatMessages').appendChild(retry);
+  }
+}
+
+function finishStream(bubble, acc) {
+  bubble.classList.remove('streaming');
+  if (acc) state.chat.messages.push({ role: 'assistant', content: acc });
+  else bubble.remove();
+  state.chat.streaming = false;
+  $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+  $('sendBtn').disabled = false;
+  pulseCost();
+}
 
 /* ---------------- sign-in (mock) ---------------- */
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
@@ -238,5 +373,6 @@ $('doCreate').addEventListener('click', () => signIn($('cr-nick').value || 'you'
 $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+$('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 
 boot();
