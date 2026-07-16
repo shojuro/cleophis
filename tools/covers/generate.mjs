@@ -24,10 +24,10 @@ function mulberry32(a) {
   };
 }
 
-function cover(id, category) {
+function cover(id, category, idx) {
   const rnd = mulberry32(seedFrom(id));
   const { accent, deep } = PAL[category];
-  const motif = Math.floor(rnd() * 3); // 0 rings, 1 bands, 2 blocks
+  const motif = idx % 3; // 0 rings, 1 bands, 2 blocks
   let art = '';
   if (motif === 0) {
     const cx = 120 + rnd() * 400, cy = 160 + rnd() * 420;
@@ -67,8 +67,8 @@ function cover(id, category) {
 
 mkdirSync(OUT, { recursive: true });
 const catalog = JSON.parse(readFileSync('../../src-tauri/resources/catalog.json', 'utf8'));
-for (const m of catalog) {
-  const svg = cover(m.id, m.category);
+for (const [i, m] of catalog.entries()) {
+  const svg = cover(m.id, m.category, i);
   await sharp(Buffer.from(svg)).webp({ quality: 82 }).toFile(`${OUT}/${m.id}.webp`);
   console.log('wrote', `${m.id}.webp`);
 }
