@@ -134,11 +134,19 @@ function closeDrawer() {
 /* ---------------- Get flow ---------------- */
 function runGetFlow(m, btn) {
   if (m.real && state.mine.has(m.id)) { enterChat(m); return; }
-  if (!m.real) { if (!state.mine.has(m.id)) simulateStubDownload(m, btn); return; }
+  if (state.mine.has(m.id)) return;
+  btn.disabled = true;
+  btn.textContent = 'Processing payment…';
+  setTimeout(() => {
+    btn.textContent = '✓ Paid — downloading…';
+    if (m.real) heroDownload(m, btn);
+    else simulateStubDownload(m, btn);
+  }, 900);
+}
 
-  // Hero: progress theater synced with real engine readiness, then slide.
+function heroDownload(m, btn) {
   const prog = $('prog'), bar = prog.firstElementChild;
-  prog.style.display = 'block'; btn.disabled = true;
+  prog.style.display = 'block';
   const t0 = performance.now(), THEATER_MS = 2200;
   let raf;
   (function frame() {
@@ -158,7 +166,9 @@ function runGetFlow(m, btn) {
     })
     .catch((err) => {
       cancelAnimationFrame(raf);
-      prog.style.display = 'none'; btn.disabled = false;
+      prog.style.display = 'none';
+      btn.disabled = false;
+      btn.textContent = 'Retry download';
       const e = $('errMsg'); e.style.display = 'block'; e.textContent = String(err);
     });
 }

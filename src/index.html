@@ -43,34 +43,6 @@
     <div class="grid" id="grid"></div>
 
     <footer>Cleophis demo build · everything runs on this device</footer>
-
-    <div class="scrim" id="scrim"></div>
-    <aside class="drawer" id="drawer" aria-hidden="true"></aside>
-
-    <div class="modal" id="loginModal">
-      <div class="box">
-        <button class="x" data-close>&times;</button>
-        <h2>Log in</h2>
-        <p class="sub">Sign in to check what runs on your device and manage your library.</p>
-        <div class="field"><input type="email" placeholder="Email" id="li-email"/></div>
-        <div class="field"><input type="password" placeholder="Password" id="li-pass"/></div>
-        <button class="btn primary block" id="doLogin">Log in</button>
-        <div class="foot"><span>Don't have an account?</span><button class="btn" id="toCreate">Create</button></div>
-      </div>
-    </div>
-
-    <div class="modal" id="createModal">
-      <div class="box">
-        <button class="x" data-close>&times;</button>
-        <h2>Create an account</h2>
-        <p class="sub">Save models to your library and sync your device profile.</p>
-        <div class="field"><input type="email" placeholder="Email" id="cr-email"/></div>
-        <div class="field"><input type="password" placeholder="Password" id="cr-pass"/></div>
-        <div class="field"><input type="text" placeholder="Nickname" id="cr-nick"/></div>
-        <button class="btn primary block" id="doCreate">Create account</button>
-        <div class="foot"><span>Already have an account?</span><button class="btn" id="toLogin">Log in</button></div>
-      </div>
-    </div>
   </section>
 
   <!-- ============ View 2: Chat ============ -->
@@ -97,6 +69,35 @@
   </section>
 
 </div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+<div class="modal" id="loginModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <h2>Log in</h2>
+    <p class="sub">Sign in to check what runs on your device and manage your library.</p>
+    <div class="field"><input type="email" placeholder="Email" id="li-email"/></div>
+    <div class="field"><input type="password" placeholder="Password" id="li-pass"/></div>
+    <button class="btn primary block" id="doLogin">Log in</button>
+    <div class="foot"><span>Don't have an account?</span><button class="btn" id="toCreate">Create</button></div>
+  </div>
+</div>
+
+<div class="modal" id="createModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <h2>Create an account</h2>
+    <p class="sub">Save models to your library and sync your device profile.</p>
+    <div class="field"><input type="email" placeholder="Email" id="cr-email"/></div>
+    <div class="field"><input type="password" placeholder="Password" id="cr-pass"/></div>
+    <div class="field"><input type="text" placeholder="Nickname" id="cr-nick"/></div>
+    <button class="btn primary block" id="doCreate">Create account</button>
+    <div class="foot"><span>Already have an account?</span><button class="btn" id="toLogin">Log in</button></div>
+  </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>
