@@ -324,6 +324,28 @@ function finishStream(bubble, acc) {
   pulseCost();
 }
 
+/* ---------------- signed-out nudge ---------------- */
+let toastTimer = null;
+function showToast(text) {
+  let t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.className = 'toast';
+    t.addEventListener('click', () => { t.classList.remove('show'); show($('loginModal')); });
+    document.body.appendChild(t);
+  }
+  t.textContent = text;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function lockNudge(card) {
+  card.classList.add('locked');
+  setTimeout(() => card.classList.remove('locked'), 900);
+  showToast('Log in or create an account to open this model — tap here to log in.');
+}
+
 /* ---------------- sign-in (mock) ---------------- */
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
 function hide(el) { el.classList.remove('show'); }
@@ -352,7 +374,12 @@ $('subjectFilters').addEventListener('click', (e) => {
   state.subject = b.dataset.subject; renderFilters(); renderGrid();
 });
 $('search').addEventListener('input', (e) => { state.q = e.target.value; renderGrid(); });
-$('grid').addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) openDrawer(c.dataset.id); });
+$('grid').addEventListener('click', (e) => {
+  const c = e.target.closest('.card');
+  if (!c) return;
+  if (!state.signedIn) { lockNudge(c); return; }
+  openDrawer(c.dataset.id);
+});
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {

@@ -17,10 +17,10 @@ button{font-family:inherit;cursor:pointer}
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 
 /* ---- two-view slide ---- */
-.views{display:flex;width:200vw;height:100vh;transform:translateX(0);
+.views{display:flex;width:200%;height:100vh;transform:translateX(0);
   transition:transform .5s cubic-bezier(.22,.9,.34,1)}
-.views.in-chat{transform:translateX(-100vw)}
-.view{width:100vw;flex:none;height:100vh;overflow-y:auto;position:relative}
+.views.in-chat{transform:translateX(-50%)}
+.view{width:50%;flex:none;height:100vh;overflow-y:auto;position:relative}
 .chatview{display:flex;flex-direction:column;overflow:hidden}
 
 /* ---- header ---- */
@@ -154,3 +154,9 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .composer{display:flex;gap:10px;padding:16px 24px;border-top:1px solid var(--line);background:rgba(14,18,24,.9)}
 #chatInput{flex:1;background:var(--surface);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px 16px;font-size:14.5px;outline:none}
 #chatInput:focus{border-color:var(--teal)}
+.toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(8px);
+  background:var(--surface2);border:1px solid var(--teal);color:var(--text);
+  padding:11px 18px;border-radius:12px;font-size:13.5px;z-index:80;opacity:0;pointer-events:none;
+  transition:opacity .25s ease,transform .25s ease;cursor:pointer;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+.toast.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.card.locked{opacity:.45;filter:saturate(.35)}
