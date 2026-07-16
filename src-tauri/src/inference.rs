@@ -135,7 +135,8 @@ fn child_exited(engine: &Engine) -> bool {
 }
 
 fn kill_child(engine: &Engine) {
-    if let Some(mut c) = engine.child.lock().unwrap().take() {
+    let child = engine.child.lock().unwrap().take();
+    if let Some(mut c) = child {
         let _ = c.kill();
         let _ = c.wait();
     }
@@ -151,6 +152,7 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || {
         let force_cpu = std::env::var("CLEOPHIS_FORCE_CPU").is_ok();
         let mut ngl: u32 = if force_cpu { 0 } else { 99 };
+        let mut crashes: u32 = 0;
         'restart: loop {
             if engine.shutting_down.load(Ordering::Relaxed) {
                 break;
@@ -162,6 +164,10 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
                     let _ = app.emit("engine-failed", format!("spawn error: {e}"));
                     break;
                 }
+            }
+            if engine.shutting_down.load(Ordering::Relaxed) {
+                kill_child(&engine);
+                break 'restart;
             }
             // Wait for health (model load can take a while on CPU).
             let deadline = Instant::now() + Duration::from_secs(180);
@@ -211,6 +217,16 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
                     if ngl > 0 {
                         ngl = 0; // be conservative after a crash
                     }
+                    crashes += 1;
+                    if crashes >= 3 {
+                        engine.set_status(EngineStatus::Failed);
+                        let _ = app.emit(
+                            "engine-failed",
+                            "engine crashed repeatedly — giving up".to_string(),
+                        );
+                        break 'restart;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
                     continue 'restart;
                 }
                 std::thread::sleep(Duration::from_millis(700));
