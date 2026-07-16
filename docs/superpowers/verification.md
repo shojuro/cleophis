@@ -14,7 +14,7 @@ earlier tasks is cited, not re-run, per this task's brief.
 
 | # | DoD item | Result | Evidence |
 |---|---|---|---|
-| 1 | Clean-machine test (Sandbox / fresh profile, zero dev tools) | **PENDING** — see note below | Coordinator runs with the user after this report |
+| 1 | Clean-machine test (Sandbox / fresh profile, zero dev tools) | **PASS** | User-confirmed 2026-07-16: MSI installed and full flow ran in a clean environment (sign-in → pay → download → chat responding); CPU-speed streaming, as expected without GPU passthrough |
 | 2 | Cover-forward catalog renders; compatibility badges after mock sign-in | **PASS** (user-confirmed) | Full offline flow verified on installed app: catalog → sign-in → badges → pay → download → chat |
 | 3 | Hero model: Get → progress → slides straight into live chat, greeting pre-printed | **PASS** (user-confirmed) | Same session as above; slide transition + pre-printed greeting confirmed |
 | 4 | Scripted Socratic probes stream guiding questions, never the final answer (also decides Phi vs Llama) | **PASS** (user-confirmed + probe transcript) | In-app: all 3 probes streamed guiding questions, no answer revealed. Model-selection probe script (Task 7): 4/4 pass, transcript below and in `docs/superpowers/probes-llama.md` |
@@ -175,16 +175,17 @@ within/above the expected 20–45 range** on the GTX 1650 via Vulkan.
 CPU fallback: functional and streaming, at the expected order-of-magnitude slower rate
 (~3 tok/s vs. ~36 tok/s GPU) — acceptable as a "plan B" contingency, not the primary path.
 
-## Step 6 — clean-machine test — **PENDING**
+## Step 6 — clean-machine test — **PASS**
 
-**Not run in this task.** Per explicit instruction, the coordinator runs this step with
-the user after this verification pass (Windows Sandbox or a second local user account,
-`.msi` copied in fresh, zero dev tools present). This is the only outstanding row before
-full demo-day sign-off — see the summary table above (item 1).
+Run by the user (coordinator-guided) after the automated pass, 2026-07-16: the `.msi`
+was copied into a clean environment (zero dev tools), installed via double-click, and
+the full flow ran — sign-in, payment, download, and a responding chat. Streaming was
+CPU-speed, consistent with no GPU passthrough in the clean environment; slow-but-working
+was the defined pass criterion.
 
 ## Concerns
 
 - MSI is unsigned (carried over from Task 11) — SmartScreen may warn on a machine other
   than the one used to build it; not a blocker for a demo running the already-installed app.
-- Item 1 (clean-machine test) is the sole PENDING item; everything else in this table is
-  PASS with evidence attached.
+- All items in this table are PASS with evidence attached. Definition of done is fully
+  satisfied as of 2026-07-16.
