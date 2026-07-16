@@ -197,6 +197,7 @@ function enterChat(m) {
 }
 
 function exitChat() {
+  state.chat.aborter?.abort();
   $('views').classList.remove('in-chat');
 }
 
