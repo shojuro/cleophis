@@ -1,0 +1,7 @@
+node_modules/
+src-tauri/target/
+src-tauri/resources/models/*.gguf
+src-tauri/resources/llama/
+models-lab/
+tools/covers/out/
+*.log
