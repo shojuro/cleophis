@@ -204,6 +204,7 @@ function enterChat(m) {
     views.removeEventListener('transitionend', onEnd);
     $('chatInput').focus();
   });
+  setTimeout(() => { if (views.classList.contains('in-chat')) $('chatInput').focus(); }, 650);
 }
 
 function exitChat() {
@@ -321,6 +322,7 @@ async function sendCompletion() {
     retry.textContent = '⟳ That didn\'t go through — tap to retry';
     retry.onclick = () => { retry.remove(); sendCompletion(); };
     $('chatMessages').appendChild(retry);
+    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   }
 }
 
@@ -412,5 +414,11 @@ $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
+[['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
+  const btn = group[group.length - 1];
+  group.slice(0, -1).forEach((id) => $(id).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $(btn).click();
+  }));
+});
 
 boot();

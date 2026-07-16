@@ -147,9 +147,23 @@ pub fn shutdown(engine: &Engine) {
     kill_child(engine);
 }
 
+/// A llama-server left over from an abnormal exit holds VRAM and would
+/// silently force this launch onto the CPU — clear it before spawning.
+#[cfg(windows)]
+fn sweep_stray_servers() {
+    use std::os::windows::process::CommandExt;
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "llama-server.exe"])
+        .creation_flags(0x0800_0000)
+        .output();
+}
+#[cfg(not(windows))]
+fn sweep_stray_servers() {}
+
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || {
+        sweep_stray_servers();
         let force_cpu = std::env::var("CLEOPHIS_FORCE_CPU").is_ok();
         let mut ngl: u32 = if force_cpu { 0 } else { 99 };
         let mut crashes: u32 = 0;
