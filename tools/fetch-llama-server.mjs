@@ -8,7 +8,7 @@
 // way `unzip -j` would and keeps only llama-server.exe + *.dll, matching the
 // original glob intent.
 import { execSync } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 
 const rel = await (await fetch('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest', {
   headers: { 'User-Agent': 'cleophis-build' },
@@ -25,7 +25,7 @@ writeFileSync('/tmp/llama-server.zip', buf);
 mkdirSync('../src-tauri/resources/llama', { recursive: true });
 try {
   execSync(`unzip -o -j /tmp/llama-server.zip 'llama-server.exe' '*.dll' -d ../src-tauri/resources/llama/`, { stdio: 'inherit' });
-} catch (e) {
+} catch {
   // Fallback: no `unzip` on this host. Extract with python3's stdlib zipfile
   // module instead, flattening paths and filtering to the same file set.
   console.log('unzip unavailable, falling back to python3 zipfile');
@@ -41,5 +41,12 @@ for name in z.namelist():
         print('extracted', base)
 `;
   execSync(`python3 -c "${py.replace(/"/g, '\\"')}"`, { stdio: 'inherit' });
+}
+// Fail loudly if extraction produced nothing useful (e.g. release layout drift
+// slipped past both filters): the server exe must exist or this task failed.
+if (!existsSync('../src-tauri/resources/llama/llama-server.exe')) {
+  console.error('llama-server.exe missing after extraction. Zip contents were:');
+  execSync(`python3 -c "import zipfile; print('\\n'.join(zipfile.ZipFile('/tmp/llama-server.zip').namelist()))"`, { stdio: 'inherit' });
+  process.exit(1);
 }
 console.log('done');
