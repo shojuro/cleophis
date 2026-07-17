@@ -54,17 +54,20 @@ impl SessionInfo {
 /// Locking discipline (binding, see the task brief):
 /// - `session` is NEVER held across network I/O — read/copy under lock,
 ///   drop the guard, do I/O, re-lock only to write the result back.
-/// - `refresh_gate` is the ONE lock allowed to span I/O, and only across a
-///   single refresh round-trip (single-flight token rotation: a second
-///   caller that queues up behind the gate re-checks freshness once it
-///   gets in, rather than firing a redundant refresh).
+/// - `refresh_gate` is the ONE lock allowed to span I/O: across a single
+///   refresh round-trip (single-flight token rotation: a second caller
+///   that queues up behind the gate re-checks freshness once it gets in,
+///   rather than firing a redundant refresh), AND, on that round-trip's
+///   `SessionExpired` failure branch, across the local purge that follows
+///   (keyring delete + memory clear + cache delete under `cache_lock`).
 /// - `cache_lock` is a LEAF lock: it serializes the on-disk cache file's
 ///   short read-modify-write cycles (queueing/recording a grant, updating
 ///   entitlements, purging on sign-out/session-expiry) so two callers
 ///   racing on the cache file can't lose each other's update. It is NEVER
 ///   held while taking `session` or `refresh_gate`, and NEVER held across
 ///   network I/O — only ever across a local read -> mutate -> write of the
-///   cache file itself.
+///   cache file itself. The sanctioned nesting order is `refresh_gate` ->
+///   `cache_lock` (the mid-session-purge case above), never the reverse.
 /// - Rotation discipline: after a successful `auth::refresh`, the new
 ///   refresh token is persisted to the keyring BEFORE the in-memory
 ///   session is updated or success is reported to the caller.
@@ -435,10 +438,7 @@ impl Cloud {
         source: &str,
     ) -> Result<(), CloudError> {
         match rest::insert_entitlement(access, user_id, model_id, source) {
-            Ok(()) => {
-                self.record_grant(model_id, source);
-                Ok(())
-            }
+            Ok(()) => self.record_grant(model_id, source),
             Err(CloudError::Offline) => self.queue_grant(model_id, source),
             Err(CloudError::SessionExpired) => match self.refresh_via_gate() {
                 Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
@@ -447,10 +447,7 @@ impl Cloud {
                 Err(e) => Err(e),
                 Ok((access2, user_id2)) => {
                     match rest::insert_entitlement(&access2, &user_id2, model_id, source) {
-                        Ok(()) => {
-                            self.record_grant(model_id, source);
-                            Ok(())
-                        }
+                        Ok(()) => self.record_grant(model_id, source),
                         Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
                             self.queue_grant(model_id, source)
                         }
@@ -498,10 +495,19 @@ impl Cloud {
 
     /// Records a successful grant in the cache (if not already present).
     /// Same self-contained, `cache_lock`-serialized read-modify-write
-    /// discipline as `queue_grant`.
-    fn record_grant(&self, model_id: &str, source: &str) {
+    /// discipline as `queue_grant`, INCLUDING the same empty-owner
+    /// refusal — the success-path twin of the same resurrection race:
+    /// without it, a `record_grant` that loses a race with a concurrent
+    /// `sign_out`/purge would recreate the cache file from scratch with an
+    /// anonymous (unowned) entitlement entry instead of just failing. The
+    /// server-side insert this follows already succeeded either way; the
+    /// caller just needs to re-authenticate to see it again locally.
+    fn record_grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
         let _guard = self.cache_lock.lock().unwrap();
         let mut cache = store::read_cache(&self.cache_path);
+        if cache.user_id.is_empty() {
+            return Err(CloudError::SessionExpired);
+        }
         if !cache.entitlements.iter().any(|e| e.model_id == model_id) {
             cache.entitlements.push(Entitlement {
                 model_id: model_id.to_string(),
@@ -511,6 +517,7 @@ impl Cloud {
             });
         }
         self.write_cache_best_effort(&cache);
+        Ok(())
     }
 
     fn offline_cached_info(&self, cache: &store::CloudCache) -> SessionInfo {
