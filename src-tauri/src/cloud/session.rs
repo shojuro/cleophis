@@ -47,6 +47,16 @@ impl SessionInfo {
     }
 }
 
+/// Result of a `Cloud::create_checkout` call. `Url` carries a validated
+/// (`https://checkout.stripe.com/`-prefixed), open-in-browser Stripe
+/// Checkout link. No `Debug`/`PartialEq` derive (mirrors
+/// `rest::CheckoutSessionResponse`'s rationale): the URL is a payment-page
+/// capability and must never end up in a `{:?}`/panic message.
+pub enum CheckoutOutcome {
+    AlreadyOwned,
+    Url(String),
+}
+
 /// The stateful session layer. Composes `auth` (GoTrue), `rest` (PostgREST),
 /// and `store` (keyring + on-disk cache) into the six operations the
 /// front-end drives via `cloud::commands`.
@@ -241,6 +251,24 @@ impl Cloud {
                 rest::mint_download_url(&access2, model_id)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Create a Stripe Checkout session for a model. Refreshes the session
+    /// token if needed; one forced refresh+retry on `SessionExpired`
+    /// (mirrors `download_authorization`'s retry shape). A 409 from the
+    /// function (already owns the model) maps to `AlreadyOwned` rather than
+    /// an error. On success, validates the returned URL actually points at
+    /// Stripe's checkout host before it's ever handed to the opener plugin
+    /// — see `checkout_outcome`.
+    pub fn create_checkout(&self, model_id: &str) -> Result<CheckoutOutcome, CloudError> {
+        let (access, _user_id) = self.ensure_fresh()?;
+        match rest::create_checkout(&access, model_id) {
+            Err(CloudError::SessionExpired) => {
+                let (access2, _user_id2) = self.refresh_via_gate()?;
+                checkout_outcome(rest::create_checkout(&access2, model_id))
+            }
+            result => checkout_outcome(result),
         }
     }
 
@@ -691,6 +719,27 @@ fn merge_pending_synthetics(
         }
     }
     merged
+}
+
+/// Maps a `rest::create_checkout` result to a `CheckoutOutcome`: a 409 (the
+/// function's "already owns this model" response) becomes `AlreadyOwned`
+/// rather than an error; any other error passes through unchanged. On
+/// success, the URL is validated here — the one place this is
+/// unit-testable without a Tauri `AppHandle`/opener plugin in the loop —
+/// before `Cloud::create_checkout`'s caller (`start_checkout`) ever trusts
+/// it enough to hand to `tauri_plugin_opener`.
+fn checkout_outcome(result: Result<rest::CheckoutSessionResponse, CloudError>) -> Result<CheckoutOutcome, CloudError> {
+    match result {
+        Ok(resp) => {
+            if resp.url.starts_with("https://checkout.stripe.com/") {
+                Ok(CheckoutOutcome::Url(resp.url))
+            } else {
+                Err(CloudError::Internal("unexpected checkout url".into()))
+            }
+        }
+        Err(CloudError::Api { status: 409, .. }) => Ok(CheckoutOutcome::AlreadyOwned),
+        Err(e) => Err(e),
+    }
 }
 
 fn local_part(email: &str) -> String {
@@ -1514,5 +1563,148 @@ mod tests {
         assert_eq!(result.url, "http://x/file/b/m.gguf");
         assert_eq!(result.authorization, "tok123");
         assert_eq!(result.file_bytes, 2019377696);
+    }
+
+    // S7-2. create_checkout happy path: locally-fresh session, 200
+    // {"url":"https://checkout.stripe.com/..."} -> Url(...) exact.
+    #[test]
+    fn create_checkout_happy_path_returns_url() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-happy-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-checkout".into(),
+                email: "checkout@example.com".into(),
+                access_token: "at-fresh-checkout".into(),
+                refresh_token: "rt-fresh-checkout".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "200 OK",
+            r#"{"url":"https://checkout.stripe.com/c/pay/cs_test_x"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud
+            .create_checkout("socratic-tutor")
+            .expect("expected success");
+        match result {
+            CheckoutOutcome::Url(u) => {
+                assert_eq!(u, "https://checkout.stripe.com/c/pay/cs_test_x")
+            }
+            CheckoutOutcome::AlreadyOwned => panic!("expected Url, got AlreadyOwned"),
+        }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-3. create_checkout 409 {"error":"already_purchased",...} ->
+    // AlreadyOwned.
+    #[test]
+    fn create_checkout_409_is_already_owned() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-409-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-409".into(),
+                email: "u409@example.com".into(),
+                access_token: "at-409".into(),
+                refresh_token: "rt-409".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "409 Conflict",
+            r#"{"error":"already_purchased","message":"You already own this model."}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud
+            .create_checkout("socratic-tutor")
+            .expect("expected Ok(AlreadyOwned)");
+        assert!(matches!(result, CheckoutOutcome::AlreadyOwned));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-4. create_checkout 200 with a non-Stripe url ->
+    // Err(Internal("unexpected checkout url")) -- validation lives in
+    // session.rs, unit-testable here without touching the browser opener.
+    #[test]
+    fn create_checkout_non_stripe_url_rejected() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-badurl-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-badurl".into(),
+                email: "badurl@example.com".into(),
+                access_token: "at-badurl".into(),
+                refresh_token: "rt-badurl".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server("200 OK", r#"{"url":"https://evil.example/pay"}"#);
+        set_mock_env(port);
+
+        let err = cloud
+            .create_checkout("socratic-tutor")
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Internal(reason) => {
+                assert!(reason.contains("unexpected checkout url"), "reason was: {reason}")
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-6. create_checkout: server rejects a locally-fresh access token
+    // with 401 (clock skew / out-of-band revocation -- same rationale as
+    // grant_with_access's retry). `refresh_via_gate()` re-checks the SAME
+    // local clock and short-circuits without a network call (the session
+    // is still locally fresh), handing back the identical access token, so
+    // connection 2 is the retried create-checkout call, which also 401s.
+    // The mock listener serves exactly 2 responses then stops accepting --
+    // a bug that retried a third time would hit a transport error
+    // (Offline) here instead, so this also proves the one-retry shape (no
+    // infinite retry).
+    #[test]
+    fn create_checkout_401_session_expired_no_retry() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-401-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-401".into(),
+                email: "u401@example.com".into(),
+                access_token: "at-401".into(),
+                refresh_token: "rt-401".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server_n(vec![
+            ("401 Unauthorized", r#"{"message":"JWT expired"}"#),
+            ("401 Unauthorized", r#"{"message":"JWT expired"}"#),
+        ]);
+        set_mock_env(port);
+
+        let result = cloud.create_checkout("socratic-tutor");
+        assert!(matches!(result, Err(CloudError::SessionExpired)));
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 }
