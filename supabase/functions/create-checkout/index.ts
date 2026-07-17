@@ -154,6 +154,36 @@ Deno.serve(async (req: Request) => {
     );
   }
 
+  // Existing-customer reuse: a lapsed subscriber who re-subscribes must land
+  // on their EXISTING Stripe Customer, not a brand-new one. customer-portal
+  // (supabase/functions/customer-portal/index.ts) can only cancel
+  // subscriptions that live on the customer it opens a portal session for —
+  // minting a fresh Customer here would orphan the old, possibly still
+  // dunning-retrying subscription outside the portal's view. If the old
+  // card recovers during Stripe's smart-retry window, the user ends up
+  // double-billed with no self-serve way to cancel the stale sub. Reusing
+  // the mapped customer keeps every subscription visible and self-serve
+  // cancellable from one portal (residual same-customer dunning case is
+  // documented in docs/ops/payments-runbook.md).
+  const { data: customerRow, error: customerErr } = await supabase
+    .from("stripe_customers")
+    .select("customer_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (customerErr) {
+    // Mirrors the entitlements query's error path above exactly (same
+    // internal_error/500) rather than inventing a new error code.
+    // Proceeding without the mapping would mint a duplicate Customer in
+    // precisely the scenario this lookup exists to prevent, so this fails
+    // closed instead of falling through to Stripe.
+    console.error(`stripe_customers lookup failed: ${customerErr.message}`);
+    return jsonResponse({ error: "internal_error" }, 500);
+  }
+  // No row = first-ever subscribe: customerId stays undefined and the
+  // session below is created with no `customer` param, exactly as today.
+  const customerId = customerRow?.customer_id;
+
   // Stripe client constructed lazily here, only once every prior check has
   // passed and it's actually about to be used — mirrors how download-url
   // builds its clients after env validation rather than at module load.
@@ -171,6 +201,11 @@ Deno.serve(async (req: Request) => {
     // The key below uses a new prefix, distinct from the old payment-mode
     // key's prefix, so it can never collide with a live 24h payment-mode
     // idempotency key still cached from before subscription mode shipped.
+    // The key is scoped by (userId, modelId) only, not by whether a
+    // `customer` param is present below — so a with/without-customer params
+    // mismatch inside Stripe's 24h idempotency window would require pay →
+    // lapse → re-subscribe within the same day, which doesn't happen at
+    // this milestone's actual monthly cadence.
     session = await stripe.checkout.sessions.create(
       {
         mode: "subscription",
@@ -185,6 +220,11 @@ Deno.serve(async (req: Request) => {
         subscription_data: { metadata: { user_id: userId, model_id: modelId } },
         success_url: "https://shojuro.github.io/cleophis/pay/success.html",
         cancel_url: "https://shojuro.github.io/cleophis/pay/cancelled.html",
+        // Existing-customer reuse (see comment block above the
+        // stripe_customers lookup): only set when a mapping was found, so a
+        // first-ever subscriber still gets no `customer` param at all,
+        // exactly as before this change.
+        ...(customerId ? { customer: customerId } : {}),
       },
       { idempotencyKey: `subcheckout-${userId}-${modelId}` },
     );

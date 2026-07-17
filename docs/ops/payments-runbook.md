@@ -229,6 +229,19 @@ Checkout Session exactly like a naturally lapsed one.
   it needed no guard of its own. Only a genuinely new `(user_id, model_id)`
   pair landing at the cap is exposed, on either path, and only reachable
   via deliberate self-flooding (100 distinct `model_id` rows for one user).
+- **Residual dunning-window case (two subs, one customer).** `create-checkout`
+  now reuses the mapped Stripe Customer on re-subscribe (see its
+  `stripe_customers` lookup ahead of the Checkout Session call), which
+  closes the orphaned-customer version of this problem. But if a user
+  re-subscribes while their old subscription is still inside Stripe's
+  smart-retry (dunning) window, they end up with TWO subscriptions on the
+  SAME customer — the lapsed one Stripe hasn't given up on yet, plus the
+  new one just created. Both are now portal-visible and self-serve
+  cancellable, so the support answer is simple: cancel the stale
+  subscription in the Billing Portal or the Stripe Dashboard. Future
+  hardening option: have `create-checkout` cancel any non-canceled prior
+  subscription on the customer at re-checkout time, instead of leaving two
+  live.
 
 ## LIVE-MODE FLIP checklist
 
@@ -295,6 +308,10 @@ test mode**. Before real money can move, in order:
    redeploy for the flip — it has no test/live branching of its own, so it
    picks up live-mode behavior automatically once `STRIPE_SECRET_KEY` is
    rotated in step 2.
+6. Verify customer reuse behavior in live mode: run the re-subscribe flow
+   with a live-mode card and confirm it lands on the existing Customer (no
+   new one minted) and that the Billing Portal shows the full subscription
+   history for that customer.
 
 **No app release is needed for this flip.** Nothing in the Tauri client
 (`src-tauri`, `src/app.js`) encodes test-vs-live mode, a secret value, or a
