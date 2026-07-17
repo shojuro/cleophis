@@ -21,8 +21,8 @@ as $$
 begin
   insert into public.profiles (id, nickname)
   values (new.id,
-          coalesce(nullif(new.raw_user_meta_data->>'nickname', ''),
-                   nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+          coalesce(nullif(left(new.raw_user_meta_data->>'nickname', 40), ''),
+                   nullif(left(split_part(coalesce(new.email, ''), '@', 1), 40), ''),
                    'you'));
   return new;
 end;
