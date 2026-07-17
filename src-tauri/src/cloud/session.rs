@@ -215,6 +215,29 @@ impl Cloud {
         }
     }
 
+    /// Fresh download authorization for a model. Refreshes the session token
+    /// if needed; one forced refresh+retry on `SessionExpired` (mirrors
+    /// `grant_with_access`'s retry shape). No cache/lock interaction beyond
+    /// what `ensure_fresh`/`refresh_via_gate` already do internally — unlike
+    /// `grant`, there is nothing to queue offline; a download-URL mint is
+    /// only ever meaningful right before an online download attempt.
+    ///
+    /// Not yet called from production code: the download worker that invokes
+    /// this lands in a later task (C3b). Directly unit-tested below in the
+    /// meantime.
+    #[allow(dead_code)]
+    pub fn download_authorization(&self, model_id: &str) -> Result<rest::DownloadAuth, CloudError> {
+        let (access, _user_id) = self.ensure_fresh()?;
+        match rest::mint_download_url(&access, model_id) {
+            Ok(auth) => Ok(auth),
+            Err(CloudError::SessionExpired) => {
+                let (access2, _user_id2) = self.refresh_via_gate()?;
+                rest::mint_download_url(&access2, model_id)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// The shared post-auth pass: persists the rotated refresh token,
     /// writes the in-memory session, fetches nickname + entitlements
     /// (falling back to cache on error), flushes any queued pending
@@ -1276,5 +1299,39 @@ mod tests {
             !cache_path.exists(),
             "expected the RLS rejection not to be queued"
         );
+    }
+
+    // C3a-1. download_authorization happy path: locally-fresh session skips
+    // the refresh round-trip (dead port on any second connection would
+    // panic the mock thread's accept, not the test — the assertions below
+    // are what actually prove it) and returns the minted fields.
+    #[test]
+    fn download_authorization_happy_path() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-download-auth-happy-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-dl".into(),
+                email: "dl@example.com".into(),
+                access_token: "at-fresh-dl".into(),
+                refresh_token: "rt-fresh-dl".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "200 OK",
+            r#"{"url":"http://x/file/b/m.gguf","authorization":"tok123","expiresAt":"2026-07-18T00:00:00Z","fileBytes":2019377696}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud
+            .download_authorization("socratic-tutor")
+            .expect("expected success");
+        assert_eq!(result.url, "http://x/file/b/m.gguf");
+        assert_eq!(result.authorization, "tok123");
+        assert_eq!(result.file_bytes, 2019377696);
     }
 }
