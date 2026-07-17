@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 pub const SUPABASE_URL: &str = "https://isltexsxpysxqewjsryv.supabase.co";
-/// Publishable (anon) key — public by design; the real value is filled in
-/// once retrieved from the project dashboard (Task A8 gate). The env
+/// Publishable key — public by design (ships in the app). The env
 /// override always wins, which is also how the mock-server tests run.
-pub const SUPABASE_PUBLISHABLE_KEY: &str = "";
+pub const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_zKxcgZ9z7S4xpwd68Pv1bA_iNbv6oyq";
 
 pub const OFFLINE_GRACE_DAYS: i64 = 30;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
