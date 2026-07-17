@@ -18,7 +18,7 @@ pub struct TokenResponse {
 pub fn sign_in_password(email: &str, password: &str) -> Result<TokenResponse, CloudError> {
     let url = format!("{}/auth/v1/token?grant_type=password", config::supabase_url());
     let body = serde_json::json!({ "email": email, "password": password });
-    request_token(&url, body, false)
+    request_token(&url, body, Endpoint::SignIn)
 }
 
 /// POST {url}/auth/v1/signup  body {"email","password","data":{"nickname": nickname}}
@@ -31,14 +31,14 @@ pub fn sign_up(email: &str, password: &str, nickname: &str) -> Result<TokenRespo
         "password": password,
         "data": { "nickname": nickname },
     });
-    request_token(&url, body, false)
+    request_token(&url, body, Endpoint::SignUp)
 }
 
 /// POST {url}/auth/v1/token?grant_type=refresh_token  body {"refresh_token"}
 pub fn refresh(refresh_token: &str) -> Result<TokenResponse, CloudError> {
     let url = format!("{}/auth/v1/token?grant_type=refresh_token", config::supabase_url());
     let body = serde_json::json!({ "refresh_token": refresh_token });
-    request_token(&url, body, true)
+    request_token(&url, body, Endpoint::Refresh)
 }
 
 /// POST {url}/auth/v1/logout with Authorization: Bearer <access>. Best-effort:
@@ -65,7 +65,17 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-fn request_token(url: &str, body: Value, is_refresh: bool) -> Result<TokenResponse, CloudError> {
+/// Which GoTrue endpoint a request is for — drives two pieces of
+/// endpoint-specific error mapping: refresh's "any 4xx → SessionExpired"
+/// rule, and signup's "no access_token on 2xx → EmailNotConfirmed" rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    SignIn,
+    SignUp,
+    Refresh,
+}
+
+fn request_token(url: &str, body: Value, endpoint: Endpoint) -> Result<TokenResponse, CloudError> {
     let key = config::supabase_key();
     match agent()
         .post(url)
@@ -74,15 +84,27 @@ fn request_token(url: &str, body: Value, is_refresh: bool) -> Result<TokenRespon
         .send_json(body)
     {
         Ok(resp) => {
+            let status = resp.status();
             let json: Value = resp
                 .into_json()
                 .map_err(|_| CloudError::Internal("failed to parse auth response".into()))?;
-            parse_token_response(&json).ok_or(CloudError::EmailNotConfirmed)
+            match parse_token_response(&json) {
+                Some(token) => Ok(token),
+                // Only signup legitimately omits access_token on a 2xx (email
+                // confirmation pending). A bare/malformed body from sign-in or
+                // refresh is unexpected, not "unconfirmed" — surface it as a
+                // generic API error instead of misreporting the reason.
+                None if endpoint == Endpoint::SignUp => Err(CloudError::EmailNotConfirmed),
+                None => Err(CloudError::Api {
+                    status,
+                    msg: "malformed token response".into(),
+                }),
+            }
         }
         Err(ureq::Error::Transport(_)) => Err(CloudError::Offline),
         Err(ureq::Error::Status(status, resp)) => {
             let body: Option<Value> = resp.into_json().ok();
-            Err(map_status_error(status, body, is_refresh))
+            Err(map_status_error(status, body, endpoint == Endpoint::Refresh))
         }
     }
 }
@@ -98,7 +120,7 @@ fn parse_token_response(body: &Value) -> Option<TokenResponse> {
     let expires_at = body
         .get("expires_at")
         .and_then(Value::as_i64)
-        .unwrap_or_else(|| now() + expires_in);
+        .unwrap_or_else(|| now().saturating_add(expires_in));
     let user = body.get("user");
     let user_id = user
         .and_then(|u| u.get("id"))
@@ -148,6 +170,14 @@ fn map_status_error(status: u16, body: Option<Value>, is_refresh: bool) -> Cloud
     if status == 429 || code == "over_request_rate_limit" {
         return CloudError::RateLimited;
     }
+    // Refresh is special-cased above all other error-code matching: ANY 4xx
+    // on the refresh endpoint (other than 429, handled above) means the
+    // session needs to be re-established, regardless of what GoTrue's body
+    // claims — including invalid_grant/invalid_credentials shapes, which on
+    // every other endpoint mean something more specific.
+    if is_refresh && (400..500).contains(&status) {
+        return CloudError::SessionExpired;
+    }
     if code == "invalid_credentials"
         || code == "invalid_grant"
         || msg.contains("Invalid login credentials")
@@ -163,9 +193,6 @@ fn map_status_error(status: u16, body: Option<Value>, is_refresh: bool) -> Cloud
     }
     if code == "weak_password" || msg.contains("Password should") {
         return CloudError::WeakPassword(msg);
-    }
-    if is_refresh && (400..500).contains(&status) {
-        return CloudError::SessionExpired;
     }
     CloudError::Api { status, msg }
 }
@@ -360,6 +387,22 @@ mod tests {
         assert!(matches!(err, CloudError::SessionExpired));
     }
 
+    // 7a-bis. refresh 400 with an old-schema invalid_grant body still maps to
+    // SessionExpired — refresh's "any 4xx → SessionExpired" rule takes
+    // precedence over the credential-specific codes, which apply everywhere
+    // else.
+    #[test]
+    fn refresh_400_invalid_grant_still_session_expired() {
+        let _g = lock();
+        let port = start_mock_server(
+            "400 Bad Request",
+            r#"{"error":"invalid_grant","error_description":"Invalid Refresh Token"}"#,
+        );
+        set_mock_env(port);
+        let err = expect_err(refresh("some-refresh-token"));
+        assert!(matches!(err, CloudError::SessionExpired));
+    }
+
     // 7b. refresh 429 → RateLimited.
     #[test]
     fn refresh_429_rate_limited() {
@@ -398,6 +441,23 @@ mod tests {
                 assert!(msg.contains("Password should"), "msg was: {msg}")
             }
             other => panic!("expected WeakPassword, got {other:?}"),
+        }
+    }
+
+    // sign-in 200 with no access_token is malformed, not "unconfirmed" (that
+    // reading only applies to signup) → Api{status: 200, msg: "malformed..."}.
+    #[test]
+    fn sign_in_200_malformed_body_is_api_error() {
+        let _g = lock();
+        let port = start_mock_server("200 OK", r#"{"id":"user-x","email":"x@example.com"}"#);
+        set_mock_env(port);
+        let err = expect_err(sign_in_password("x@example.com", "hunter2"));
+        match err {
+            CloudError::Api { status, msg } => {
+                assert_eq!(status, 200);
+                assert_eq!(msg, "malformed token response");
+            }
+            other => panic!("expected Api, got {other:?}"),
         }
     }
 

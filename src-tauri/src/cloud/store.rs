@@ -83,7 +83,7 @@ pub fn write_cache(path: &Path, cache: &CloudCache) -> Result<(), CloudError> {
     let json = serde_json::to_string_pretty(cache)
         .map_err(|e| CloudError::Internal(format!("failed to serialize cache: {e}")))?;
 
-    let tmp_path = path.with_extension("tmp");
+    let tmp_path = temp_write_path(path);
     {
         let mut file = std::fs::File::create(&tmp_path)
             .map_err(|e| CloudError::Internal(format!("failed to write cache: {e}")))?;
@@ -93,6 +93,22 @@ pub fn write_cache(path: &Path, cache: &CloudCache) -> Result<(), CloudError> {
     std::fs::rename(&tmp_path, path)
         .map_err(|e| CloudError::Internal(format!("failed to finalize cache: {e}")))?;
     Ok(())
+}
+
+/// A temp path unique per writer, alongside `path`: `<name>.<pid>.<nanos>.tmp`
+/// in the same directory. Uniqueness matters if two processes (or two racing
+/// writes in tests) target the same cache file concurrently — each gets its
+/// own temp file, so neither clobbers the other before the atomic rename.
+fn temp_write_path(path: &Path) -> std::path::PathBuf {
+    let file_name = path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    path.with_file_name(format!("{file_name}.{}.{nanos}.tmp", std::process::id()))
 }
 
 /// Appends a pending grant unless `model_id` is already pending or already
