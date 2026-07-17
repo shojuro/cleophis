@@ -19,6 +19,11 @@ create or replace function public.apply_subscription_period(
 language plpgsql security definer set search_path = ''
 as $$
 begin
+  -- NULL period_end would mint an un-expirable row indistinguishable from a
+  -- grandfathered lifetime purchase — fail loudly instead.
+  if p_period_end is null then
+    raise exception 'apply_subscription_period: null period_end';
+  end if;
   insert into public.entitlements (user_id, model_id, source, expires_at)
   values (p_user_id, p_model_id, 'purchase', p_period_end)
   on conflict (user_id, model_id) do update
