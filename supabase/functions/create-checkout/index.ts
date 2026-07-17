@@ -22,11 +22,12 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import Stripe from "npm:stripe";
 
 // In-source model→Stripe-price registry. Keep in sync with the catalog on
-// the client side (src/app.js / src-tauri) and with download-url's own
-// MODELS registry — this function is the source of truth for which Stripe
-// Price ID backs a purchase of a given model_id.
+// the client side (src/app.js / src-tauri), with download-url's own MODELS
+// registry, and with stripe-webhook's SUB_MODELS registry (Sub2) — this
+// function is the source of truth for which Stripe Price ID backs a
+// subscription checkout of a given model_id.
 const MODELS: Record<string, { priceEnv: string; display: string }> = {
-  "socratic-tutor": { priceEnv: "STRIPE_PRICE_SOCRATIC", display: "Socratic Math Tutor" },
+  "socratic-tutor": { priceEnv: "STRIPE_PRICE_SOCRATIC_MONTHLY", display: "Socratic Math Tutor" },
 };
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -122,12 +123,20 @@ Deno.serve(async (req: Request) => {
   // Already-purchased check: a completed purchase (source = 'purchase')
   // blocks a second Checkout Session outright, before Stripe is ever
   // called — avoids double-charging and duplicate entitlement rows.
+  // Expiry-aware, mirroring download-url's entitlement check: a matching
+  // row only counts while it's still active — expires_at either null
+  // (lifetime purchase, or an active subscription whose row has no expiry
+  // yet) or in the future (an active subscription's current period end).
+  // A row whose expires_at is in the past (a lapsed subscription) does NOT
+  // block — the user falls through to a fresh checkout so they can
+  // re-subscribe.
   const { data: entRows, error: entErr } = await supabase
     .from("entitlements")
     .select("id")
     .eq("user_id", userId)
     .eq("model_id", modelId)
-    .eq("source", "purchase");
+    .eq("source", "purchase")
+    .or("expires_at.is.null,expires_at.gt." + new Date().toISOString());
 
   if (entErr) {
     // Not one of the brief's named error cases (DB/network failure on the
@@ -158,16 +167,25 @@ Deno.serve(async (req: Request) => {
     // rapid identical requests return the same session instead of minting
     // two. If the price for this model changes, the key's params change too
     // and Stripe errors on a stale key — acceptable, self-heals after 24h.
+    // The key below uses a new prefix, distinct from the old payment-mode
+    // key's prefix, so it can never collide with a live 24h payment-mode
+    // idempotency key still cached from before subscription mode shipped.
     session = await stripe.checkout.sessions.create(
       {
-        mode: "payment",
+        mode: "subscription",
         line_items: [{ price: priceId, quantity: 1 }],
         metadata: { user_id: userId, model_id: modelId },
         client_reference_id: userId,
+        // subscription_data.metadata propagates onto the Subscription object
+        // itself (not just this Session), which is what stripe-webhook's
+        // invoice.paid / subscription-lifecycle handling reads from — the
+        // session-level metadata above doesn't carry over to the
+        // subscription automatically.
+        subscription_data: { metadata: { user_id: userId, model_id: modelId } },
         success_url: "https://shojuro.github.io/cleophis/pay/success.html",
         cancel_url: "https://shojuro.github.io/cleophis/pay/cancelled.html",
       },
-      { idempotencyKey: `checkout-${userId}-${modelId}` },
+      { idempotencyKey: `subcheckout-${userId}-${modelId}` },
     );
   } catch (err) {
     // Log the error message only — never the Stripe secret key.
