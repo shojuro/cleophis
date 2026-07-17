@@ -176,10 +176,14 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
 
-  const model = MODELS[modelId];
-  if (!model) {
+  // Object.hasOwn fences the lookup against prototype-chain keys
+  // ("__proto__", "constructor", "toString", ...) that would otherwise
+  // return a truthy value from MODELS[modelId] and bypass this 404 gate —
+  // the paywall must not depend on B2 rejecting a bogus prefix downstream.
+  if (!Object.hasOwn(MODELS, modelId)) {
     return jsonResponse({ error: "unknown_model" }, 404);
   }
+  const model = MODELS[modelId];
 
   // Entitlement check: a matching row must exist with expires_at either
   // null or in the future.
