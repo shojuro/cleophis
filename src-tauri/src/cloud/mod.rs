@@ -3,6 +3,7 @@
 //! The chat hot path must never route through this module.
 #![allow(dead_code)] // transient scaffolding allowance: removed when commands.rs lands (Task A5)
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod session;
