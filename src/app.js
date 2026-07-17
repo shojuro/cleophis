@@ -20,6 +20,10 @@ async function boot() {
   for (const m of state.catalog) m.coverUrl = convertFileSrc(m.coverAbs);
   try { state.engine = await invoke('engine_info'); } catch (_) {}
   renderFilters(); renderGrid();
+  try {
+    const s = await invoke('restore_session');
+    if (s.signedIn) applySession(s);
+  } catch (_) { /* signed-out boot is fine */ }
 }
 
 /* ---------------- compatibility ---------------- */
@@ -161,6 +165,7 @@ function heroDownload(m, btn) {
       cancelAnimationFrame(raf);
       bar.style.width = '100%';
       state.mine.add(m.id);
+      invoke('grant_entitlement', { modelId: m.id, source: 'trial' }).catch(() => {});
       renderGrid();
       setTimeout(() => enterChat(m), 280);
     })
@@ -183,6 +188,7 @@ function simulateStubDownload(m, btn) {
     if (p >= 100) {
       clearInterval(t);
       state.mine.add(m.id);
+      invoke('grant_entitlement', { modelId: m.id, source: 'library' }).catch(() => {});
       btn.innerHTML = 'Installed'; btn.disabled = false; btn.style.opacity = 1;
       $('installedMsg').style.display = 'flex';
       renderGrid();
@@ -362,14 +368,20 @@ function lockNudge(card) {
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
 function hide(el) { el.classList.remove('show'); }
 
-async function signIn(nick) {
-  state.signedIn = true; state.nick = nick || 'you';
+async function applySession(info) {
+  state.signedIn = true;
+  state.nick = info.nickname || 'you';
+  state.mine = new Set((info.entitlements || []).map((e) => e.modelId));
   state.device = await invoke('detect_hardware');
   $('dev-name').textContent = state.device.gpu.replace(/NVIDIA |GeForce /g, '') || 'This machine';
   $('dev-spec').textContent = `${state.device.ram_gb} GB RAM`;
   $('device').style.display = 'flex';
-  const lb = $('loginBtn'); lb.textContent = state.nick;
-  hide($('loginModal')); hide($('createModal'));
+  const lb = $('loginBtn');
+  lb.textContent = state.nick;
+  lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
+  $('signOutBtn').style.display = '';
+  hide($('loginModal'));
+  hide($('createModal'));
   renderGrid();
 }
 
@@ -407,13 +419,80 @@ $('loginBtn').addEventListener('click', () => {
 document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); }));
 $('toCreate').addEventListener('click', () => { hide($('loginModal')); show($('createModal')); });
 $('toLogin').addEventListener('click', () => { hide($('createModal')); show($('loginModal')); });
-$('doLogin').addEventListener('click', () => signIn('you'));
-$('doCreate').addEventListener('click', () => signIn($('cr-nick').value || 'you'));
+$('doLogin').addEventListener('click', async () => {
+  const email = $('li-email').value.trim();
+  const password = $('li-pass').value;
+  const err = $('li-err');
+  err.style.display = 'none';
+  if (!email || !password) {
+    err.style.display = 'block';
+    err.textContent = 'Enter your email and password.';
+    return;
+  }
+  const btn = $('doLogin');
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  try {
+    applySession(await invoke('sign_in', { email, password }));
+  } catch (e) {
+    err.style.display = 'block';
+    err.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Log in';
+  }
+});
+$('doCreate').addEventListener('click', async () => {
+  const email = $('cr-email').value.trim();
+  const password = $('cr-pass').value;
+  const err = $('cr-err');
+  err.style.display = 'none';
+  if (!email || !password) {
+    err.style.display = 'block';
+    err.textContent = 'Enter your email and password.';
+    return;
+  }
+  if (password.length < 8) {
+    err.style.display = 'block';
+    err.textContent = 'Password must be at least 8 characters.';
+    return;
+  }
+  const btn = $('doCreate');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  try {
+    applySession(await invoke('sign_up', { email, password, nickname: $('cr-nick').value.trim() || 'you' }));
+  } catch (e) {
+    err.style.display = 'block';
+    err.textContent = String(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create account';
+  }
+});
 [$('loginModal'), $('createModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
 $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
+$('signOutBtn').addEventListener('click', async () => {
+  try { await invoke('sign_out'); } catch (_) {}
+  state.signedIn = false;
+  state.nick = null;
+  state.device = null;
+  state.mine = new Set();
+  $('device').style.display = 'none';
+  $('signOutBtn').style.display = 'none';
+  const lb = $('loginBtn');
+  lb.textContent = 'Log in';
+  lb.title = '';
+  if (state.cat === 'mine') {
+    state.cat = 'all';
+    document.querySelectorAll('#nav button').forEach((x) => x.classList.toggle('active', x.dataset.cat === 'all'));
+  }
+  renderFilters();
+  renderGrid();
+});
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];
   group.slice(0, -1).forEach((id) => $(id).addEventListener('keydown', (e) => {
