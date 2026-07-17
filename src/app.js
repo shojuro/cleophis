@@ -9,6 +9,7 @@ const state = {
   chat: { model: null, messages: [], streaming: false, aborter: null },
   dl: { installed: false, partBytes: 0, active: false },
   pay: { modelId: null, timer: null, deadline: 0 },
+  drawerId: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -104,6 +105,7 @@ function renderGrid() {
 /* ---------------- drawer ---------------- */
 function openDrawer(id) {
   const m = state.catalog.find((x) => x.id === id); if (!m) return;
+  state.drawerId = m.id;
   const cp = compat(m.sizeParams);
   const installed = state.mine.has(m.id);
   const gb = (m.fileBytes / 2 ** 30).toFixed(2);
@@ -155,6 +157,7 @@ function openDrawer(id) {
 function closeDrawer() {
   $('scrim').classList.remove('show'); $('drawer').classList.remove('show');
   $('drawer').setAttribute('aria-hidden', 'true');
+  state.drawerId = null;
 }
 
 /* ---------------- Get flow ---------------- */
@@ -225,6 +228,10 @@ function cancelPaymentPoll(resetBtnText) {
   state.pay = { modelId: null, timer: null, deadline: 0 };
   const btn = $('dlBtn');
   if (btn && resetBtnText) { btn.disabled = false; btn.textContent = resetBtnText; }
+  if (resetBtnText) {
+    const el = $('errMsg');
+    if (el) { el.style.display = 'none'; el.style.color = ''; }
+  }
 }
 
 function beginPaymentPoll(m) {
@@ -245,7 +252,7 @@ function beginPaymentPoll(m) {
     state.mine.add(m.id);
     renderGrid();
     const btn = $('dlBtn');
-    if (btn && $('drawer').classList.contains('show')) {
+    if (btn && state.drawerId === m.id && $('drawer').classList.contains('show')) {
       btn.disabled = true;
       btn.textContent = '✓ Paid — starting download…';
       heroDownload(m, btn);
