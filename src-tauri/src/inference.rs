@@ -286,11 +286,6 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
 /// Check-and-set: NoModel -> Starting under the status lock. Returns whether
 /// the transition happened (true) or the engine was in some other state
 /// (false) — the double-start guard for `start_if_no_model`.
-///
-/// Not yet called from production code: the download-completion event that
-/// invokes `start_if_no_model` lands in a later task (thin-installer C3b/C4).
-/// Directly unit-tested below in the meantime.
-#[allow(dead_code)]
 fn try_begin_start(engine: &Engine) -> bool {
     let mut status = engine.status.lock().unwrap();
     if *status == EngineStatus::NoModel {
@@ -303,10 +298,8 @@ fn try_begin_start(engine: &Engine) -> bool {
 
 /// Start the engine after a download completes. No-op unless current status is
 /// NoModel (atomic check-and-set under the status lock — double-start guard).
-///
-/// Not yet wired to a caller: the download-completion handler that invokes
-/// this lands in a later task (thin-installer C3b/C4).
-#[allow(dead_code)]
+/// Called by `cloud::download::download_model`'s worker thread once a
+/// download finishes and the file lands at its final path.
 pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
     if try_begin_start(&engine) {
         start(app, engine);

@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod commands;
 pub mod config;
+pub mod download;
 pub mod error;
 pub mod rest;
 pub mod session;

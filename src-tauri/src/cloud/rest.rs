@@ -91,10 +91,9 @@ pub fn upsert_device(
 /// token scoped to the CDN object and must never end up in a `{:?}`/panic
 /// message.
 ///
-/// Not yet constructed from production code: the download worker that
-/// consumes this lands in a later task (C3b). Directly unit-tested below in
-/// the meantime.
-#[allow(dead_code)]
+/// Constructed by `mint_download_url` and consumed by
+/// `cloud::download::run_download`'s `auth_provider`, which places
+/// `authorization` ONLY in the request's `Authorization` header.
 #[derive(Clone, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadAuth {
@@ -106,11 +105,9 @@ pub struct DownloadAuth {
 
 /// POST {url}/functions/v1/download-url  body {"model_id": ...}
 /// Headers: apikey + Bearer (same as other rest calls). Mints a short-lived,
-/// per-file CDN authorization for the download worker (C3b).
-///
-/// Not yet called from production code: the download worker (C3b) is the
-/// caller-to-be. Directly unit-tested below in the meantime.
-#[allow(dead_code)]
+/// per-file CDN authorization consumed by `cloud::session::Cloud::download_authorization`,
+/// in turn called by the download worker (`cloud::download::run_download`'s
+/// `auth_provider`).
 pub fn mint_download_url(access_token: &str, model_id: &str) -> Result<DownloadAuth, CloudError> {
     let url = format!("{}/functions/v1/download-url", config::supabase_url());
     let body = serde_json::json!({ "model_id": model_id });
@@ -216,9 +213,7 @@ fn post_json(
 /// `Internal`, since it's the server's contract that broke, not something
 /// local.
 ///
-/// Only caller today is `mint_download_url` (see its own `#[allow(dead_code)]`
-/// note — C3b lands the consumer).
-#[allow(dead_code)]
+/// Only caller today is `mint_download_url`.
 fn post_json_response<T: DeserializeOwned>(
     url: &str,
     access_token: &str,

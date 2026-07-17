@@ -222,10 +222,9 @@ impl Cloud {
     /// `grant`, there is nothing to queue offline; a download-URL mint is
     /// only ever meaningful right before an online download attempt.
     ///
-    /// Not yet called from production code: the download worker that invokes
-    /// this lands in a later task (C3b). Directly unit-tested below in the
-    /// meantime.
-    #[allow(dead_code)]
+    /// Called by `cloud::download::download_model`'s worker thread as
+    /// `auth_provider`, at start and on every re-mint (a retryable
+    /// failure).
     pub fn download_authorization(&self, model_id: &str) -> Result<rest::DownloadAuth, CloudError> {
         let (access, _user_id) = self.ensure_fresh()?;
         match rest::mint_download_url(&access, model_id) {
