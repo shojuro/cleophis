@@ -14,6 +14,10 @@ pub struct CatalogEntry {
     #[serde(default)]
     pub model_file: Option<String>,
     #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub version: Option<u32>,
+    #[serde(default)]
     pub chat_template: Option<String>,
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -85,5 +89,10 @@ mod tests {
         let h = hero(&v).expect("catalog must contain the hero model");
         assert_eq!(h.id, "socratic-tutor");
         assert!(h.system_prompt.is_some() && h.greeting.is_some());
+        assert!(
+            h.sha256.as_deref().map(|s| s.len() == 64).unwrap_or(false),
+            "hero must carry a 64-hex sha256"
+        );
+        assert_eq!(h.version, Some(1));
     }
 }

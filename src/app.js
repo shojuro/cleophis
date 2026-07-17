@@ -96,7 +96,7 @@ function openDrawer(id) {
   const m = state.catalog.find((x) => x.id === id); if (!m) return;
   const cp = compat(m.sizeParams);
   const installed = state.mine.has(m.id);
-  const gb = (m.fileBytes / 1e9).toFixed(1);
+  const gb = (m.fileBytes / 2 ** 30).toFixed(2);
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const btnLabel = m.real
     ? (installed ? 'Open chat' : `Get · ${m.pro ? 'Pro' : m.price}`)
@@ -106,7 +106,7 @@ function openDrawer(id) {
     <div class="dcover"><img src="${m.coverUrl}" alt=""/></div>
     <span class="tag ${m.category}" style="position:static;display:inline-block;margin-top:14px">${m.category === 'education' ? 'Education' : 'Medical reference'}</span>
     <h2>${m.name}</h2>
-    <div class="dsub">${m.subject} · ${gb} GB on disk</div>
+    <div class="dsub">${m.subject} · ${gb} GiB on disk</div>
     <div class="specs">
       <div class="spec"><div class="k">Model size</div><div class="v mono">${m.sizeParams} params</div></div>
       <div class="spec"><div class="k">On your device</div><div class="v"><span class="compat ${cp.cls}">${cp.label}</span></div></div>
