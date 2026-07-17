@@ -1,6 +1,6 @@
 // supabase/functions/create-checkout/index.ts
 //
-// Creates a Stripe Checkout Session for a one-time model purchase. Called by
+// Creates a Stripe Checkout Session for a monthly model subscription. Called by
 // the Rust client's checkout entry point (src-tauri/src/cloud/rest.rs, S7) —
 // POST { model_id } with a Supabase user JWT in the Authorization header.
 // Returns the Stripe-hosted checkout URL for the client to open (opener
@@ -15,7 +15,8 @@
 // branch, https://shojuro.github.io/cleophis/pay/).
 //
 // Task S3: code + commit only, no deployment. Deployment (verify_jwt: ON)
-// plus secrets (STRIPE_SECRET_KEY, STRIPE_PRICE_SOCRATIC) happen in S6.
+// plus secrets (STRIPE_SECRET_KEY, STRIPE_PRICE_SOCRATIC_MONTHLY) happen at
+// deploy time (S6 originally; Sub5 flipped the price to the monthly one).
 //
 // Import: pinned to jsr:@supabase/supabase-js@2, matching download-url.
 import { createClient } from "jsr:@supabase/supabase-js@2";
