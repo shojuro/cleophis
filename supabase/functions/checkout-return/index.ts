@@ -11,6 +11,23 @@
 // Task S3: code + commit only, no deployment. Deployed at S6 with
 // verify_jwt: OFF — by design this function reads zero secrets, zero env
 // vars, and performs zero auth: it's a public, stateless redirect target.
+//
+// S9 live finding: the deployed function was observed serving this 200
+// response as `text/plain` (+ `X-Content-Type-Options: nosniff`) instead of
+// `text/html; charset=utf-8`, so browsers rendered the markup as literal
+// source text with em-dash mojibake. htmlResponse() below already builds
+// its Content-Type via an explicit `Headers` instance (not a plain-object
+// literal) to remove any doubt that the header is attached on our side. If
+// the live response still comes back as text/plain after redeploy, this is
+// very likely NOT fixable from function code at all: Supabase's own docs
+// state "GET requests that return text/html will be rewritten to
+// text/plain" on the default `*.supabase.co` domain — HTML rendering is
+// only supported behind a custom domain (Pro plan). See
+// https://supabase.com/docs/guides/functions/development-tips and
+// https://github.com/orgs/supabase/discussions/31238. If that's confirmed,
+// the real fix is a custom domain for this project's Edge Functions, or
+// moving this landing page off Supabase entirely — not a further header
+// tweak here.
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -40,10 +57,12 @@ function htmlResponse(heading: string, message: string): Response {
 </body>
 </html>
 `;
-  return new Response(html, {
-    status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  // Explicit Headers instance (not a plain-object literal) + .set(), so
+  // there is no ambiguity about whether Content-Type actually attaches to
+  // the outgoing Response — see the S9 live finding this addresses.
+  const headers = new Headers();
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  return new Response(html, { status: 200, headers });
 }
 
 Deno.serve((req: Request) => {
