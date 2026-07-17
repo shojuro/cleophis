@@ -242,6 +242,17 @@ Checkout Session exactly like a naturally lapsed one.
   hardening option: have `create-checkout` cancel any non-canceled prior
   subscription on the customer at re-checkout time, instead of leaving two
   live.
+- **Stale/deleted Stripe Customer id blocks checkout.** If a
+  `stripe_customers` row points at a customer that no longer exists in the
+  active Stripe mode (test-data wipe, or test-mode rows surviving the
+  live flip), `create-checkout`'s `customer` param makes Stripe reject the
+  session (`resource_missing`) and the user gets a 502
+  `payment_provider_unavailable` on every attempt — self-perpetuating,
+  because checkout never completes so no `invoice.paid` fires to rewrite
+  the mapping. Remedy: delete the offending row
+  (`delete from public.stripe_customers where user_id = '<uuid>';`) — the
+  next checkout then omits `customer` and mints a fresh one. See also
+  LIVE-MODE FLIP step 6.
 
 ## LIVE-MODE FLIP checklist
 
@@ -308,7 +319,16 @@ test mode**. Before real money can move, in order:
    redeploy for the flip — it has no test/live branching of its own, so it
    picks up live-mode behavior automatically once `STRIPE_SECRET_KEY` is
    rotated in step 2.
-6. Verify customer reuse behavior in live mode: run the re-subscribe flow
+6. **Purge test-mode `stripe_customers` rows before the first live sale.**
+   Every row written before the flip holds a *test-mode* `cus_…` id, which
+   does not exist in live mode. Because `create-checkout` now passes the
+   mapped id as `customer`, a stale row makes Stripe reject the session
+   (`resource_missing`) and the user is blocked from subscribing with a 502
+   `payment_provider_unavailable` — and stays blocked, since no
+   `invoice.paid` can fire to correct the mapping. Truncate the table (and
+   any test entitlement rows being retired) as part of the flip:
+   `delete from public.stripe_customers;` via the SQL editor.
+7. Verify customer reuse behavior in live mode: run the re-subscribe flow
    with a live-mode card and confirm it lands on the existing Customer (no
    new one minted) and that the Billing Portal shows the full subscription
    history for that customer.
@@ -319,7 +339,7 @@ Price id — the client only ever calls `start_checkout`/`create-checkout`
 by `model_id` and opens whatever URL comes back. The entire flip is
 server-side (Supabase function secrets + code) and Stripe-Dashboard-side
 (business name, webhook endpoint); an already-installed app keeps working
-unmodified once the five steps above land.
+unmodified once the steps above land.
 
 ## Return pages (GitHub Pages)
 
