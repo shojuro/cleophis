@@ -18,7 +18,7 @@ create policy "entitlements_select_own" on public.entitlements
   for select to authenticated using ((select auth.uid()) = user_id);
 create policy "entitlements_insert_own_nonpurchase" on public.entitlements
   for insert to authenticated
-  with check ((select auth.uid()) = user_id and source in ('trial','library'));
+  with check ((select auth.uid()) = user_id and source in ('trial','library') and expires_at is null);
 -- no UPDATE/DELETE policies: clients cannot revoke or extend
 
 create index entitlements_user_id_idx on public.entitlements (user_id);

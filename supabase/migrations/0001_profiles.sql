@@ -1,7 +1,7 @@
 -- Profiles: one row per auth user, created server-side by trigger.
 create table public.profiles (
   id         uuid primary key references auth.users(id) on delete cascade,
-  nickname   text not null default 'you',
+  nickname   text not null default 'you' check (char_length(nickname) <= 40),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -22,7 +22,8 @@ begin
   insert into public.profiles (id, nickname)
   values (new.id,
           coalesce(nullif(new.raw_user_meta_data->>'nickname', ''),
-                   split_part(new.email, '@', 1)));
+                   nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
+                   'you'));
   return new;
 end;
 $$;
