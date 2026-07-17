@@ -208,66 +208,7 @@ fn now() -> i64 {
 mod tests {
     use super::*;
     use crate::cloud::error::CloudError;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::Mutex;
-
-    /// env vars (`CLEOPHIS_SUPABASE_URL`/`KEY`) are process-global — serialize
-    /// every test that touches them behind this lock.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn set_mock_env(port: u16) {
-        std::env::set_var("CLEOPHIS_SUPABASE_URL", format!("http://127.0.0.1:{port}"));
-        std::env::set_var("CLEOPHIS_SUPABASE_KEY", "test-anon-key");
-    }
-
-    /// Bind an ephemeral port, spawn a thread that accepts exactly one
-    /// connection, drains the request, writes back `body` with `status_line`
-    /// (e.g. "200 OK"), then closes. Returns the port to point the client at.
-    fn start_mock_server(status_line: &'static str, body: &'static str) -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                drain_request(&mut stream);
-                let response = format!(
-                    "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-        port
-    }
-
-    /// Reads (and discards) whatever the client sends until it stops
-    /// arriving. We don't assert on the request in these tests — the mock
-    /// only needs to drain it so the client doesn't see a reset.
-    fn drain_request(stream: &mut std::net::TcpStream) {
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
-            .ok();
-        let mut buf = [0u8; 2048];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => continue,
-                Err(_) => break,
-            }
-        }
-    }
-
-    /// A bound-then-dropped listener: nothing is listening on the returned
-    /// port, so connecting to it yields a transport error immediately.
-    fn unused_port() -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind throwaway");
-        listener.local_addr().unwrap().port()
-    }
+    use crate::cloud::test_support::{lock, set_mock_env, start_mock_server, unused_port};
 
     fn now() -> i64 {
         std::time::SystemTime::now()

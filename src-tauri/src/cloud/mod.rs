@@ -6,5 +6,9 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod rest;
 pub mod session;
 pub mod store;
+
+#[cfg(test)]
+pub(crate) mod test_support;
