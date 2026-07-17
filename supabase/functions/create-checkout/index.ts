@@ -4,9 +4,15 @@
 // the Rust client's checkout entry point (src-tauri/src/cloud/rest.rs, S7) —
 // POST { model_id } with a Supabase user JWT in the Authorization header.
 // Returns the Stripe-hosted checkout URL for the client to open (opener
-// plugin, S7). The user lands back on checkout-return/index.ts (this repo,
-// verify_jwt: OFF) after paying or cancelling; the actual entitlement grant
-// happens out-of-band via stripe-webhook (S4), not on this request.
+// plugin, S7). The user lands back on a static return page after paying or
+// cancelling; the actual entitlement grant happens out-of-band via
+// stripe-webhook (S4), not on this request.
+//
+// S10: the return pages formerly lived as a same-repo Edge Function, but
+// Supabase's shared *.supabase.co domain force-serves HTML as text/plain
+// (platform anti-phishing behavior, confirmed live), so that function is
+// deleted and the pages now live as static HTML on GitHub Pages (gh-pages
+// branch, https://shojuro.github.io/cleophis/pay/).
 //
 // Task S3: code + commit only, no deployment. Deployment (verify_jwt: ON)
 // plus secrets (STRIPE_SECRET_KEY, STRIPE_PRICE_SOCRATIC) happen in S6.
@@ -158,8 +164,8 @@ Deno.serve(async (req: Request) => {
         line_items: [{ price: priceId, quantity: 1 }],
         metadata: { user_id: userId, model_id: modelId },
         client_reference_id: userId,
-        success_url: `${supabaseUrl}/functions/v1/checkout-return?status=success`,
-        cancel_url: `${supabaseUrl}/functions/v1/checkout-return?status=cancel`,
+        success_url: "https://shojuro.github.io/cleophis/pay/success.html",
+        cancel_url: "https://shojuro.github.io/cleophis/pay/cancelled.html",
       },
       { idempotencyKey: `checkout-${userId}-${modelId}` },
     );

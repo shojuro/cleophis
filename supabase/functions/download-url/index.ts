@@ -15,12 +15,17 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 
 // In-source model registry. Keep in sync with the catalog on the client
 // side (src/app.js / src-tauri) — this function is the source of truth for
-// what bytes actually exist in the B2 bucket.
-const MODELS: Record<string, { prefix: string; file: string; bytes: number }> = {
+// what bytes actually exist in the B2 bucket. allowedSources fences which
+// entitlements.source values grant access to each model: paid models list
+// ["purchase"] (Stripe-gated, granted by stripe-webhook — see S4/create-checkout);
+// free models would list ["library"]. The fence is per-model, checked below
+// via .in("source", model.allowedSources) on the entitlement query.
+const MODELS: Record<string, { prefix: string; file: string; bytes: number; allowedSources: string[] }> = {
   "socratic-tutor": {
     prefix: "models/socratic-tutor/1/",
     file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     bytes: 2019377696,
+    allowedSources: ["purchase"],
   },
 };
 
@@ -193,6 +198,7 @@ Deno.serve(async (req: Request) => {
     .select("id")
     .eq("user_id", userId)
     .eq("model_id", modelId)
+    .in("source", model.allowedSources)
     .or("expires_at.is.null,expires_at.gt." + nowIso);
 
   if (entErr) {
