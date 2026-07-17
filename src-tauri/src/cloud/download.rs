@@ -151,6 +151,7 @@ pub fn run_download(
     let agent = streaming_agent();
     let mut consecutive_failures: u32 = 0;
     let mut bytes_at_last_failure: u64 = 0;
+    let mut last_failure_kind: Option<FailureKind> = None;
     // Backdated so the very first streamed chunk always clears the >=500ms
     // throttle and emits a `downloading` event immediately, rather than a
     // small/fast download (which can finish well under 500ms end-to-end on
@@ -179,11 +180,15 @@ pub fn run_download(
         let resp = match req.call() {
             Ok(r) => r,
             // Transport error OR a non-2xx status (401/403 included) when
-            // (re)connecting — same retry policy either way.
-            Err(_connect_err) => {
+            // (re)connecting — same retry policy either way, though the
+            // give-up message and fast-fail behavior below depend on which.
+            Err(connect_err) => {
+                let kind = classify_connect_err(&connect_err);
                 match record_failure_and_backoff(
                     &mut consecutive_failures,
                     &mut bytes_at_last_failure,
+                    &mut last_failure_kind,
+                    kind,
                     bytes_counter,
                     cancel,
                 ) {
@@ -226,9 +231,14 @@ pub fn run_download(
             Ok(StreamOutcome::Cancelled) => return Ok(()),
             Err(StreamFailure::Fatal(msg)) => return Err(msg),
             Err(StreamFailure::Retryable(_io_err)) => {
+                // A mid-stream failure never carries an HTTP status — the
+                // connect already succeeded (200/206) before the body read
+                // failed — so it's always classified as Transport.
                 match record_failure_and_backoff(
                     &mut consecutive_failures,
                     &mut bytes_at_last_failure,
+                    &mut last_failure_kind,
+                    FailureKind::Transport,
                     bytes_counter,
                     cancel,
                 ) {
@@ -416,15 +426,62 @@ fn interruptible_sleep(total: Duration, cancel: &AtomicBool) -> bool {
     }
 }
 
+/// What kind of thing made an attempt fail — distinguishes a definitive
+/// server refusal (an HTTP status from the download GET itself) from a
+/// transport/timeout problem, so the give-up message can say which one it
+/// was instead of always blaming "your connection" for e.g. a B2 daily
+/// download-cap 403. Only ever `Status` for a CONNECT-time failure
+/// (`req.call()` returning `Err(ureq::Error::Status(..))`) — a mid-stream
+/// read/timeout failure never carries an HTTP status (the connect already
+/// succeeded), so it's always `Transport`.
+#[derive(Clone, Copy, PartialEq)]
+enum FailureKind {
+    Transport,
+    Status(u16),
+}
+
+fn classify_connect_err(err: &ureq::Error) -> FailureKind {
+    match err {
+        ureq::Error::Status(code, _) => FailureKind::Status(*code),
+        ureq::Error::Transport(_) => FailureKind::Transport,
+    }
+}
+
+/// `true` for the CDN statuses that mean "retrying won't help without
+/// outside intervention" (object genuinely missing, or B2's daily download
+/// cap rejecting every request account-wide) — as opposed to a 401 (token
+/// expired, a re-mint plausibly fixes it) or a 5xx (transient server
+/// trouble).
+fn is_definitive_refusal(kind: FailureKind) -> bool {
+    matches!(kind, FailureKind::Status(403) | FailureKind::Status(404))
+}
+
+fn give_up_message(kind: FailureKind) -> String {
+    match kind {
+        FailureKind::Status(status) => format!(
+            "Download failed — the server refused the request (HTTP {status}). This can be a temporary account limit; try again later."
+        ),
+        FailureKind::Transport => "Download failed — check your connection and retry.".to_string(),
+    }
+}
+
 /// Bookkeeping for worker step 5's retry policy: increments the
-/// consecutive-failure counter (resetting it first if at least one byte
-/// advanced since the last failure), then either sleeps the matching
-/// backoff or gives up.
+/// consecutive-failure counter (resetting it, along with `last_failure_kind`,
+/// if at least one byte advanced since the last failure), then either
+/// sleeps the matching backoff or gives up.
 ///
 /// Returns `Ok(true)` if `cancel` fired during the backoff sleep (caller
 /// should emit `cancelled` and return `Ok(())`), `Ok(false)` if the caller
-/// should re-mint auth and retry, or `Err(msg)` once the 3-consecutive-
-/// failure budget is exhausted (caller returns that `Err` directly).
+/// should re-mint auth and retry, or `Err(msg)` once the retry budget is
+/// exhausted (caller returns that `Err` directly). The budget is normally
+/// 3 consecutive failures, but a DEFINITIVE refusal (`is_definitive_refusal`
+/// — 403/404) seen twice in a row gives up after the 2nd instead of burning
+/// a 3rd retry: every retry in this loop already re-mints auth before
+/// looping back, so "twice in a row with a re-mint in between" is exactly
+/// what a second consecutive definitive status represents — a fresh token
+/// didn't help, so a third attempt won't either. The give-up message
+/// reflects `kind` — the LAST attempt's failure — so a definitive server
+/// refusal is reported as such rather than as a generic connection problem.
 ///
 /// Backoff schedule note (documented per the task instructions, since this
 /// is a real ambiguity in the brief rather than a codebase conflict): the
@@ -439,18 +496,26 @@ fn interruptible_sleep(total: Duration, cancel: &AtomicBool) -> bool {
 fn record_failure_and_backoff(
     consecutive_failures: &mut u32,
     bytes_at_last_failure: &mut u64,
+    last_failure_kind: &mut Option<FailureKind>,
+    kind: FailureKind,
     bytes_counter: &AtomicU64,
     cancel: &AtomicBool,
 ) -> Result<bool, String> {
     let current = bytes_counter.load(Ordering::Relaxed);
     if current > *bytes_at_last_failure {
         *consecutive_failures = 0;
+        *last_failure_kind = None;
     }
+
+    let prev_was_definitive = last_failure_kind.map(is_definitive_refusal).unwrap_or(false);
+    let fast_fail = is_definitive_refusal(kind) && prev_was_definitive;
+
     *consecutive_failures += 1;
     *bytes_at_last_failure = current;
+    *last_failure_kind = Some(kind);
 
-    if *consecutive_failures >= 3 {
-        return Err("Download failed — check your connection and retry.".to_string());
+    if fast_fail || *consecutive_failures >= 3 {
+        return Err(give_up_message(kind));
     }
 
     let backoff_secs = match *consecutive_failures {
@@ -1077,6 +1142,56 @@ mod tests {
         assert!(
             call_count.load(Ordering::SeqCst) >= 2,
             "expected auth_provider to be called >=2 times, got {}",
+            call_count.load(Ordering::SeqCst)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // C7 follow-up: two definitive refusals (403) in a row give up after
+    // the 2nd attempt (not the 3rd) with a message that names the server
+    // refusal rather than blaming "your connection" — and auth_provider is
+    // called exactly twice (initial mint + the one re-mint between the two
+    // failures), never a third time, since the fast-fail path doesn't
+    // re-mint before giving up.
+    #[test]
+    fn repeated_403_fast_fails_with_server_refusal_message() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let sha = sha256_hex(&content);
+        let (base_url, _handle, _rx) = start_ranged_server(
+            content.clone(),
+            vec![RangedBehavior::Status(403), RangedBehavior::Status(403)],
+        );
+
+        let dir = unique_dir("repeated-403");
+        let final_path = dir.join("hero.gguf");
+
+        let (auth_provider, call_count) = counting_auth_provider(&base_url, SIZE as u64);
+        let (emit, _events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_download(
+            &auth_provider,
+            &final_path,
+            SIZE as u64,
+            &sha,
+            &emit,
+            &cancel,
+            &bytes_counter,
+        );
+
+        let err = result.expect_err("expected an Err after two consecutive definitive 403s");
+        assert!(
+            err.contains("the server refused the request (HTTP 403)"),
+            "error was: {err}"
+        );
+        assert!(!final_path.exists());
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "expected exactly 2 auth_provider calls, got {}",
             call_count.load(Ordering::SeqCst)
         );
 
