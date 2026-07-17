@@ -8,6 +8,7 @@ const state = {
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null },
   dl: { installed: false, partBytes: 0, active: false },
+  pay: { modelId: null, timer: null, deadline: 0 },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -115,9 +116,11 @@ function openDrawer(id) {
           ? 'Downloading…'
           : state.dl.partBytes > 0
             ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
-            : state.mine.has(m.id)
-              ? `Download · ${gib} GiB`
-              : `Get · ${m.pro ? 'Pro' : m.price}`)
+            : state.pay.modelId === m.id
+              ? 'Waiting for payment… (click to cancel)'
+              : state.mine.has(m.id)
+                ? `Download · ${gib} GiB`
+                : `Get · ${m.pro ? 'Pro' : m.price}`)
     : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
@@ -165,20 +168,37 @@ function runGetFlow(m, btn) {
       heroDownload(m, btn);
     };
     if (state.mine.has(m.id) || state.dl.partBytes > 0) { startDownload(); return; }
+    if (state.pay.modelId === m.id) {
+      cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
+      return;
+    }
     btn.disabled = true;
-    btn.textContent = 'Processing payment…';
-    setTimeout(async () => {
+    btn.textContent = 'Opening checkout…';
+    (async () => {
+      let res;
       try {
-        await invoke('grant_entitlement', { modelId: m.id, source: 'trial' });
+        res = await invoke('start_checkout', { modelId: m.id });
       } catch (e) {
         btn.disabled = false;
         btn.textContent = `Get · ${m.pro ? 'Pro' : m.price}`;
-        const el = $('errMsg'); el.style.display = 'block'; el.textContent = String(e);
+        const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(e);
         return;
       }
-      btn.textContent = '✓ Paid — downloading…';
-      startDownload();
-    }, 900);
+      if (res.status === 'alreadyOwned') {
+        state.mine.add(m.id);
+        renderGrid();
+        btn.textContent = '✓ Owned — starting download…';
+        heroDownload(m, btn);
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Waiting for payment… (click to cancel)';
+      const el = $('errMsg');
+      el.style.display = 'block';
+      el.style.color = 'var(--muted)';
+      el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
+      beginPaymentPoll(m);
+    })();
   } else {
     if (state.mine.has(m.id)) return;
     simulateStubDownload(m, btn);
@@ -196,8 +216,41 @@ function heroDownload(m, btn) {
     prog.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Retry download';
-    const el = $('errMsg'); el.style.display = 'block'; el.textContent = String(err);
+    const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(err);
   });
+}
+
+function cancelPaymentPoll(resetBtnText) {
+  if (state.pay.timer) clearInterval(state.pay.timer);
+  state.pay = { modelId: null, timer: null, deadline: 0 };
+  const btn = $('dlBtn');
+  if (btn && resetBtnText) { btn.disabled = false; btn.textContent = resetBtnText; }
+}
+
+function beginPaymentPoll(m) {
+  state.pay.modelId = m.id;
+  state.pay.deadline = Date.now() + 10 * 60 * 1000;
+  state.pay.timer = setInterval(async () => {
+    if (Date.now() > state.pay.deadline) {
+      cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
+      const el = $('errMsg');
+      if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = "We didn't see a completed payment. If you paid, it will appear shortly — try Get again in a moment."; }
+      return;
+    }
+    let list;
+    try { list = await invoke('list_entitlements'); } catch (_) { return; }
+    const hit = (list || []).some((e) => e.modelId === m.id && e.source === 'purchase');
+    if (!hit) return;
+    cancelPaymentPoll(null);
+    state.mine.add(m.id);
+    renderGrid();
+    const btn = $('dlBtn');
+    if (btn && $('drawer').classList.contains('show')) {
+      btn.disabled = true;
+      btn.textContent = '✓ Paid — starting download…';
+      heroDownload(m, btn);
+    }
+  }, 3000);
 }
 
 function fmtGiB(n) { return (n / 2 ** 30).toFixed(2); }
@@ -549,6 +602,7 @@ $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
+  cancelPaymentPoll(null);
   state.signedIn = false;
   state.nick = null;
   state.device = null;

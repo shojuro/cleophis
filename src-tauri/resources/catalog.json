@@ -16,7 +16,7 @@
     "greeting": "Hi! What are we working on today? Show me the problem and we'll figure it out together.",
     "blurb": "Asks the guiding question instead of handing over the answer.",
     "real": true,
-    "price": "$20/mo",
+    "price": "$20",
     "tps": "22 tok/s",
     "eval": "guides, not answers",
     "long": "A tutor built on the Socratic method. Instead of solving the problem for the student, it asks the next guiding question — the behaviour teachers actually want and cheating-proof by design.",
