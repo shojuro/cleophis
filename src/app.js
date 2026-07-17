@@ -515,6 +515,7 @@ async function applySession(info) {
   lb.textContent = state.nick;
   lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
   $('signOutBtn').style.display = '';
+  $('billingBtn').style.display = '';
   hide($('loginModal'));
   hide($('createModal'));
   renderGrid();
@@ -619,6 +620,7 @@ $('signOutBtn').addEventListener('click', async () => {
   state.mine = new Set();
   $('device').style.display = 'none';
   $('signOutBtn').style.display = 'none';
+  $('billingBtn').style.display = 'none';
   const lb = $('loginBtn');
   lb.textContent = 'Log in';
   lb.title = '';
@@ -628,6 +630,18 @@ $('signOutBtn').addEventListener('click', async () => {
   }
   renderFilters();
   renderGrid();
+});
+$('billingBtn').addEventListener('click', async () => {
+  const btn = $('billingBtn');
+  btn.disabled = true;
+  try {
+    const res = await invoke('open_billing_portal');
+    if (res.status === 'noBillingAccount') showToast('No billing account yet — subscribe first.');
+  } catch (e) {
+    showToast(String(e));
+  } finally {
+    btn.disabled = false;
+  }
 });
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];
