@@ -169,6 +169,10 @@ fn live_auth_and_entitlements_roundtrip() {
     );
     match rls_result {
         Err(CloudError::Api { status, msg }) => {
+            assert_eq!(
+                status, 403,
+                "expected the RLS with-check fence to reject with 403, got status {status} (msg: {msg})"
+            );
             eprintln!(
                 "a8: RLS fence rejected the purchase-source insert as expected (status {status}, msg: {msg})"
             );

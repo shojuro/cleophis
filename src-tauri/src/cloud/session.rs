@@ -11,7 +11,9 @@ use crate::hardware;
 
 /// In-memory only — never serialized to disk as a whole. The refresh token
 /// is mirrored to the OS keyring; the access token lives nowhere else.
-#[derive(Clone, Debug)]
+/// No `Debug` (mirrors `auth::TokenResponse`'s rationale): this holds live
+/// access/refresh tokens and must never end up in a `{:?}`/panic message.
+#[derive(Clone)]
 pub struct Session {
     pub user_id: String,
     pub email: String,
@@ -171,14 +173,12 @@ impl Cloud {
             if cache.user_id.is_empty() {
                 return Err(CloudError::SessionExpired);
             }
-            self.queue_grant(model_id, source);
-            return Ok(());
+            return self.queue_grant(model_id, source);
         }
 
         match self.ensure_fresh() {
             Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                self.queue_grant(model_id, source);
-                Ok(())
+                self.queue_grant(model_id, source)
             }
             Err(e) => Err(e),
             Ok((access, user_id)) => self.grant_with_access(&access, &user_id, model_id, source),
@@ -274,13 +274,20 @@ impl Cloud {
         };
 
         // 5. Flush pending grants, attempted against the early snapshot —
-        // still lock-free network I/O. Stop on Offline (leave everything
-        // from here on queued), continue past Api errors (leave just that
-        // row queued). `flushed` records which model_ids landed so the
-        // merge below (step 7) can retire them from whatever the FRESH
-        // queue looks like by the time we get there.
+        // still lock-free network I/O. A row whose owner doesn't match the
+        // user we just authenticated as (leftover from a different,
+        // previously offline-cached user on this device) is never
+        // attempted — merge_synced_cache (step 7) drops those rather than
+        // flushing them under the wrong identity. Otherwise: stop on
+        // Offline (leave everything from here on queued), continue past
+        // Api errors (leave just that row queued). `flushed` records which
+        // model_ids landed so the merge can retire them from whatever the
+        // FRESH queue looks like by the time we get there.
         let mut flushed: Vec<String> = Vec::new();
         for grant in cache.pending_grants.iter() {
+            if grant.user_id != user_id {
+                continue;
+            }
             match rest::insert_entitlement(&access_token, &user_id, &grant.model_id, &grant.source) {
                 Ok(()) => flushed.push(grant.model_id.clone()),
                 Err(CloudError::Offline) => break,
@@ -376,7 +383,27 @@ impl Cloud {
             }
         }; // guard dropped here, before the network call.
 
-        let tok = auth::refresh(&refresh_token)?;
+        let tok = match auth::refresh(&refresh_token) {
+            Ok(tok) => tok,
+            // A revoked/rotated-away refresh token mid-session is the same
+            // situation restore() handles at boot: purge everything
+            // (keyring, in-memory session/nickname, cache file) before
+            // propagating the error, so a subsequent restore()/sign_in()
+            // doesn't trip over stale state. `cache_lock` nests safely
+            // inside the still-held `refresh_gate` here (leaf lock — the
+            // rule is it must never be held while TAKING session/
+            // refresh_gate, not the reverse).
+            Err(CloudError::SessionExpired) => {
+                store::delete_refresh_token();
+                self.clear_memory();
+                {
+                    let _guard = self.cache_lock.lock().unwrap();
+                    let _ = std::fs::remove_file(&self.cache_path);
+                }
+                return Err(CloudError::SessionExpired);
+            }
+            Err(e) => return Err(e),
+        };
         if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
             eprintln!("cloud: failed to persist rotated refresh token to keyring: {e}");
         }
@@ -412,14 +439,10 @@ impl Cloud {
                 self.record_grant(model_id, source);
                 Ok(())
             }
-            Err(CloudError::Offline) => {
-                self.queue_grant(model_id, source);
-                Ok(())
-            }
+            Err(CloudError::Offline) => self.queue_grant(model_id, source),
             Err(CloudError::SessionExpired) => match self.refresh_via_gate() {
                 Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                    self.queue_grant(model_id, source);
-                    Ok(())
+                    self.queue_grant(model_id, source)
                 }
                 Err(e) => Err(e),
                 Ok((access2, user_id2)) => {
@@ -429,8 +452,7 @@ impl Cloud {
                             Ok(())
                         }
                         Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                            self.queue_grant(model_id, source);
-                            Ok(())
+                            self.queue_grant(model_id, source)
                         }
                         Err(e) => Err(e), // Api errors etc.: return, do not queue.
                     }
@@ -446,11 +468,22 @@ impl Cloud {
     /// `session`/`refresh_gate`, never across I/O) — reads its own fresh
     /// copy of the cache rather than trusting any earlier snapshot, so it
     /// can't clobber a concurrent update.
-    fn queue_grant(&self, model_id: &str, source: &str) {
+    ///
+    /// Stamps the row with `cache.user_id` (this fresh read, not any
+    /// earlier snapshot) and refuses to queue at all if that's empty — this
+    /// closes a race with a concurrent `sign_out`/purge: without this
+    /// check, a `queue_grant` that loses the race with the purge's cache
+    /// delete would recreate the cache file from scratch with an anonymous
+    /// (unowned) pending row instead of just failing.
+    fn queue_grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
         let _guard = self.cache_lock.lock().unwrap();
         let mut cache = store::read_cache(&self.cache_path);
+        if cache.user_id.is_empty() {
+            return Err(CloudError::SessionExpired);
+        }
+        let owner = cache.user_id.clone();
         let created_at = now();
-        store::queue_pending(&mut cache, model_id, source, created_at);
+        store::queue_pending(&mut cache, model_id, source, &owner, created_at);
         if !cache.entitlements.iter().any(|e| e.model_id == model_id) {
             cache.entitlements.push(Entitlement {
                 model_id: model_id.to_string(),
@@ -460,6 +493,7 @@ impl Cloud {
             });
         }
         self.write_cache_best_effort(&cache);
+        Ok(())
     }
 
     /// Records a successful grant in the cache (if not already present).
@@ -522,14 +556,19 @@ fn now() -> i64 {
 /// does not. Preserving that row instead of clobbering it with the stale
 /// snapshot is the whole point of re-reading and merging here.
 ///
+/// - Rows in `fresh.pending_grants` owned by a DIFFERENT user_id than the
+///   one we just authenticated as (leftover from a previous, differently
+///   offline-cached user on this device) are dropped entirely — never
+///   flushed, never carried forward, and their entitlement (if any) is not
+///   resurrected either. Only rows owned by `user_id` are considered below.
 /// - `entitlements` = `server_entitlements`, plus a synthesized entry for
 ///   any `flushed` model_id absent from it (the entitlements fetch predates
 ///   the insert within the same sync), plus any synthetic entitlement
-///   already in `fresh.entitlements` whose model_id is still queued in
-///   `fresh.pending_grants` (queued concurrently mid-sync — never lose its
-///   optimistic visibility).
-/// - `pending_grants` = `fresh.pending_grants` minus `flushed` minus any
-///   model_id already present in `server_entitlements`.
+///   already in `fresh.entitlements` whose model_id is still queued (and
+///   owned by `user_id`) in `fresh.pending_grants` (queued concurrently
+///   mid-sync — never lose its optimistic visibility).
+/// - `pending_grants` = `fresh.pending_grants` (owned rows only) minus
+///   `flushed` minus any model_id already present in `server_entitlements`.
 /// - identity fields (`user_id`/`email`/`nickname`) and `last_online_auth`
 ///   come from the sync, not from `fresh`.
 fn merge_synced_cache(
@@ -541,8 +580,13 @@ fn merge_synced_cache(
     flushed: &[String],
     now: i64,
 ) -> store::CloudCache {
-    let pending_grants: Vec<store::PendingGrant> = fresh
+    let owned_pending: Vec<store::PendingGrant> = fresh
         .pending_grants
+        .into_iter()
+        .filter(|p| p.user_id == user_id)
+        .collect();
+
+    let pending_grants: Vec<store::PendingGrant> = owned_pending
         .iter()
         .filter(|p| !flushed.iter().any(|m| m == &p.model_id))
         .filter(|p| !server_entitlements.iter().any(|e| e.model_id == p.model_id))
@@ -557,7 +601,7 @@ fn merge_synced_cache(
         }
         if let Some(existing) = fresh.entitlements.iter().find(|e| &e.model_id == model_id) {
             entitlements.push(existing.clone());
-        } else if let Some(p) = fresh.pending_grants.iter().find(|p| &p.model_id == model_id) {
+        } else if let Some(p) = owned_pending.iter().find(|p| &p.model_id == model_id) {
             entitlements.push(Entitlement {
                 model_id: p.model_id.clone(),
                 source: p.source.clone(),
@@ -568,7 +612,7 @@ fn merge_synced_cache(
     }
 
     for entry in &fresh.entitlements {
-        let still_pending = fresh.pending_grants.iter().any(|p| p.model_id == entry.model_id);
+        let still_pending = owned_pending.iter().any(|p| p.model_id == entry.model_id);
         let already_present = entitlements.iter().any(|e| e.model_id == entry.model_id);
         if still_pending && !already_present {
             entitlements.push(entry.clone());
@@ -647,6 +691,7 @@ mod tests {
         fresh.pending_grants.push(PendingGrant {
             model_id: "phi-4".into(),
             source: "trial".into(),
+            user_id: "user-1".into(),
             created_at: 1000,
         });
         fresh.entitlements.push(store::Entitlement {
@@ -691,6 +736,7 @@ mod tests {
         fresh.pending_grants.push(PendingGrant {
             model_id: "llama-8b".into(),
             source: "trial".into(),
+            user_id: "user-2".into(),
             created_at: 1000,
         });
 
@@ -726,6 +772,7 @@ mod tests {
         fresh.pending_grants.push(PendingGrant {
             model_id: "mistral-7b".into(),
             source: "trial".into(),
+            user_id: "user-3".into(),
             created_at: 1000,
         });
         fresh.entitlements.push(store::Entitlement {
@@ -767,6 +814,50 @@ mod tests {
             matches.len(),
             1,
             "expected exactly one mistral-7b entitlement, got {matches:?}"
+        );
+    }
+
+    // merge_synced_cache (d): a pending row owned by a DIFFERENT user_id
+    // (leftover from a previous offline-cached user on this device) is
+    // dropped entirely — never flushed under the new identity, never
+    // carried forward, and its entitlement is not resurrected either.
+    #[test]
+    fn merge_synced_cache_drops_pending_row_owned_by_a_different_user() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "stale-user".into(), // NOT the user we just authenticated as
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let flushed: Vec<String> = vec![]; // never attempted — different owner
+
+        let merged = merge_synced_cache(
+            fresh,
+            "user-new".into(),
+            "new@example.com".into(),
+            "New".into(),
+            vec![], // server (for user-new) doesn't know phi-4 either
+            &flushed,
+            5000,
+        );
+
+        assert!(
+            !merged.pending_grants.iter().any(|p| p.model_id == "phi-4"),
+            "expected the mismatched-owner row to be dropped, got {:?}",
+            merged.pending_grants
+        );
+        assert!(
+            !merged.entitlements.iter().any(|e| e.model_id == "phi-4"),
+            "expected the mismatched-owner's optimistic entitlement to be dropped too, got {:?}",
+            merged.entitlements
         );
     }
 
@@ -940,6 +1031,7 @@ mod tests {
         cache.pending_grants.push(PendingGrant {
             model_id: "phi-4".into(),
             source: "trial".into(),
+            user_id: "user-6".into(), // matches the mock refresh's authenticated user below
             created_at: now(),
         });
         store::write_cache(&cache_path, &cache).expect("seed cache");
@@ -985,9 +1077,27 @@ mod tests {
         let rewritten = store::read_cache(&cache_path);
         assert_eq!(rewritten.pending_grants.len(), 1);
         assert_eq!(rewritten.pending_grants[0].model_id, "llama-8b");
+        assert_eq!(rewritten.pending_grants[0].user_id, "user-7"); // owner-stamped
         assert!(rewritten.entitlements.iter().any(|e| e.model_id == "llama-8b"));
 
         let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // item 1: queue_grant refuses to queue against an unowned (empty
+    // user_id) cache instead of silently creating an anonymous pending row
+    // — closes the race where a concurrent sign_out purge wipes the cache
+    // out from under a grant() call that already decided to queue.
+    #[test]
+    fn queue_grant_refuses_when_cache_has_no_owner() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-queue-grant-no-owner-cache.json");
+        // No cache file at all -> store::read_cache returns
+        // CloudCache::default() -> user_id == "".
+        let cloud = Cloud::new(cache_path.clone());
+
+        let result = cloud.queue_grant("llama-8b", "trial");
+        assert!(matches!(result, Err(CloudError::SessionExpired)));
+        assert!(!cache_path.exists(), "expected nothing to be written");
     }
 
     // 8. grant with an invalid source -> Err, nothing written.
@@ -1080,6 +1190,84 @@ mod tests {
         assert_eq!(
             store::load_refresh_token(),
             Some("rt-rotated-10b".to_string())
+        );
+    }
+
+    // item 2: a mid-session SessionExpired (refresh token revoked/rotated
+    // away, not a boot-time restore) must purge exactly like restore()'s
+    // boot-time purge does — keyring, in-memory session, and cache file —
+    // before propagating the error.
+    #[test]
+    fn ensure_fresh_stale_session_refresh_400_purges_everything() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+        store::save_refresh_token("seed-token-mid-session").expect("seed keyring");
+
+        let cache_path = temp_cache_path("t-mid-session-expired-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-mid".into();
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-mid".into(),
+                email: "mid@example.com".into(),
+                access_token: "at-stale-mid".into(),
+                refresh_token: "rt-stale-mid".into(),
+                expires_at: now() - 10,
+            });
+        }
+
+        let port = start_mock_server(
+            "400 Bad Request",
+            r#"{"msg":"Invalid Refresh Token: Already Used"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud.ensure_fresh();
+        assert!(matches!(result, Err(CloudError::SessionExpired)));
+        assert_eq!(store::load_refresh_token(), None);
+        assert!(!cache_path.exists());
+        assert!(cloud.session.lock().unwrap().is_none());
+    }
+
+    // item 5: models the live PostgREST RLS with-check rejection —
+    // insert_entitlement returns Api{403,..} and grant() surfaces it
+    // directly, without queuing (a rejected write will be rejected again).
+    #[test]
+    fn grant_rls_rejection_surfaces_api_403_without_queuing() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-grant-rls-403-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-rls".into(),
+                email: "rls@example.com".into(),
+                access_token: "at-rls".into(),
+                refresh_token: "rt-rls".into(),
+                expires_at: now() + 3600, // fresh -> ensure_fresh skips network
+            });
+        }
+
+        let port = start_mock_server(
+            "403 Forbidden",
+            r#"{"code":"42501","message":"new row violates row-level security policy"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud.grant("socratic-tutor", "trial");
+        match result {
+            Err(CloudError::Api { status, .. }) => assert_eq!(status, 403),
+            other => panic!("expected Err(CloudError::Api{{403,..}}), got {other:?}"),
+        }
+
+        assert!(
+            !cache_path.exists(),
+            "expected the RLS rejection not to be queued"
         );
     }
 }

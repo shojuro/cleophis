@@ -22,6 +22,13 @@ pub struct Entitlement {
 pub struct PendingGrant {
     pub model_id: String,
     pub source: String,
+    /// Owner stamp: the `user_id` the cache belonged to when this grant was
+    /// queued. `#[serde(default)]` for backward compat with cache files
+    /// written before this field existed (deserializes to `""`, which never
+    /// matches a real authenticated user_id, so old unowned rows are simply
+    /// dropped at the next flush rather than misattributed).
+    #[serde(default)]
+    pub user_id: String,
     pub created_at: i64,
 }
 
@@ -111,9 +118,15 @@ fn temp_write_path(path: &Path) -> std::path::PathBuf {
     path.with_file_name(format!("{file_name}.{}.{nanos}.tmp", std::process::id()))
 }
 
-/// Appends a pending grant unless `model_id` is already pending or already
-/// entitled. Returns true iff it appended.
-pub fn queue_pending(cache: &mut CloudCache, model_id: &str, source: &str, now: i64) -> bool {
+/// Appends a pending grant, owner-stamped with `user_id`, unless `model_id`
+/// is already pending or already entitled. Returns true iff it appended.
+pub fn queue_pending(
+    cache: &mut CloudCache,
+    model_id: &str,
+    source: &str,
+    user_id: &str,
+    now: i64,
+) -> bool {
     let already_pending = cache.pending_grants.iter().any(|p| p.model_id == model_id);
     let already_entitled = cache.entitlements.iter().any(|e| e.model_id == model_id);
     if already_pending || already_entitled {
@@ -122,6 +135,7 @@ pub fn queue_pending(cache: &mut CloudCache, model_id: &str, source: &str, now: 
     cache.pending_grants.push(PendingGrant {
         model_id: model_id.to_string(),
         source: source.to_string(),
+        user_id: user_id.to_string(),
         created_at: now,
     });
     true
@@ -181,6 +195,7 @@ mod tests {
         cache.pending_grants.push(PendingGrant {
             model_id: "phi-4".into(),
             source: "trial".into(),
+            user_id: "user-1".into(),
             created_at: 999,
         });
 
@@ -227,11 +242,12 @@ mod tests {
     fn queue_pending_appends_once() {
         let _g = lock();
         let mut cache = CloudCache::default();
-        let appended = queue_pending(&mut cache, "llama-8b", "trial", 1000);
+        let appended = queue_pending(&mut cache, "llama-8b", "trial", "user-1", 1000);
         assert!(appended);
         assert_eq!(cache.pending_grants.len(), 1);
         assert_eq!(cache.pending_grants[0].model_id, "llama-8b");
         assert_eq!(cache.pending_grants[0].source, "trial");
+        assert_eq!(cache.pending_grants[0].user_id, "user-1");
         assert_eq!(cache.pending_grants[0].created_at, 1000);
     }
 
@@ -239,8 +255,8 @@ mod tests {
     fn queue_pending_duplicate_in_pending_returns_false() {
         let _g = lock();
         let mut cache = CloudCache::default();
-        assert!(queue_pending(&mut cache, "llama-8b", "trial", 1000));
-        let appended_again = queue_pending(&mut cache, "llama-8b", "trial", 2000);
+        assert!(queue_pending(&mut cache, "llama-8b", "trial", "user-1", 1000));
+        let appended_again = queue_pending(&mut cache, "llama-8b", "trial", "user-1", 2000);
         assert!(!appended_again);
         assert_eq!(cache.pending_grants.len(), 1);
     }
@@ -255,7 +271,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             expires_at: None,
         });
-        let appended = queue_pending(&mut cache, "llama-8b", "trial", 1000);
+        let appended = queue_pending(&mut cache, "llama-8b", "trial", "user-1", 1000);
         assert!(!appended);
         assert!(cache.pending_grants.is_empty());
     }
@@ -285,7 +301,12 @@ mod tests {
 
     #[test]
     fn keyring_round_trip() {
-        let _g = lock();
+        // Unified with every other cloud-module test that touches the real
+        // OS credential store: the keyring entry is shared global state, so
+        // this must serialize on the SAME lock as auth.rs/rest.rs/
+        // session.rs's keyring-touching tests, not this module's own
+        // separate local lock (which would let them race).
+        let _g = crate::cloud::test_support::lock();
         let _cleanup = KeyringCleanup;
         delete_refresh_token(); // ensure a clean slate before we start
 
