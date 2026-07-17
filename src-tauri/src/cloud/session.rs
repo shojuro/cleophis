@@ -56,6 +56,13 @@ impl SessionInfo {
 ///   single refresh round-trip (single-flight token rotation: a second
 ///   caller that queues up behind the gate re-checks freshness once it
 ///   gets in, rather than firing a redundant refresh).
+/// - `cache_lock` is a LEAF lock: it serializes the on-disk cache file's
+///   short read-modify-write cycles (queueing/recording a grant, updating
+///   entitlements, purging on sign-out/session-expiry) so two callers
+///   racing on the cache file can't lose each other's update. It is NEVER
+///   held while taking `session` or `refresh_gate`, and NEVER held across
+///   network I/O — only ever across a local read -> mutate -> write of the
+///   cache file itself.
 /// - Rotation discipline: after a successful `auth::refresh`, the new
 ///   refresh token is persisted to the keyring BEFORE the in-memory
 ///   session is updated or success is reported to the caller.
@@ -63,6 +70,7 @@ pub struct Cloud {
     session: Mutex<Option<Session>>,
     nickname: Mutex<Option<String>>,
     refresh_gate: Mutex<()>,
+    cache_lock: Mutex<()>,
     cache_path: PathBuf,
 }
 
@@ -72,6 +80,7 @@ impl Cloud {
             session: Mutex::new(None),
             nickname: Mutex::new(None),
             refresh_gate: Mutex::new(()),
+            cache_lock: Mutex::new(()),
             cache_path,
         }
     }
@@ -83,16 +92,23 @@ impl Cloud {
             Some(t) => t,
             None => return SessionInfo::signed_out(),
         };
-        let mut cache = store::read_cache(&self.cache_path);
+        // Early, unlocked read — used only as a read-only fallback source
+        // (offline-cached info, or apply_and_sync's nickname/entitlements
+        // fallback while its network calls are in flight). Not part of any
+        // read-modify-write cycle, so it doesn't need `cache_lock`.
+        let cache = store::read_cache(&self.cache_path);
         match auth::refresh(&refresh_token) {
-            Ok(tok) => self.apply_and_sync(tok, &mut cache),
+            Ok(tok) => self.apply_and_sync(tok, &cache),
             // Any 4xx on refresh means the token was revoked or rotated
             // away server-side — the session cannot be re-established, so
             // purge everything and report signed out.
             Err(CloudError::SessionExpired) => {
                 store::delete_refresh_token();
                 self.clear_memory();
-                let _ = std::fs::remove_file(&self.cache_path);
+                {
+                    let _guard = self.cache_lock.lock().unwrap();
+                    let _ = std::fs::remove_file(&self.cache_path);
+                }
                 SessionInfo::signed_out()
             }
             // Offline, server trouble (Api{..}), or anything else we don't
@@ -104,8 +120,8 @@ impl Cloud {
 
     pub fn sign_in(&self, email: &str, password: &str) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_in_password(email, password)?;
-        let mut cache = store::read_cache(&self.cache_path);
-        Ok(self.apply_and_sync(tok, &mut cache))
+        let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
+        Ok(self.apply_and_sync(tok, &cache))
     }
 
     pub fn sign_up(
@@ -115,8 +131,8 @@ impl Cloud {
         nickname: &str,
     ) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_up(email, password, nickname)?;
-        let mut cache = store::read_cache(&self.cache_path);
-        Ok(self.apply_and_sync(tok, &mut cache))
+        let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
+        Ok(self.apply_and_sync(tok, &cache))
     }
 
     pub fn sign_out(&self) {
@@ -134,7 +150,10 @@ impl Cloud {
         }
         store::delete_refresh_token();
         self.clear_memory();
-        let _ = std::fs::remove_file(&self.cache_path);
+        {
+            let _guard = self.cache_lock.lock().unwrap();
+            let _ = std::fs::remove_file(&self.cache_path);
+        }
     }
 
     pub fn grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
@@ -142,48 +161,52 @@ impl Cloud {
             return Err(CloudError::Internal("invalid source".into()));
         }
 
-        let mut cache = store::read_cache(&self.cache_path);
         let has_session = self.session.lock().unwrap().is_some();
 
         if !has_session {
             // Never signed in on this device at all -> nothing to queue
             // against. Previously signed in (offline-cached) -> queue.
+            // Read-only decision check, not part of an RMW cycle — no lock.
+            let cache = store::read_cache(&self.cache_path);
             if cache.user_id.is_empty() {
                 return Err(CloudError::SessionExpired);
             }
-            self.queue_grant(&mut cache, model_id, source);
+            self.queue_grant(model_id, source);
             return Ok(());
         }
 
         match self.ensure_fresh() {
             Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                self.queue_grant(&mut cache, model_id, source);
+                self.queue_grant(model_id, source);
                 Ok(())
             }
             Err(e) => Err(e),
-            Ok((access, user_id)) => {
-                self.grant_with_access(&mut cache, &access, &user_id, model_id, source)
-            }
+            Ok((access, user_id)) => self.grant_with_access(&access, &user_id, model_id, source),
         }
     }
 
     pub fn entitlements(&self) -> Result<Vec<Entitlement>, CloudError> {
-        let mut cache = store::read_cache(&self.cache_path);
         let has_session = self.session.lock().unwrap().is_some();
         if !has_session {
-            return Ok(cache.entitlements);
+            return Ok(store::read_cache(&self.cache_path).entitlements);
         }
 
         match self.ensure_fresh() {
-            Err(CloudError::Offline) => Ok(cache.entitlements),
+            Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
             Err(e) => Err(e),
             Ok((access, _user_id)) => match rest::list_entitlements(&access) {
                 Ok(list) => {
+                    // Read-modify-write under `cache_lock`: re-read fresh
+                    // (a concurrent grant() may have queued something
+                    // since we last looked) rather than reusing any
+                    // earlier read, then write back.
+                    let _guard = self.cache_lock.lock().unwrap();
+                    let mut cache = store::read_cache(&self.cache_path);
                     cache.entitlements = list.clone();
                     self.write_cache_best_effort(&cache);
                     Ok(list)
                 }
-                Err(CloudError::Offline) => Ok(cache.entitlements),
+                Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
                 Err(e) => Err(e),
             },
         }
@@ -194,7 +217,16 @@ impl Cloud {
     /// (falling back to cache on error), flushes any queued pending
     /// grants, fires off a best-effort device upsert, and rewrites the
     /// cache. Called from `restore`, `sign_in`, and `sign_up` alike.
-    fn apply_and_sync(&self, tok: auth::TokenResponse, cache: &mut store::CloudCache) -> SessionInfo {
+    ///
+    /// `cache` is an EARLY, unlocked read the caller took before any of
+    /// this — used only as a best-effort fallback source while the network
+    /// calls below run lock-free. It is deliberately NOT what gets written
+    /// back: a concurrent `grant()` could queue a new pending row (and its
+    /// synthetic entitlement) into the real cache file while this method
+    /// is off doing network I/O, and blindly overwriting with this stale
+    /// snapshot would silently lose it. Instead, the final write (step 7)
+    /// takes `cache_lock`, re-reads the cache FRESH, and merges.
+    fn apply_and_sync(&self, tok: auth::TokenResponse, cache: &store::CloudCache) -> SessionInfo {
         // 1. Persist the refresh token FIRST (rotation discipline) — a
         // keyring failure degrades to a memory-only session rather than
         // aborting the sign-in.
@@ -220,8 +252,8 @@ impl Cloud {
             });
         } // guard dropped here, before any I/O below.
 
-        // 3. Nickname: server profile row, else cached nickname, else the
-        // email's local-part.
+        // 3. Nickname: server profile row, else the early cache's nickname
+        // (best-effort fallback only), else the email's local-part.
         let nickname_value = match rest::get_profile_nickname(&access_token) {
             Ok(Some(n)) => n,
             _ => {
@@ -234,40 +266,27 @@ impl Cloud {
         };
         *self.nickname.lock().unwrap() = Some(nickname_value.clone());
 
-        // 4. Entitlements: fresh list from the server, else stale-but-usable
-        // cache.
-        let mut entitlements = match rest::list_entitlements(&access_token) {
+        // 4. Entitlements: fresh list from the server, else the early
+        // cache's stale-but-usable list.
+        let server_entitlements = match rest::list_entitlements(&access_token) {
             Ok(list) => list,
             Err(_) => cache.entitlements.clone(),
         };
 
-        // 5. Flush pending grants: stop on Offline (keep everything from
-        // here on queued), continue past Api errors (keep just that row
-        // queued), and on success make sure it's reflected in
-        // `entitlements` too (synthesize an entry if the refetch above
-        // predates it).
-        let pending = std::mem::take(&mut cache.pending_grants);
-        let mut remaining_pending = Vec::new();
-        for (idx, grant) in pending.iter().enumerate() {
+        // 5. Flush pending grants, attempted against the early snapshot —
+        // still lock-free network I/O. Stop on Offline (leave everything
+        // from here on queued), continue past Api errors (leave just that
+        // row queued). `flushed` records which model_ids landed so the
+        // merge below (step 7) can retire them from whatever the FRESH
+        // queue looks like by the time we get there.
+        let mut flushed: Vec<String> = Vec::new();
+        for grant in cache.pending_grants.iter() {
             match rest::insert_entitlement(&access_token, &user_id, &grant.model_id, &grant.source) {
-                Ok(()) => {
-                    if !entitlements.iter().any(|e| e.model_id == grant.model_id) {
-                        entitlements.push(Entitlement {
-                            model_id: grant.model_id.clone(),
-                            source: grant.source.clone(),
-                            created_at: grant.created_at.to_string(),
-                            expires_at: None,
-                        });
-                    }
-                }
-                Err(CloudError::Offline) => {
-                    remaining_pending.extend(pending[idx..].iter().cloned());
-                    break;
-                }
-                Err(_) => remaining_pending.push(grant.clone()),
+                Ok(()) => flushed.push(grant.model_id.clone()),
+                Err(CloudError::Offline) => break,
+                Err(_) => {} // Api error etc.: leave this one queued, keep going.
             }
         }
-        cache.pending_grants = remaining_pending;
 
         // 6. Fire-and-forget device upsert — errors swallowed, never blocks
         // the caller.
@@ -281,24 +300,35 @@ impl Cloud {
             });
         }
 
-        // 7. Update + write the cache.
-        cache.user_id = user_id;
-        cache.email = email.clone();
-        cache.nickname = nickname_value;
-        cache.entitlements = entitlements.clone();
-        cache.last_online_auth = now();
-        self.write_cache_best_effort(cache);
+        // 7. Final write: take `cache_lock` (leaf lock — never held with
+        // `session`/`refresh_gate`, never across I/O), re-read the cache
+        // FRESH, merge the sync's results into it, write.
+        let merged = {
+            let _guard = self.cache_lock.lock().unwrap();
+            let fresh = store::read_cache(&self.cache_path);
+            let merged = merge_synced_cache(
+                fresh,
+                user_id,
+                email,
+                nickname_value,
+                server_entitlements,
+                &flushed,
+                now(),
+            );
+            self.write_cache_best_effort(&merged);
+            merged
+        };
 
         // 8. Online SessionInfo. Read email back from the session record
-        // (mirroring how `nickname` is handled) rather than the local
-        // `email` copy, so it reflects the authoritative in-memory state.
+        // (mirroring how `nickname` is handled) rather than the merged
+        // cache's copy, so it reflects the authoritative in-memory state.
         let session_email = self.session.lock().unwrap().as_ref().map(|s| s.email.clone());
         SessionInfo {
             signed_in: true,
             nickname: self.nickname.lock().unwrap().clone(),
             email: session_email,
             mode: "online".into(),
-            entitlements,
+            entitlements: merged.entitlements,
             grace_expired: false,
         }
     }
@@ -372,7 +402,6 @@ impl Cloud {
     /// the shared gate and retry once before giving up and queuing.
     fn grant_with_access(
         &self,
-        cache: &mut store::CloudCache,
         access: &str,
         user_id: &str,
         model_id: &str,
@@ -380,27 +409,27 @@ impl Cloud {
     ) -> Result<(), CloudError> {
         match rest::insert_entitlement(access, user_id, model_id, source) {
             Ok(()) => {
-                self.record_grant(cache, model_id, source);
+                self.record_grant(model_id, source);
                 Ok(())
             }
             Err(CloudError::Offline) => {
-                self.queue_grant(cache, model_id, source);
+                self.queue_grant(model_id, source);
                 Ok(())
             }
             Err(CloudError::SessionExpired) => match self.refresh_via_gate() {
                 Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                    self.queue_grant(cache, model_id, source);
+                    self.queue_grant(model_id, source);
                     Ok(())
                 }
                 Err(e) => Err(e),
                 Ok((access2, user_id2)) => {
                     match rest::insert_entitlement(&access2, &user_id2, model_id, source) {
                         Ok(()) => {
-                            self.record_grant(cache, model_id, source);
+                            self.record_grant(model_id, source);
                             Ok(())
                         }
                         Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                            self.queue_grant(cache, model_id, source);
+                            self.queue_grant(model_id, source);
                             Ok(())
                         }
                         Err(e) => Err(e), // Api errors etc.: return, do not queue.
@@ -412,11 +441,16 @@ impl Cloud {
     }
 
     /// Queues a grant for later flush and synthesizes a placeholder
-    /// entitlement so the UI reflects it immediately, then writes the
-    /// cache.
-    fn queue_grant(&self, cache: &mut store::CloudCache, model_id: &str, source: &str) {
+    /// entitlement so the UI reflects it immediately. Read-modify-write is
+    /// serialized under `cache_lock` (leaf lock: never held with
+    /// `session`/`refresh_gate`, never across I/O) — reads its own fresh
+    /// copy of the cache rather than trusting any earlier snapshot, so it
+    /// can't clobber a concurrent update.
+    fn queue_grant(&self, model_id: &str, source: &str) {
+        let _guard = self.cache_lock.lock().unwrap();
+        let mut cache = store::read_cache(&self.cache_path);
         let created_at = now();
-        store::queue_pending(cache, model_id, source, created_at);
+        store::queue_pending(&mut cache, model_id, source, created_at);
         if !cache.entitlements.iter().any(|e| e.model_id == model_id) {
             cache.entitlements.push(Entitlement {
                 model_id: model_id.to_string(),
@@ -425,12 +459,15 @@ impl Cloud {
                 expires_at: None,
             });
         }
-        self.write_cache_best_effort(cache);
+        self.write_cache_best_effort(&cache);
     }
 
-    /// Records a successful grant in the cache (if not already present)
-    /// and writes it.
-    fn record_grant(&self, cache: &mut store::CloudCache, model_id: &str, source: &str) {
+    /// Records a successful grant in the cache (if not already present).
+    /// Same self-contained, `cache_lock`-serialized read-modify-write
+    /// discipline as `queue_grant`.
+    fn record_grant(&self, model_id: &str, source: &str) {
+        let _guard = self.cache_lock.lock().unwrap();
+        let mut cache = store::read_cache(&self.cache_path);
         if !cache.entitlements.iter().any(|e| e.model_id == model_id) {
             cache.entitlements.push(Entitlement {
                 model_id: model_id.to_string(),
@@ -439,7 +476,7 @@ impl Cloud {
                 expires_at: None,
             });
         }
-        self.write_cache_best_effort(cache);
+        self.write_cache_best_effort(&cache);
     }
 
     fn offline_cached_info(&self, cache: &store::CloudCache) -> SessionInfo {
@@ -471,6 +508,81 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Merge the results of a completed online sync into the freshest cache
+/// state. Pure function — no I/O, no locking, easy to unit-test directly.
+///
+/// `fresh` is the cache re-read from disk under `cache_lock` immediately
+/// before this merge runs — NOT the (possibly stale) snapshot
+/// `apply_and_sync` used earlier to compute `flushed`. Because the sync's
+/// network calls ran lock-free, a concurrent `grant()` may have queued a
+/// new pending row (with its own optimistic synthetic entitlement) into
+/// the real cache file in the meantime; `fresh` reflects that, `flushed`
+/// does not. Preserving that row instead of clobbering it with the stale
+/// snapshot is the whole point of re-reading and merging here.
+///
+/// - `entitlements` = `server_entitlements`, plus a synthesized entry for
+///   any `flushed` model_id absent from it (the entitlements fetch predates
+///   the insert within the same sync), plus any synthetic entitlement
+///   already in `fresh.entitlements` whose model_id is still queued in
+///   `fresh.pending_grants` (queued concurrently mid-sync — never lose its
+///   optimistic visibility).
+/// - `pending_grants` = `fresh.pending_grants` minus `flushed` minus any
+///   model_id already present in `server_entitlements`.
+/// - identity fields (`user_id`/`email`/`nickname`) and `last_online_auth`
+///   come from the sync, not from `fresh`.
+fn merge_synced_cache(
+    fresh: store::CloudCache,
+    user_id: String,
+    email: String,
+    nickname: String,
+    server_entitlements: Vec<Entitlement>,
+    flushed: &[String],
+    now: i64,
+) -> store::CloudCache {
+    let pending_grants: Vec<store::PendingGrant> = fresh
+        .pending_grants
+        .iter()
+        .filter(|p| !flushed.iter().any(|m| m == &p.model_id))
+        .filter(|p| !server_entitlements.iter().any(|e| e.model_id == p.model_id))
+        .cloned()
+        .collect();
+
+    let mut entitlements = server_entitlements;
+
+    for model_id in flushed {
+        if entitlements.iter().any(|e| &e.model_id == model_id) {
+            continue;
+        }
+        if let Some(existing) = fresh.entitlements.iter().find(|e| &e.model_id == model_id) {
+            entitlements.push(existing.clone());
+        } else if let Some(p) = fresh.pending_grants.iter().find(|p| &p.model_id == model_id) {
+            entitlements.push(Entitlement {
+                model_id: p.model_id.clone(),
+                source: p.source.clone(),
+                created_at: p.created_at.to_string(),
+                expires_at: None,
+            });
+        }
+    }
+
+    for entry in &fresh.entitlements {
+        let still_pending = fresh.pending_grants.iter().any(|p| p.model_id == entry.model_id);
+        let already_present = entitlements.iter().any(|e| e.model_id == entry.model_id);
+        if still_pending && !already_present {
+            entitlements.push(entry.clone());
+        }
+    }
+
+    store::CloudCache {
+        user_id,
+        email,
+        nickname,
+        entitlements,
+        pending_grants,
+        last_online_auth: now,
+    }
 }
 
 fn local_part(email: &str) -> String {
@@ -523,6 +635,139 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64
+    }
+
+    // merge_synced_cache (a): a grant queued CONCURRENTLY during the sync
+    // (present in `fresh` but never seen by this sync's flush, since
+    // `flushed` only reflects the early pre-sync snapshot) must survive the
+    // merge — this is the reviewer's exact lost-update scenario.
+    #[test]
+    fn merge_synced_cache_preserves_concurrently_queued_grant() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let flushed: Vec<String> = vec![]; // this sync's flush never attempted phi-4
+
+        let merged = merge_synced_cache(
+            fresh,
+            "user-1".into(),
+            "u1@example.com".into(),
+            "Nick".into(),
+            vec![], // server list doesn't know about phi-4 yet
+            &flushed,
+            5000,
+        );
+
+        assert_eq!(merged.user_id, "user-1");
+        assert_eq!(merged.last_online_auth, 5000);
+        assert!(
+            merged.pending_grants.iter().any(|p| p.model_id == "phi-4"),
+            "expected phi-4 to still be queued, got {:?}",
+            merged.pending_grants
+        );
+        assert!(
+            merged.entitlements.iter().any(|e| e.model_id == "phi-4"),
+            "expected phi-4's optimistic entitlement to survive, got {:?}",
+            merged.entitlements
+        );
+    }
+
+    // merge_synced_cache (b): a row this sync DID flush leaves the queue
+    // and appears in entitlements (synthesized, since the server list fetch
+    // predates the insert within the same sync).
+    #[test]
+    fn merge_synced_cache_removes_flushed_and_synthesizes_entitlement() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "llama-8b".into(),
+            source: "trial".into(),
+            created_at: 1000,
+        });
+
+        let flushed = vec!["llama-8b".to_string()];
+
+        let merged = merge_synced_cache(
+            fresh,
+            "user-2".into(),
+            "u2@example.com".into(),
+            "Nick2".into(),
+            vec![], // server list fetched before the insert landed
+            &flushed,
+            5000,
+        );
+
+        assert!(
+            !merged.pending_grants.iter().any(|p| p.model_id == "llama-8b"),
+            "expected llama-8b to leave the queue, got {:?}",
+            merged.pending_grants
+        );
+        assert!(
+            merged.entitlements.iter().any(|e| e.model_id == "llama-8b"),
+            "expected llama-8b's entitlement to be synthesized, got {:?}",
+            merged.entitlements
+        );
+    }
+
+    // merge_synced_cache (c): a row already present in the server list
+    // drops from the queue without duplicating the entitlement.
+    #[test]
+    fn merge_synced_cache_drops_pending_already_on_server_without_duplicating() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "mistral-7b".into(),
+            source: "trial".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "mistral-7b".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let server_entitlements = vec![store::Entitlement {
+            model_id: "mistral-7b".into(),
+            source: "trial".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
+        }];
+        let flushed: Vec<String> = vec![]; // this sync's flush never attempted it
+
+        let merged = merge_synced_cache(
+            fresh,
+            "user-3".into(),
+            "u3@example.com".into(),
+            "Nick3".into(),
+            server_entitlements,
+            &flushed,
+            5000,
+        );
+
+        assert!(
+            !merged.pending_grants.iter().any(|p| p.model_id == "mistral-7b"),
+            "expected mistral-7b to leave the queue, got {:?}",
+            merged.pending_grants
+        );
+        let matches: Vec<_> = merged
+            .entitlements
+            .iter()
+            .filter(|e| e.model_id == "mistral-7b")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one mistral-7b entitlement, got {matches:?}"
+        );
     }
 
     // 1. restore with no keyring entry -> signed_out, no network needed.
