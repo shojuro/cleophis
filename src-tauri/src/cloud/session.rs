@@ -197,17 +197,24 @@ impl Cloud {
         match self.ensure_fresh() {
             Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
             Err(e) => Err(e),
-            Ok((access, _user_id)) => match rest::list_entitlements(&access) {
+            Ok((access, user_id)) => match rest::list_entitlements(&access) {
                 Ok(list) => {
                     // Read-modify-write under `cache_lock`: re-read fresh
                     // (a concurrent grant() may have queued something
                     // since we last looked) rather than reusing any
-                    // earlier read, then write back.
+                    // earlier read, then merge in any still-pending
+                    // optimistic synthetic (owned by `user_id`) that
+                    // `list` doesn't know about yet — otherwise a
+                    // still-queued grant's placeholder would transiently
+                    // vanish every time this polls. `cache_lock` stays a
+                    // leaf here: the network call already happened above,
+                    // nothing under this guard does I/O.
                     let _guard = self.cache_lock.lock().unwrap();
-                    let mut cache = store::read_cache(&self.cache_path);
-                    cache.entitlements = list.clone();
-                    self.write_cache_best_effort(&cache);
-                    Ok(list)
+                    let mut fresh = store::read_cache(&self.cache_path);
+                    let merged = merge_pending_synthetics(&fresh, &user_id, list);
+                    fresh.entitlements = merged.clone();
+                    self.write_cache_best_effort(&fresh);
+                    Ok(merged)
                 }
                 Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
                 Err(e) => Err(e),
@@ -658,6 +665,34 @@ fn merge_synced_cache(
     }
 }
 
+/// Merge still-pending optimistic synthetics into a fresh server list.
+/// Keeps each entitlement from `fresh.entitlements` whose model_id is in
+/// `fresh.pending_grants` owned by `user_id` and absent from `server`.
+///
+/// Pure function — no I/O, no locking, easy to unit-test directly. Owner
+/// filter mirrors `merge_synced_cache`'s: only `fresh.pending_grants` rows
+/// whose `user_id` matches the caller's are eligible to keep their
+/// synthetic alive; a leftover row from a previously offline-cached
+/// different user never resurrects its entitlement.
+fn merge_pending_synthetics(
+    fresh: &store::CloudCache,
+    user_id: &str,
+    server: Vec<Entitlement>,
+) -> Vec<Entitlement> {
+    let mut merged = server;
+    for entry in &fresh.entitlements {
+        let owned_and_pending = fresh
+            .pending_grants
+            .iter()
+            .any(|p| p.model_id == entry.model_id && p.user_id == user_id);
+        let already_present = merged.iter().any(|e| e.model_id == entry.model_id);
+        if owned_and_pending && !already_present {
+            merged.push(entry.clone());
+        }
+    }
+    merged
+}
+
 fn local_part(email: &str) -> String {
     email.split('@').next().unwrap_or(email).to_string()
 }
@@ -888,6 +923,153 @@ mod tests {
             "expected the mismatched-owner's optimistic entitlement to be dropped too, got {:?}",
             merged.entitlements
         );
+    }
+
+    // merge_pending_synthetics (S2-1): a still-pending, owned grant's
+    // optimistic synthetic entitlement survives a merge against an empty
+    // server list.
+    #[test]
+    fn merge_pending_synthetics_synthetic_survives() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "user-1".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let merged = merge_pending_synthetics(&fresh, "user-1", vec![]);
+
+        assert!(
+            merged.iter().any(|e| e.model_id == "phi-4"),
+            "expected phi-4's synthetic to survive, got {merged:?}"
+        );
+    }
+
+    // merge_pending_synthetics (S2-2): the server already knows about the
+    // model_id -> no duplicate, exactly one copy (the server's).
+    #[test]
+    fn merge_pending_synthetics_no_duplicate_when_server_has_it() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "llama-8b".into(),
+            source: "trial".into(),
+            user_id: "user-2".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "llama-8b".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let server = vec![store::Entitlement {
+            model_id: "llama-8b".into(),
+            source: "purchase".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
+        }];
+
+        let merged = merge_pending_synthetics(&fresh, "user-2", server);
+
+        let matches: Vec<_> = merged.iter().filter(|e| e.model_id == "llama-8b").collect();
+        assert_eq!(matches.len(), 1, "expected exactly one copy, got {matches:?}");
+        assert_eq!(matches[0].source, "purchase", "expected the server's copy to win");
+    }
+
+    // merge_pending_synthetics (S2-3): a pending row owned by a DIFFERENT
+    // user_id must not resurrect its synthetic entitlement.
+    #[test]
+    fn merge_pending_synthetics_foreign_owner_pending_dropped() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "stale-user".into(), // NOT the caller's user_id
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let merged = merge_pending_synthetics(&fresh, "user-new", vec![]);
+
+        assert!(
+            !merged.iter().any(|e| e.model_id == "phi-4"),
+            "expected the foreign-owner's synthetic to be dropped, got {merged:?}"
+        );
+    }
+
+    // S2-4. entitlements() session-level: cache seeded with a pending grant
+    // (owned by U) + its synthetic entitlement, a fresh in-memory session
+    // for U, server returns an empty entitlements list -> entitlements()
+    // returns the synthetic AND the rewritten cache file still contains
+    // both the synthetic entitlement and the pending grant (poll must not
+    // transiently drop the optimistic state).
+    #[test]
+    fn entitlements_preserves_pending_synthetic_against_empty_server_list() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-s2-entitlements-synthetic-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-s2".into();
+        cache.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "user-s2".into(),
+            created_at: now(),
+        });
+        cache.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: now().to_string(),
+            expires_at: None,
+        });
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-s2".into(),
+                email: "s2@example.com".into(),
+                access_token: "at-s2".into(),
+                refresh_token: "rt-s2".into(),
+                expires_at: now() + 3600, // fresh -> ensure_fresh skips network
+            });
+        }
+
+        let port = start_mock_server("200 OK", "[]");
+        set_mock_env(port);
+
+        let result = cloud.entitlements().expect("expected Ok");
+        assert!(
+            result.iter().any(|e| e.model_id == "phi-4"),
+            "expected the synthetic to survive in the returned list, got {result:?}"
+        );
+
+        let rewritten = store::read_cache(&cache_path);
+        assert!(
+            rewritten.entitlements.iter().any(|e| e.model_id == "phi-4"),
+            "expected the synthetic to survive in the rewritten cache, got {:?}",
+            rewritten.entitlements
+        );
+        assert!(
+            rewritten.pending_grants.iter().any(|p| p.model_id == "phi-4"),
+            "expected the pending grant to still be queued, got {:?}",
+            rewritten.pending_grants
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     // 1. restore with no keyring entry -> signed_out, no network needed.
