@@ -149,7 +149,10 @@ PY
 # creation, never changed via update — see step 3 below), then appends its
 # signing secret to ~/.env. Appending (rather than rewriting the file)
 # preserves the file's existing permissions (expected chmod 600) since the
-# inode is untouched.
+# inode is untouched. The rotation path (api_version mismatch, step 3) calls
+# this function while a stale STRIPE_WEBHOOK_SECRET line still exists in
+# ~/.env, so the dedupe immediately below — also in-place, also
+# permission-preserving — is required to avoid ending up with two lines.
 create_new_webhook_endpoint() {
   local create_body="$TMP_DIR/webhook-create.json"
   local status
@@ -168,6 +171,9 @@ create_new_webhook_endpoint() {
     echo "error: webhook endpoint creation response had no secret" >&2
     exit 1
   fi
+  # Remove any stale STRIPE_WEBHOOK_SECRET line (rotation path) before appending
+  # the fresh one — duplicate lines are ambiguous to non-last-wins dotenv readers.
+  sed -i '/^STRIPE_WEBHOOK_SECRET=/d' "$ENV_FILE"
   printf 'STRIPE_WEBHOOK_SECRET=%s\n' "$secret" >>"$ENV_FILE"
   echo "webhook secret stored in ~/.env"
 }
