@@ -212,7 +212,11 @@ async function handleInvoicePaid(
 
   const periodCandidates = matchedPeriods.length > 0 ? matchedPeriods : allPeriods;
   const periodEnd = periodCandidates.length > 0 ? Math.max(...periodCandidates) : null;
-  if (periodEnd === null || !(periodEnd > 0)) {
+  // ~400 days — longest plausible billing period + slack; an inflated
+  // period can never be walked back by the extend-only writer, and this
+  // also prevents a Date RangeError on absurd values.
+  const periodEndMax = Math.floor(Date.now() / 1000) + 400 * 86400;
+  if (periodEnd === null || !(periodEnd > 0) || periodEnd > periodEndMax) {
     console.error(
       `stripe-webhook invoice.paid validation failed: check=period_end subscription=${subscriptionId} ` +
         `user_id=${userId} model_id=${modelId}`,
