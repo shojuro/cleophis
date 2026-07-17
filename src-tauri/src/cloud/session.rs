@@ -47,6 +47,16 @@ impl SessionInfo {
     }
 }
 
+/// Result of a `Cloud::create_checkout` call. `Url` carries a validated
+/// (`https://checkout.stripe.com/`-prefixed), open-in-browser Stripe
+/// Checkout link. No `Debug`/`PartialEq` derive (mirrors
+/// `rest::CheckoutSessionResponse`'s rationale): the URL is a payment-page
+/// capability and must never end up in a `{:?}`/panic message.
+pub enum CheckoutOutcome {
+    AlreadyOwned,
+    Url(String),
+}
+
 /// The stateful session layer. Composes `auth` (GoTrue), `rest` (PostgREST),
 /// and `store` (keyring + on-disk cache) into the six operations the
 /// front-end drives via `cloud::commands`.
@@ -197,17 +207,24 @@ impl Cloud {
         match self.ensure_fresh() {
             Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
             Err(e) => Err(e),
-            Ok((access, _user_id)) => match rest::list_entitlements(&access) {
+            Ok((access, user_id)) => match rest::list_entitlements(&access) {
                 Ok(list) => {
                     // Read-modify-write under `cache_lock`: re-read fresh
                     // (a concurrent grant() may have queued something
                     // since we last looked) rather than reusing any
-                    // earlier read, then write back.
+                    // earlier read, then merge in any still-pending
+                    // optimistic synthetic (owned by `user_id`) that
+                    // `list` doesn't know about yet — otherwise a
+                    // still-queued grant's placeholder would transiently
+                    // vanish every time this polls. `cache_lock` stays a
+                    // leaf here: the network call already happened above,
+                    // nothing under this guard does I/O.
                     let _guard = self.cache_lock.lock().unwrap();
-                    let mut cache = store::read_cache(&self.cache_path);
-                    cache.entitlements = list.clone();
-                    self.write_cache_best_effort(&cache);
-                    Ok(list)
+                    let mut fresh = store::read_cache(&self.cache_path);
+                    let merged = merge_pending_synthetics(&fresh, &user_id, list);
+                    fresh.entitlements = merged.clone();
+                    self.write_cache_best_effort(&fresh);
+                    Ok(merged)
                 }
                 Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
                 Err(e) => Err(e),
@@ -234,6 +251,24 @@ impl Cloud {
                 rest::mint_download_url(&access2, model_id)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Create a Stripe Checkout session for a model. Refreshes the session
+    /// token if needed; one forced refresh+retry on `SessionExpired`
+    /// (mirrors `download_authorization`'s retry shape). A 409 from the
+    /// function (already owns the model) maps to `AlreadyOwned` rather than
+    /// an error. On success, validates the returned URL actually points at
+    /// Stripe's checkout host before it's ever handed to the opener plugin
+    /// — see `checkout_outcome`.
+    pub fn create_checkout(&self, model_id: &str) -> Result<CheckoutOutcome, CloudError> {
+        let (access, _user_id) = self.ensure_fresh()?;
+        match rest::create_checkout(&access, model_id) {
+            Err(CloudError::SessionExpired) => {
+                let (access2, _user_id2) = self.refresh_via_gate()?;
+                checkout_outcome(rest::create_checkout(&access2, model_id))
+            }
+            result => checkout_outcome(result),
         }
     }
 
@@ -658,6 +693,55 @@ fn merge_synced_cache(
     }
 }
 
+/// Merge still-pending optimistic synthetics into a fresh server list.
+/// Keeps each entitlement from `fresh.entitlements` whose model_id is in
+/// `fresh.pending_grants` owned by `user_id` and absent from `server`.
+///
+/// Pure function — no I/O, no locking, easy to unit-test directly. Owner
+/// filter mirrors `merge_synced_cache`'s: only `fresh.pending_grants` rows
+/// whose `user_id` matches the caller's are eligible to keep their
+/// synthetic alive; a leftover row from a previously offline-cached
+/// different user never resurrects its entitlement.
+fn merge_pending_synthetics(
+    fresh: &store::CloudCache,
+    user_id: &str,
+    server: Vec<Entitlement>,
+) -> Vec<Entitlement> {
+    let mut merged = server;
+    for entry in &fresh.entitlements {
+        let owned_and_pending = fresh
+            .pending_grants
+            .iter()
+            .any(|p| p.model_id == entry.model_id && p.user_id == user_id);
+        let already_present = merged.iter().any(|e| e.model_id == entry.model_id);
+        if owned_and_pending && !already_present {
+            merged.push(entry.clone());
+        }
+    }
+    merged
+}
+
+/// Maps a `rest::create_checkout` result to a `CheckoutOutcome`: a 409 (the
+/// function's "already owns this model" response) becomes `AlreadyOwned`
+/// rather than an error; any other error passes through unchanged. On
+/// success, the URL is validated here — the one place this is
+/// unit-testable without a Tauri `AppHandle`/opener plugin in the loop —
+/// before `Cloud::create_checkout`'s caller (`start_checkout`) ever trusts
+/// it enough to hand to `tauri_plugin_opener`.
+fn checkout_outcome(result: Result<rest::CheckoutSessionResponse, CloudError>) -> Result<CheckoutOutcome, CloudError> {
+    match result {
+        Ok(resp) => {
+            if resp.url.starts_with("https://checkout.stripe.com/") {
+                Ok(CheckoutOutcome::Url(resp.url))
+            } else {
+                Err(CloudError::Internal("unexpected checkout url".into()))
+            }
+        }
+        Err(CloudError::Api { status: 409, .. }) => Ok(CheckoutOutcome::AlreadyOwned),
+        Err(e) => Err(e),
+    }
+}
+
 fn local_part(email: &str) -> String {
     email.split('@').next().unwrap_or(email).to_string()
 }
@@ -888,6 +972,153 @@ mod tests {
             "expected the mismatched-owner's optimistic entitlement to be dropped too, got {:?}",
             merged.entitlements
         );
+    }
+
+    // merge_pending_synthetics (S2-1): a still-pending, owned grant's
+    // optimistic synthetic entitlement survives a merge against an empty
+    // server list.
+    #[test]
+    fn merge_pending_synthetics_synthetic_survives() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "user-1".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let merged = merge_pending_synthetics(&fresh, "user-1", vec![]);
+
+        assert!(
+            merged.iter().any(|e| e.model_id == "phi-4"),
+            "expected phi-4's synthetic to survive, got {merged:?}"
+        );
+    }
+
+    // merge_pending_synthetics (S2-2): the server already knows about the
+    // model_id -> no duplicate, exactly one copy (the server's).
+    #[test]
+    fn merge_pending_synthetics_no_duplicate_when_server_has_it() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "llama-8b".into(),
+            source: "trial".into(),
+            user_id: "user-2".into(),
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "llama-8b".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let server = vec![store::Entitlement {
+            model_id: "llama-8b".into(),
+            source: "purchase".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
+        }];
+
+        let merged = merge_pending_synthetics(&fresh, "user-2", server);
+
+        let matches: Vec<_> = merged.iter().filter(|e| e.model_id == "llama-8b").collect();
+        assert_eq!(matches.len(), 1, "expected exactly one copy, got {matches:?}");
+        assert_eq!(matches[0].source, "purchase", "expected the server's copy to win");
+    }
+
+    // merge_pending_synthetics (S2-3): a pending row owned by a DIFFERENT
+    // user_id must not resurrect its synthetic entitlement.
+    #[test]
+    fn merge_pending_synthetics_foreign_owner_pending_dropped() {
+        let mut fresh = CloudCache::default();
+        fresh.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "stale-user".into(), // NOT the caller's user_id
+            created_at: 1000,
+        });
+        fresh.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: "1000".into(),
+            expires_at: None,
+        });
+
+        let merged = merge_pending_synthetics(&fresh, "user-new", vec![]);
+
+        assert!(
+            !merged.iter().any(|e| e.model_id == "phi-4"),
+            "expected the foreign-owner's synthetic to be dropped, got {merged:?}"
+        );
+    }
+
+    // S2-4. entitlements() session-level: cache seeded with a pending grant
+    // (owned by U) + its synthetic entitlement, a fresh in-memory session
+    // for U, server returns an empty entitlements list -> entitlements()
+    // returns the synthetic AND the rewritten cache file still contains
+    // both the synthetic entitlement and the pending grant (poll must not
+    // transiently drop the optimistic state).
+    #[test]
+    fn entitlements_preserves_pending_synthetic_against_empty_server_list() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-s2-entitlements-synthetic-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-s2".into();
+        cache.pending_grants.push(PendingGrant {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            user_id: "user-s2".into(),
+            created_at: now(),
+        });
+        cache.entitlements.push(store::Entitlement {
+            model_id: "phi-4".into(),
+            source: "trial".into(),
+            created_at: now().to_string(),
+            expires_at: None,
+        });
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-s2".into(),
+                email: "s2@example.com".into(),
+                access_token: "at-s2".into(),
+                refresh_token: "rt-s2".into(),
+                expires_at: now() + 3600, // fresh -> ensure_fresh skips network
+            });
+        }
+
+        let port = start_mock_server("200 OK", "[]");
+        set_mock_env(port);
+
+        let result = cloud.entitlements().expect("expected Ok");
+        assert!(
+            result.iter().any(|e| e.model_id == "phi-4"),
+            "expected the synthetic to survive in the returned list, got {result:?}"
+        );
+
+        let rewritten = store::read_cache(&cache_path);
+        assert!(
+            rewritten.entitlements.iter().any(|e| e.model_id == "phi-4"),
+            "expected the synthetic to survive in the rewritten cache, got {:?}",
+            rewritten.entitlements
+        );
+        assert!(
+            rewritten.pending_grants.iter().any(|p| p.model_id == "phi-4"),
+            "expected the pending grant to still be queued, got {:?}",
+            rewritten.pending_grants
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 
     // 1. restore with no keyring entry -> signed_out, no network needed.
@@ -1332,5 +1563,148 @@ mod tests {
         assert_eq!(result.url, "http://x/file/b/m.gguf");
         assert_eq!(result.authorization, "tok123");
         assert_eq!(result.file_bytes, 2019377696);
+    }
+
+    // S7-2. create_checkout happy path: locally-fresh session, 200
+    // {"url":"https://checkout.stripe.com/..."} -> Url(...) exact.
+    #[test]
+    fn create_checkout_happy_path_returns_url() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-happy-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-checkout".into(),
+                email: "checkout@example.com".into(),
+                access_token: "at-fresh-checkout".into(),
+                refresh_token: "rt-fresh-checkout".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "200 OK",
+            r#"{"url":"https://checkout.stripe.com/c/pay/cs_test_x"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud
+            .create_checkout("socratic-tutor")
+            .expect("expected success");
+        match result {
+            CheckoutOutcome::Url(u) => {
+                assert_eq!(u, "https://checkout.stripe.com/c/pay/cs_test_x")
+            }
+            CheckoutOutcome::AlreadyOwned => panic!("expected Url, got AlreadyOwned"),
+        }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-3. create_checkout 409 {"error":"already_purchased",...} ->
+    // AlreadyOwned.
+    #[test]
+    fn create_checkout_409_is_already_owned() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-409-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-409".into(),
+                email: "u409@example.com".into(),
+                access_token: "at-409".into(),
+                refresh_token: "rt-409".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "409 Conflict",
+            r#"{"error":"already_purchased","message":"You already own this model."}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud
+            .create_checkout("socratic-tutor")
+            .expect("expected Ok(AlreadyOwned)");
+        assert!(matches!(result, CheckoutOutcome::AlreadyOwned));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-4. create_checkout 200 with a non-Stripe url ->
+    // Err(Internal("unexpected checkout url")) -- validation lives in
+    // session.rs, unit-testable here without touching the browser opener.
+    #[test]
+    fn create_checkout_non_stripe_url_rejected() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-badurl-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-badurl".into(),
+                email: "badurl@example.com".into(),
+                access_token: "at-badurl".into(),
+                refresh_token: "rt-badurl".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server("200 OK", r#"{"url":"https://evil.example/pay"}"#);
+        set_mock_env(port);
+
+        let err = cloud
+            .create_checkout("socratic-tutor")
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Internal(reason) => {
+                assert!(reason.contains("unexpected checkout url"), "reason was: {reason}")
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // S7-6. create_checkout: server rejects a locally-fresh access token
+    // with 401 (clock skew / out-of-band revocation -- same rationale as
+    // grant_with_access's retry). `refresh_via_gate()` re-checks the SAME
+    // local clock and short-circuits without a network call (the session
+    // is still locally fresh), handing back the identical access token, so
+    // connection 2 is the retried create-checkout call, which also 401s.
+    // The mock listener serves exactly 2 responses then stops accepting --
+    // a bug that retried a third time would hit a transport error
+    // (Offline) here instead, so this also proves the one-retry shape (no
+    // infinite retry).
+    #[test]
+    fn create_checkout_401_session_expired_no_retry() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-checkout-401-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-401".into(),
+                email: "u401@example.com".into(),
+                access_token: "at-401".into(),
+                refresh_token: "rt-401".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server_n(vec![
+            ("401 Unauthorized", r#"{"message":"JWT expired"}"#),
+            ("401 Unauthorized", r#"{"message":"JWT expired"}"#),
+        ]);
+        set_mock_env(port);
+
+        let result = cloud.create_checkout("socratic-tutor");
+        assert!(matches!(result, Err(CloudError::SessionExpired)));
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 }

@@ -114,6 +114,35 @@ pub fn mint_download_url(access_token: &str, model_id: &str) -> Result<DownloadA
     post_json_response(&url, access_token, body)
 }
 
+/// Response shape of the `create-checkout` edge function.
+///
+/// No `Debug` derive (mirrors `DownloadAuth`'s rationale, per the S7
+/// contract brief): `url` is a payment-page capability — a live Stripe
+/// Checkout session link — and must never end up in a `{:?}`/panic
+/// message.
+///
+/// Constructed by `create_checkout` and consumed by
+/// `cloud::session::Cloud::create_checkout`, which validates the URL
+/// before it is ever opened in the user's browser.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutSessionResponse {
+    pub url: String,
+}
+
+/// POST {url}/functions/v1/create-checkout  body {"model_id": ...}
+/// Headers: apikey + Bearer (same as other rest calls). Mints a Stripe
+/// Checkout session URL, consumed by `cloud::session::Cloud::create_checkout`,
+/// in turn called by the `start_checkout` Tauri command.
+pub fn create_checkout(
+    access_token: &str,
+    model_id: &str,
+) -> Result<CheckoutSessionResponse, CloudError> {
+    let url = format!("{}/functions/v1/create-checkout", config::supabase_url());
+    let body = serde_json::json!({ "model_id": model_id });
+    post_json_response(&url, access_token, body)
+}
+
 /// Stable machine identifier: hex(SHA-256(MachineGuid)) on Windows via
 /// winreg (HKLM\SOFTWARE\Microsoft\Cryptography, value MachineGuid); on
 /// failure or non-Windows: hex(SHA-256(hostname + "|" + OS)), hostname from
@@ -564,6 +593,64 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(body).expect("expected JSON body");
         assert_eq!(parsed, serde_json::json!({"model_id": "socratic-tutor"}));
+    }
+
+    // S7-1. create_checkout request shape: path is
+    // /functions/v1/create-checkout, body {"model_id":"socratic-tutor"},
+    // both auth headers present.
+    #[test]
+    fn create_checkout_request_shape() {
+        let _g = test_support::lock();
+        let (port, rx) = test_support::start_capturing_mock_server(
+            "200 OK",
+            r#"{"url":"https://checkout.stripe.com/c/pay/cs_test_x"}"#,
+        );
+        test_support::set_mock_env(port);
+
+        let result = create_checkout("test-access-token", "socratic-tutor");
+        assert!(result.is_ok(), "expected Ok(..), got error");
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("expected a captured request");
+        let text = String::from_utf8_lossy(&raw);
+        let (head, body) = text
+            .split_once("\r\n\r\n")
+            .expect("expected header/body split");
+        assert!(
+            head.contains("POST /functions/v1/create-checkout"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("apikey: test-anon-key"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("Authorization: Bearer test-access-token"),
+            "head was: {head}"
+        );
+
+        let parsed: Value = serde_json::from_str(body).expect("expected JSON body");
+        assert_eq!(parsed, serde_json::json!({"model_id": "socratic-tutor"}));
+    }
+
+    // S7-5. create_checkout malformed 200 (no url field) ->
+    // Api{status:200, msg:"malformed response"} (from post_json_response).
+    #[test]
+    fn create_checkout_malformed_200_is_api_error() {
+        let _g = test_support::lock();
+        let port = test_support::start_mock_server("200 OK", r#"{}"#);
+        test_support::set_mock_env(port);
+        let err = create_checkout("token", "socratic-tutor")
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Api { status, msg } => {
+                assert_eq!(status, 200);
+                assert_eq!(msg, "malformed response");
+            }
+            other => panic!("expected Api, got {other:?}"),
+        }
     }
 
     // 8. device_fingerprint(): returns 64 lowercase hex chars; stable across

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::cloud::error::CloudError;
-use crate::cloud::session::{Cloud, SessionInfo};
+use crate::cloud::session::{Cloud, CheckoutOutcome, SessionInfo};
 use crate::cloud::store::Entitlement;
 
 /// Only reachable if the blocking task itself panics or the runtime is
@@ -85,4 +85,43 @@ pub async fn list_entitlements(cloud: State<'_, Arc<Cloud>>) -> Result<Vec<Entit
         .await
         .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
         .map_err(|e: CloudError| e.user_message())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartCheckoutResult {
+    /// "opened" | "alreadyOwned"
+    pub status: String,
+}
+
+/// Mints a Stripe Checkout session for `model_id` and, unless the user
+/// already owns it, opens it in the system browser via the opener plugin
+/// (never inside the app's own webview — a payment page has no business
+/// running under this app's CSP/IPC surface).
+#[tauri::command]
+pub async fn start_checkout(
+    model_id: String,
+    app: tauri::AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+) -> Result<StartCheckoutResult, String> {
+    let cloud = cloud.inner().clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || cloud.create_checkout(&model_id))
+        .await
+        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+        .map_err(|e: CloudError| e.user_message())?;
+
+    match outcome {
+        CheckoutOutcome::AlreadyOwned => Ok(StartCheckoutResult {
+            status: "alreadyOwned".into(),
+        }),
+        CheckoutOutcome::Url(u) => {
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(u, None::<&str>)
+                .map_err(|_| "Couldn't open your browser — please try again.".to_string())?;
+            Ok(StartCheckoutResult {
+                status: "opened".into(),
+            })
+        }
+    }
 }

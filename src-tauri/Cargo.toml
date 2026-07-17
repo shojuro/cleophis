@@ -15,6 +15,7 @@ ureq = { version = "2", features = ["json"] }
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["windows-native", "linux-native"] }
 sha2 = "0.10"
+tauri-plugin-opener = "2"
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"

@@ -65,6 +65,7 @@ async fn load_model(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
@@ -98,6 +99,7 @@ fn main() {
             cloud::commands::restore_session,
             cloud::commands::grant_entitlement,
             cloud::commands::list_entitlements,
+            cloud::commands::start_checkout,
             cloud::download::download_model,
             cloud::download::cancel_download,
             cloud::download::download_status
