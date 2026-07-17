@@ -390,7 +390,8 @@ async function sendCompletion() {
     try {
       const info = await invoke('engine_info');
       state.engine = info;
-      if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
+      if (info.status === 'NoModel') { showEngineBanner('Model not downloaded yet.'); setComposerEnabled(false); }
+      else if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
     } catch (_) {}
     const retry = document.createElement('button');
     retry.className = 'retrychip';

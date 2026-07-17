@@ -197,8 +197,24 @@ pub fn run_download(
                         return Ok(());
                     }
                     Ok(false) => {
-                        auth = auth_provider().map_err(|e| e.user_message())?;
-                        continue 'attempt;
+                        match remint_with_budget(
+                            auth_provider,
+                            &mut consecutive_failures,
+                            &mut bytes_at_last_failure,
+                            &mut last_failure_kind,
+                            bytes_counter,
+                            cancel,
+                        ) {
+                            Ok(Some(new_auth)) => {
+                                auth = new_auth;
+                                continue 'attempt;
+                            }
+                            Ok(None) => {
+                                emit(cancelled_progress(bytes_counter, expected_bytes));
+                                return Ok(());
+                            }
+                            Err(msg) => return Err(msg),
+                        }
                     }
                     Err(msg) => return Err(msg),
                 }
@@ -247,8 +263,24 @@ pub fn run_download(
                         return Ok(());
                     }
                     Ok(false) => {
-                        auth = auth_provider().map_err(|e| e.user_message())?;
-                        continue 'attempt;
+                        match remint_with_budget(
+                            auth_provider,
+                            &mut consecutive_failures,
+                            &mut bytes_at_last_failure,
+                            &mut last_failure_kind,
+                            bytes_counter,
+                            cancel,
+                        ) {
+                            Ok(Some(new_auth)) => {
+                                auth = new_auth;
+                                continue 'attempt;
+                            }
+                            Ok(None) => {
+                                emit(cancelled_progress(bytes_counter, expected_bytes));
+                                return Ok(());
+                            }
+                            Err(msg) => return Err(msg),
+                        }
                     }
                     Err(msg) => return Err(msg),
                 }
@@ -256,7 +288,14 @@ pub fn run_download(
         }
     };
 
-    // 6. Finish: verify, then finalize.
+    // 6. Finish: verify, then finalize. Deliberately does NOT emit `done`
+    // itself (a deviation from the original worker-step-6 wording, made
+    // during whole-branch review to close a race): `download_model`'s
+    // command wrapper emits `done` only AFTER it has called
+    // `start_if_no_model`, so the front-end never observes `done` while the
+    // engine's status could still read `NoModel` — `run_download` returning
+    // `Ok(())` (with the file present at `final_path`) is itself the
+    // completion signal the wrapper acts on.
     emit(DownloadProgress {
         model_id: String::new(),
         phase: "verifying".into(),
@@ -280,15 +319,6 @@ pub fn run_download(
 
     std::fs::rename(&part_path, final_path)
         .map_err(|e| format!("Failed to finalize download: {e}"))?;
-
-    emit(DownloadProgress {
-        model_id: String::new(),
-        phase: "done".into(),
-        bytes_downloaded: expected_bytes,
-        total_bytes: expected_bytes,
-        bytes_per_sec: 0,
-        error: None,
-    });
 
     Ok(())
 }
@@ -526,6 +556,64 @@ fn record_failure_and_backoff(
     Ok(interruptible_sleep(Duration::from_secs(backoff_secs), cancel))
 }
 
+/// Classifies a failed `auth_provider()` (re-mint) call the same way a
+/// failed connect is classified: `CloudError::Api { status, .. }` — a
+/// definitive HTTP-level rejection from the mint endpoint itself (e.g. an
+/// RLS rejection, or Supabase surfacing a CDN-side refusal) — maps to
+/// `Status(status)`; everything else (`Offline`, `SessionExpired`,
+/// `Internal`, ...) maps to `Transport`, since none of those carry a
+/// meaningful HTTP status for the download itself.
+fn classify_mint_err(err: &CloudError) -> FailureKind {
+    match err {
+        CloudError::Api { status, .. } => FailureKind::Status(*status),
+        _ => FailureKind::Transport,
+    }
+}
+
+/// Re-mints auth, itself subject to the SAME retry budget as a connect or
+/// mid-stream failure — a mint failure (Supabase offline, the
+/// `download-url` edge function rejecting the request, ...) must consume
+/// the 3-consecutive-failure policy rather than aborting the whole download
+/// outright via `?`. Loops internally: each failed mint attempt is
+/// recorded through `record_failure_and_backoff` exactly like any other
+/// attempt failure, sharing the same counters (so a mint failure right
+/// after a connect failure counts as the 2nd of 3, not a fresh 1st).
+///
+/// Returns `Ok(Some(auth))` once a mint succeeds, `Ok(None)` if `cancel`
+/// fired during a backoff sleep (caller emits `cancelled` and returns
+/// `Ok(())`), or `Err(msg)` once the retry budget is exhausted (caller
+/// returns that `Err` directly — the give-up message already reflects
+/// whichever failure was last, mint or connect/stream).
+fn remint_with_budget(
+    auth_provider: &dyn Fn() -> Result<rest::DownloadAuth, CloudError>,
+    consecutive_failures: &mut u32,
+    bytes_at_last_failure: &mut u64,
+    last_failure_kind: &mut Option<FailureKind>,
+    bytes_counter: &AtomicU64,
+    cancel: &AtomicBool,
+) -> Result<Option<rest::DownloadAuth>, String> {
+    loop {
+        match auth_provider() {
+            Ok(auth) => return Ok(Some(auth)),
+            Err(mint_err) => {
+                let kind = classify_mint_err(&mint_err);
+                match record_failure_and_backoff(
+                    consecutive_failures,
+                    bytes_at_last_failure,
+                    last_failure_kind,
+                    kind,
+                    bytes_counter,
+                    cancel,
+                ) {
+                    Ok(true) => return Ok(None),
+                    Ok(false) => continue,
+                    Err(msg) => return Err(msg),
+                }
+            }
+        }
+    }
+}
+
 enum StreamOutcome {
     Completed,
     Cancelled,
@@ -706,10 +794,22 @@ pub async fn download_model(
             // `run_download` returns `Ok(())` for BOTH a completed download
             // and a cancelled one (worker step 4) — distinguish by whether
             // the file actually landed at `final_path` before deciding
-            // whether to start the engine.
+            // whether to start the engine. `done` is emitted here, AFTER
+            // `start_if_no_model`, not inside `run_download` — emitting it
+            // first would let the front-end react to `done` (e.g. calling
+            // `load_model`) while the engine's status could still read
+            // `NoModel`, a race `load_model` could lose.
             Ok(()) => {
                 if final_path_for_thread.exists() {
                     crate::inference::start_if_no_model(app_for_thread, engine_for_thread);
+                    emit(DownloadProgress {
+                        model_id: model_id_for_thread,
+                        phase: "done".into(),
+                        bytes_downloaded: expected_bytes,
+                        total_bytes: expected_bytes,
+                        bytes_per_sec: 0,
+                        error: None,
+                    });
                 }
             }
             Err(msg) => {
@@ -860,7 +960,11 @@ mod tests {
     }
 
     // 1. Fresh happy path: full stream -> verified -> renamed; events
-    // include requesting/downloading/done; final file matches content.
+    // include requesting/downloading/verifying; final file matches content.
+    // `run_download` itself is `Ok(())` + the file landing at `final_path`
+    // — not a `done` event — the completion signal: `done` is emitted by
+    // the `download_model` command wrapper, AFTER `start_if_no_model`, to
+    // avoid a front-end race (see the module doc comment / task report).
     #[test]
     fn fresh_happy_path_completes_and_renames() {
         let _g = env_lock();
@@ -894,7 +998,8 @@ mod tests {
         let phases: Vec<String> = events.lock().unwrap().iter().map(|p| p.phase.clone()).collect();
         assert!(phases.contains(&"requesting".to_string()), "phases: {phases:?}");
         assert!(phases.contains(&"downloading".to_string()), "phases: {phases:?}");
-        assert_eq!(phases.last(), Some(&"done".to_string()), "phases: {phases:?}");
+        assert_eq!(phases.last(), Some(&"verifying".to_string()), "phases: {phases:?}");
+        assert!(!phases.contains(&"done".to_string()), "phases: {phases:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1193,6 +1298,76 @@ mod tests {
             2,
             "expected exactly 2 auth_provider calls, got {}",
             call_count.load(Ordering::SeqCst)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Whole-branch-review follow-up: a re-mint (`auth_provider`) failure
+    // mid-retry must consume the SAME 3-consecutive-failure budget as a
+    // connect/stream failure rather than aborting the download outright.
+    // Script: [DisconnectAfter(100_000), Serve206] forces one connect-level
+    // failure; `auth_provider`'s SECOND call (the re-mint that failure
+    // triggers) fails once (`CloudError::Offline`), then its THIRD call
+    // succeeds — two failures total, still under the budget of 3 — and the
+    // download completes using the auth from that third call.
+    #[test]
+    fn remint_failure_consumes_retry_budget_and_recovers() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let sha = sha256_hex(&content);
+        let (base_url, _handle, rx) = start_ranged_server(
+            content.clone(),
+            vec![RangedBehavior::DisconnectAfter(100_000), RangedBehavior::Serve206],
+        );
+
+        let dir = unique_dir("remint-failure");
+        let final_path = dir.join("hero.gguf");
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_for_closure = call_count.clone();
+        let url = format!("{base_url}/file");
+        let auth_provider = move || {
+            let n = call_count_for_closure.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 2 {
+                return Err(CloudError::Offline);
+            }
+            Ok(rest::DownloadAuth {
+                url: url.clone(),
+                authorization: "test-b2-token".to_string(),
+                expires_at: "2026-07-18T00:00:00Z".to_string(),
+                file_bytes: SIZE as u64,
+            })
+        };
+
+        let (emit, _events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_download(
+            &auth_provider,
+            &final_path,
+            SIZE as u64,
+            &sha,
+            &emit,
+            &cancel,
+            &bytes_counter,
+        );
+
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, content);
+        assert!(
+            call_count.load(Ordering::SeqCst) >= 3,
+            "expected auth_provider to be called >=3 times (initial + failed remint + successful remint), got {}",
+            call_count.load(Ordering::SeqCst)
+        );
+
+        let requests = drain_all(&rx);
+        assert!(
+            requests.len() >= 2,
+            "expected >=2 ranged-server requests, got {}",
+            requests.len()
         );
 
         let _ = std::fs::remove_dir_all(&dir);
