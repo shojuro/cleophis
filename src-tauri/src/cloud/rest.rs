@@ -270,7 +270,7 @@ fn post_json(
 /// `Internal`, since it's the server's contract that broke, not something
 /// local.
 ///
-/// Only caller today is `mint_download_url`.
+/// Callers: `mint_download_url`, `create_checkout`, `create_portal_session`.
 fn post_json_response<T: DeserializeOwned>(
     url: &str,
     access_token: &str,
