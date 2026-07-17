@@ -22,7 +22,7 @@ async function boot() {
   renderFilters(); renderGrid();
   try {
     const s = await invoke('restore_session');
-    if (s.signedIn) applySession(s);
+    if (s.signedIn) await applySession(s);
   } catch (_) { /* signed-out boot is fine */ }
 }
 
@@ -364,7 +364,7 @@ function lockNudge(card) {
   showToast('Log in or create an account to open this model — tap here to log in.');
 }
 
-/* ---------------- sign-in (mock) ---------------- */
+/* ---------------- auth ---------------- */
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
 function hide(el) { el.classList.remove('show'); }
 
@@ -372,10 +372,12 @@ async function applySession(info) {
   state.signedIn = true;
   state.nick = info.nickname || 'you';
   state.mine = new Set((info.entitlements || []).map((e) => e.modelId));
-  state.device = await invoke('detect_hardware');
-  $('dev-name').textContent = state.device.gpu.replace(/NVIDIA |GeForce /g, '') || 'This machine';
-  $('dev-spec').textContent = `${state.device.ram_gb} GB RAM`;
-  $('device').style.display = 'flex';
+  try {
+    state.device = await invoke('detect_hardware');
+    $('dev-name').textContent = state.device.gpu.replace(/NVIDIA |GeForce /g, '') || 'This machine';
+    $('dev-spec').textContent = `${state.device.ram_gb} GB RAM`;
+    $('device').style.display = 'flex';
+  } catch (_) { /* chip is optional — badges fall back to 'Sign in to check' */ }
   const lb = $('loginBtn');
   lb.textContent = state.nick;
   lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
@@ -433,7 +435,7 @@ $('doLogin').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Signing in…';
   try {
-    applySession(await invoke('sign_in', { email, password }));
+    await applySession(await invoke('sign_in', { email, password }));
   } catch (e) {
     err.style.display = 'block';
     err.textContent = String(e);
@@ -461,7 +463,7 @@ $('doCreate').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Creating…';
   try {
-    applySession(await invoke('sign_up', { email, password, nickname: $('cr-nick').value.trim() || 'you' }));
+    await applySession(await invoke('sign_up', { email, password, nickname: $('cr-nick').value.trim() || 'you' }));
   } catch (e) {
     err.style.display = 'block';
     err.textContent = String(e);
