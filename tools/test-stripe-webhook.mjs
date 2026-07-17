@@ -28,6 +28,18 @@
 // resulting entitlements row via the Supabase Management API's database
 // query endpoint and prints it, asserting source='purchase'.
 //
+// S6 finding: node's fetch (undici) to api.supabase.com can be edge-blocked
+// in some network environments where `curl` to the same host succeeds —
+// observed live during S6. That only affects this optional row-verification
+// step (the webhook deliveries themselves go to
+// isltexsxpysxqewjsryv.supabase.co, a different host, and were unaffected).
+// The verification call is therefore wrapped in try/catch: on ANY failure —
+// network-unreachable or otherwise — this script prints the SQL it would
+// have run and leaves the process exit code untouched, since delivery
+// expectations alone decide pass/fail. A row that WAS reached but has the
+// wrong contents is a different case and still fails the run (see
+// verifyEntitlementRow's return value).
+//
 // Secret values (STRIPE_WEBHOOK_SECRET, SUPABASE_ACCESS_TOKEN) are never
 // logged — only variable names, ids, HTTP statuses, and response bodies
 // that this script itself generated (which never contain either secret).
@@ -191,16 +203,26 @@ function sqlLiteral(s) {
   return String(s).replace(/'/g, "''");
 }
 
+/** The SQL SELECT the row-verification step runs (or would run). Factored
+ * out so the try/catch around the verification call can print it verbatim
+ * as a manual fallback when the fetch itself fails — see call site. */
+function entitlementsSql() {
+  return (
+    `select source, expires_at from public.entitlements ` +
+    `where user_id='${sqlLiteral(userId)}' and model_id='${sqlLiteral(modelId)}'`
+  );
+}
+
 /** Queries the resulting entitlements row via the Management API's
  * database query endpoint and prints it. Only called when
  * SUPABASE_ACCESS_TOKEN is present; never logs the token itself. Returns
- * true if the row confirms source='purchase' (or if the check couldn't be
- * performed as a hard failure — see below), false on a clear assertion
- * failure. */
+ * true if the row confirms source='purchase', false on a clear assertion
+ * failure (query reached the API but the row was missing/wrong). Network-
+ * level failures (fetch throws) are NOT caught here — they propagate to
+ * the caller, which treats "couldn't even reach it" differently from
+ * "reached it and the row was wrong". */
 async function verifyEntitlementRow() {
-  const sql =
-    `select source, expires_at from public.entitlements ` +
-    `where user_id='${sqlLiteral(userId)}' and model_id='${sqlLiteral(modelId)}'`;
+  const sql = entitlementsSql();
   const res = await fetch(`${MANAGEMENT_API_BASE}/v1/projects/${PROJECT_REF}/database/query`, {
     method: 'POST',
     headers: {
@@ -255,8 +277,20 @@ if (mode === 'replay') {
 console.log(ok ? 'PASS' : 'FAIL');
 
 if (supabaseAccessToken && (mode === 'default' || mode === 'replay')) {
-  const rowOk = await verifyEntitlementRow();
-  ok = ok && rowOk;
+  try {
+    const rowOk = await verifyEntitlementRow();
+    ok = ok && rowOk;
+  } catch (err) {
+    // ANY failure here (observed live in S6: node's fetch to
+    // api.supabase.com can be edge-blocked while curl to the same host
+    // works) is treated as "couldn't check" rather than "checked and it's
+    // wrong" — exit code is deliberately left alone; the webhook delivery
+    // expectations checked above already determined it.
+    const message = err instanceof Error ? err.message : String(err);
+    console.log('row verification unavailable (network) — verify manually:');
+    console.log(entitlementsSql());
+    console.log(`(underlying error: ${message})`);
+  }
 } else if (mode === 'default' || mode === 'replay') {
   console.log('SUPABASE_ACCESS_TOKEN not set — skipping entitlements row verification');
 }
