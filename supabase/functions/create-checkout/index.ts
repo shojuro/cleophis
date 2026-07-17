@@ -148,14 +148,21 @@ Deno.serve(async (req: Request) => {
 
   let session: Stripe.Checkout.Session;
   try {
-    session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      line_items: [{ price: priceId, quantity: 1 }],
-      metadata: { user_id: userId, model_id: modelId },
-      client_reference_id: userId,
-      success_url: `${supabaseUrl}/functions/v1/checkout-return?status=success`,
-      cancel_url: `${supabaseUrl}/functions/v1/checkout-return?status=cancel`,
-    });
+    // Idempotency key closes the double-click double-charge window: two
+    // rapid identical requests return the same session instead of minting
+    // two. If the price for this model changes, the key's params change too
+    // and Stripe errors on a stale key — acceptable, self-heals after 24h.
+    session = await stripe.checkout.sessions.create(
+      {
+        mode: "payment",
+        line_items: [{ price: priceId, quantity: 1 }],
+        metadata: { user_id: userId, model_id: modelId },
+        client_reference_id: userId,
+        success_url: `${supabaseUrl}/functions/v1/checkout-return?status=success`,
+        cancel_url: `${supabaseUrl}/functions/v1/checkout-return?status=cancel`,
+      },
+      { idempotencyKey: `checkout-${userId}-${modelId}` },
+    );
   } catch (err) {
     // Log the error message only — never the Stripe secret key.
     const message = err instanceof Error ? err.message : String(err);
