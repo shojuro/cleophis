@@ -67,13 +67,29 @@ fn main() {
             let engine = Arc::new(Engine::new(port));
             app.manage(engine.clone());
             inference::start(app.handle().clone(), engine);
+
+            let cloud_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            std::fs::create_dir_all(&cloud_dir)?;
+            app.manage(Arc::new(cloud::session::Cloud::new(
+                cloud_dir.join("cloud-cache.json"),
+            )));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_catalog,
             detect_hardware,
             engine_info,
-            load_model
+            load_model,
+            cloud::commands::sign_up,
+            cloud::commands::sign_in,
+            cloud::commands::sign_out,
+            cloud::commands::restore_session,
+            cloud::commands::grant_entitlement,
+            cloud::commands::list_entitlements
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

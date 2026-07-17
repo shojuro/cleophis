@@ -29,10 +29,20 @@ impl CloudError {
             CloudError::WeakPassword(msg) => format!("Password too weak: {msg}"),
             CloudError::RateLimited => "Too many attempts — wait a minute and try again.".into(),
             CloudError::SessionExpired => "Session expired — please log in again.".into(),
-            CloudError::Api { status, .. } => {
-                format!("Server error ({status}) — please try again.")
+            // `msg` here is the server's own validation message (GoTrue's
+            // msg/error_description, or PostgREST's message field) — the
+            // doc comment above permits exactly this.
+            CloudError::Api { status, msg } => {
+                if msg.is_empty() {
+                    format!("Server error ({status}) — please try again.")
+                } else {
+                    format!("Server error ({status}): {msg}")
+                }
             }
-            CloudError::Internal(_) => {
+            CloudError::Internal(reason) => {
+                // The detailed reason is for developers, not end users —
+                // log it server-side and show a generic message.
+                eprintln!("cloud: internal error: {reason}");
                 "Something went wrong on this device. Please try again.".into()
             }
         }

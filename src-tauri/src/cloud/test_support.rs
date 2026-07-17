@@ -97,3 +97,29 @@ pub(crate) fn unused_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind throwaway");
     listener.local_addr().unwrap().port()
 }
+
+/// Serves a fixed sequence of canned responses, one per successive TCP
+/// connection, in order — for multi-request flows (Task A5's session
+/// manager chains several HTTP calls per public method: e.g. restore's
+/// refresh -> profile -> entitlements) where each call needs its own
+/// distinct response. A connection beyond the end of `responses` (e.g. the
+/// session manager's fire-and-forget device-upsert thread arriving after
+/// the scripted flow completes) is simply not accepted; the listener
+/// thread exits after serving the last one, so any late connection fails
+/// fast rather than hanging.
+pub(crate) fn start_mock_server_n(responses: Vec<(&'static str, &'static str)>) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for (status_line, body) in responses {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    drain_request(&mut stream);
+                    write_response(&mut stream, status_line, body);
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    port
+}
