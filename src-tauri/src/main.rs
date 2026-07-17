@@ -43,6 +43,9 @@ async fn load_model(
     _model_id: String,
     engine: tauri::State<'_, Arc<Engine>>,
 ) -> Result<EngineInfo, String> {
+    if *engine.status.lock().unwrap() == EngineStatus::NoModel {
+        return Err("Model not downloaded yet.".to_string());
+    }
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let status = engine.status.lock().unwrap().clone();
@@ -66,7 +69,11 @@ fn main() {
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
             app.manage(engine.clone());
-            inference::start(app.handle().clone(), engine);
+            if inference::model_path(app.handle()).is_some() {
+                inference::start(app.handle().clone(), engine.clone());
+            } else {
+                engine.set_no_model();
+            }
 
             let cloud_dir = app
                 .path()

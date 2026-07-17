@@ -13,6 +13,7 @@ pub enum EngineStatus {
     Ready,
     Restarting,
     Failed,
+    NoModel,
 }
 
 #[derive(Clone, Serialize)]
@@ -53,6 +54,12 @@ impl Engine {
     fn set_status(&self, s: EngineStatus) {
         *self.status.lock().unwrap() = s;
     }
+
+    /// Marks the engine as having no model on disk yet (thin install, not
+    /// downloaded). Cleared by `start_if_no_model` once the download lands.
+    pub fn set_no_model(&self) {
+        self.set_status(EngineStatus::NoModel);
+    }
 }
 
 pub fn free_port() -> std::io::Result<u16> {
@@ -75,16 +82,42 @@ pub fn resources_root(app: &AppHandle) -> PathBuf {
         .join("resources")
 }
 
-fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
+/// Resolve the hero model on disk: downloaded copy first (app data),
+/// bundled copy second (dev / fat installs). None = thin install, not yet downloaded.
+pub fn model_path(app: &AppHandle) -> Option<PathBuf> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json"))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, format!("catalog: {e}")))?;
+        .map_err(|e| eprintln!("model_path: catalog read: {e}"))
+        .ok()?;
     let entries = crate::catalog::parse_catalog(&raw)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let hero = crate::catalog::hero(&entries).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no real model in catalog")
-    })?;
-    let model = root.join(hero.model_file.as_ref().unwrap());
+        .map_err(|e| eprintln!("model_path: catalog parse: {e}"))
+        .ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    let model_file = hero.model_file.as_ref()?;
+    let app_data = app.path().app_data_dir().ok();
+    resolve_model(app_data, root, model_file)
+}
+
+/// Pure resolution logic behind `model_path`: app-data copy wins if present,
+/// else the bundled resources copy, else None.
+fn resolve_model(app_data: Option<PathBuf>, resources: PathBuf, model_file: &str) -> Option<PathBuf> {
+    if let Some(dir) = app_data {
+        let candidate = dir.join(model_file);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    let candidate = resources.join(model_file);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
+}
+
+fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
+    let root = resources_root(app);
+    let model = model_path(app)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "model not on disk"))?;
     let exe = root.join("llama").join("llama-server.exe");
 
     let log_path = std::env::temp_dir().join("cleophis-llama.log");
@@ -163,6 +196,7 @@ fn sweep_stray_servers() {}
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || {
+        engine.set_status(EngineStatus::Starting);
         sweep_stray_servers();
         let force_cpu = std::env::var("CLEOPHIS_FORCE_CPU").is_ok();
         let mut ngl: u32 = if force_cpu { 0 } else { 99 };
@@ -247,4 +281,119 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
             }
         }
     });
+}
+
+/// Check-and-set: NoModel -> Starting under the status lock. Returns whether
+/// the transition happened (true) or the engine was in some other state
+/// (false) — the double-start guard for `start_if_no_model`.
+///
+/// Not yet called from production code: the download-completion event that
+/// invokes `start_if_no_model` lands in a later task (thin-installer C3b/C4).
+/// Directly unit-tested below in the meantime.
+#[allow(dead_code)]
+fn try_begin_start(engine: &Engine) -> bool {
+    let mut status = engine.status.lock().unwrap();
+    if *status == EngineStatus::NoModel {
+        *status = EngineStatus::Starting;
+        true
+    } else {
+        false
+    }
+}
+
+/// Start the engine after a download completes. No-op unless current status is
+/// NoModel (atomic check-and-set under the status lock — double-start guard).
+///
+/// Not yet wired to a caller: the download-completion handler that invokes
+/// this lands in a later task (thin-installer C3b/C4).
+#[allow(dead_code)]
+pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
+    if try_begin_start(&engine) {
+        start(app, engine);
+    } else {
+        eprintln!("start_if_no_model: ignored, engine was not in NoModel state");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_dir(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "cleophis-c2-test-{}-{}-{}",
+            std::process::id(),
+            unique,
+            name
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_model_prefers_app_data_when_both_exist() {
+        let app_data = unique_dir("appdata-both");
+        let resources = unique_dir("resources-both");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        std::fs::create_dir_all(resources.join("models")).unwrap();
+        std::fs::write(app_data.join("models/hero.gguf"), b"a").unwrap();
+        std::fs::write(resources.join("models/hero.gguf"), b"b").unwrap();
+
+        let got = resolve_model(Some(app_data.clone()), resources, "models/hero.gguf");
+        assert_eq!(got, Some(app_data.join("models/hero.gguf")));
+    }
+
+    #[test]
+    fn resolve_model_falls_back_to_resources_when_app_data_missing_file() {
+        let app_data = unique_dir("appdata-fallback");
+        let resources = unique_dir("resources-fallback");
+        std::fs::create_dir_all(resources.join("models")).unwrap();
+        std::fs::write(resources.join("models/hero.gguf"), b"b").unwrap();
+        // app_data dir exists but does not contain the model file.
+
+        let got = resolve_model(Some(app_data), resources.clone(), "models/hero.gguf");
+        assert_eq!(got, Some(resources.join("models/hero.gguf")));
+    }
+
+    #[test]
+    fn resolve_model_falls_back_to_resources_when_app_data_absent() {
+        let resources = unique_dir("resources-optnone");
+        std::fs::create_dir_all(resources.join("models")).unwrap();
+        std::fs::write(resources.join("models/hero.gguf"), b"b").unwrap();
+
+        let got = resolve_model(None, resources.clone(), "models/hero.gguf");
+        assert_eq!(got, Some(resources.join("models/hero.gguf")));
+    }
+
+    #[test]
+    fn resolve_model_none_when_neither_has_the_file() {
+        let app_data = unique_dir("appdata-none");
+        let resources = unique_dir("resources-none");
+
+        let got = resolve_model(Some(app_data), resources, "models/hero.gguf");
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn try_begin_start_transitions_no_model_to_starting() {
+        let engine = Engine::new(0);
+        engine.set_no_model();
+        assert!(try_begin_start(&engine));
+        assert_eq!(*engine.status.lock().unwrap(), EngineStatus::Starting);
+    }
+
+    #[test]
+    fn try_begin_start_is_a_noop_for_other_statuses() {
+        let engine = Engine::new(0); // Engine::new starts in Starting.
+        assert!(!try_begin_start(&engine));
+        assert_eq!(*engine.status.lock().unwrap(), EngineStatus::Starting);
+
+        engine.set_status(EngineStatus::Ready);
+        assert!(!try_begin_start(&engine));
+        assert_eq!(*engine.status.lock().unwrap(), EngineStatus::Ready);
+    }
 }
