@@ -143,6 +143,34 @@ pub fn create_checkout(
     post_json_response(&url, access_token, body)
 }
 
+/// Response shape of the `customer-portal` edge function.
+///
+/// No `Debug` derive (mirrors `CheckoutSessionResponse`'s rationale, per the
+/// Sub7 contract brief): `url` is a billing-portal capability — a live
+/// Stripe Billing Portal session link — and must never end up in a
+/// `{:?}`/panic message.
+///
+/// Constructed by `create_portal_session` and consumed by
+/// `cloud::session::Cloud::create_portal_session`, which validates the URL
+/// before it is ever opened in the user's browser.
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalSessionResponse {
+    pub url: String,
+}
+
+/// POST {url}/functions/v1/customer-portal  body {}
+/// Headers: apikey + Bearer (same as other rest calls). The function reads
+/// no body — it derives identity solely from the Bearer JWT. Mints a Stripe
+/// Billing Portal session URL, consumed by
+/// `cloud::session::Cloud::create_portal_session`, in turn called by the
+/// `open_billing_portal` Tauri command.
+pub fn create_portal_session(access_token: &str) -> Result<PortalSessionResponse, CloudError> {
+    let url = format!("{}/functions/v1/customer-portal", config::supabase_url());
+    let body = serde_json::json!({});
+    post_json_response(&url, access_token, body)
+}
+
 /// Stable machine identifier: hex(SHA-256(MachineGuid)) on Windows via
 /// winreg (HKLM\SOFTWARE\Microsoft\Cryptography, value MachineGuid); on
 /// failure or non-Windows: hex(SHA-256(hostname + "|" + OS)), hostname from
@@ -651,6 +679,44 @@ mod tests {
             }
             other => panic!("expected Api, got {other:?}"),
         }
+    }
+
+    // Sub7-1. create_portal_session request shape: path is
+    // /functions/v1/customer-portal, body {}, both auth headers present.
+    #[test]
+    fn create_portal_session_request_shape() {
+        let _g = test_support::lock();
+        let (port, rx) = test_support::start_capturing_mock_server(
+            "200 OK",
+            r#"{"url":"https://billing.stripe.com/p/session/x"}"#,
+        );
+        test_support::set_mock_env(port);
+
+        let result = create_portal_session("test-access-token");
+        assert!(result.is_ok(), "expected Ok(..), got error");
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("expected a captured request");
+        let text = String::from_utf8_lossy(&raw);
+        let (head, body) = text
+            .split_once("\r\n\r\n")
+            .expect("expected header/body split");
+        assert!(
+            head.contains("POST /functions/v1/customer-portal"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("apikey: test-anon-key"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("Authorization: Bearer test-access-token"),
+            "head was: {head}"
+        );
+
+        let parsed: Value = serde_json::from_str(body).expect("expected JSON body");
+        assert_eq!(parsed, serde_json::json!({}));
     }
 
     // 8. device_fingerprint(): returns 64 lowercase hex chars; stable across
