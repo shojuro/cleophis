@@ -13,7 +13,6 @@
 #
 # Examples:
 #   tools/deploy-function.sh create-checkout
-#   tools/deploy-function.sh checkout-return --no-verify-jwt
 #   tools/deploy-function.sh stripe-webhook --no-verify-jwt
 #
 # Same Management API call as deploy-download-url.sh's deploy step:

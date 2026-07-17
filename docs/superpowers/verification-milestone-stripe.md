@@ -72,3 +72,52 @@ Carried on the ledger, not gaps introduced by this milestone:
   (`apply_and_sync`) that can leak across the test lock and cause
   intermittent parallel-test flakiness — unrelated to Stripe, not fixed in
   this milestone.
+
+### MULTI-MODEL LANDMINES (next milestone inherits these)
+
+This milestone ships exactly one paid model (`socratic-tutor`) with no
+free model in the same catalog yet. The following are correctness gaps
+that don't bite at that scope but will as soon as a free (library) model
+and a paid model coexist, or more than one purchase can be in flight —
+found during final whole-branch review, recorded here rather than fixed
+now since fixing them now would mean building against a shape (multi-model
+catalog) this milestone doesn't have yet:
+
+(a) **FE owned-check vs. server fence.** `state.mine` (`src/app.js`)
+    hydrates from **all** entitlement sources, and `runGetFlow`
+    short-circuits any model already in `state.mine` straight to download.
+    Once a free (`library`-sourced) model and a paid model coexist, a
+    self-granted `library` row on a *paid* model becomes a purchase dead
+    end: the front end believes the model is owned and skips checkout
+    entirely, but `download-url`'s per-model source fence (the source
+    fence cutover, commit `54e8b1b`) rejects the download with 403 — the
+    user can neither download the model nor get offered a Buy button for
+    it. Fix at the next milestone: gate paid-model download eligibility
+    client-side on `source === 'purchase'` specifically, not on mere
+    presence in `state.mine`.
+(b) **`beginPaymentPoll` leaks on a second concurrent purchase.**
+    `beginPaymentPoll` (`src/app.js`) never clears a pre-existing
+    `setInterval` before starting a new one, and `state.pay`/`state.dl`
+    are single-slot. Starting a purchase on a second purchasable model
+    while a first model's poll is still running leaks the first poll's
+    timer — it keeps firing against the now-overwritten single-slot state
+    rather than being cancelled. Fix when generalizing beyond one
+    in-flight purchase at a time.
+(c) Two more edge cases worth recording now rather than rediscovering
+    later: at the 100-row per-user `entitlements` cap
+    (`enforce_entitlement_cap()`,
+    `supabase/migrations/0005_entitlement_caps.sql`), a paying customer's
+    webhook UPSERT hits the cap trigger and 500s forever — paid but never
+    entitled. Only reachable via deliberate self-flooding (100 distinct
+    `model_id` rows for one user), not a normal-use path, but worth
+    recognizing as a support signature if it's ever reported. Separately:
+    changing a Stripe Price's amount strands any Checkout Session already
+    minted at the old amount — `stripe-webhook`'s `EXPECTED` validation
+    (`supabase/functions/stripe-webhook/index.ts`) will permanently reject
+    that in-flight session's completion once the registry moves to the new
+    amount, since `amount_total` can never match again. Drain in-flight
+    sessions (or accept the loss) before changing a live Price.
+(d) Platform undeploy of the old `checkout-return` Edge Function instance
+    is confirmed (HTTP 200, coordinator-run) — closes out the item flagged
+    as outstanding in the S10 task report ("No removal of the deployed
+    `checkout-return` Edge Function instance (coordinator's job)").

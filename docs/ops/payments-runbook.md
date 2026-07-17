@@ -106,7 +106,14 @@ test mode**. Before real money can move, in order:
    `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_SOCRATIC`. Live and test Stripe
    objects are entirely separate — a live secret key, a live webhook
    endpoint (with its own live signing secret), and a live Price id (even
-   if it represents the "same" $20 product) are all needed.
+   if it represents the "same" $20 product) are all needed. `~/.env` ends
+   up with the test-mode `STRIPE_WEBHOOK_SECRET=` line still present from
+   the original `tools/stripe-bootstrap.sh` run (step 4 below appends the
+   live one rather than replacing it in place) — prune the stale test line
+   by hand so a future read of `~/.env` doesn't pick up the wrong secret.
+   Optionally disable (rather than delete) the test-mode webhook endpoint
+   in the Stripe Dashboard once the live one is confirmed working, so test
+   deliveries stop arriving at a production-adjacent function.
 3. **Remove the livemode guard** in
    `supabase/functions/stripe-webhook/index.ts` — the block reading
    ```ts
@@ -128,6 +135,14 @@ test mode**. Before real money can move, in order:
    objects, which live in Stripe's separate test-mode data.
 5. Redeploy `create-checkout` and `stripe-webhook` (step 3 above changes
    their code) via `tools/deploy-function.sh`.
+
+**No app release is needed for this flip.** Nothing in the Tauri client
+(`src-tauri`, `src/app.js`) encodes test-vs-live mode, a secret value, or a
+Price id — the client only ever calls `start_checkout`/`create-checkout`
+by `model_id` and opens whatever URL comes back. The entire flip is
+server-side (Supabase function secrets + code) and Stripe-Dashboard-side
+(business name, webhook endpoint); an already-installed app keeps working
+unmodified once the five steps above land.
 
 ## Return pages (GitHub Pages)
 

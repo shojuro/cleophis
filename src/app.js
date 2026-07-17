@@ -239,9 +239,12 @@ function beginPaymentPoll(m) {
   state.pay.deadline = Date.now() + 10 * 60 * 1000;
   state.pay.timer = setInterval(async () => {
     if (Date.now() > state.pay.deadline) {
-      cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
-      const el = $('errMsg');
-      if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = "We didn't see a completed payment. If you paid, it will appear shortly — try Get again in a moment."; }
+      const drawerMatch = state.drawerId === m.id;
+      cancelPaymentPoll(drawerMatch ? `Get · ${m.pro ? 'Pro' : m.price}` : null);
+      if (drawerMatch) {
+        const el = $('errMsg');
+        if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = "We didn't see a completed payment. If you paid, it will appear shortly — try Get again in a moment."; }
+      }
       return;
     }
     let list;
