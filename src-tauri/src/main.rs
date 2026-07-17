@@ -43,6 +43,9 @@ async fn load_model(
     _model_id: String,
     engine: tauri::State<'_, Arc<Engine>>,
 ) -> Result<EngineInfo, String> {
+    if *engine.status.lock().unwrap() == EngineStatus::NoModel {
+        return Err("Model not downloaded yet.".to_string());
+    }
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let status = engine.status.lock().unwrap().clone();
@@ -66,7 +69,11 @@ fn main() {
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
             app.manage(engine.clone());
-            inference::start(app.handle().clone(), engine);
+            if inference::model_path(app.handle()).is_some() {
+                inference::start(app.handle().clone(), engine.clone());
+            } else {
+                engine.set_no_model();
+            }
 
             let cloud_dir = app
                 .path()
@@ -76,6 +83,7 @@ fn main() {
             app.manage(Arc::new(cloud::session::Cloud::new(
                 cloud_dir.join("cloud-cache.json"),
             )));
+            app.manage(Arc::new(cloud::download::Downloads::new()));
 
             Ok(())
         })
@@ -89,11 +97,18 @@ fn main() {
             cloud::commands::sign_out,
             cloud::commands::restore_session,
             cloud::commands::grant_entitlement,
-            cloud::commands::list_entitlements
+            cloud::commands::list_entitlements,
+            cloud::download::download_model,
+            cloud::download::cancel_download,
+            cloud::download::download_status
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 inference::shutdown(&window.app_handle().state::<Arc<Engine>>());
+                window
+                    .app_handle()
+                    .state::<Arc<cloud::download::Downloads>>()
+                    .request_cancel();
             }
         })
         .run(tauri::generate_context!())

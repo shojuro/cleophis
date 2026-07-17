@@ -84,6 +84,36 @@ pub fn upsert_device(
     post_json(&url, access_token, body, "resolution=merge-duplicates")
 }
 
+/// Response shape of the `download-url` edge function.
+///
+/// No `Debug` derive (mirrors `auth::TokenResponse`'s rationale, per the C3a
+/// contract brief): `authorization` is a secret-ish, short-lived bearer
+/// token scoped to the CDN object and must never end up in a `{:?}`/panic
+/// message.
+///
+/// Constructed by `mint_download_url` and consumed by
+/// `cloud::download::run_download`'s `auth_provider`, which places
+/// `authorization` ONLY in the request's `Authorization` header.
+#[derive(Clone, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadAuth {
+    pub url: String,
+    pub authorization: String,
+    pub expires_at: String,
+    pub file_bytes: u64,
+}
+
+/// POST {url}/functions/v1/download-url  body {"model_id": ...}
+/// Headers: apikey + Bearer (same as other rest calls). Mints a short-lived,
+/// per-file CDN authorization consumed by `cloud::session::Cloud::download_authorization`,
+/// in turn called by the download worker (`cloud::download::run_download`'s
+/// `auth_provider`).
+pub fn mint_download_url(access_token: &str, model_id: &str) -> Result<DownloadAuth, CloudError> {
+    let url = format!("{}/functions/v1/download-url", config::supabase_url());
+    let body = serde_json::json!({ "model_id": model_id });
+    post_json_response(&url, access_token, body)
+}
+
 /// Stable machine identifier: hex(SHA-256(MachineGuid)) on Windows via
 /// winreg (HKLM\SOFTWARE\Microsoft\Cryptography, value MachineGuid); on
 /// failure or non-Windows: hex(SHA-256(hostname + "|" + OS)), hostname from
@@ -171,6 +201,36 @@ fn post_json(
     {
         // Success = any 2xx (ureq only treats non-2xx as Err).
         Ok(_) => Ok(()),
+        Err(ureq::Error::Transport(_)) => Err(CloudError::Offline),
+        Err(ureq::Error::Status(status, resp)) => Err(map_status_error(status, resp)),
+    }
+}
+
+/// Same agent/headers/error mapping as `post_json`, but for endpoints (edge
+/// functions) that return a body on success — parses the 2xx response as
+/// `T`. A malformed 2xx body (missing/mistyped fields) is reported as
+/// `CloudError::Api { status: 200, msg: "malformed response" }` rather than
+/// `Internal`, since it's the server's contract that broke, not something
+/// local.
+///
+/// Only caller today is `mint_download_url`.
+fn post_json_response<T: DeserializeOwned>(
+    url: &str,
+    access_token: &str,
+    body: Value,
+) -> Result<T, CloudError> {
+    let key = config::supabase_key();
+    match agent()
+        .post(url)
+        .set("apikey", &key)
+        .set("Content-Type", "application/json")
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .send_json(body)
+    {
+        Ok(resp) => resp.into_json::<T>().map_err(|_| CloudError::Api {
+            status: 200,
+            msg: "malformed response".into(),
+        }),
         Err(ureq::Error::Transport(_)) => Err(CloudError::Offline),
         Err(ureq::Error::Status(status, resp)) => Err(map_status_error(status, resp)),
     }
@@ -388,6 +448,122 @@ mod tests {
         test_support::set_mock_env(port);
         let err = list_entitlements("token").unwrap_err();
         assert!(matches!(err, CloudError::Offline));
+    }
+
+    // 9. mint_download_url happy path: canned 200 → struct fields exact.
+    // No Debug on DownloadAuth (see its doc comment), so fields are checked
+    // individually rather than via a single whole-struct assert_eq!.
+    #[test]
+    fn mint_download_url_happy_path() {
+        let _g = test_support::lock();
+        let port = test_support::start_mock_server(
+            "200 OK",
+            r#"{"url":"http://x/file/b/m.gguf","authorization":"tok123","expiresAt":"2026-07-18T00:00:00Z","fileBytes":2019377696}"#,
+        );
+        test_support::set_mock_env(port);
+        let result = mint_download_url("test-access-token", "socratic-tutor").expect("expected success");
+        assert_eq!(result.url, "http://x/file/b/m.gguf");
+        assert_eq!(result.authorization, "tok123");
+        assert_eq!(result.expires_at, "2026-07-18T00:00:00Z");
+        assert_eq!(result.file_bytes, 2019377696);
+    }
+
+    // 10. mint_download_url 403 → Api{403,..} with the message preserved.
+    // map_status_error extracts the "message" field from the body, so the
+    // canned body uses that shape (not GoTrue's "msg"/"error_description").
+    #[test]
+    fn mint_download_url_403_preserves_message() {
+        let _g = test_support::lock();
+        let port = test_support::start_mock_server(
+            "403 Forbidden",
+            r#"{"message":"You don't own this model."}"#,
+        );
+        test_support::set_mock_env(port);
+        // `.err()` rather than `.unwrap_err()`: the latter requires the Ok
+        // side (DownloadAuth) to be Debug, which it deliberately isn't.
+        let err = mint_download_url("token", "socratic-tutor")
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Api { status, msg } => {
+                assert_eq!(status, 403);
+                assert_eq!(msg, "You don't own this model.");
+            }
+            other => panic!("expected Api, got {other:?}"),
+        }
+    }
+
+    // 11. mint_download_url 401 → SessionExpired.
+    #[test]
+    fn mint_download_url_401_session_expired() {
+        let _g = test_support::lock();
+        let port = test_support::start_mock_server("401 Unauthorized", r#"{"message":"JWT expired"}"#);
+        test_support::set_mock_env(port);
+        let err = mint_download_url("expired-token", "socratic-tutor")
+            .err()
+            .expect("expected an error");
+        assert!(matches!(err, CloudError::SessionExpired));
+    }
+
+    // 12. mint_download_url malformed 200 (missing fields) →
+    // Api{status:200, msg:"malformed response"}.
+    #[test]
+    fn mint_download_url_malformed_200_is_api_error() {
+        let _g = test_support::lock();
+        let port = test_support::start_mock_server("200 OK", r#"{"url":"http://x/file/b/m.gguf"}"#);
+        test_support::set_mock_env(port);
+        let err = mint_download_url("token", "socratic-tutor")
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Api { status, msg } => {
+                assert_eq!(status, 200);
+                assert_eq!(msg, "malformed response");
+            }
+            other => panic!("expected Api, got {other:?}"),
+        }
+    }
+
+    // 13. mint_download_url request shape: path is
+    // /functions/v1/download-url, body {"model_id":"socratic-tutor"}, both
+    // auth headers present.
+    #[test]
+    fn mint_download_url_request_shape() {
+        let _g = test_support::lock();
+        let (port, rx) = test_support::start_capturing_mock_server(
+            "200 OK",
+            r#"{"url":"http://x/file/b/m.gguf","authorization":"tok123","expiresAt":"2026-07-18T00:00:00Z","fileBytes":1}"#,
+        );
+        test_support::set_mock_env(port);
+
+        let result = mint_download_url("test-access-token", "socratic-tutor");
+        // Not `{result:?}` — DownloadAuth deliberately has no Debug.
+        if let Err(e) = &result {
+            panic!("expected Ok(..), got error: {e:?}");
+        }
+
+        let raw = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("expected a captured request");
+        let text = String::from_utf8_lossy(&raw);
+        let (head, body) = text
+            .split_once("\r\n\r\n")
+            .expect("expected header/body split");
+        assert!(
+            head.contains("POST /functions/v1/download-url"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("apikey: test-anon-key"),
+            "head was: {head}"
+        );
+        assert!(
+            head.contains("Authorization: Bearer test-access-token"),
+            "head was: {head}"
+        );
+
+        let parsed: Value = serde_json::from_str(body).expect("expected JSON body");
+        assert_eq!(parsed, serde_json::json!({"model_id": "socratic-tutor"}));
     }
 
     // 8. device_fingerprint(): returns 64 lowercase hex chars; stable across

@@ -7,6 +7,7 @@ const state = {
   mine: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null },
+  dl: { installed: false, partBytes: 0, active: false },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -16,8 +17,16 @@ async function boot() {
   await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); });
   await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); });
   await listen('engine-failed', (e) => { showEngineBanner('Local engine failed: ' + e.payload); setComposerEnabled(false); });
+  await listen('download-progress', onDownloadProgress);
   state.catalog = await invoke('get_catalog');
   for (const m of state.catalog) m.coverUrl = convertFileSrc(m.coverAbs);
+  const heroEntry = state.catalog.find((m) => m.real);
+  if (heroEntry) {
+    try {
+      const ds = await invoke('download_status', { modelId: heroEntry.id });
+      state.dl = { installed: ds.installed, partBytes: ds.partBytes, active: ds.active };
+    } catch (_) {}
+  }
   try { state.engine = await invoke('engine_info'); } catch (_) {}
   renderFilters(); renderGrid();
   try {
@@ -96,17 +105,26 @@ function openDrawer(id) {
   const m = state.catalog.find((x) => x.id === id); if (!m) return;
   const cp = compat(m.sizeParams);
   const installed = state.mine.has(m.id);
-  const gb = (m.fileBytes / 1e9).toFixed(1);
+  const gb = (m.fileBytes / 2 ** 30).toFixed(2);
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+  const gib = (m.fileBytes / 2 ** 30).toFixed(2);
   const btnLabel = m.real
-    ? (installed ? 'Open chat' : `Get · ${m.pro ? 'Pro' : m.price}`)
+    ? (state.dl.installed
+        ? 'Open chat'
+        : state.dl.active
+          ? 'Downloading…'
+          : state.dl.partBytes > 0
+            ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
+            : state.mine.has(m.id)
+              ? `Download · ${gib} GiB`
+              : `Get · ${m.pro ? 'Pro' : m.price}`)
     : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
     <div class="dcover"><img src="${m.coverUrl}" alt=""/></div>
     <span class="tag ${m.category}" style="position:static;display:inline-block;margin-top:14px">${m.category === 'education' ? 'Education' : 'Medical reference'}</span>
     <h2>${m.name}</h2>
-    <div class="dsub">${m.subject} · ${gb} GB on disk</div>
+    <div class="dsub">${m.subject} · ${gb} GiB on disk</div>
     <div class="specs">
       <div class="spec"><div class="k">Model size</div><div class="v mono">${m.sizeParams} params</div></div>
       <div class="spec"><div class="k">On your device</div><div class="v"><span class="compat ${cp.cls}">${cp.label}</span></div></div>
@@ -116,6 +134,7 @@ function openDrawer(id) {
     <div class="dlrow">
       <button class="btn primary block" id="dlBtn">${btnLabel}</button>
       <div class="prog" id="prog"><i></i></div>
+      <div class="dlline mono" id="dlLine" style="display:none;font-size:12.5px;color:var(--muted);margin-top:8px"></div>
       <div class="installed" id="installedMsg">${check} Installed — runs offline on your device</div>
       <div class="errmsg" id="errMsg"></div>
     </div>
@@ -137,45 +156,95 @@ function closeDrawer() {
 
 /* ---------------- Get flow ---------------- */
 function runGetFlow(m, btn) {
-  if (m.real && state.mine.has(m.id)) { enterChat(m); return; }
-  if (state.mine.has(m.id)) return;
-  btn.disabled = true;
-  btn.textContent = 'Processing payment…';
-  setTimeout(() => {
-    btn.textContent = '✓ Paid — downloading…';
-    if (m.real) heroDownload(m, btn);
-    else simulateStubDownload(m, btn);
-  }, 900);
+  if (m.real) {
+    if (state.dl.installed) { enterChat(m); return; }
+    if (state.dl.active) return;
+    const startDownload = () => {
+      state.mine.add(m.id);
+      renderGrid();
+      heroDownload(m, btn);
+    };
+    if (state.mine.has(m.id) || state.dl.partBytes > 0) { startDownload(); return; }
+    btn.disabled = true;
+    btn.textContent = 'Processing payment…';
+    setTimeout(async () => {
+      try {
+        await invoke('grant_entitlement', { modelId: m.id, source: 'trial' });
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = `Get · ${m.pro ? 'Pro' : m.price}`;
+        const el = $('errMsg'); el.style.display = 'block'; el.textContent = String(e);
+        return;
+      }
+      btn.textContent = '✓ Paid — downloading…';
+      startDownload();
+    }, 900);
+  } else {
+    if (state.mine.has(m.id)) return;
+    simulateStubDownload(m, btn);
+  }
 }
 
 function heroDownload(m, btn) {
   const prog = $('prog'), bar = prog.firstElementChild;
   prog.style.display = 'block';
-  const t0 = performance.now(), THEATER_MS = 2200;
-  let raf;
-  (function frame() {
-    const k = Math.min(1, (performance.now() - t0) / THEATER_MS);
-    bar.style.width = `${Math.floor(92 * (1 - Math.pow(1 - k, 3)))}%`;
-    if (k < 1) raf = requestAnimationFrame(frame);
-  })();
-  const minWait = new Promise((r) => setTimeout(r, THEATER_MS));
-  Promise.all([invoke('load_model', { modelId: m.id }), minWait])
-    .then(([info]) => {
-      state.engine = info;
-      cancelAnimationFrame(raf);
-      bar.style.width = '100%';
-      state.mine.add(m.id);
-      invoke('grant_entitlement', { modelId: m.id, source: 'trial' }).catch(() => {});
-      renderGrid();
-      setTimeout(() => enterChat(m), 280);
-    })
-    .catch((err) => {
-      cancelAnimationFrame(raf);
-      prog.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Downloading…';
+  state.dl.active = true;
+  invoke('download_model', { modelId: m.id }).catch((err) => {
+    state.dl.active = false;
+    prog.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Retry download';
+    const el = $('errMsg'); el.style.display = 'block'; el.textContent = String(err);
+  });
+}
+
+function fmtGiB(n) { return (n / 2 ** 30).toFixed(2); }
+
+async function onDownloadProgress(e) {
+  const p = e.payload;
+  const hero = state.catalog.find((x) => x.id === p.modelId);
+  const bar = $('prog') ? $('prog').firstElementChild : null;
+  const line = $('dlLine');
+  if (p.phase === 'downloading' && p.totalBytes > 0) {
+    state.dl.active = true;
+    if (bar) bar.style.width = `${Math.floor((p.bytesDownloaded / p.totalBytes) * 100)}%`;
+    if (line) {
+      line.style.display = 'block';
+      line.textContent = `${fmtGiB(p.bytesDownloaded)} / ${fmtGiB(p.totalBytes)} GiB · ${(p.bytesPerSec / 1e6).toFixed(1)} MB/s`;
+    }
+  } else if (p.phase === 'verifying') {
+    if (line) { line.style.display = 'block'; line.textContent = 'Verifying download…'; }
+    if (bar) bar.style.width = '100%';
+  } else if (p.phase === 'done') {
+    state.dl = { installed: true, partBytes: 0, active: false };
+    if (line) line.style.display = 'none';
+    const btn = $('dlBtn');
+    if (btn) { btn.textContent = 'Starting engine…'; }
+    try {
+      await invoke('load_model', { modelId: p.modelId });
+      if (hero) { state.mine.add(hero.id); renderGrid(); enterChat(hero); }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Open chat'; }
+      const el = $('errMsg');
+      if (el) { el.style.display = 'block'; el.textContent = String(err); }
+    }
+  } else if (p.phase === 'failed' || p.phase === 'cancelled') {
+    state.dl.active = false;
+    try {
+      const ds = await invoke('download_status', { modelId: p.modelId });
+      state.dl.partBytes = ds.partBytes;
+      state.dl.installed = ds.installed;
+    } catch (_) {}
+    const btn = $('dlBtn');
+    if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Retry download';
-      const e = $('errMsg'); e.style.display = 'block'; e.textContent = String(err);
-    });
+      btn.textContent = p.phase === 'failed' ? 'Retry download' : `Resume download · ${fmtGiB(state.dl.partBytes)} GiB so far`;
+    }
+    if (line) line.style.display = 'none';
+    if (p.error) { const el = $('errMsg'); if (el) { el.style.display = 'block'; el.textContent = p.error; } }
+  }
 }
 
 function simulateStubDownload(m, btn) {
@@ -321,7 +390,8 @@ async function sendCompletion() {
     try {
       const info = await invoke('engine_info');
       state.engine = info;
-      if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
+      if (info.status === 'NoModel') { showEngineBanner('Model not downloaded yet.'); setComposerEnabled(false); }
+      else if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
     } catch (_) {}
     const retry = document.createElement('button');
     retry.className = 'retrychip';

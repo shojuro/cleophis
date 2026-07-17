@@ -35,7 +35,6 @@
     "resources": {
       "resources/catalog.json": "resources/catalog.json",
       "resources/covers/": "resources/covers/",
-      "resources/models/": "resources/models/",
       "resources/llama/": "resources/llama/"
     }
   }
