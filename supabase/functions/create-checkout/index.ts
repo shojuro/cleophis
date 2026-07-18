@@ -228,7 +228,16 @@ Deno.serve(async (req: Request) => {
         // exactly as before this change.
         ...(customerId ? { customer: customerId } : {}),
       },
-      { idempotencyKey: `subcheckout-${userId}-${modelId}` },
+      // Hour-bucketed: double-clicks inside the hour dedupe to the same
+      // cached session (identical params), but a re-subscribe hours later —
+      // or a redeploy that changed session params — gets a fresh key. A
+      // fully deterministic key proved harmful live: a same-day
+      // pay→lapse→renew sequence replayed the morning's key with different
+      // params and Stripe rejected it (idempotency_error → 502). Boundary
+      // straddle (two clicks across an hour tick) can mint two sessions;
+      // harmless — nothing charges until a session is completed, and the
+      // client serializes checkout opens anyway.
+      { idempotencyKey: `subcheckout-${userId}-${modelId}-h${Math.floor(Date.now() / 3_600_000)}` },
     );
   } catch (err) {
     // Log the error message only — never the Stripe secret key.
