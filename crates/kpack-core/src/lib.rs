@@ -28,9 +28,14 @@
 //! chunker, spec §1.3). K6 adds `parse` (Markdown + plain-text parsers
 //! producing `tree::Document`, spec §3.2). K7 adds `contract` (the versioned
 //! prompt contract shared with the adapter-training track, and the
-//! single-pass citation renderer, spec §4.2, plan D5). The rest of the
-//! module list above lands K7 onward.
+//! single-pass citation renderer, spec §4.2, plan D5). K8 adds `build` — the
+//! capstone that wires every prior module into one real `.kpack` end to end
+//! (`parse` → `chunk` → `embed` → `format` → `manifest`), proven against
+//! `embed::MockEmbedder` (see that module's own determinism caveat: K8's
+//! mock-based tests prove the build CODE is deterministic, not spec §5's
+//! real cross-build claim, which needs K4b's real tokenizer).
 
+pub mod build;
 pub mod chunk;
 pub mod contract;
 pub mod embed;
@@ -40,6 +45,7 @@ pub mod parse;
 pub mod sign;
 pub mod tree;
 
+pub use build::{build_pack, passage_input, sha256_hex, BuildMeta, Error as BuildError, SourceInput};
 pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
 pub use contract::{
     contract_version, no_evidence_marker, refusal_with_offer, render_sources, system_contract,
