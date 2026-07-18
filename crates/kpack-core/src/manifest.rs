@@ -360,18 +360,34 @@ impl Pack {
     /// 1. `Curated` packs: refuse if `ctx.curator_key` is `None` (this
     ///    build can't verify curated packs yet — see `sign`'s module doc
     ///    comment for why that's the correct v1 state, fail-closed).
-    ///    Otherwise, read the detached signature from `<path>.sig`
-    ///    (refusing if it's missing) and the pack file's raw bytes, then
-    ///    call `sign::verify_detached`; refuse on any error it returns.
+    ///    Otherwise, call `sign::verify_file(path, <path>.sig, key)` — which
+    ///    itself reads the detached signature (capped, refusing if missing
+    ///    or malformed) and the pack file's raw bytes, then delegates to
+    ///    `sign::verify_detached`; refuse on any error it returns.
     /// 2. `Personal` packs: skip signature verification entirely — they're
     ///    unsigned by design (spec §1.2).
     ///
-    /// Residual: this function trusts whatever `manifest.pack_tier` says
-    /// and only ever decides whether THAT tier's signature requirement is
-    /// satisfied. It does NOT check that a curated pack actually came from
-    /// the CDN, or that a personal pack actually came from the local pack
-    /// directory — origin-based tier enforcement is the wrapper's job (K9),
-    /// not the core's.
+    /// Residual (tier trust): this function trusts whatever
+    /// `manifest.pack_tier` says and only ever decides whether THAT tier's
+    /// signature requirement is satisfied. It does NOT check that a curated
+    /// pack actually came from the CDN, or that a personal pack actually
+    /// came from the local pack directory — origin-based tier enforcement
+    /// is the wrapper's job (K9), not the core's.
+    ///
+    /// Residual (open-before-verify): `Pack::open` above — for every pack,
+    /// curated or personal — parses the file as SQLite and runs
+    /// sqlite-vec's C `xConnect` against its untrusted bytes BEFORE this
+    /// function's curated-tier signature check ever runs. That ordering is
+    /// inherent for personal packs (there's no signature to check ahead of
+    /// opening — you must open the file to even read its tier), but for
+    /// CDN-sourced curated packs it doesn't have to be: the wrapper can and
+    /// should call `sign::verify_file` — a pure bytes-on-disk gate that
+    /// touches no SQLite at all — on a downloaded pack's raw bytes BEFORE
+    /// ever handing it to `Pack::mount`. This residual is latent today
+    /// (`sign::CURATOR_PUBLIC_KEY == None`, so no curated pack mounts at
+    /// all — see `sign`'s module doc comment) but MUST be wired at K9/§2.6,
+    /// before a real curator key is pinned and curated packs start actually
+    /// mounting.
     pub fn mount<P: AsRef<Path>>(path: P, ctx: &LoadContext) -> Result<(Pack, Manifest), Error> {
         let path = path.as_ref();
         let pack = Pack::open(path)?;
@@ -382,15 +398,11 @@ impl Pack {
             let key = ctx.curator_key.ok_or_else(|| {
                 Error::Schema("this build can't verify curated packs yet".to_string())
             })?;
-            let sig_bytes = std::fs::read(sig_path_for(path)).map_err(|_| {
-                Error::Schema("curated pack is missing its signature".to_string())
-            })?;
-            let pack_bytes = std::fs::read(path).map_err(|e| {
-                Error::Schema(format!(
-                    "could not read the pack file to verify its signature: {e}"
-                ))
-            })?;
-            crate::sign::verify_detached(&pack_bytes, &sig_bytes, &key)?;
+            // Reuses `sign::verify_file` (Fix 1) rather than re-reading the
+            // pack/sig bytes here itself, so there is exactly one crypto
+            // path for curated-pack verification regardless of whether the
+            // caller is this in-mount check or a wrapper's pre-open gate.
+            crate::sign::verify_file(path, &sig_path_for(path), &key)?;
         }
 
         Ok((pack, manifest))
@@ -953,5 +965,34 @@ mod tests {
         };
         let (_pack, mounted) = Pack::mount(&path, &ctx).unwrap();
         assert_eq!(mounted, m);
+    }
+
+    // 22. Oversized (10 KB) .sig file -> refuses as malformed, no OOM/panic
+    // (Fix 2's cap, exercised end-to-end through Pack::mount; sign.rs's own
+    // t13 covers the same scenario through verify_file directly).
+    #[test]
+    fn t22_mount_curated_pack_oversized_sig_refuses_malformed_no_panic() {
+        let dir = unique_dir("t22");
+        let m = sample_manifest();
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        let sk = test_curator_signing_key();
+        sign_pack_file(&path, &sk);
+        // Overwrite the valid signature with 10 KB of junk.
+        std::fs::write(sig_path_for(&path), vec![0u8; 10 * 1024]).unwrap();
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(sk.verifying_key()),
+        };
+        // `.map(|_| ())` sidesteps `unwrap_err`'s `T: Debug` bound — `Pack`
+        // (holds a `rusqlite::Connection`, which isn't `Debug`) is the Ok
+        // side of this Result, but we only need the Err side here.
+        let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(err.to_string().contains("malformed"), "error was: {err}");
     }
 }
