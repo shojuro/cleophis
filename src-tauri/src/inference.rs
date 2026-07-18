@@ -1,10 +1,12 @@
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -30,6 +32,13 @@ pub struct Engine {
     pub child: Mutex<Option<Child>>,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
+    /// Session cache for the load-time integrity check in
+    /// `verify_model_once`: once a model path's sha256 has been checked
+    /// against the catalog's pinned hash, it's recorded here so watchdog
+    /// respawns of the SAME ~2GB file don't re-hash it every time — only
+    /// the first successful verification per process pays the hashing
+    /// cost.
+    verified_model: Mutex<Option<PathBuf>>,
 }
 
 impl Engine {
@@ -40,6 +49,7 @@ impl Engine {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
+            verified_model: Mutex::new(None),
         }
     }
 
@@ -114,6 +124,80 @@ fn resolve_model(app_data: Option<PathBuf>, resources: PathBuf, model_file: &str
     None
 }
 
+/// Streams `path` through SHA-256 in fixed-size chunks — mirrors
+/// `cloud::download::rehash_existing`'s pattern — rather than reading the
+/// whole ~2GB model file into memory at once. Returns the lowercase hex
+/// digest.
+fn model_sha256(path: &Path) -> std::io::Result<String> {
+    let mut f = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Re-verifies `model`'s sha256 against the catalog's pinned hash before it
+/// is fed into llama-server (audit sec-rust #5): integrity was previously
+/// checked only at download time, so a local attacker overwriting the
+/// app-data file after that check — or a TOCTOU window between
+/// download-verify and load — got an arbitrary GGUF parsed by llama.cpp
+/// with no re-check at load. Hashing costs real time on a ~2GB file, so the
+/// result is cached in `engine.verified_model` for the life of the
+/// process: only the FIRST successful verification of a given path
+/// re-hashes it; every watchdog respawn of the same file after that is
+/// free.
+///
+/// A catalog that pins no hash for the hero model (`sha256: None`) is
+/// treated as "nothing to check" rather than a hard failure — the download
+/// path already gates real models, so this only affects dev/fixture
+/// catalogs missing integrity data.
+fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(), String> {
+    if engine.verified_model.lock().unwrap().as_deref() == Some(model) {
+        return Ok(());
+    }
+
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
+    let entries = crate::catalog::parse_catalog(&raw)?;
+    let hero = crate::catalog::hero(&entries)
+        .ok_or_else(|| "catalog missing integrity data".to_string())?;
+
+    let Some(expected) = hero.sha256.as_deref() else {
+        eprintln!(
+            "verify_model_once: catalog pins no sha256 for the hero model — skipping integrity check"
+        );
+        return Ok(());
+    };
+
+    let actual = model_sha256(model).map_err(|e| e.to_string())?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        eprintln!(
+            "verify_model_once: integrity check failed for {}",
+            model.display()
+        );
+        return Err("model integrity check failed".to_string());
+    }
+
+    *engine.verified_model.lock().unwrap() = Some(model.to_path_buf());
+    Ok(())
+}
+
+/// Where the currently-spawned llama-server's PID is recorded (symmetry
+/// with `cleophis-llama.log`) — read back by `sweep_stray_servers` on the
+/// NEXT process start so a leftover from an abnormal exit can be killed by
+/// the exact PID we spawned, instead of by image name (which would kill
+/// every llama-server.exe on the box, including ones from other apps or
+/// another Cleophis instance).
+fn pid_file_path() -> PathBuf {
+    std::env::temp_dir().join("cleophis-llama.pid")
+}
+
 fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
     let root = resources_root(app);
     let model = model_path(app)
@@ -148,7 +232,12 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    // Best-effort: record our PID so `sweep_stray_servers` can target
+    // exactly this instance on a future sweep instead of every
+    // llama-server.exe on the box. Never fails the spawn itself.
+    let _ = std::fs::write(pid_file_path(), child.id().to_string());
+    Ok(child)
 }
 
 fn healthy(port: u16) -> bool {
@@ -173,6 +262,7 @@ fn kill_child(engine: &Engine) {
         let _ = c.kill();
         let _ = c.wait();
     }
+    let _ = std::fs::remove_file(pid_file_path());
 }
 
 pub fn shutdown(engine: &Engine) {
@@ -182,9 +272,26 @@ pub fn shutdown(engine: &Engine) {
 
 /// A llama-server left over from an abnormal exit holds VRAM and would
 /// silently force this launch onto the CPU — clear it before spawning.
+///
+/// Targets ONLY the PID recorded in `pid_file_path()` by a previous
+/// `spawn_server` call, never every `llama-server.exe` on the box (audit
+/// sec-rust #3): a bare `/IM llama-server.exe` kill would also nuke any
+/// llama-server run by another app, or by a second Cleophis instance. The
+/// double `/FI PID eq <pid> /FI IMAGENAME eq llama-server.exe` filter
+/// additionally guards against PID reuse — taskkill only fires when BOTH
+/// filters match the same process, so if the OS has since handed that PID
+/// to an unrelated program, it's left alone.
 #[cfg(windows)]
 fn sweep_stray_servers() {
     use std::os::windows::process::CommandExt;
+
+    let Ok(raw_pid) = std::fs::read_to_string(pid_file_path()) else {
+        return;
+    };
+    let Ok(pid) = raw_pid.trim().parse::<u32>() else {
+        return;
+    };
+
     // Absolute path, not a bare "taskkill": Windows' CreateProcess search
     // order checks the current working directory before PATH, so a bare
     // name would let a planted taskkill.exe in an attacker-writable CWD run
@@ -192,9 +299,17 @@ fn sweep_stray_servers() {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
     let taskkill = format!(r"{system_root}\System32\taskkill.exe");
     let _ = Command::new(&taskkill)
-        .args(["/F", "/IM", "llama-server.exe"])
+        .args([
+            "/F",
+            "/FI",
+            &format!("PID eq {pid}"),
+            "/FI",
+            "IMAGENAME eq llama-server.exe",
+        ])
         .creation_flags(0x0800_0000)
         .output();
+
+    let _ = std::fs::remove_file(pid_file_path());
 }
 #[cfg(not(windows))]
 fn sweep_stray_servers() {}
@@ -210,6 +325,17 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
         'restart: loop {
             if engine.shutting_down.load(Ordering::Relaxed) {
                 break;
+            }
+            if let Some(model) = model_path(&app) {
+                if let Err(e) = verify_model_once(&engine, &app, &model) {
+                    eprintln!("start: verify_model_once failed: {e}");
+                    engine.set_status(EngineStatus::Failed);
+                    let _ = app.emit(
+                        "engine-failed",
+                        "Model failed its integrity check — re-download it.".to_string(),
+                    );
+                    break;
+                }
             }
             match spawn_server(&app, engine.port, ngl) {
                 Ok(c) => *engine.child.lock().unwrap() = Some(c),
@@ -394,5 +520,99 @@ mod tests {
         engine.set_status(EngineStatus::Ready);
         assert!(!try_begin_start(&engine));
         assert_eq!(*engine.status.lock().unwrap(), EngineStatus::Ready);
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn model_sha256_matches_a_known_digest() {
+        let dir = unique_dir("sha256-known");
+        let path = dir.join("sample.bin");
+        let content = b"cleophis-model-sha256-fixture";
+        std::fs::write(&path, content).unwrap();
+
+        let expected = sha256_hex(content);
+        let got = model_sha256(&path).unwrap();
+        assert_eq!(got, expected);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_sha256_streams_content_larger_than_one_chunk() {
+        // Content bigger than the 256 KiB read buffer, to exercise the
+        // chunked-read loop across more than one iteration rather than
+        // reading the whole file in a single `read` call.
+        let dir = unique_dir("sha256-chunked");
+        let path = dir.join("sample.bin");
+        let content: Vec<u8> = (0..600_000u32).map(|i| (i % 256) as u8).collect();
+        std::fs::write(&path, &content).unwrap();
+
+        let expected = sha256_hex(&content);
+        let got = model_sha256(&path).unwrap();
+        assert_eq!(got, expected);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_sha256_mismatch_against_a_wrong_hash_does_not_match() {
+        // Mirrors the comparison `verify_model_once` makes after hashing:
+        // a real file's digest must NOT case-insensitively match an
+        // unrelated hash. `verify_model_once` itself takes an `AppHandle`,
+        // which (like `model_path` above it) isn't constructible outside a
+        // running Tauri app, so this exercises the same comparison logic
+        // directly rather than wiring a full catalog + AppHandle for a
+        // unit test.
+        let dir = unique_dir("sha256-mismatch");
+        let path = dir.join("sample.bin");
+        std::fs::write(&path, b"the real model bytes").unwrap();
+
+        let actual = model_sha256(&path).unwrap();
+        let wrong_hash = "0".repeat(64);
+        assert!(!actual.eq_ignore_ascii_case(&wrong_hash));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verified_model_session_cache_round_trips_a_path() {
+        // Exercises the exact field + comparison `verify_model_once` uses
+        // for its session-cache short-circuit (`engine.verified_model.lock()
+        // .unwrap().as_deref() == Some(model)`), without needing an
+        // `AppHandle` to call `verify_model_once` itself.
+        let engine = Engine::new(0);
+        assert_eq!(*engine.verified_model.lock().unwrap(), None);
+
+        let dir = unique_dir("verified-cache");
+        let model = dir.join("hero.gguf");
+        *engine.verified_model.lock().unwrap() = Some(model.clone());
+
+        assert_eq!(
+            engine.verified_model.lock().unwrap().as_deref(),
+            Some(model.as_path())
+        );
+
+        let other = dir.join("other.gguf");
+        assert_ne!(engine.verified_model.lock().unwrap().as_deref(), Some(other.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pid_file_round_trips_a_written_pid() {
+        let path = pid_file_path();
+        let pid: u32 = 424242; // arbitrary, unlikely to collide with a real PID.
+        std::fs::write(&path, pid.to_string()).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: u32 = raw.trim().parse().unwrap();
+        assert_eq!(parsed, pid);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
