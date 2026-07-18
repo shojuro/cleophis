@@ -174,14 +174,26 @@ pub fn retrieve_pack(
     let dense = pack.vec_search(query_i8, k)?;
     let dense_ids: Vec<i64> = dense.iter().map(|(chunk_id, _)| *chunk_id).collect();
 
-    let lexical_query = safe_fts5_query(query_text);
-    let lexical = pack.fts_search(&lexical_query, k)?;
+    // An empty/whitespace-only query_text yields "" from safe_fts5_query (no
+    // terms to quote); fts5's MATCH treats "" as a syntax error, not "match
+    // nothing". Skip the lexical lane entirely in that case rather than
+    // calling fts_search with an empty pattern -- the dense lane still runs
+    // and RRF over a single lane is well-defined.
+    let safe_q = safe_fts5_query(query_text);
+    let lexical: Vec<i64> = if safe_q.is_empty() {
+        Vec::new()
+    } else {
+        pack.fts_search(&safe_q, k)?
+    };
 
     let fused = rrf(&[&dense_ids, &lexical], DEFAULT_K_RRF);
 
     fused
         .into_iter()
         .map(|(chunk_id, fused_score)| {
+            // TODO(§5-perf): batch cosine lookups -- this issues one
+            // get_embedding SELECT per fused candidate (N+1); fine for
+            // correctness, a latency item for §5's floor-machine benchmark.
             let dense_cosine = match pack.get_embedding(chunk_id)? {
                 Some(stored) => {
                     let raw = dot_int8(query_i8, &stored)?;
@@ -221,9 +233,16 @@ pub fn retrieve_pack(
 ///
 /// ## Rule
 /// 1. Empty `candidates` → `false` (nothing to pass a gate with).
+/// 1b. Any non-finite (`NaN`) `dense_cosine` among `candidates`, at any
+///     rank → `false`. A `NaN` is a corrupt/degenerate input (unreachable
+///     via `retrieve_pack` today — cosines are always finite via the
+///     `/INT8_DOT_SCALE` clamp — but the gate refuses on it regardless of
+///     provenance); this is checked BEFORE the `n == 1` special case below,
+///     so a single `NaN` candidate cannot fail-open.
 /// 2. `top1` = the maximum `dense_cosine` among `candidates` (ranking is
 ///    done internally on `dense_cosine`; caller order is irrelevant).
-/// 3. **Absolute floor:** `top1 >= abs_floor`.
+/// 3. **Absolute floor:** `top1 >= abs_floor` (a `NaN`/negative-infinity
+///    `abs_floor` is never satisfiable, so it also fails closed).
 /// 4. **Relative margin:** let `cos_at_rank_min10` be the `dense_cosine` at
 ///    rank `min(10, n)` (1-based, descending — the 10th-highest score, or
 ///    the lowest-ranked candidate's score if `n < 10`); require `top1 -
@@ -247,15 +266,33 @@ pub fn pack_passes_gate(candidates: &[Candidate], abs_floor: f64, rel_margin: f6
     // Rank descending by dense_cosine -- independent of input order, per
     // the gate's contract (it ranks internally, never trusts caller order).
     let mut cosines: Vec<f64> = candidates.iter().map(|c| c.dense_cosine as f64).collect();
+
+    // A non-finite cosine (NaN) ANYWHERE in the set -- not just at top1 --
+    // is a corrupt/degenerate input. partial_cmp has no total order for
+    // NaN, so sort_by's `unwrap_or(Equal)` fallback below does not
+    // guarantee a NaN sorts to position 0; checking only `cosines[0]` after
+    // sorting could let a buried NaN dodge the floor check entirely. Bail
+    // explicitly, before sorting, so this holds for every n.
+    if cosines.iter().any(|c| !c.is_finite()) {
+        return false;
+    }
+
     cosines.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
     let top1 = cosines[0];
-    if top1 < abs_floor {
+    // `!(top1 >= abs_floor)` rather than `top1 < abs_floor`: the two are
+    // equivalent for finite top1 (guaranteed here, having passed the
+    // is_finite check above), but written this way so a NaN abs_floor
+    // itself also fails closed: `top1 >= NaN` is always false, so `!(...)`
+    // is true and this refuses, whereas `top1 < NaN` is ALSO always false
+    // and would wrongly fall through to the n==1 early return below.
+    if !(top1 >= abs_floor) {
         return false;
     }
 
     // n == 1: absolute floor alone, no margin check (there is no rank-10 /
-    // lower rank to compare top1 against).
+    // lower rank to compare top1 against). Reached only once top1 is known
+    // finite and >= abs_floor, so this can no longer fail-open on NaN.
     if cosines.len() == 1 {
         return true;
     }
@@ -504,6 +541,55 @@ mod tests {
         );
     }
 
+    // 3b. Fix 1 regression: an empty (or all-whitespace) query_text must NOT
+    // hard-error retrieve_pack. safe_fts5_query("") / safe_fts5_query("   ")
+    // both yield "" (no terms to quote), which fts5's MATCH treats as a
+    // syntax error rather than "match nothing" -- retrieve_pack must skip
+    // the lexical lane in that case, not call fts_search("") and propagate
+    // the raw fts5 error. The dense lane still runs and every returned
+    // candidate has a valid dense_cosine.
+    #[test]
+    fn t3b_retrieve_pack_empty_or_whitespace_query_skips_lexical_lane_not_error() {
+        let dir = unique_dir("t3b-empty-query");
+        let out_path = dir.join("empty-query.kpack");
+        let embedder = MockEmbedder::new(TEST_DIMS);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let text = "Vitamin K is a fat-soluble vitamin involved in blood clotting.";
+        let sources = vec![SourceInput {
+            title: "Vitamin K".to_string(),
+            source_type: "md".to_string(),
+            content: format!("# Vitamin K\n\n{text}\n"),
+        }];
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+        let pack = Pack::open(&out_path).unwrap();
+
+        let raw = embedder.embed_passage(text).unwrap();
+        let query_i8 = quantize_int8(&l2_normalize(&raw));
+
+        for query_text in ["", "   \t "] {
+            let result = retrieve_pack(&pack, query_text, &query_i8, 20);
+            assert!(
+                result.is_ok(),
+                "empty/whitespace query_text {query_text:?} must not error retrieve_pack: {:?}",
+                result.err()
+            );
+            let candidates = result.unwrap();
+            assert!(
+                !candidates.is_empty(),
+                "the dense lane alone should still surface candidates for {query_text:?}"
+            );
+            for c in &candidates {
+                assert!(
+                    (-1.0..=1.0).contains(&c.dense_cosine),
+                    "dense_cosine out of range for {query_text:?}: {}",
+                    c.dense_cosine
+                );
+            }
+        }
+    }
+
     /// Builds a `Candidate` for gate tests where only `dense_cosine`
     /// matters -- `chunk_id` and `fused_score` are placeholders the gate
     /// never reads.
@@ -723,5 +809,92 @@ mod tests {
             pack_passes_gate(&shuffled, abs_floor, rel_margin),
         );
         assert!(pack_passes_gate(&in_order, abs_floor, rel_margin));
+    }
+
+    // 12. Fix 4(a): empty candidates always refuses, regardless of how
+    // permissive the thresholds are (already covered structurally by the
+    // early `is_empty` return -- this pins it as an explicit contract test).
+    #[test]
+    fn t12_gate_empty_candidates_always_fails() {
+        assert!(!pack_passes_gate(&[], 0.0, 0.0));
+        assert!(!pack_passes_gate(&[], -1.0, -1.0));
+    }
+
+    // 13. Fix 4(b) / Fix 3 regression lock: a NaN dense_cosine must resolve
+    // to fail-closed (refuse) -- both the n == 1 case (the exact fail-OPEN
+    // Fix 3 closes: floor guard used to let a NaN top1 fall through to the
+    // n==1 early return) and a multi-candidate set where the NaN is buried
+    // among otherwise-passing candidates (proving the check isn't just
+    // "top1 happens to still be NaN after sorting").
+    #[test]
+    fn t13_gate_nan_cosine_fails_closed() {
+        assert!(
+            !pack_passes_gate(&[candidate(1, f32::NAN)], 0.5, 0.0),
+            "a lone NaN candidate must refuse, not fail-open on the n==1 special case"
+        );
+
+        // Otherwise-passing multi-candidate set (top1 well above floor,
+        // wide margin) with one NaN mixed in -- must still refuse.
+        let with_nan = vec![
+            candidate(1, 0.95),
+            candidate(2, f32::NAN),
+            candidate(3, 0.90),
+            candidate(4, 0.88),
+            candidate(5, 0.85),
+        ];
+        assert!(
+            !pack_passes_gate(&with_nan, 0.5, 0.05),
+            "a NaN anywhere in a multi-candidate set must refuse, even though every \
+             finite candidate here would otherwise clear both the floor and the margin"
+        );
+
+        // NaN as the reported top1 itself (largest finite value pushed to a
+        // non-top rank isn't possible to force via sort, so this covers the
+        // direct case Fix 3's commit message describes).
+        let nan_top = vec![candidate(1, f32::NAN), candidate(2, 0.6), candidate(3, 0.55)];
+        assert!(!pack_passes_gate(&nan_top, 0.5, 0.01));
+    }
+
+    // 14. Fix 4(c): pin the `min(10, n)` clamp for n > 10. Both cases are
+    // constructed so ranks 11+ are far below rank 10 -- if the margin check
+    // mistakenly used the LAST rank (n or n-1) instead of rank-10, the much
+    // bigger (top1 - last_rank) gap would flip a failing verdict to passing.
+    #[test]
+    fn t14_gate_n_over_10_margin_uses_rank10_not_last_rank() {
+        // n = 11: rank-10 (index 9) = 0.72, rank-11 (index 10, last) = 0.05.
+        // Correct: margin = top1(0.9) - rank10(0.72) = 0.18 < rel_margin
+        // 0.20 -> fails. Buggy (last-rank): margin = 0.9 - 0.05 = 0.85 ->
+        // would wrongly pass.
+        let n11: [f32; 11] = [
+            0.90, 0.88, 0.86, 0.84, 0.82, 0.80, 0.78, 0.76, 0.74, 0.72, 0.05,
+        ];
+        let candidates_11: Vec<Candidate> = n11
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candidate(i as i64, c))
+            .collect();
+        assert!(
+            !pack_passes_gate(&candidates_11, 0.5, 0.20),
+            "n=11 must use rank-10's cosine (0.72) for the margin, not rank-11's (0.05) -- \
+             using the last rank would wrongly pass"
+        );
+
+        // n = 12: rank-10 (index 9) = 0.70, ranks 11-12 (indices 10, 11,
+        // last) = 0.10, 0.05. Correct: margin = 0.9 - 0.70 = 0.20 <
+        // rel_margin 0.30 -> fails. Buggy (last-rank): margin = 0.9 - 0.05 =
+        // 0.85 -> would wrongly pass.
+        let n12: [f32; 12] = [
+            0.90, 0.88, 0.86, 0.84, 0.82, 0.80, 0.78, 0.76, 0.72, 0.70, 0.10, 0.05,
+        ];
+        let candidates_12: Vec<Candidate> = n12
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candidate(i as i64, c))
+            .collect();
+        assert!(
+            !pack_passes_gate(&candidates_12, 0.5, 0.30),
+            "n=12 must use rank-10's cosine (0.70) for the margin, not rank-12's (0.05) -- \
+             using the last rank would wrongly pass"
+        );
     }
 }

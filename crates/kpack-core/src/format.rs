@@ -311,6 +311,14 @@ impl Pack {
     /// see the module doc comment's API split), not an error. Needed by
     /// `retrieve` (§4.1) to recompute a candidate's dense cosine for the
     /// per-pack gate.
+    ///
+    /// Defensive length check (Fix 2): `insert_embedding` validates vector
+    /// length on write, but a read-back blob's length isn't otherwise
+    /// re-verified against `self.dims` — a tampered/corrupt `.kpack` file
+    /// could in principle store a wrong-length blob (SQLite itself has no
+    /// column-width constraint on a BLOB). Rather than silently return a
+    /// too-short/too-long vector (which would then feed a mismatched-length
+    /// dot product downstream), a length mismatch is a loud `Error::Schema`.
     pub fn get_embedding(&self, chunk_id: i64) -> Result<Option<Vec<i8>>> {
         let blob: Option<Vec<u8>> = self
             .conn
@@ -320,7 +328,19 @@ impl Pack {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(blob.map(|bytes| bytes.iter().map(|&b| b as i8).collect()))
+        match blob {
+            Some(bytes) => {
+                if bytes.len() != self.dims {
+                    return Err(Error::Schema(format!(
+                        "stored embedding length {} != dims {} — pack corrupt",
+                        bytes.len(),
+                        self.dims
+                    )));
+                }
+                Ok(Some(bytes.iter().map(|&b| b as i8).collect()))
+            }
+            None => Ok(None),
+        }
     }
 
     /// K-nearest-neighbor search over the `vec0` dense lane. Returns
