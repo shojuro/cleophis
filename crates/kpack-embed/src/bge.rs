@@ -21,8 +21,9 @@
 //! `LlamaContext<'a>` borrows `&'a LlamaModel`. Storing both the model and
 //! a context derived from it in the same struct would be self-referential
 //! (not expressible in safe Rust without an unsafe pinning trick). Instead
-//! each `embed_raw` call creates its own short-lived context sized to
-//! exactly the input's token count (capped at [`BGE_N_CTX`]). This is
+//! each `embed_raw` call creates its own short-lived context with a fixed
+//! [`BGE_N_CTX`] (512) slots — the model's context length; over-length
+//! inputs are rejected before decode. This is
 //! simpler and trivially thread-safe (`LlamaModel` is `Send + Sync`; each
 //! call gets an independent context, no shared mutable state) at the cost
 //! of re-paying context-alloc overhead per call — acceptable for a
