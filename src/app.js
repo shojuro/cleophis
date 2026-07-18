@@ -302,6 +302,12 @@ async function onDownloadProgress(e) {
   } else if (p.phase === 'done') {
     state.dl = { installed: true, partBytes: 0, active: false };
     if (line) line.style.display = 'none';
+    // The download outlives the session that started it (the file is
+    // machine-global). If the CURRENT session isn't entitled to this model
+    // — the starter signed out and someone else signed in mid-download —
+    // record the machine fact and stop: no engine start, no auto-enter
+    // into a paid chat.
+    if (!state.signedIn || !hero || !state.mine.has(hero.id)) { renderGrid(); return; }
     const btn = $('dlBtn');
     if (btn) { btn.textContent = 'Starting engine…'; }
     try {
@@ -518,7 +524,13 @@ function lockNudge(card) {
 
 /* ---------------- auth ---------------- */
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
-function hide(el) { el.classList.remove('show'); }
+function hide(el) {
+  el.classList.remove('show');
+  // Any dismissal of an auth modal (close button, backdrop, Escape) clears
+  // both forms — typed-but-abandoned credentials must not sit in the DOM for
+  // the next person at the keyboard.
+  if (el.id === 'loginModal' || el.id === 'createModal') resetAuthForms();
+}
 
 function resetAuthForms() {
   $('li-email').value = '';
@@ -645,6 +657,11 @@ $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
   closeDrawer();
+  // Chat state is per-account: leave the chat view if it's open and drop
+  // the transcript so the next sign-in can't replay this one's messages.
+  exitChat();
+  state.chat.messages = [];
+  state.chat.model = null;
   state.signedIn = false;
   state.nick = null;
   state.device = null;
