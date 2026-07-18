@@ -380,6 +380,9 @@ pub struct Citation {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RetrievalResult {
     Grounded { prompt: String, citations: Vec<Citation> },
+    /// This variant is intentionally marker-free: the CALLER (R4/§3) is
+    /// responsible for emitting the contract's [`contract::no_evidence_marker`]
+    /// text for this case; the marker itself lives in the contract, not here.
     NoEvidence,
 }
 
@@ -526,6 +529,17 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         if let Some(doc) = hit.pack.get_doc(chunk.doc_id)? {
             resolved.push((pack_index, chunk, doc));
         }
+    }
+
+    // Fix 1: if every selected chunk failed to resolve (its doc/chunk row
+    // is missing -- e.g. a build-pipeline invariant violation catching up
+    // with us), `resolved` is empty and there is nothing to cite. Falling
+    // through would render a Grounded prompt whose sources block is empty
+    // while still instructing the model to cite `[n]` -- a citation-less
+    // "grounded" prompt undermines the exact anti-hallucination invariant
+    // this module exists to guarantee. NO_EVIDENCE instead.
+    if resolved.is_empty() {
+        return Ok(RetrievalResult::NoEvidence);
     }
 
     let render_chunks: Vec<RenderChunk<'_>> = resolved
@@ -1240,14 +1254,18 @@ mod tests {
     // whose single candidate sits just below ITS floor (fails its own
     // gate), and a LOOSE pack (low gate_abs_floor) whose single candidate
     // clears ITS floor (passes). The strict pack's candidate is given a
-    // much higher fused_score than the loose pack's -- so if fusion ever
-    // happened BEFORE gating (or gating were applied post-fusion against
-    // only the winning pack's thresholds), the strict pack's chunk would
-    // dominate the cross-pack ranking. Because gating happens per-pack,
+    // much higher fused_score than the loose pack's, but that magnitude is
+    // a red herring for what this test actually locks: `cross_pack_rrf`
+    // fuses on RANK/position within each pack's already-fused lane (same as
+    // R1's `rrf`), never on `Candidate.fused_score`, so the fused_score gap
+    // has no bearing on the cross-pack ranking either way. What actually
+    // locks this regression is the step-1 gate filter -- the strict pack is
+    // excluded from cross-pack fusion entirely because it failed its OWN
+    // gate -- plus the deterministic `(pack_index, chunk_id)` tie-break that
+    // keeps the outcome reproducible. Because gating happens per-pack,
     // strictly BEFORE cross-pack fusion (Δ1), the strict pack contributes
-    // NOTHING regardless of that fused_score advantage: the result must
-    // contain only the loose pack's citation, and the strict pack's
-    // chunk_id must never appear.
+    // NOTHING: the result must contain only the loose pack's citation, and
+    // the strict pack's chunk_id must never appear.
     #[test]
     fn t17_assemble_delta1_gate_before_fusion_regression() {
         let strict_pack = empty_pack("t17-strict-pack");
@@ -1265,8 +1283,12 @@ mod tests {
             manifest: &strict_manifest,
             // dense_cosine 0.85 < abs_floor 0.9 -> fails its OWN gate (n==1,
             // floor-only rule). fused_score 100.0 is deliberately far above
-            // the loose pack's, so it would out-RRF the loose chunk if
-            // fusion ran before (or independently of) the per-pack gate.
+            // the loose pack's -- but `cross_pack_rrf` never reads
+            // fused_score, only rank/position within each pack's own
+            // already-fused lane, so this magnitude has zero effect on the
+            // cross-pack outcome either way; it's set high purely to make
+            // clear the strict chunk is excluded by the step-1 gate filter,
+            // not by losing some fusion contest it was never entered into.
             candidates: vec![Candidate {
                 chunk_id: strict_chunk_id,
                 fused_score: 100.0,
@@ -1277,7 +1299,8 @@ mod tests {
             pack: &loose_pack,
             manifest: &loose_manifest,
             // dense_cosine 0.25 >= abs_floor 0.2 -> passes (n==1, floor
-            // alone). fused_score 1.0 is far below the strict candidate's.
+            // alone). fused_score 1.0 is likewise irrelevant to the
+            // cross-pack outcome -- see the strict candidate's comment above.
             candidates: vec![Candidate {
                 chunk_id: loose_chunk_id,
                 fused_score: 1.0,
@@ -1441,5 +1464,37 @@ mod tests {
     fn t20_assemble_empty_hits_yields_no_evidence_no_panic() {
         let result = assemble(&[], Tier::Small).unwrap();
         assert_eq!(result, RetrievalResult::NoEvidence);
+    }
+
+    // 21. Fix 1 regression: a candidate that clears its pack's OWN gate but
+    // whose chunk_id does not exist in that pack (e.g. its doc/chunk row is
+    // missing) must not fall through to a citation-less "Grounded" prompt --
+    // assemble must return NoEvidence instead. Uses a pack with no chunks
+    // inserted at all, so ANY chunk_id named by the synthetic candidate is
+    // guaranteed absent (get_chunk returns None in step 4, leaving both
+    // `selected` and `resolved` empty); dense_cosine is set well above the
+    // pack's gate_abs_floor so the pack passes its own gate (step 1) and the
+    // only thing that fails is resolution.
+    #[test]
+    fn t21_assemble_all_selected_chunks_unresolvable_yields_no_evidence() {
+        let pack = empty_pack("t21-unresolvable-chunk");
+        let manifest = test_manifest(0.5, 0.05);
+        // n==1: floor alone, well clear of 0.5. chunk_id 999_999 was never
+        // inserted into `pack`, so get_chunk(999_999) returns None.
+        let candidates = vec![candidate(999_999, 0.9)];
+
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates,
+        };
+
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        assert_eq!(
+            result,
+            RetrievalResult::NoEvidence,
+            "a pack that passes its own gate but whose selected chunk_id doesn't resolve to a \
+             real chunk/doc row must fall back to NoEvidence, never a citation-less Grounded"
+        );
     }
 }
