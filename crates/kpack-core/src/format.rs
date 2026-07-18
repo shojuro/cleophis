@@ -356,6 +356,36 @@ impl Pack {
             .optional()
             .map_err(Error::from)
     }
+
+    /// The pack's ACTUAL `vec0` embedding column width, parsed directly out
+    /// of the virtual table's own stored DDL in `sqlite_master` — deliberately
+    /// independent of the `embedding_dims` manifest key (which is a plain
+    /// TEXT row and could in principle drift from the real schema, whether
+    /// through tampering or a build-pipeline bug). K2's load-time gate
+    /// compares the manifest's self-report against this, so a mismatch is
+    /// caught before any query runs against a wrongly-sized vector.
+    pub fn vec_dims(&self) -> Result<u32> {
+        let sql: String = self.conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec'",
+            [],
+            |row| row.get(0),
+        )?;
+        // This crate always creates the table as
+        // `... USING vec0(chunk_id INTEGER PRIMARY KEY, embedding int8[<N>])`;
+        // pull `<N>` out of the stored DDL text.
+        let after = sql.find("int8[").map(|i| i + "int8[".len()).ok_or_else(|| {
+            Error::Schema("vec0 table DDL missing an int8[..] embedding column".to_string())
+        })?;
+        let rest = &sql[after..];
+        let close = rest.find(']').ok_or_else(|| {
+            Error::Schema("vec0 table DDL malformed: unterminated int8[..]".to_string())
+        })?;
+        rest[..close].parse::<u32>().map_err(|e| {
+            Error::Schema(format!(
+                "vec0 table DDL has a non-numeric embedding width: {e}"
+            ))
+        })
+    }
 }
 
 /// True if this connection's database already has a `manifest` table — the

@@ -16,10 +16,13 @@
 //! trait + int8 quantization math), `contract` (the versioned prompt contract
 //! + citation renderer), and `build` (the end-to-end pack builder).
 //!
-//! K1 lands the first real module: `format` (the `.kpack` SQLite schema,
+//! K1 landed the first real module: `format` (the `.kpack` SQLite schema,
 //! open/create, typed doc/chunk I/O, and the vec0 + fts5 dual-lane proof).
-//! The rest of the module list above lands K2 onward.
+//! K2 adds `manifest` (self-description + load-time integrity gate). The
+//! rest of the module list above lands K3 onward.
 
 pub mod format;
+pub mod manifest;
 
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
+pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
