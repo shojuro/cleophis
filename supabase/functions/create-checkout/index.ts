@@ -21,8 +21,8 @@
 // deploy time (S6 originally; Sub5 flipped the price to the monthly one).
 //
 // Import: pinned to jsr:@supabase/supabase-js@2, matching download-url.
-import { createClient } from "jsr:@supabase/supabase-js@2";
-import Stripe from "npm:stripe";
+import { createClient } from "jsr:@supabase/supabase-js@2.110.7";
+import Stripe from "npm:stripe@22.3.2";
 
 // In-source model→Stripe-price registry. Keep in sync with the catalog on
 // the client side (src/app.js / src-tauri), with download-url's own MODELS

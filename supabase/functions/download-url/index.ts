@@ -11,7 +11,7 @@
 // Import: pinned to jsr:@supabase/supabase-js@2 — this is the import form
 // the Supabase docs currently recommend for Edge Functions (superseding
 // the older esm.sh/deno.land/x forms seen in some legacy examples).
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient } from "jsr:@supabase/supabase-js@2.110.7";
 
 // In-source model registry. Keep in sync with the catalog on the client
 // side (src/app.js / src-tauri) — this function is the source of truth for
