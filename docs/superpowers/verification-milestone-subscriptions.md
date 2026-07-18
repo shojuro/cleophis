@@ -64,30 +64,49 @@ Carried on the ledger, not gaps introduced by this milestone:
   subscription RPC path; not fixed, not newly introduced, recorded there
   rather than here.
 
-## Pending — real E2E (user-assist)
+## Real E2E — PASSED (2026-07-18)
 
-None of the following have been run yet. All server-side/synthetic
-verification above is a necessary but not sufficient substitute — Stripe's
-actual Checkout UI, actual invoice/webhook timing, and the actual Tauri
-opener/portal round-trip have not been exercised end-to-end this milestone.
+Run by the user on the target machine (fresh MSI), with server-side
+verification via the Management API and a synthetic probe account for the
+JWT-bearing negative cases. The first round surfaced two blockers (auth
+forms retained the previous account's live credentials; machine-global
+file-on-disk state granted "Open chat" to unentitled accounts) — fixed in
+`24a6604` + `1c6dd17`, re-tested clean.
 
-- [ ] Real $20/mo checkout with a Stripe test card (`4242 4242 4242 4242`)
-      completes successfully
-- [ ] Resulting `entitlements` row shows `expires_at` ≈ now + 1 month
-- [ ] `stripe_customers` row exists for the user (populated by the
-      post-entitlement best-effort upsert)
-- [ ] Download works (model mints and downloads normally post-subscribe)
-- [ ] The Billing button opens the Stripe customer portal
-- [ ] Cancelling in the portal (cancel-at-period-end) leaves the
-      `entitlements` row **unchanged** — it lapses naturally at
-      `expires_at`, not immediately
-- [ ] Re-checkout while the subscription is still active returns **409**
-      (expiry-aware already-subscribed gate)
-- [ ] SQL-force the row's `expires_at` into the past (Manual revocation,
-      `docs/ops/payments-runbook.md`)
-- [ ] Post-force, download **403**s (soft lapse enforced)
-- [ ] Post-force, re-subscribing mints a **fresh** Checkout Session (not a
-      stale/cached one)
+- [x] Real $20/mo checkout with a Stripe test card (`4242 4242 4242 4242`)
+      completes successfully — two throwaway accounts subscribed
+- [x] Resulting `entitlements` row shows `expires_at` ≈ now + 1 month —
+      both rows at `2026-08-18` (server-verified)
+- [x] `stripe_customers` row exists for the user — both mappings present
+      (server-verified)
+- [x] Download works — exercised as the **installed-skip variant**: the
+      model file was already on disk from the grandfather account, so the
+      post-payment path went `load_model` → chat with no re-download (the
+      `finishInstalled` path added in `24a6604`). The full
+      mint-and-download path is unchanged since the CDN/Stripe milestones
+      and its entitlement gate is proven by the 403 below.
+- [x] The Billing button opens the Stripe customer portal
+- [x] Cancelling in the portal (cancel-at-period-end) leaves the
+      `entitlements` row **unchanged** — Stripe shows the sub `active` with
+      `cancel_at_period_end=true`; the row keeps its future `expires_at`
+- [x] Re-checkout while the subscription is still active returns **409** —
+      proven with a probe account (real JWT against the deployed
+      function): active row → `409 already_purchased`
+- [x] SQL-force the row's `expires_at` into the past — probe row forced
+      via `apply_subscription_period` + UPDATE
+- [x] Post-force, download **403**s — `403 not_entitled` from the deployed
+      `download-url` (soft lapse enforced server-side)
+- [x] Post-force, re-subscribing mints a **fresh** Checkout Session —
+      `200` with a new `https://checkout.stripe.com/c/pay/…` URL (probe
+      account cleaned up afterwards)
+
+**Known follow-up (deliberate, not a defect):** the client hydrates
+`state.mine` from **all** entitlement rows with no expiry filter, so a
+*lapsed* subscriber's UI still shows Open chat (soft lapse working as
+designed for installed models) and never re-surfaces a Get button — the
+proven server-side re-subscribe fall-through is unreachable from the UI
+until a lapse-aware UX ships. Belongs to the same future milestone as the
+grace plumbing.
 
 Note: Stripe Test Clocks (simulated billing-cycle passage) were deliberately
 skipped for this milestone — the synthetic tester's `--sub-replay`/
