@@ -4,11 +4,11 @@ const { listen } = window.__TAURI__.event;
 
 const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
-  mine: new Set(), catalog: [],
+  mine: new Set(), lapsed: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null },
   dl: { installed: false, partBytes: 0, active: false },
-  pay: { modelId: null, timer: null, deadline: 0 },
+  pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
 };
 
@@ -108,22 +108,32 @@ function openDrawer(id) {
   state.drawerId = m.id;
   const cp = compat(m.sizeParams);
   const installed = state.mine.has(m.id);
+  const lapsed = m.real && state.lapsed.has(m.id);
   const gb = (m.fileBytes / 2 ** 30).toFixed(2);
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const gib = (m.fileBytes / 2 ** 30).toFixed(2);
+  const waitingLabel = 'Waiting for payment… (click to cancel)';
   const btnLabel = m.real
     ? (!installed
         ? (state.pay.modelId === m.id
-            ? 'Waiting for payment… (click to cancel)'
+            ? waitingLabel
             : `Get · ${m.pro ? 'Pro' : m.price}`)
-        : (state.dl.installed
-            ? 'Open chat'
-            : state.dl.active
-              ? 'Downloading…'
-              : state.dl.partBytes > 0
-                ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
-                : `Download · ${gib} GiB`))
+        : (lapsed && !state.dl.installed
+            ? (state.pay.modelId === m.id
+                ? waitingLabel
+                : `Renew · ${m.pro ? 'Pro' : m.price}`)
+            : (state.dl.installed
+                ? 'Open chat'
+                : state.dl.active
+                  ? 'Downloading…'
+                  : state.dl.partBytes > 0
+                    ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
+                    : `Download · ${gib} GiB`)))
     : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
+  const showRenewLine = lapsed && state.dl.installed;
+  const renewLineHtml = showRenewLine
+    ? `<div class="dlline mono" id="renewLine" style="display:block;font-size:12.5px;color:var(--muted);margin-top:8px;cursor:pointer">${state.pay.modelId === m.id ? waitingLabel : 'Subscription lapsed — downloads paused. Renew · $20/mo'}</div>`
+    : '';
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
     <div class="dcover"><img src="${m.coverUrl}" alt=""/></div>
@@ -142,6 +152,7 @@ function openDrawer(id) {
       <div class="dlline mono" id="dlLine" style="display:none;font-size:12.5px;color:var(--muted);margin-top:8px"></div>
       <div class="installed" id="installedMsg">${check} Installed — runs offline on your device</div>
       <div class="errmsg" id="errMsg"></div>
+      ${renewLineHtml}
     </div>
     <div class="body">
       <h4>About</h4><p>${m.long || m.blurb}</p>
@@ -152,6 +163,10 @@ function openDrawer(id) {
   $('drawer').setAttribute('aria-hidden', 'false');
   if (installed && !m.real) $('installedMsg').style.display = 'flex';
   $('dlBtn').onclick = () => runGetFlow(m, $('dlBtn'));
+  if (showRenewLine) {
+    const renewEl = $('renewLine');
+    renewEl.onclick = () => startCheckoutFlow(m, renewEl);
+  }
 }
 
 function closeDrawer() {
@@ -164,42 +179,9 @@ function closeDrawer() {
 function runGetFlow(m, btn) {
   if (m.real) {
     const owned = state.mine.has(m.id);
-    if (!owned) {
-      if (state.pay.modelId === m.id) {
-        cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
-        return;
-      }
-      btn.disabled = true;
-      btn.textContent = 'Opening checkout…';
-      (async () => {
-        let res;
-        try {
-          res = await invoke('start_checkout', { modelId: m.id });
-        } catch (e) {
-          btn.disabled = false;
-          btn.textContent = `Get · ${m.pro ? 'Pro' : m.price}`;
-          const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(e);
-          return;
-        }
-        if (res.status === 'alreadyOwned') {
-          state.mine.add(m.id);
-          renderGrid();
-          if (state.dl.installed) { finishInstalled(m, btn); return; }
-          btn.textContent = '✓ Owned — starting download…';
-          heroDownload(m, btn);
-          return;
-        }
-        btn.disabled = false;
-        btn.textContent = 'Waiting for payment… (click to cancel)';
-        const el = $('errMsg');
-        el.style.display = 'block';
-        el.style.color = 'var(--muted)';
-        el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
-        beginPaymentPoll(m);
-      })();
-      return;
-    }
+    if (!owned) { startCheckoutFlow(m, btn); return; }
     if (state.dl.installed) { enterChat(m); return; }
+    if (state.lapsed.has(m.id)) { startCheckoutFlow(m, btn); return; }
     if (state.dl.active) return;
     renderGrid();
     heroDownload(m, btn);
@@ -207,6 +189,63 @@ function runGetFlow(m, btn) {
     if (state.mine.has(m.id)) return;
     simulateStubDownload(m, btn);
   }
+}
+
+/* ---------------- checkout flow ---------------- */
+// The idle (non-pending) label for a model's primary checkout control:
+// "Get" for never-owned models, "Renew" once the subscription has lapsed.
+function primaryLabel(m) {
+  return `${state.lapsed.has(m.id) ? 'Renew' : 'Get'} · ${m.pro ? 'Pro' : m.price}`;
+}
+
+// Like primaryLabel, but aware that the lapsed-and-installed drawer state
+// drives its checkout from a separate renew line (not the primary dlBtn,
+// which must keep reading "Open chat") — that element gets its own fixed
+// idle copy instead of the generic Get/Renew short form.
+function idleLabel(m, btn) {
+  return (btn && btn.id === 'renewLine')
+    ? 'Subscription lapsed — downloads paused. Renew · $20/mo'
+    : primaryLabel(m);
+}
+
+// Shared by three callers with identical behavior: the not-owned Get button,
+// the lapsed-not-installed primary (Renew) button, and the lapsed-installed
+// renew line. `btn` is whichever element triggered the flow — its own
+// disabled/text state is updated, never a different, unrelated control.
+function startCheckoutFlow(m, btn) {
+  if (state.pay.modelId === m.id) {
+    cancelPaymentPoll(idleLabel(m, btn), btn);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Opening checkout…';
+  (async () => {
+    let res;
+    try {
+      res = await invoke('start_checkout', { modelId: m.id });
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = idleLabel(m, btn);
+      const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(e);
+      return;
+    }
+    if (res.status === 'alreadyOwned') {
+      state.mine.add(m.id);
+      state.lapsed.delete(m.id);
+      renderGrid();
+      if (state.dl.installed) { finishInstalled(m, btn); return; }
+      btn.textContent = '✓ Owned — starting download…';
+      heroDownload(m, btn);
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Waiting for payment… (click to cancel)';
+    const el = $('errMsg');
+    el.style.display = 'block';
+    el.style.color = 'var(--muted)';
+    el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
+    beginPaymentPoll(m, btn.id);
+  })();
 }
 
 function heroDownload(m, btn) {
@@ -237,10 +276,10 @@ async function finishInstalled(m, btn) {
   }
 }
 
-function cancelPaymentPoll(resetBtnText) {
+function cancelPaymentPoll(resetBtnText, btnEl) {
   if (state.pay.timer) clearInterval(state.pay.timer);
-  state.pay = { modelId: null, timer: null, deadline: 0 };
-  const btn = $('dlBtn');
+  state.pay = { modelId: null, timer: null, deadline: 0, btnId: null };
+  const btn = btnEl || $('dlBtn');
   if (btn && resetBtnText) { btn.disabled = false; btn.textContent = resetBtnText; }
   if (resetBtnText) {
     const el = $('errMsg');
@@ -248,13 +287,15 @@ function cancelPaymentPoll(resetBtnText) {
   }
 }
 
-function beginPaymentPoll(m) {
+function beginPaymentPoll(m, btnId) {
   state.pay.modelId = m.id;
+  state.pay.btnId = btnId || 'dlBtn';
   state.pay.deadline = Date.now() + 10 * 60 * 1000;
   state.pay.timer = setInterval(async () => {
     if (Date.now() > state.pay.deadline) {
       const drawerMatch = state.drawerId === m.id;
-      cancelPaymentPoll(drawerMatch ? `Get · ${m.pro ? 'Pro' : m.price}` : null);
+      const targetBtn = drawerMatch ? $(state.pay.btnId) : null;
+      cancelPaymentPoll(drawerMatch ? idleLabel(m, targetBtn) : null, targetBtn);
       if (drawerMatch) {
         const el = $('errMsg');
         if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = "We didn't see a completed payment. If you paid, it will appear shortly — try Get again in a moment."; }
@@ -263,13 +304,16 @@ function beginPaymentPoll(m) {
     }
     let list;
     try { list = await invoke('list_entitlements'); } catch (_) { return; }
-    const hit = (list || []).some((e) => e.modelId === m.id && e.source === 'purchase');
+    const hit = (list || []).some((e) => e.modelId === m.id && e.source === 'purchase' && (!e.expiresAt || Date.parse(e.expiresAt) > Date.now()));
     if (!hit) return;
     cancelPaymentPoll(null);
     state.mine.add(m.id);
+    state.lapsed.delete(m.id);
     renderGrid();
     const btn = $('dlBtn');
     if (btn && state.drawerId === m.id && $('drawer').classList.contains('show')) {
+      const renewEl = $('renewLine');
+      if (renewEl) renewEl.style.display = 'none';
       btn.disabled = true;
       if (state.dl.installed) {
         btn.textContent = '✓ Paid — starting engine…';
@@ -546,6 +590,9 @@ async function applySession(info) {
   state.signedIn = true;
   state.nick = info.nickname || 'you';
   state.mine = new Set((info.entitlements || []).map((e) => e.modelId));
+  state.lapsed = new Set((info.entitlements || [])
+    .filter((e) => e.source === 'purchase' && e.expiresAt && Date.parse(e.expiresAt) < Date.now())
+    .map((e) => e.modelId));
   try {
     state.device = await invoke('detect_hardware');
     $('dev-name').textContent = state.device.gpu.replace(/NVIDIA |GeForce /g, '') || 'This machine';
@@ -666,6 +713,7 @@ $('signOutBtn').addEventListener('click', async () => {
   state.nick = null;
   state.device = null;
   state.mine = new Set();
+  state.lapsed = new Set();
   resetAuthForms();
   $('device').style.display = 'none';
   $('signOutBtn').style.display = 'none';
