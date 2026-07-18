@@ -14,7 +14,7 @@
 // for them, not an error condition.
 //
 // The portal's return_url points at a static page on GitHub Pages
-// (gh-pages branch, https://shojuro.github.io/cleophis/pay/portal-return.html)
+// (gh-pages branch, https://pay.cleophis.com/pay/portal-return.html)
 // — same reasoning as create-checkout's success/cancel pages (S10):
 // Supabase's shared *.supabase.co domain force-serves HTML as text/plain
 // (platform anti-phishing behavior), so return pages live outside Supabase
@@ -137,7 +137,7 @@ Deno.serve(async (req: Request) => {
     // links rather than risking a double charge.
     session = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: "https://shojuro.github.io/cleophis/pay/portal-return.html",
+      return_url: "https://pay.cleophis.com/pay/portal-return.html",
     });
   } catch (err) {
     // Log the error message only — never the Stripe secret key. Same

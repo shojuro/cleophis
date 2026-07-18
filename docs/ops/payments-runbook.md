@@ -341,12 +341,19 @@ server-side (Supabase function secrets + code) and Stripe-Dashboard-side
 (business name, webhook endpoint); an already-installed app keeps working
 unmodified once the steps above land.
 
-## Return pages (GitHub Pages)
+## Return pages (GitHub Pages, pay.cleophis.com)
 
 The Stripe Checkout success/cancel redirect targets are **static HTML on
-the `gh-pages` branch**, not a Supabase Edge Function:
-- `https://shojuro.github.io/cleophis/pay/success.html`
-- `https://shojuro.github.io/cleophis/pay/cancelled.html`
+the `gh-pages` branch**, not a Supabase Edge Function, served on the
+custom domain (Cloudflare milestone — DNS-only CNAME `pay` →
+`shojuro.github.io`, `CNAME` file in the branch, HTTPS enforced):
+- `https://pay.cleophis.com/pay/success.html`
+- `https://pay.cleophis.com/pay/cancelled.html`
+- `https://pay.cleophis.com/pay/portal-return.html`
+
+The pre-cutover `https://shojuro.github.io/cleophis/pay/…` URLs
+permanently redirect to the custom domain, so Stripe sessions and portal
+configurations minted before the cutover still land correctly.
 
 **Why not Supabase:** the return pages originally lived as a same-repo
 Edge Function (`checkout-return`, now deleted). Supabase's shared

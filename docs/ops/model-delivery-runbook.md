@@ -106,7 +106,7 @@ document describes: `supabase/functions/download-url/index.ts`,
    describes how to fetch and verify them; see the thin-installer note
    below).
 
-## Cloudflare swap
+## Cloudflare swap — LIVE since the domain milestone (dl.cleophis.com)
 
 The token scheme is **hostname-agnostic by design**: the edge function
 builds the download URL from `B2_DOWNLOAD_BASE_URL` if set, falling back to
@@ -115,14 +115,26 @@ B2's native `downloadUrl` from `b2_authorize_account` otherwise —
 const base = (readEnv("B2_DOWNLOAD_BASE_URL") || auth.downloadUrl).replace(/\/+$/, "");
 const url = `${base}/file/${b2BucketName}/${model.prefix}${model.file}`;
 ```
-Putting a Cloudflare (or any other CDN) domain in front of the bucket is a
-**single secret change**, no code change:
-```bash
-B2_DOWNLOAD_BASE_URL=https://<cdn-domain> tools/deploy-download-url.sh secrets_set
-```
-The B2 authorization token minted per-request is still required in the
-`Authorization` header regardless of which hostname serves the bytes, so
-the CDN must be configured to pass that header through unmodified.
+The swap was exercised for real in the Cloudflare milestone:
+`B2_DOWNLOAD_BASE_URL=https://dl.cleophis.com` is set as a function
+secret, and downloads flow app → `dl.cleophis.com` (Cloudflare, proxied
+CNAME → `f005.backblazeb2.com`) → B2. The per-request B2 authorization
+token rides the `Authorization` header unchanged — Cloudflare passes it
+through. Rollback is deleting the secret (URLs fall back to B2's native
+hostname; tokens keep working).
+
+Cloudflare-side configuration (zone `cleophis.com`, Free plan, managed via
+the scoped API token `CLOUDFLARE_API_TOKEN` in `~/.env`):
+- `dl` CNAME → `f005.backblazeb2.com`, **proxied**; SSL mode Full
+  (strict); Always Use HTTPS on.
+- A WAF custom rule **skips** bot/challenge products (`bic`,
+  `securityLevel`, `uaBlock`, `zoneLockdown`, `waf`, `rateLimit`) for
+  `http.host eq "dl.cleophis.com"` — the Rust reqwest client is not a
+  browser and must never be challenged.
+- The 2 GB GGUF exceeds the Free plan's 512 MB cache ceiling, so requests
+  pass through uncached. That's fine: Backblaze waives egress to
+  Cloudflare (Bandwidth Alliance), so the $-cap pressure drops to Class-B
+  transaction fees. The **$3/day cap stays** as a backstop (see below).
 
 ## Ops notes
 
