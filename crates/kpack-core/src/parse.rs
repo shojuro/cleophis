@@ -63,9 +63,8 @@ pub fn parse_markdown(source: &str, title: &str) -> Document {
     let mut target = Target::None;
     let mut buffers = Buffers::default();
 
-    // Byte offsets of the currently-open heading/paragraph/code/list block,
-    // for computing that block's locator once it closes.
-    let mut heading_start = 0usize;
+    // Byte offsets of the currently-open paragraph/code/list block, for
+    // computing that block's locator once it closes.
     let mut paragraph_start = 0usize;
     let mut code_start = 0usize;
     let mut list_start = 0usize;
@@ -91,20 +90,27 @@ pub fn parse_markdown(source: &str, title: &str) -> Document {
                 }
                 heading_stack.truncate(heading_level_to_usize(level).saturating_sub(1));
                 buffers.heading.clear();
-                heading_start = range.start;
                 target = Target::Heading;
             }
             Event::End(TagEnd::Heading(_)) => {
                 heading_stack.push(buffers.heading.trim().to_string());
                 current_path = heading_stack.clone();
                 target = Target::None;
-                let _ = heading_start; // locator not attached to a Block for headings
+                // Headings intentionally get no own locator/Block.
             }
             Event::Start(Tag::Paragraph) => {
                 if list_depth == 0 {
                     buffers.paragraph.clear();
                     paragraph_start = range.start;
                     target = Target::Paragraph;
+                } else if !buffers.list.is_empty() && !buffers.list.ends_with(char::is_whitespace) {
+                    // Loose-list continuation paragraph: pulldown-cmark
+                    // wraps every block child of a loose-list item in its
+                    // own Paragraph tag, so without a separator this
+                    // paragraph's text would glue directly onto the
+                    // previous one's. Mirrors the separator logic in the
+                    // `Tag::Item` handler below.
+                    buffers.list.push('\n');
                 }
             }
             Event::End(TagEnd::Paragraph) => {
@@ -254,9 +260,18 @@ pub fn parse_txt(source: &str, title: &str) -> Document {
         push_txt_paragraph(&mut blocks, &lines, start, para_end);
     }
 
+    let sections = if blocks.is_empty() {
+        // Match parse_markdown("")'s zero-sections result: a content-less
+        // input (empty, or whitespace/blank-only) has nothing to chunk, so
+        // it shouldn't manufacture an empty root Section either.
+        Vec::new()
+    } else {
+        vec![Section { path: Vec::new(), blocks }]
+    };
+
     Document {
         title: title.to_string(),
-        sections: vec![Section { path: Vec::new(), blocks }],
+        sections,
     }
 }
 
@@ -615,5 +630,46 @@ let dose_mg = 5;
         assert_eq!(chunks[2].text, "let dose_mg = 5;");
         assert!(chunks[3].text.starts_with("Drug | Class"));
         assert!(chunks[3].text.contains("Drug: Warfarin | Class: VKA"));
+    }
+
+    // 8. Regression: a loose list's continuation paragraph (blank line
+    // inside an item) must be separated from the preceding text, not glued
+    // word-to-word — and item boundaries stay separated too.
+    #[test]
+    fn t8_loose_list_continuation_paragraph_is_not_glued() {
+        let source = "\
+- item one
+
+  continuation paragraph inside item one
+
+- item two
+";
+        let doc = parse_markdown(source, "Doc");
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.sections[0].blocks.len(), 1);
+        let text = match &doc.sections[0].blocks[0] {
+            Block::Paragraph { text, .. } => text.as_str(),
+            other => panic!("expected Block::Paragraph, got {other:?}"),
+        };
+        assert!(!text.contains("onecontinuation"), "words glued together: {text:?}");
+        assert!(text.contains("one"), "missing distinct word \"one\": {text:?}");
+        assert!(text.contains("continuation"), "missing distinct word \"continuation\": {text:?}");
+        assert!(text.contains("- item one"));
+        assert!(text.contains("- item two"));
+        // Item boundary separation: "item one\n- item two", not glued.
+        assert!(!text.contains("oneitem two"), "item boundary glued: {text:?}");
+    }
+
+    // 9. Regression: empty-input parity between parse_markdown and
+    // parse_txt — a content-less input yields zero sections either way, but
+    // a txt with real content still yields one root section.
+    #[test]
+    fn t9_empty_input_parity_between_md_and_txt() {
+        assert!(parse_markdown("", "Doc").sections.is_empty());
+        assert!(parse_txt("   \n\n", "Doc").sections.is_empty());
+
+        let doc = parse_txt("Some real content.", "Doc");
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.sections[0].path, Vec::<String>::new());
     }
 }
