@@ -96,6 +96,7 @@ fn main() {
             load_model,
             kpack::mount_pack,
             kpack::build_personal_pack,
+            kpack::rag_query,
             cloud::commands::sign_up,
             cloud::commands::sign_in,
             cloud::commands::sign_out,

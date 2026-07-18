@@ -6,9 +6,13 @@
 //! decides pack-level pass/fail against that pack's own calibrated
 //! thresholds, cross-pack-fuses only the survivors, and renders the K7
 //! prompt contract's numbered-source block into the final grounded prompt.
-//! Pure, network-free. Building the [`PackHit`]s this module's [`assemble`]
-//! consumes — mounting packs, embedding the query, calling
-//! [`retrieve_pack`] per pack — is R4's job, exposed as a Tauri command.
+//! Pure, network-free. [`retrieve`] is spec §4's top-level entry point:
+//! embed the query, call [`retrieve_pack`] per already-mounted pack to
+//! build the [`PackHit`]s [`assemble`] consumes, then hand off to
+//! [`assemble`]. Mounting the packs themselves (opening `.kpack` files,
+//! running the load-time integrity gate) stays outside this pure,
+//! network-free module — that's the Tauri command layer's job
+//! (`src-tauri/src/kpack.rs`'s `rag_query` command).
 //!
 //! ## Per-pack gate (Δ1, §4.1)
 //! [`pack_passes_gate`] is the Δ1 safety mechanism: each mounted pack is
@@ -48,7 +52,7 @@
 //! "every one of these words must appear" — just with zero operator
 //! parsing surface left for user-supplied text to exploit.
 use crate::contract::{self, RenderChunk};
-use crate::embed::dot_int8;
+use crate::embed::{dot_int8, l2_normalize, quantize_int8, Embedder};
 use crate::format::{self, Pack};
 use crate::manifest::Manifest;
 use std::fmt;
@@ -568,6 +572,63 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         .collect();
 
     Ok(RetrievalResult::Grounded { prompt, citations })
+}
+
+/// Spec §4's top-level retrieval entry point — the one function a caller
+/// (the Tauri `rag_query` command, `src-tauri/src/kpack.rs`) needs to go
+/// from a raw query string and a list of already-mounted packs to a
+/// [`RetrievalResult`]. Composes the rest of this module: embeds the query
+/// once for the DENSE lane, then runs [`retrieve_pack`] per pack and hands
+/// the results to [`assemble`].
+///
+/// 1. **Dense-lane query embedding:** `embedder.embed_query(query)` — the
+///    `Embedder` trait's own contract is that implementations apply the BGE
+///    instruction prefix internally (via `embed::query_input`), so this
+///    function never re-applies it — then [`l2_normalize`] →
+///    [`quantize_int8`] → `query_i8`. This mirrors, step for step, the
+///    build-time pipeline a stored passage vector went through (spec §1.4),
+///    so `query_i8` is directly comparable to what
+///    `format::Pack::vec_search`/`get_embedding` score against.
+/// 2. **Lexical-lane query text:** the RAW `query` string, unmodified — NOT
+///    the BGE-prefixed instruction form `embed_query` embeds. `fts_search`'s
+///    bm25 match is against the user's own words; prefixing it with
+///    "Represent this sentence for searching relevant passages: " would
+///    only inject noise tokens into a lexical match that has no notion of
+///    "instruction" framing (see [`retrieve_pack`]'s own doc comment for how
+///    that raw text is made fts5-safe).
+/// 3. **Per-pack retrieval:** for each `(pack, manifest)` in `packs`, calls
+///    [`retrieve_pack`] with `k=20` (spec §4.1's fixed dense/lexical fan-out
+///    width — hardcoded here, the one production call site, rather than
+///    threaded through as a parameter, so it can't drift between callers)
+///    and wraps the result in a [`PackHit`].
+/// 4. **Assemble:** [`assemble`]`(&hits, tier)` — the per-pack gate,
+///    cross-pack fusion, `NO_EVIDENCE`, tier-select/dedupe, and
+///    prompt-rendering pipeline this module's top doc comment describes.
+///
+/// Errors: an `Embedder` failure on `query` (a backend/dims problem)
+/// surfaces as [`Error::Embed`]; any pack's `vec_search`/`fts_search`/
+/// `get_embedding` I/O failure surfaces as [`Error::Format`] — both via the
+/// same `?`-propagation [`retrieve_pack`] already uses.
+pub fn retrieve(
+    query: &str,
+    packs: &[(Pack, Manifest)],
+    embedder: &dyn Embedder,
+    tier: Tier,
+) -> Result<RetrievalResult> {
+    let raw_query_vec = embedder.embed_query(query)?;
+    let query_i8 = quantize_int8(&l2_normalize(&raw_query_vec));
+
+    let mut hits: Vec<PackHit<'_>> = Vec::with_capacity(packs.len());
+    for (pack, manifest) in packs {
+        let candidates = retrieve_pack(pack, query, &query_i8, 20)?;
+        hits.push(PackHit {
+            pack,
+            manifest,
+            candidates,
+        });
+    }
+
+    assemble(&hits, tier)
 }
 
 #[cfg(test)]
@@ -1495,6 +1556,122 @@ mod tests {
             RetrievalResult::NoEvidence,
             "a pack that passes its own gate but whose selected chunk_id doesn't resolve to a \
              real chunk/doc row must fall back to NoEvidence, never a citation-less Grounded"
+        );
+    }
+
+    // 22. retrieve(): end-to-end wiring with MockEmbedder — a permissive
+    // gate (abs_floor below anything a real cosine could be, since
+    // dot_int8-derived cosine is always clamped to [-1, 1]) on a single
+    // pack with one chunk yields Grounded with exactly one citation, and
+    // the prompt carries the system contract + a rendered "[1] (...)"
+    // line. Deliberately a PLUMBING test (embed -> quantize -> per-pack
+    // retrieve -> assemble all get wired together end to end by `retrieve`
+    // itself), not a relevance test — MockEmbedder has no real semantics
+    // (see embed.rs's own doc comment), so which chunk "wins" is never
+    // asserted, only that the pipeline as a whole produces a well-formed
+    // Grounded result.
+    #[test]
+    fn t22_retrieve_end_to_end_grounded_with_mock_embedder() {
+        let dir = unique_dir("t22-retrieve-grounded");
+        let out_path = dir.join("t22.kpack");
+        let embedder = MockEmbedder::new(TEST_DIMS);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let sources = vec![SourceInput {
+            title: "Only Doc".to_string(),
+            source_type: "md".to_string(),
+            content: "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+        }];
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+        let pack = Pack::open(&out_path).unwrap();
+
+        // gate_abs_floor well below any cosine's possible range -- ANY
+        // candidate passes, isolating this test to the wiring rather than a
+        // specific mock cosine value.
+        let manifest = test_manifest(-2.0, 0.0);
+
+        let packs = vec![(pack, manifest)];
+        let result = retrieve("only doc content", &packs, &embedder, Tier::Small).unwrap();
+
+        match result {
+            RetrievalResult::Grounded { prompt, citations } => {
+                assert!(
+                    prompt.contains(contract::system_contract().trim_end()),
+                    "prompt must contain the system contract text"
+                );
+                assert!(
+                    prompt.contains("[1] ("),
+                    "prompt must contain the rendered numbered source line: {prompt}"
+                );
+                assert_eq!(citations.len(), 1);
+            }
+            RetrievalResult::NoEvidence => panic!("expected Grounded with an abs_floor of -2.0"),
+        }
+    }
+
+    // 23. retrieve(): an impossible gate_abs_floor (2.0, outside a cosine's
+    // [-1, 1] range) always fails every pack's gate regardless of query or
+    // candidates -- proving `retrieve` surfaces `assemble`'s NoEvidence
+    // path end to end, not just its Grounded one.
+    #[test]
+    fn t23_retrieve_end_to_end_no_evidence_when_gate_impossible() {
+        let dir = unique_dir("t23-retrieve-no-evidence");
+        let out_path = dir.join("t23.kpack");
+        let embedder = MockEmbedder::new(TEST_DIMS);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let sources = vec![SourceInput {
+            title: "Only Doc".to_string(),
+            source_type: "md".to_string(),
+            content: "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+        }];
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+        let pack = Pack::open(&out_path).unwrap();
+
+        let manifest = test_manifest(2.0, 0.0); // no real cosine can ever reach 2.0
+
+        let packs = vec![(pack, manifest)];
+        let result = retrieve("only doc content", &packs, &embedder, Tier::Small).unwrap();
+        assert_eq!(result, RetrievalResult::NoEvidence);
+    }
+
+    /// An `Embedder` whose `embed_query` always errors -- exists only to
+    /// prove t24's error-propagation path; `embed_passage`/`token_count`
+    /// are never exercised by `retrieve` (which only calls `embed_query`)
+    /// but are implemented plausibly so this stays a well-formed `Embedder`.
+    struct FailingEmbedder;
+
+    impl Embedder for FailingEmbedder {
+        fn dims(&self) -> usize {
+            TEST_DIMS
+        }
+
+        fn embed_passage(&self, _text: &str) -> std::result::Result<Vec<f32>, crate::embed::EmbedError> {
+            Ok(vec![0.0; TEST_DIMS])
+        }
+
+        fn embed_query(&self, _text: &str) -> std::result::Result<Vec<f32>, crate::embed::EmbedError> {
+            Err(crate::embed::EmbedError::Backend("boom".to_string()))
+        }
+
+        fn token_count(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+    }
+
+    // 24. retrieve(): an Embedder that fails embed_query surfaces as
+    // Error::Embed (via this module's own `From<EmbedError>` impl), not a
+    // panic -- proving the `?` on `embedder.embed_query(query)` actually
+    // propagates. `packs` is empty since embed_query runs BEFORE any
+    // per-pack loop, so this fails before ever touching a pack.
+    #[test]
+    fn t24_retrieve_propagates_embed_error_not_panic() {
+        let result = retrieve("any query", &[], &FailingEmbedder, Tier::Small);
+        assert!(
+            matches!(result, Err(Error::Embed(_))),
+            "expected Error::Embed, got {result:?}"
         );
     }
 }
