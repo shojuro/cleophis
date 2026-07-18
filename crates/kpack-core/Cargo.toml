@@ -24,5 +24,12 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 # fails the MSVC build with `C1083: Cannot open include file`. 0.1.9 predates
 # the DISKANN feature and has no such gap.
 sqlite-vec = "0.1.9"
+# Detached ed25519 signature verification for curated packs (§1.2/§2.6,
+# K3) — `verify_strict` only, against a key injected via `LoadContext`
+# (never read from the pack). Pinned to the latest stable 2.x (2.2.0);
+# deliberately NOT 3.0.0 — this pin predates that major bump and 2.x is
+# still the widely-deployed, audited line. Pure computation, no RNG/network
+# feature enabled, consistent with this crate's network-free invariant.
+ed25519-dalek = "2.2.0"
 
 [dev-dependencies]

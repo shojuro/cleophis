@@ -24,11 +24,13 @@
 //! meant to be shown to a user: embedder hash → dims → schema version →
 //! vec format version (the last enforces the compatibility field the plan's
 //! risk note calls out; the first three are the spec-mandated ones).
-//! Curated-pack signature verification is explicitly NOT here — see the
-//! `// K3:` seam comment in `check_load`.
+//! Curated-pack signature verification is explicitly NOT here — it's
+//! enforced in `Pack::mount` instead (K3; see the `// K3:` seam comment in
+//! `check_load` and the doc comment on `mount` for why).
 
 use crate::format::{Error, Pack, SCHEMA_VERSION};
-use std::path::Path;
+use ed25519_dalek::VerifyingKey;
+use std::path::{Path, PathBuf};
 
 /// The `sqlite-vec` version whose on-disk `vec0` format this build was
 /// compiled against — mirrors the pin in `Cargo.toml` (see its comment for
@@ -243,11 +245,20 @@ fn require_pack_tier(pack: &Pack, key: &str) -> Result<PackTier, Error> {
 
 /// What the wrapper (the Tauri app today; the future server pipeline too)
 /// knows about this device/session at pack-mount time. K2's tests pass a
-/// fixture; K4 wires `available_embedder_sha256` to the real set of
+/// fixture for `available_embedder_sha256`; K4 wires it to the real set of
 /// installed embedder GGUFs, hashed with the same convention as
 /// `inference.rs`'s `model_sha256`.
+///
+/// `curator_key` is the pinned curator public key (K3), injected here
+/// exactly like `available_embedder_sha256` above — the wrapper passes
+/// `sign::curator_verifying_key()` in production (currently always `None`;
+/// see that function's doc comment), and this crate's own tests pass a
+/// fixed-seed test key. This is deliberate: the key is never read from the
+/// pack itself (see the `sign` module doc comment for why a pack-supplied
+/// key would be trivially forgeable).
 pub struct LoadContext<'a> {
     pub available_embedder_sha256: &'a [String],
+    pub curator_key: Option<VerifyingKey>,
 }
 
 /// The load-time integrity gate (§1.2) — the checks that must pass before
@@ -321,29 +332,84 @@ pub fn check_load(manifest: &Manifest, ctx: &LoadContext, pack: &Pack) -> Result
         )));
     }
 
-    // K3: curated-only ed25519 signature verification slots in here, after
-    // all four checks above pass.
+    // K3: curated-only ed25519 signature verification is enforced in
+    // `Pack::mount`, immediately after this gate passes — not here. It
+    // needs the file's path/bytes (the detached signature lives alongside
+    // the `.kpack` file on disk, as `<path>.sig`), and this function is
+    // deliberately a pure metadata gate over what's already inside the
+    // pack. See `Pack::mount`'s doc comment for the check itself and its
+    // residual note on origin-based tier enforcement (K9's job, not the
+    // core's).
 
     Ok(())
 }
 
 impl Pack {
-    /// Open a `.kpack`, read and validate its manifest, and run the
-    /// load-time integrity gate — the single entry point the Tauri `mount`
+    /// Open a `.kpack`, read and validate its manifest, run the load-time
+    /// integrity gate, and — for curated packs only — verify the detached
+    /// ed25519 signature (K3) — the single entry point the Tauri `mount`
     /// command (K9) will call. Any failure at any stage (open, a
-    /// missing/malformed manifest key, or a gate check) refuses with a
-    /// plain-language reason; nothing partially mounts.
+    /// missing/malformed manifest key, a gate check, or signature
+    /// verification) refuses with a plain-language reason; nothing
+    /// partially mounts.
+    ///
+    /// ## Curated-pack signature verification
+    /// Runs AFTER `check_load`'s four metadata checks pass, because it
+    /// needs the file `path` (`check_load` only ever sees the already-open
+    /// `pack` and its parsed `manifest`):
+    /// 1. `Curated` packs: refuse if `ctx.curator_key` is `None` (this
+    ///    build can't verify curated packs yet — see `sign`'s module doc
+    ///    comment for why that's the correct v1 state, fail-closed).
+    ///    Otherwise, read the detached signature from `<path>.sig`
+    ///    (refusing if it's missing) and the pack file's raw bytes, then
+    ///    call `sign::verify_detached`; refuse on any error it returns.
+    /// 2. `Personal` packs: skip signature verification entirely — they're
+    ///    unsigned by design (spec §1.2).
+    ///
+    /// Residual: this function trusts whatever `manifest.pack_tier` says
+    /// and only ever decides whether THAT tier's signature requirement is
+    /// satisfied. It does NOT check that a curated pack actually came from
+    /// the CDN, or that a personal pack actually came from the local pack
+    /// directory — origin-based tier enforcement is the wrapper's job (K9),
+    /// not the core's.
     pub fn mount<P: AsRef<Path>>(path: P, ctx: &LoadContext) -> Result<(Pack, Manifest), Error> {
+        let path = path.as_ref();
         let pack = Pack::open(path)?;
         let manifest = Manifest::read(&pack)?;
         check_load(&manifest, ctx, &pack)?;
+
+        if manifest.pack_tier == PackTier::Curated {
+            let key = ctx.curator_key.ok_or_else(|| {
+                Error::Schema("this build can't verify curated packs yet".to_string())
+            })?;
+            let sig_bytes = std::fs::read(sig_path_for(path)).map_err(|_| {
+                Error::Schema("curated pack is missing its signature".to_string())
+            })?;
+            let pack_bytes = std::fs::read(path).map_err(|e| {
+                Error::Schema(format!(
+                    "could not read the pack file to verify its signature: {e}"
+                ))
+            })?;
+            crate::sign::verify_detached(&pack_bytes, &sig_bytes, &key)?;
+        }
+
         Ok((pack, manifest))
     }
+}
+
+/// `<path>.sig` — same path, `.sig` appended to the whole file name (so
+/// `foo.kpack` gets `foo.kpack.sig`, not `foo.sig`). Mirrors
+/// `src-tauri/src/cloud/download.rs`'s `part_path_for` convention.
+fn sig_path_for(path: &Path) -> PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".sig");
+    PathBuf::from(os)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use std::path::PathBuf;
 
     /// Mirrors `format.rs`'s own test helper (this repo hand-rolls temp
@@ -465,6 +531,7 @@ mod tests {
 
         let ctx = LoadContext {
             available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
         };
         check_load(&m, &ctx, &pack).unwrap();
     }
@@ -481,6 +548,7 @@ mod tests {
         let available = vec!["deadbeefdeadbeef".to_string()];
         let ctx = LoadContext {
             available_embedder_sha256: &available,
+            curator_key: None,
         };
         let err = check_load(&m, &ctx, &pack).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
@@ -498,6 +566,7 @@ mod tests {
 
         let ctx = LoadContext {
             available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
         };
         let err = check_load(&m, &ctx, &pack).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
@@ -514,6 +583,7 @@ mod tests {
 
         let ctx = LoadContext {
             available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
         };
         let err = check_load(&m, &ctx, &pack).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
@@ -521,11 +591,16 @@ mod tests {
     }
 
     // 8. Pack::mount end-to-end: a fully-built valid pack mounts; a
-    // tampered one (drop a key) refuses.
+    // tampered one (drop a key) refuses. Uses a Personal-tier manifest
+    // deliberately — this test is about the metadata gate chaining
+    // correctly through `mount` (open -> read -> check_load), not about
+    // signatures (K3's curated-only signature tests live below, t15+).
     #[test]
     fn t8_mount_end_to_end() {
         let dir = unique_dir("t8");
-        let m = sample_manifest();
+        let mut m = sample_manifest();
+        m.pack_tier = PackTier::Personal;
+        m.license_ref = None;
 
         let good_path = dir.join("good.kpack");
         {
@@ -534,6 +609,7 @@ mod tests {
         }
         let ctx = LoadContext {
             available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
         };
         let (_pack, mounted) = Pack::mount(&good_path, &ctx).unwrap();
         assert_eq!(mounted, m);
@@ -561,6 +637,7 @@ mod tests {
         let available = vec![m.embedder_sha256.to_uppercase()];
         let ctx = LoadContext {
             available_embedder_sha256: &available,
+            curator_key: None,
         };
         check_load(&m, &ctx, &pack).unwrap();
     }
@@ -577,6 +654,7 @@ mod tests {
         let available: Vec<String> = Vec::new();
         let ctx = LoadContext {
             available_embedder_sha256: &available,
+            curator_key: None,
         };
         let err = check_load(&m, &ctx, &pack).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
@@ -610,6 +688,7 @@ mod tests {
 
         let ctx = LoadContext {
             available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
         };
         let err = check_load(&m, &ctx, &pack).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
@@ -646,5 +725,233 @@ mod tests {
             msg.contains("gate_abs_floor"),
             "error should name the key: {msg}"
         );
+    }
+
+    // ---- K3: curated-pack signature verification, exercised end-to-end
+    // through Pack::mount (unit-level verify_detached coverage lives in
+    // sign.rs's own test module). ----
+
+    /// Fixed-seed test curator keypairs, constructed here inside
+    /// `#[cfg(test)]` — never at crate scope (mirrors `sign`'s own
+    /// test-key discipline; see that module's doc comment and its t9
+    /// guardrail test).
+    fn test_curator_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[42u8; 32])
+    }
+
+    fn other_curator_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[99u8; 32])
+    }
+
+    /// Signs the `.kpack` file already written at `path` with `sk` and
+    /// writes the detached signature to `<path>.sig` — the exact layout
+    /// `Pack::mount` reads back.
+    fn sign_pack_file(path: &Path, sk: &SigningKey) {
+        let bytes = std::fs::read(path).unwrap();
+        let sig = sk.sign(&bytes);
+        std::fs::write(sig_path_for(path), sig.to_bytes()).unwrap();
+    }
+
+    // 15. Curated pack + valid signature + correct curator key -> mounts OK.
+    #[test]
+    fn t15_mount_curated_pack_valid_signature_succeeds() {
+        let dir = unique_dir("t15");
+        let m = sample_manifest(); // Curated by default
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        let sk = test_curator_signing_key();
+        sign_pack_file(&path, &sk);
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(sk.verifying_key()),
+        };
+        let (_pack, mounted) = Pack::mount(&path, &ctx).unwrap();
+        assert_eq!(mounted, m);
+    }
+
+    // 16. Curated pack signed by a DIFFERENT key than ctx.curator_key ->
+    // refuses.
+    #[test]
+    fn t16_mount_curated_pack_wrong_signing_key_refuses() {
+        let dir = unique_dir("t16");
+        let m = sample_manifest();
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        sign_pack_file(&path, &other_curator_signing_key());
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(test_curator_signing_key().verifying_key()),
+        };
+        // `.map(|_| ())` sidesteps `unwrap_err`'s `T: Debug` bound — `Pack`
+        // (holds a `rusqlite::Connection`, which isn't `Debug`) is the Ok
+        // side of this Result, but we only need the Err side here.
+        let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+    }
+
+    // 17. Truncated (63 bytes) and oversized (65 bytes) .sig file -> refuse
+    // with the malformed message, no panic on the short/long slice.
+    #[test]
+    fn t17_mount_curated_pack_wrong_length_signature_refuses_malformed() {
+        let dir = unique_dir("t17");
+        let m = sample_manifest();
+        let sk = test_curator_signing_key();
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(sk.verifying_key()),
+        };
+
+        let short_path = dir.join("short.kpack");
+        {
+            let pack = Pack::open_or_create(&short_path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        sign_pack_file(&short_path, &sk);
+        let sig_bytes = std::fs::read(sig_path_for(&short_path)).unwrap();
+        std::fs::write(sig_path_for(&short_path), &sig_bytes[..63]).unwrap();
+        let err = Pack::mount(&short_path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(err.to_string().contains("malformed"), "error was: {err}");
+
+        let long_path = dir.join("long.kpack");
+        {
+            let pack = Pack::open_or_create(&long_path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        sign_pack_file(&long_path, &sk);
+        let mut long_sig = std::fs::read(sig_path_for(&long_path)).unwrap();
+        long_sig.push(0);
+        std::fs::write(sig_path_for(&long_path), &long_sig).unwrap();
+        let err = Pack::mount(&long_path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(err.to_string().contains("malformed"), "error was: {err}");
+    }
+
+    // 18. Tampered pack bytes after signing (rewrite one manifest value
+    // through the normal Pack API, keeping the now-stale old signature) ->
+    // refuses. This is the core guarantee, exercised end-to-end through
+    // Pack::mount (sign.rs's own t4 covers verify_detached directly).
+    // Tampers via `manifest_set` rather than flipping a raw byte in the
+    // file so the SQLite file stays structurally valid — this isolates
+    // "the signature no longer matches the bytes" from "corrupt SQLite
+    // file", which would fail for an unrelated reason.
+    #[test]
+    fn t18_mount_curated_pack_tampered_bytes_refuses() {
+        let dir = unique_dir("t18");
+        let m = sample_manifest();
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        let sk = test_curator_signing_key();
+        sign_pack_file(&path, &sk);
+
+        {
+            let pack = Pack::open(&path).unwrap();
+            pack.manifest_set("built_by", "attacker-modified-pipeline")
+                .unwrap();
+        }
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(sk.verifying_key()),
+        };
+        // `.map(|_| ())` sidesteps `unwrap_err`'s `T: Debug` bound — `Pack`
+        // (holds a `rusqlite::Connection`, which isn't `Debug`) is the Ok
+        // side of this Result, but we only need the Err side here.
+        let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(
+            err.to_string().contains("does not verify"),
+            "expected a signature-verification refusal, got: {err}"
+        );
+    }
+
+    // 19. Curated pack with NO .sig file -> refuses ("missing its
+    // signature").
+    #[test]
+    fn t19_mount_curated_pack_missing_sig_file_refuses() {
+        let dir = unique_dir("t19");
+        let m = sample_manifest();
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        // Deliberately no .sig file written.
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: Some(test_curator_signing_key().verifying_key()),
+        };
+        // `.map(|_| ())` sidesteps `unwrap_err`'s `T: Debug` bound — `Pack`
+        // (holds a `rusqlite::Connection`, which isn't `Debug`) is the Ok
+        // side of this Result, but we only need the Err side here.
+        let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(
+            err.to_string().contains("missing its signature"),
+            "error was: {err}"
+        );
+    }
+
+    // 20. Curated pack but ctx.curator_key = None -> refuses ("can't
+    // verify curated packs yet").
+    #[test]
+    fn t20_mount_curated_pack_no_curator_key_refuses() {
+        let dir = unique_dir("t20");
+        let m = sample_manifest();
+        let path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        sign_pack_file(&path, &test_curator_signing_key());
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
+        };
+        // `.map(|_| ())` sidesteps `unwrap_err`'s `T: Debug` bound — `Pack`
+        // (holds a `rusqlite::Connection`, which isn't `Debug`) is the Ok
+        // side of this Result, but we only need the Err side here.
+        let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(
+            err.to_string().contains("can't verify curated packs yet"),
+            "error was: {err}"
+        );
+    }
+
+    // 21. Personal pack with no signature and curator_key = None -> mounts
+    // OK (personal packs skip signature verification entirely).
+    #[test]
+    fn t21_mount_personal_pack_skips_signature_verification() {
+        let dir = unique_dir("t21");
+        let mut m = sample_manifest();
+        m.pack_tier = PackTier::Personal;
+        m.license_ref = None;
+        let path = dir.join("personal.kpack");
+        {
+            let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+            m.write(&pack).unwrap();
+        }
+        // Deliberately no .sig file, and no curator key available.
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
+        };
+        let (_pack, mounted) = Pack::mount(&path, &ctx).unwrap();
+        assert_eq!(mounted, m);
     }
 }
