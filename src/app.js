@@ -21,6 +21,16 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// Defense-in-depth: catalog fields are interpolated into innerHTML templates
+// below. The catalog is a bundled local file today (not remotely fetched),
+// but escape it anyway in case that changes or the resource file is
+// tampered with.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 /* ---------------- boot ---------------- */
 async function boot() {
   await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); });
@@ -67,7 +77,7 @@ function subjectsFor(cat) {
 
 function renderFilters() {
   $('subjectFilters').innerHTML = subjectsFor(state.cat).map((s) =>
-    `<button class="chip ${state.subject === s ? 'active' : ''}" data-subject="${s}">${s === 'all' ? 'All subjects' : s}</button>`
+    `<button class="chip ${state.subject === s ? 'active' : ''}" data-subject="${escapeHtml(s)}">${s === 'all' ? 'All subjects' : escapeHtml(s)}</button>`
   ).join('') + `<span class="count" id="count"></span>`;
 }
 
@@ -94,15 +104,15 @@ function renderGrid() {
   }
   $('grid').innerHTML = list.map((m) => {
     const cp = compat(m.sizeParams);
-    return `<button class="card" data-id="${m.id}">
-      <div class="cover"><img src="${m.coverUrl}" alt="" loading="lazy"/>
-        <span class="tag ${m.category}">${m.category === 'education' ? 'Education' : 'Medical'}</span></div>
+    return `<button class="card" data-id="${escapeHtml(m.id)}">
+      <div class="cover"><img src="${escapeHtml(m.coverUrl)}" alt="" loading="lazy"/>
+        <span class="tag ${escapeHtml(m.category)}">${m.category === 'education' ? 'Education' : 'Medical'}</span></div>
       <div class="cardbody">
-        <h3>${m.name}</h3>
-        <p class="sub">${m.subject}</p>
+        <h3>${escapeHtml(m.name)}</h3>
+        <p class="sub">${escapeHtml(m.subject)}</p>
         <div class="cardfoot">
           <span class="compat ${cp.cls}">${cp.label}</span>
-          <span class="meta mono">${m.sizeParams} · ${m.pro ? 'Pro' : m.price}</span>
+          <span class="meta mono">${escapeHtml(m.sizeParams)} · ${m.pro ? 'Pro' : escapeHtml(m.price)}</span>
         </div>
       </div>
     </button>`;
@@ -125,11 +135,11 @@ function openDrawer(id) {
     ? (!installed
         ? (state.pay.modelId === m.id
             ? waitingLabel
-            : `Get · ${m.pro ? 'Pro' : m.price}`)
+            : `Get · ${m.pro ? 'Pro' : escapeHtml(m.price)}`)
         : ((lapsed && !state.dl.installed) || chatBlocked
             ? (state.pay.modelId === m.id
                 ? waitingLabel
-                : `Renew · ${m.pro ? 'Pro' : m.price}`)
+                : `Renew · ${m.pro ? 'Pro' : escapeHtml(m.price)}`)
             : (state.dl.installed
                 ? 'Open chat'
                 : state.dl.active
@@ -137,22 +147,22 @@ function openDrawer(id) {
                   : state.dl.partBytes > 0
                     ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
                     : `Download · ${gib} GiB`)))
-    : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
+    : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : escapeHtml(m.price)}`);
   const showRenewLine = lapsed && state.dl.installed && !chatBlocked;
   const renewLineHtml = showRenewLine
     ? `<div class="dlline mono" id="renewLine" style="display:block;font-size:12.5px;color:var(--muted);margin-top:8px;cursor:pointer">${state.pay.modelId === m.id ? waitingLabel : 'Subscription lapsed — downloads paused. Renew · $20/mo'}</div>`
     : '';
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
-    <div class="dcover"><img src="${m.coverUrl}" alt=""/></div>
-    <span class="tag ${m.category}" style="position:static;display:inline-block;margin-top:14px">${m.category === 'education' ? 'Education' : 'Medical reference'}</span>
-    <h2>${m.name}</h2>
-    <div class="dsub">${m.subject} · ${gb} GiB on disk</div>
+    <div class="dcover"><img src="${escapeHtml(m.coverUrl)}" alt=""/></div>
+    <span class="tag ${escapeHtml(m.category)}" style="position:static;display:inline-block;margin-top:14px">${m.category === 'education' ? 'Education' : 'Medical reference'}</span>
+    <h2>${escapeHtml(m.name)}</h2>
+    <div class="dsub">${escapeHtml(m.subject)} · ${gb} GiB on disk</div>
     <div class="specs">
-      <div class="spec"><div class="k">Model size</div><div class="v mono">${m.sizeParams} params</div></div>
+      <div class="spec"><div class="k">Model size</div><div class="v mono">${escapeHtml(m.sizeParams)} params</div></div>
       <div class="spec"><div class="k">On your device</div><div class="v"><span class="compat ${cp.cls}">${cp.label}</span></div></div>
-      <div class="spec"><div class="k">Speed</div><div class="v mono">${m.tps || '—'}</div></div>
-      <div class="spec"><div class="k">Eval</div><div class="v">${m.eval || '—'}</div></div>
+      <div class="spec"><div class="k">Speed</div><div class="v mono">${escapeHtml(m.tps) || '—'}</div></div>
+      <div class="spec"><div class="k">Eval</div><div class="v">${escapeHtml(m.eval) || '—'}</div></div>
     </div>
     <div class="dlrow">
       <button class="btn primary block" id="dlBtn">${btnLabel}</button>
@@ -163,9 +173,9 @@ function openDrawer(id) {
       ${renewLineHtml}
     </div>
     <div class="body">
-      <h4>About</h4><p>${m.long || m.blurb}</p>
+      <h4>About</h4><p>${escapeHtml(m.long || m.blurb)}</p>
       <h4>What's inside</h4>
-      <ul class="inside">${(m.inside || []).map((i) => `<li>${check}${i}</li>`).join('')}</ul>
+      <ul class="inside">${(m.inside || []).map((i) => `<li>${check}${escapeHtml(i)}</li>`).join('')}</ul>
     </div>`;
   $('scrim').classList.add('show'); $('drawer').classList.add('show');
   $('drawer').setAttribute('aria-hidden', 'false');
