@@ -1,11 +1,14 @@
-//! Per-pack retrieval + reciprocal-rank fusion (RRF) + the per-pack gate —
-//! spec §4.1's first two slices. Composes `format::Pack`'s two independent
-//! lanes (`vec_search` dense, `fts_search` lexical), fuses their rankings
-//! with RRF, annotates every fused candidate with a dense cosine
-//! similarity, and decides pack-level pass/fail against that pack's own
-//! calibrated thresholds. Pure, network-free, and deliberately does NOT
-//! fuse across packs or decide `NO_EVIDENCE` (R3) — this module produces
-//! the per-pack fused, gated candidate list R3 builds on.
+//! Per-pack retrieval + reciprocal-rank fusion (RRF) + the per-pack gate +
+//! cross-pack fusion + `NO_EVIDENCE` + tier select/dedupe + prompt assembly —
+//! spec §4.1–4.2. Composes `format::Pack`'s two independent lanes
+//! (`vec_search` dense, `fts_search` lexical), fuses their rankings with
+//! RRF, annotates every fused candidate with a dense cosine similarity,
+//! decides pack-level pass/fail against that pack's own calibrated
+//! thresholds, cross-pack-fuses only the survivors, and renders the K7
+//! prompt contract's numbered-source block into the final grounded prompt.
+//! Pure, network-free. Building the [`PackHit`]s this module's [`assemble`]
+//! consumes — mounting packs, embedding the query, calling
+//! [`retrieve_pack`] per pack — is R4's job, exposed as a Tauri command.
 //!
 //! ## Per-pack gate (Δ1, §4.1)
 //! [`pack_passes_gate`] is the Δ1 safety mechanism: each mounted pack is
@@ -16,6 +19,9 @@
 //! gating must happen per-pack, pre-fusion, rather than post-fusion on
 //! "the winning pack's thresholds." [`pack_passes_gate_manifest`] is the
 //! same decision read off a pack's [`crate::manifest::Manifest`] directly.
+//! [`assemble`] is where this ordering is enforced end to end: it gates
+//! every [`PackHit`] independently (step 1) and only THEN cross-pack-fuses
+//! the survivors (step 3) — see [`assemble`]'s own doc comment.
 //!
 //! ## RRF (reciprocal rank fusion)
 //! [`rrf`] implements the standard formula: a chunk's fused score is the
@@ -25,7 +31,10 @@
 //! rank in two lanes can (and by design, should) outscore a great rank in
 //! only one. [`DEFAULT_K_RRF`] (60.0) is spec §4.1's default; it damps the
 //! influence of rank 1 vs. rank 2 (a smaller `k_rrf` makes top ranks
-//! dominate more sharply).
+//! dominate more sharply). [`assemble`]'s cross-pack fusion step reuses this
+//! same formula (via a private tuple-keyed analog, since a bare `chunk_id`
+//! is only unique WITHIN a pack) over each surviving pack's already-fused
+//! candidate list as one lane per pack.
 //!
 //! ## fts5 query safety
 //! Raw user query text can contain fts5 MATCH operators/syntax (`OR`,
@@ -38,6 +47,7 @@
 //! quoted phrases are fts5's implicit AND, so the result still means
 //! "every one of these words must appear" — just with zero operator
 //! parsing surface left for user-supplied text to exploit.
+use crate::contract::{self, RenderChunk};
 use crate::embed::dot_int8;
 use crate::format::{self, Pack};
 use crate::manifest::Manifest;
@@ -313,6 +323,237 @@ pub fn pack_passes_gate(candidates: &[Candidate], abs_floor: f64, rel_margin: f6
 /// pass-through.
 pub fn pack_passes_gate_manifest(candidates: &[Candidate], manifest: &Manifest) -> bool {
     pack_passes_gate(candidates, manifest.gate_abs_floor, manifest.gate_rel_margin)
+}
+
+/// Retrieval "budget" tiers (spec §4.3) driving how many chunks
+/// [`assemble`] selects into the final grounded prompt: [`Tier::Small`] is
+/// the constrained 1–2 GB on-device tier, [`Tier::Large`] the roomier tier
+/// on more capable hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Small,
+    Large,
+}
+
+impl Tier {
+    /// The maximum number of chunks [`assemble`] selects for this tier
+    /// (spec §4.3): 3 for [`Tier::Small`], 5 for [`Tier::Large`].
+    pub fn n(&self) -> usize {
+        match self {
+            Tier::Small => 3,
+            Tier::Large => 5,
+        }
+    }
+}
+
+/// One mounted pack's contribution to a single query: the pack itself, its
+/// manifest (for the gate thresholds, §4.1, and `pack_id`), and R1's
+/// [`retrieve_pack`] output for this query — `candidates` already in that
+/// pack's own per-pack fused rank order. Building these (mounting packs,
+/// embedding the query, calling `retrieve_pack` per pack) is R4's job;
+/// [`assemble`] only consumes them.
+pub struct PackHit<'a> {
+    pub pack: &'a Pack,
+    pub manifest: &'a Manifest,
+    pub candidates: Vec<Candidate>,
+}
+
+/// One displayed citation in a [`RetrievalResult::Grounded`] prompt: the
+/// numbered-source mapping a chat UI (§7) shows next to the model's answer.
+/// `n` is the citation's 1-based number, matching its position in the
+/// rendered `[n] (...)` line of the sources block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Citation {
+    pub n: usize,
+    pub pack_id: String,
+    pub chunk_id: i64,
+    pub doc_title: String,
+    pub section_path: String,
+    pub locator: String,
+}
+
+/// The outcome of a full retrieval + assembly pass (spec §4.1–4.2):
+/// either a grounded prompt with its citations, or
+/// [`RetrievalResult::NoEvidence`] when no mounted pack passed its own gate
+/// — the anti-hallucination contract this whole pipeline exists for: the
+/// runtime never fabricates a citation for a query nothing supports.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetrievalResult {
+    Grounded { prompt: String, citations: Vec<Citation> },
+    NoEvidence,
+}
+
+/// A [`rrf`] analog keyed on the cross-pack identity `(pack_index,
+/// chunk_id)` rather than a bare `chunk_id` — a `chunk_id` is only unique
+/// WITHIN one pack's `.kpack` file, so [`assemble`]'s cross-pack fusion
+/// (step 3) needs the pack index folded into the key to keep two different
+/// packs' chunk 1 from colliding. Identical formula and tie-break to
+/// [`rrf`] (deterministic: ties break ascending on the key tuple); kept as
+/// a small private duplicate rather than generalizing the public `rrf` over
+/// a type parameter, so R1's public signature and tests stay untouched.
+fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f64)> {
+    let mut scores: std::collections::HashMap<(usize, i64), f64> = std::collections::HashMap::new();
+    for lane in lanes {
+        for (idx, &key) in lane.iter().enumerate() {
+            let rank = (idx + 1) as f64; // 1-based
+            *scores.entry(key).or_insert(0.0) += 1.0 / (k_rrf + rank);
+        }
+    }
+    let mut fused: Vec<((usize, i64), f64)> = scores.into_iter().collect();
+    fused.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    fused
+}
+
+/// Spec §4.1–4.2's cross-pack pipeline, from the per-pack gate through the
+/// final grounded prompt.
+///
+/// 1. **Per-pack gate (Δ1 — BEFORE any cross-pack mixing):** keep only
+///    `hits` where [`pack_passes_gate_manifest`] is true for that pack's
+///    OWN `candidates`/`manifest`. A failing pack contributes NOTHING —
+///    not even at a diminished weight — to anything that follows. This is
+///    the Δ1 ordering [`pack_passes_gate`]'s doc comment explains in full:
+///    gating each pack independently, before fusion, guarantees the
+///    loosest-calibrated mounted pack can never lower the safety floor for
+///    a stricter pack's domain.
+/// 2. **`NO_EVIDENCE`:** if no pack passes its gate, return
+///    [`RetrievalResult::NoEvidence`] — no prompt, no citations.
+/// 3. **Cross-pack RRF over gate-passers only:** each surviving pack
+///    contributes one lane — its `candidates`' `chunk_id`s, in that pack's
+///    own already-fused rank order, paired with `hits`' index for that pack
+///    so `(pack_index, chunk_id)` is a stable global identity. Fused via
+///    [`cross_pack_rrf`] (same formula as [`rrf`], k = [`DEFAULT_K_RRF`]).
+///    This fused ranking is **NOT re-gated** on any pack's thresholds —
+///    gating already happened, per pack, in step 1; a pack that never
+///    passed its own gate was never a candidate for this step regardless of
+///    what its (hypothetical) fused score would have been.
+/// 4. **Tier select + dedupe:** walk the unified ranking top-down,
+///    selecting up to `tier.n()` chunks. Dedupe key: `(pack_index, doc_id,
+///    section_path)` — a v1 approximation of "same doc, overlapping
+///    window" (see the `TODO(§4-refine)` below); the higher-ranked chunk of
+///    an overlapping pair wins since the walk is top-down and a later
+///    duplicate key is simply skipped. `doc_id` comes from
+///    `pack.get_chunk(chunk_id)`.
+/// 5. **Assemble:** for each selected chunk (in rank order), fetch its doc
+///    title (`get_doc(chunk.doc_id)`), build a `contract::RenderChunk`, and
+///    render the numbered sources block via `contract::render_sources`. The
+///    final `prompt` is `contract::system_contract()` (trailing whitespace
+///    trimmed, so the layout doesn't depend on the contract file's exact
+///    trailing newline) + a blank line + the rendered sources block — kept
+///    to that one fixed two-part layout, nothing else. `citations` mirrors
+///    the rendered sources 1:1, `n` matching each line's `[n]`.
+pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
+    // 1. Per-pack gate -- Δ1: every mounted pack judged on its OWN
+    // calibrated thresholds, strictly before any cross-pack mixing. Index
+    // is `hits`' own index, not a re-numbering of the survivors -- kept
+    // stable so step 3's (pack_index, chunk_id) identity can always be
+    // traced back to `hits[pack_index]` in steps 4-5.
+    let passing: Vec<(usize, &PackHit<'_>)> = hits
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| pack_passes_gate_manifest(&hit.candidates, hit.manifest))
+        .collect();
+
+    // 2. NO_EVIDENCE: no mounted pack passed its own gate.
+    if passing.is_empty() {
+        return Ok(RetrievalResult::NoEvidence);
+    }
+
+    // 3. Cross-pack RRF over gate-passers ONLY. One lane per surviving
+    // pack; a pack that failed its own gate in step 1 contributes no lane
+    // at all, so its candidates cannot be rescued by outscoring a
+    // gate-passing pack's chunk here -- the fusion happens strictly after,
+    // and only among, packs that already cleared their OWN floor.
+    let lanes: Vec<Vec<(usize, i64)>> = passing
+        .iter()
+        .map(|(pack_index, hit)| {
+            hit.candidates
+                .iter()
+                .map(|c| (*pack_index, c.chunk_id))
+                .collect()
+        })
+        .collect();
+    let lane_refs: Vec<&[(usize, i64)]> = lanes.iter().map(Vec::as_slice).collect();
+    let unified = cross_pack_rrf(&lane_refs, DEFAULT_K_RRF);
+
+    // 4. Tier select + dedupe, walking the unified ranking top-down.
+    //
+    // TODO(§4-refine): true window-overlap dedup. This keys on exact
+    // `(pack_index, doc_id, section_path)` equality, not actual
+    // locator/window overlap -- two DIFFERENT, non-overlapping chunks that
+    // happen to share a `section_path` would be wrongly deduped, and two
+    // truly-overlapping chunks with different `section_path` labels would
+    // wrongly both survive. Good enough for v1 pending real overlap-range
+    // tracking in the chunker; documented here rather than silently
+    // approximated.
+    let mut selected: Vec<(usize, format::Chunk)> = Vec::with_capacity(tier.n());
+    let mut seen: std::collections::HashSet<(usize, i64, String)> = std::collections::HashSet::new();
+
+    for ((pack_index, chunk_id), _score) in unified {
+        if selected.len() >= tier.n() {
+            break;
+        }
+        let hit = &hits[pack_index];
+        // A missing chunk (get_chunk returning None) would be a
+        // build-pipeline invariant violation -- this chunk_id came straight
+        // out of THIS SAME pack's own candidates -- so it's skipped
+        // defensively rather than erroring the whole assemble call (same
+        // "shouldn't happen, degrade gracefully" posture as
+        // retrieve_pack's missing-embedding case).
+        let Some(chunk) = hit.pack.get_chunk(chunk_id)? else {
+            continue;
+        };
+        let key = (pack_index, chunk.doc_id, chunk.section_path.clone());
+        if !seen.insert(key) {
+            continue; // a higher-ranked chunk already claimed this (pack, doc, section)
+        }
+        selected.push((pack_index, chunk));
+    }
+
+    // 5. Assemble: resolve each selected chunk's doc (for its title),
+    // keeping chunk+doc+pack_index aligned so the RenderChunk/Citation
+    // built below stay in the same rank order.
+    let mut resolved: Vec<(usize, format::Chunk, format::Doc)> = Vec::with_capacity(selected.len());
+    for (pack_index, chunk) in selected {
+        let hit = &hits[pack_index];
+        // Same defensive posture as the chunk fetch above -- the schema's
+        // `doc_id INTEGER NOT NULL REFERENCES docs(id)` means a real
+        // chunk's doc should always resolve; skip rather than error if it
+        // somehow doesn't.
+        if let Some(doc) = hit.pack.get_doc(chunk.doc_id)? {
+            resolved.push((pack_index, chunk, doc));
+        }
+    }
+
+    let render_chunks: Vec<RenderChunk<'_>> = resolved
+        .iter()
+        .map(|(_, chunk, doc)| RenderChunk {
+            source_title: &doc.title,
+            section_path: &chunk.section_path,
+            locator: &chunk.locator,
+            text: &chunk.text,
+        })
+        .collect();
+    let sources_block = contract::render_sources(&render_chunks);
+    let prompt = format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block);
+
+    let citations: Vec<Citation> = resolved
+        .iter()
+        .enumerate()
+        .map(|(i, (pack_index, chunk, doc))| Citation {
+            n: i + 1,
+            pack_id: hits[*pack_index].manifest.pack_id.clone(),
+            chunk_id: chunk.id,
+            doc_title: doc.title.clone(),
+            section_path: chunk.section_path.clone(),
+            locator: chunk.locator.clone(),
+        })
+        .collect();
+
+    Ok(RetrievalResult::Grounded { prompt, citations })
 }
 
 #[cfg(test)]
@@ -896,5 +1137,309 @@ mod tests {
             "n=12 must use rank-10's cosine (0.70) for the margin, not rank-12's (0.05) -- \
              using the last rank would wrongly pass"
         );
+    }
+
+    /// Builds a fresh empty `.kpack` at a unique temp path -- shared setup
+    /// for the `assemble` tests below, which insert their own docs/chunks
+    /// directly (no embedder needed; `assemble` never calls `vec_search` /
+    /// `fts_search` / `get_embedding` -- it only reads back `Chunk`/`Doc`
+    /// rows for chunk_ids the caller's synthetic `Candidate`s already name).
+    fn empty_pack(name: &str) -> Pack {
+        let dir = unique_dir(name);
+        let path = dir.join("pack.kpack");
+        Pack::open_or_create(&path, TEST_DIMS).unwrap()
+    }
+
+    /// Inserts one doc + one chunk into `pack` and returns the chunk's id.
+    /// `section_path`/`locator` are exposed so dedupe tests can construct
+    /// two chunks that share a `section_path` (the v1 dedupe key).
+    fn insert_test_chunk(pack: &Pack, section_path: &str, locator: &str, text: &str) -> i64 {
+        let doc_id = pack.insert_doc(&sample_doc()).unwrap();
+        let chunk = Chunk {
+            id: 0,
+            doc_id,
+            section_path: section_path.to_string(),
+            locator: locator.to_string(),
+            prefix: String::new(),
+            text: text.to_string(),
+            token_count: text.split_whitespace().count() as i64,
+        };
+        pack.insert_chunk(&chunk).unwrap()
+    }
+
+    // 15. Single pack passes its gate -> Grounded: the prompt contains the
+    // system contract text AND a rendered "[1] (...)" source line;
+    // citations map 1:1 to the rendered sources (one candidate in, one
+    // citation out, numbered from 1); citation count <= tier.n().
+    #[test]
+    fn t15_assemble_single_pack_passes_gate_yields_grounded() {
+        let pack = empty_pack("t15-single-pack-grounded");
+        let chunk_id = insert_test_chunk(&pack, "Intro", "p.1", "hello world");
+
+        let manifest = test_manifest(0.5, 0.05);
+        let candidates = vec![candidate(chunk_id, 0.9)]; // n==1: floor alone, well clear of 0.5
+
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates,
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+
+        match result {
+            RetrievalResult::Grounded { prompt, citations } => {
+                assert!(
+                    prompt.contains(contract::system_contract().trim_end()),
+                    "prompt must contain the system contract text"
+                );
+                assert!(
+                    prompt.contains("[1] ("),
+                    "prompt must contain the rendered numbered source line: {prompt}"
+                );
+                assert_eq!(citations.len(), 1);
+                assert!(citations.len() <= Tier::Small.n());
+                assert_eq!(citations[0].n, 1);
+                assert_eq!(citations[0].chunk_id, chunk_id);
+                assert_eq!(citations[0].pack_id, manifest.pack_id);
+                assert_eq!(citations[0].section_path, "Intro");
+                assert_eq!(citations[0].locator, "p.1");
+            }
+            RetrievalResult::NoEvidence => panic!("expected Grounded, got NoEvidence"),
+        }
+    }
+
+    // 16. All packs fail their gate -> NoEvidence. Two packs, both with a
+    // single candidate whose dense_cosine sits below that pack's own
+    // gate_abs_floor.
+    #[test]
+    fn t16_assemble_all_packs_fail_gate_yields_no_evidence() {
+        let pack_a = empty_pack("t16-fail-pack-a");
+        let pack_b = empty_pack("t16-fail-pack-b");
+        let chunk_a = insert_test_chunk(&pack_a, "A", "p.1", "pack a chunk");
+        let chunk_b = insert_test_chunk(&pack_b, "B", "p.1", "pack b chunk");
+
+        let manifest_a = test_manifest(0.9, 0.05);
+        let manifest_b = test_manifest(0.9, 0.05);
+
+        let hit_a = PackHit {
+            pack: &pack_a,
+            manifest: &manifest_a,
+            candidates: vec![candidate(chunk_a, 0.3)], // well below floor 0.9
+        };
+        let hit_b = PackHit {
+            pack: &pack_b,
+            manifest: &manifest_b,
+            candidates: vec![candidate(chunk_b, 0.4)], // also below floor 0.9
+        };
+
+        let result = assemble(&[hit_a, hit_b], Tier::Large).unwrap();
+        assert_eq!(result, RetrievalResult::NoEvidence);
+    }
+
+    // 17. Δ1 regression (the crux): a STRICT pack (high gate_abs_floor)
+    // whose single candidate sits just below ITS floor (fails its own
+    // gate), and a LOOSE pack (low gate_abs_floor) whose single candidate
+    // clears ITS floor (passes). The strict pack's candidate is given a
+    // much higher fused_score than the loose pack's -- so if fusion ever
+    // happened BEFORE gating (or gating were applied post-fusion against
+    // only the winning pack's thresholds), the strict pack's chunk would
+    // dominate the cross-pack ranking. Because gating happens per-pack,
+    // strictly BEFORE cross-pack fusion (Δ1), the strict pack contributes
+    // NOTHING regardless of that fused_score advantage: the result must
+    // contain only the loose pack's citation, and the strict pack's
+    // chunk_id must never appear.
+    #[test]
+    fn t17_assemble_delta1_gate_before_fusion_regression() {
+        let strict_pack = empty_pack("t17-strict-pack");
+        let strict_chunk_id = insert_test_chunk(&strict_pack, "S", "p.1", "strict pack chunk");
+        let mut strict_manifest = test_manifest(0.9, 0.05);
+        strict_manifest.pack_id = "strict-pack".to_string();
+
+        let loose_pack = empty_pack("t17-loose-pack");
+        let loose_chunk_id = insert_test_chunk(&loose_pack, "L", "p.1", "loose pack chunk");
+        let mut loose_manifest = test_manifest(0.2, 0.0);
+        loose_manifest.pack_id = "loose-pack".to_string();
+
+        let strict_hit = PackHit {
+            pack: &strict_pack,
+            manifest: &strict_manifest,
+            // dense_cosine 0.85 < abs_floor 0.9 -> fails its OWN gate (n==1,
+            // floor-only rule). fused_score 100.0 is deliberately far above
+            // the loose pack's, so it would out-RRF the loose chunk if
+            // fusion ran before (or independently of) the per-pack gate.
+            candidates: vec![Candidate {
+                chunk_id: strict_chunk_id,
+                fused_score: 100.0,
+                dense_cosine: 0.85,
+            }],
+        };
+        let loose_hit = PackHit {
+            pack: &loose_pack,
+            manifest: &loose_manifest,
+            // dense_cosine 0.25 >= abs_floor 0.2 -> passes (n==1, floor
+            // alone). fused_score 1.0 is far below the strict candidate's.
+            candidates: vec![Candidate {
+                chunk_id: loose_chunk_id,
+                fused_score: 1.0,
+                dense_cosine: 0.25,
+            }],
+        };
+
+        let result = assemble(&[strict_hit, loose_hit], Tier::Large).unwrap();
+        match result {
+            RetrievalResult::Grounded { citations, .. } => {
+                assert_eq!(
+                    citations.len(),
+                    1,
+                    "only the loose pack's chunk should survive to the fused result"
+                );
+                assert_eq!(citations[0].chunk_id, loose_chunk_id);
+                assert_eq!(citations[0].pack_id, "loose-pack");
+                // Cross-pack identity must be checked on `pack_id`, NOT bare
+                // `chunk_id` -- a chunk_id is only a SQLite rowid, unique
+                // WITHIN one pack's file, so `strict_chunk_id` and
+                // `loose_chunk_id` can (and here do, both being the first
+                // chunk inserted into a fresh pack) collide numerically
+                // across packs. `pack_id` is the only field that actually
+                // distinguishes which pack a citation came from.
+                assert!(
+                    citations.iter().all(|c| c.pack_id != "strict-pack"),
+                    "the strict pack must NEVER contribute a citation -- it failed its own \
+                     gate before cross-pack fusion ever ran, regardless of its fused_score"
+                );
+            }
+            RetrievalResult::NoEvidence => panic!("expected Grounded from the loose pack alone"),
+        }
+    }
+
+    // 18. Tier select: more gate-passing candidates than tier.n() -> exactly
+    // tier.n() selected. Six distinct docs/chunks (no dedupe collisions),
+    // candidates given in descending dense_cosine/fused_score order so the
+    // (single-lane) fused rank order is exactly the input order. Small=3,
+    // Large=5.
+    #[test]
+    fn t18_assemble_tier_select_caps_at_tier_n() {
+        let pack = empty_pack("t18-tier-select");
+        let cosines = [0.90, 0.85, 0.80, 0.75, 0.70, 0.65];
+        let mut candidates = Vec::with_capacity(cosines.len());
+        for (i, &cos) in cosines.iter().enumerate() {
+            let chunk_id = insert_test_chunk(
+                &pack,
+                &format!("Section {i}"),
+                &format!("p.{i}"),
+                &format!("chunk body {i}"),
+            );
+            candidates.push(Candidate {
+                chunk_id,
+                fused_score: 10.0 - i as f64,
+                dense_cosine: cos,
+            });
+        }
+        // top1 = 0.90, rank-6 (last, n=6<10) = 0.65, margin = 0.25 -- clears
+        // abs_floor 0.5 / rel_margin 0.05 comfortably.
+        let manifest = test_manifest(0.5, 0.05);
+
+        let hit_small = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: candidates.clone(),
+        };
+        let result_small = assemble(&[hit_small], Tier::Small).unwrap();
+        let RetrievalResult::Grounded {
+            citations: citations_small,
+            ..
+        } = result_small
+        else {
+            panic!("expected Grounded");
+        };
+        assert_eq!(citations_small.len(), Tier::Small.n());
+        assert_eq!(citations_small.len(), 3);
+
+        let hit_large = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates,
+        };
+        let result_large = assemble(&[hit_large], Tier::Large).unwrap();
+        let RetrievalResult::Grounded {
+            citations: citations_large,
+            ..
+        } = result_large
+        else {
+            panic!("expected Grounded");
+        };
+        assert_eq!(citations_large.len(), Tier::Large.n());
+        assert_eq!(citations_large.len(), 5);
+    }
+
+    // 19. Dedupe: two chunks from the SAME doc that share a section_path
+    // (the v1 "overlapping window" approximation) -> only the higher-ranked
+    // of the pair appears in the final citations.
+    #[test]
+    fn t19_assemble_dedupes_overlapping_same_doc_chunks() {
+        let pack = empty_pack("t19-dedupe");
+        let doc_id = pack.insert_doc(&sample_doc()).unwrap();
+        let chunk_a = Chunk {
+            id: 0,
+            doc_id,
+            section_path: "Same Section".to_string(),
+            locator: "p.1-2".to_string(),
+            prefix: String::new(),
+            text: "chunk a text".to_string(),
+            token_count: 3,
+        };
+        let chunk_a_id = pack.insert_chunk(&chunk_a).unwrap();
+        let chunk_b = Chunk {
+            id: 0,
+            doc_id,
+            section_path: "Same Section".to_string(),
+            locator: "p.2-3".to_string(),
+            prefix: String::new(),
+            text: "chunk b text overlapping a".to_string(),
+            token_count: 5,
+        };
+        let chunk_b_id = pack.insert_chunk(&chunk_b).unwrap();
+
+        let manifest = test_manifest(0.5, 0.0);
+        let candidates = vec![
+            // Ranked first (higher fused_score, and first in this single
+            // lane's order) -- must be the survivor.
+            Candidate {
+                chunk_id: chunk_a_id,
+                fused_score: 2.0,
+                dense_cosine: 0.9,
+            },
+            Candidate {
+                chunk_id: chunk_b_id,
+                fused_score: 1.0,
+                dense_cosine: 0.85,
+            },
+        ];
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates,
+        };
+
+        let result = assemble(&[hit], Tier::Large).unwrap();
+        let RetrievalResult::Grounded { citations, .. } = result else {
+            panic!("expected Grounded");
+        };
+        assert_eq!(
+            citations.len(),
+            1,
+            "the lower-ranked overlapping chunk must be deduped out"
+        );
+        assert_eq!(
+            citations[0].chunk_id, chunk_a_id,
+            "the higher-ranked chunk of the overlapping pair must survive"
+        );
+    }
+
+    // 20. Empty hits -> NoEvidence, no panic.
+    #[test]
+    fn t20_assemble_empty_hits_yields_no_evidence_no_panic() {
+        let result = assemble(&[], Tier::Small).unwrap();
+        assert_eq!(result, RetrievalResult::NoEvidence);
     }
 }
