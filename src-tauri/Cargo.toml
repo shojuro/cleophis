@@ -20,6 +20,14 @@ tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["windows-native", "linux-native"] }
 sha2 = "0.10"
 tauri-plugin-opener = "2"
+# K9: the on-device knowledge-pack core + its real embedder backend. Pulling
+# in `kpack-embed` with `features = ["real"]` here (not just `kpack-core`)
+# is deliberate — the shipping app carries the real bge-base-en-v1.5
+# embedder, not a mock, so the APP build requires the native llama.cpp
+# toolchain (libclang + cmake) exactly like `kpack-embed`'s own doc comment
+# says it must for any consumer that turns this feature on.
+kpack-core = { path = "../crates/kpack-core" }
+kpack-embed = { path = "../crates/kpack-embed", features = ["real"] }
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"

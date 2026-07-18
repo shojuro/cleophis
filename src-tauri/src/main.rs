@@ -4,6 +4,7 @@ mod catalog;
 mod cloud;
 mod hardware;
 mod inference;
+mod kpack;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,6 +94,8 @@ fn main() {
             detect_hardware,
             engine_info,
             load_model,
+            kpack::mount_pack,
+            kpack::build_personal_pack,
             cloud::commands::sign_up,
             cloud::commands::sign_in,
             cloud::commands::sign_out,
