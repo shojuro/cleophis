@@ -147,6 +147,19 @@ pub fn run_download(
     if auth.file_bytes != expected_bytes {
         return Err("Catalog out of date — please update the app.".to_string());
     }
+    // Real builds only: this module's own test suite below drives
+    // `run_download` against `test_support::start_ranged_server`, which
+    // speaks plain HTTP on 127.0.0.1 (no TLS) — the gate would reject every
+    // one of those mock URLs on scheme alone before a single byte streams.
+    // `download_host_allowed` is validated directly by its own unit tests
+    // instead (see the `download_host_allowed_*` tests below), so this
+    // cfg-gate costs no coverage of the validator itself, only of this one
+    // call site — the same "testability knob" pattern `streaming_agent`
+    // uses above for its read timeout.
+    #[cfg(not(test))]
+    if !download_host_allowed(&auth.url) {
+        return Err("Download source not recognized — please update the app.".to_string());
+    }
 
     let agent = streaming_agent();
     let mut consecutive_failures: u32 = 0;
@@ -421,6 +434,36 @@ fn rehash_existing(path: &Path, hasher: &mut Sha256) -> Result<(), String> {
     Ok(())
 }
 
+/// Gates the B2 download URL before the per-request auth token is attached
+/// to it: `true` iff `url` starts with `https://` AND its host is exactly
+/// `dl.cleophis.com` or ends with `.backblazeb2.com`. Defense-in-depth —
+/// TLS already blocks MITM and the edge function that mints `auth.url` is
+/// trusted — against a buggy/compromised edge function or a CDN 3xx sending
+/// the raw B2 `Authorization` token to an unintended host. Mirrors the
+/// Stripe URL-gate discipline in `cloud::session::checkout_outcome` /
+/// `portal_outcome`.
+///
+/// Hand-parsed rather than pulling in the `url` crate (not already a dep):
+/// strip the `https://` prefix, take the authority up to the next `/`, then
+/// take everything after the LAST `@` (dropping any userinfo — `user:pass@host`,
+/// or an attacker's `@evil.com` suffix trick) and before any `:port`. The
+/// suffix check is dot-anchored (`ends_with(".backblazeb2.com")`) so
+/// `evil-backblazeb2.com` does NOT match, and equality is exact so
+/// `dl.cleophis.com.evil.com` does NOT match either.
+fn download_host_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    // Host is whatever follows the LAST '@' (userinfo, per URL authority
+    // syntax, is everything before it — an unencoded '@' cannot appear
+    // inside the host itself).
+    let host_and_port = authority.rsplit('@').next().unwrap_or("");
+    let host = host_and_port.split(':').next().unwrap_or("");
+
+    host == "dl.cleophis.com" || host.ends_with(".backblazeb2.com")
+}
+
 /// Streaming agent: connect timeout from `config::CONNECT_TIMEOUT`, NO
 /// overall timeout (large files legitimately take a long time), and a read
 /// timeout that is the real stall guard — see the module doc comment for
@@ -434,6 +477,11 @@ fn streaming_agent() -> ureq::Agent {
         .timeout_connect(config::CONNECT_TIMEOUT)
         .timeout_read(Duration::from_millis(read_timeout_ms))
         .timeout_write(Duration::from_secs(30))
+        // A B2/CDN signed download URL never legitimately redirects — no
+        // redirects means a 3xx surfaces as a non-2xx status instead of
+        // ureq silently re-attaching the `Authorization` header (with the
+        // raw B2 token) to whatever Location host the response names.
+        .redirects(0)
         .build()
 }
 
@@ -1463,5 +1511,52 @@ mod tests {
         assert!(err.contains("Catalog out of date"), "error was: {err}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 11. Accept: the production download host, plain path.
+    #[test]
+    fn download_host_allowed_accepts_cleophis_dl_host() {
+        assert!(download_host_allowed("https://dl.cleophis.com/file/abc"));
+    }
+
+    // 12. Accept: a B2 CDN host by dotted suffix.
+    #[test]
+    fn download_host_allowed_accepts_backblazeb2_suffix() {
+        assert!(download_host_allowed("https://f005.backblazeb2.com/file/abc"));
+    }
+
+    // 13. Reject: plain http, even for an otherwise-allowed host.
+    #[test]
+    fn download_host_allowed_rejects_plain_http() {
+        assert!(!download_host_allowed("http://dl.cleophis.com/file/abc"));
+    }
+
+    // 14. Reject: an unrelated host entirely.
+    #[test]
+    fn download_host_allowed_rejects_unrelated_host() {
+        assert!(!download_host_allowed("https://evil.com/file/abc"));
+    }
+
+    // 15. Reject: `dl.cleophis.com` as a subdomain LABEL of an attacker
+    // domain, not the real host — exact match only, no prefix match.
+    #[test]
+    fn download_host_allowed_rejects_cleophis_host_as_subdomain_of_evil() {
+        assert!(!download_host_allowed("https://dl.cleophis.com.evil.com/file/abc"));
+    }
+
+    // 16. Reject: a host that merely contains "backblazeb2.com" without the
+    // leading dot — the suffix check is dot-anchored, not a substring match.
+    #[test]
+    fn download_host_allowed_rejects_backblazeb2_lookalike() {
+        assert!(!download_host_allowed("https://evil-backblazeb2.com/file/abc"));
+    }
+
+    // 17. Reject: the userinfo trick — an allowed-looking host placed BEFORE
+    // an `@`, with the real (disallowed) host after it.
+    #[test]
+    fn download_host_allowed_rejects_userinfo_trick() {
+        assert!(!download_host_allowed(
+            "https://f005.backblazeb2.com@evil.com/file/abc"
+        ));
     }
 }
