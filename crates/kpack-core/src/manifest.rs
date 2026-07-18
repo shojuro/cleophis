@@ -20,10 +20,12 @@
 //! concurrently-read pack.
 //!
 //! ## The load-time gate (§1.2)
-//! `check_load` runs the three checks the spec mandates, in order, each
-//! fail-closed with a reason meant to be shown to a user: embedder hash →
-//! dims → schema version. Curated-pack signature verification is explicitly
-//! NOT here — see the `// K3:` seam comment in `check_load`.
+//! `check_load` runs four checks, in order, each fail-closed with a reason
+//! meant to be shown to a user: embedder hash → dims → schema version →
+//! vec format version (the last enforces the compatibility field the plan's
+//! risk note calls out; the first three are the spec-mandated ones).
+//! Curated-pack signature verification is explicitly NOT here — see the
+//! `// K3:` seam comment in `check_load`.
 
 use crate::format::{Error, Pack, SCHEMA_VERSION};
 use std::path::Path;
@@ -139,8 +141,8 @@ impl Manifest {
             embedding_quant: require(pack, "embedding_quant")?,
             chunk_target_tokens: require_u32(pack, "chunk_target_tokens")?,
             chunk_overlap_pct: require_u32(pack, "chunk_overlap_pct")?,
-            gate_abs_floor: require_f64(pack, "gate_abs_floor")?,
-            gate_rel_margin: require_f64(pack, "gate_rel_margin")?,
+            gate_abs_floor: require_gate_threshold(pack, "gate_abs_floor")?,
+            gate_rel_margin: require_gate_threshold(pack, "gate_rel_margin")?,
             gate_calibrated: require_bool(pack, "gate_calibrated")?,
             prefixes_present: require_bool(pack, "prefixes_present")?,
             built_by: require(pack, "built_by")?,
@@ -160,11 +162,18 @@ fn bool_str(b: bool) -> &'static str {
 }
 
 /// Read a mandatory manifest key as a raw string, or a plain-language error
-/// naming it.
+/// naming it. An empty string is treated the same as missing (an empty
+/// `embedder_sha256` or `pack_id` must never read as valid).
 fn require(pack: &Pack, key: &str) -> Result<String, Error> {
-    pack.manifest_get(key)?.ok_or_else(|| {
+    let raw = pack.manifest_get(key)?.ok_or_else(|| {
         Error::Schema(format!("manifest: missing/invalid key {key}: not present"))
-    })
+    })?;
+    if raw.is_empty() {
+        return Err(Error::Schema(format!(
+            "manifest: mandatory key {key} is empty"
+        )));
+    }
+    Ok(raw)
 }
 
 fn require_u32(pack: &Pack, key: &str) -> Result<u32, Error> {
@@ -192,6 +201,22 @@ fn require_f64(pack: &Pack, key: &str) -> Result<f64, Error> {
             "manifest: missing/invalid key {key}: not a valid number ({e}, got {raw:?})"
         ))
     })
+}
+
+/// Read a mandatory f64 that also feeds the §4 safety gate as a threshold
+/// (`gate_abs_floor`, `gate_rel_margin`) — on top of `require_f64`'s parse,
+/// reject non-finite (`NaN`/`inf`) values and negatives. A negative
+/// `gate_abs_floor` in particular would fail OPEN in the safety gate, so
+/// this is stricter than the generic f64 reader on purpose; other f64
+/// manifest fields have no such constraint and keep using `require_f64`.
+fn require_gate_threshold(pack: &Pack, key: &str) -> Result<f64, Error> {
+    let value = require_f64(pack, key)?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::Schema(format!(
+            "manifest: missing/invalid key {key}: must be a finite, non-negative number (got {value})"
+        )));
+    }
+    Ok(value)
 }
 
 fn require_bool(pack: &Pack, key: &str) -> Result<bool, Error> {
@@ -226,9 +251,9 @@ pub struct LoadContext<'a> {
 }
 
 /// The load-time integrity gate (§1.2) — the checks that must pass before
-/// ANY query touches a mounted pack, run in the spec's mandated order:
-/// embedder hash → dims → schema version. Each failure is fail-closed with
-/// a plain-language reason (never a raw SQLite/parse error surfaced to the
+/// ANY query touches a mounted pack, run in order: embedder hash → dims →
+/// schema version → vec format version. Each failure is fail-closed with a
+/// plain-language reason (never a raw SQLite/parse error surfaced to the
 /// user).
 ///
 /// Takes `pack` in addition to `manifest` because the dims check needs the
@@ -263,19 +288,41 @@ pub fn check_load(manifest: &Manifest, ctx: &LoadContext, pack: &Pack) -> Result
         )));
     }
 
-    // 3. Schema version: refuse only if the pack is NEWER than this build
-    // understands. Equal or older is fine at v1 (older only matters once
-    // migrations exist, and no pre-v1 packs exist to be older than v1).
-    if manifest.schema_version > SCHEMA_VERSION {
+    // 3. Schema version: v1 requires an exact match. Migrations don't exist
+    // yet, so "older" isn't safe to accept either (that also let a tampered
+    // `0`/negative schema_version through); distinguish the two directions
+    // since the fix differs (update the app vs. rebuild the pack).
+    if manifest.schema_version != SCHEMA_VERSION {
+        let reason = if manifest.schema_version > SCHEMA_VERSION {
+            format!(
+                "this pack was built by a newer version of the app (pack schema {}, \
+                 this build supports {}) — please update",
+                manifest.schema_version, SCHEMA_VERSION
+            )
+        } else {
+            format!(
+                "this pack was built by an older schema (pack schema {}, this build \
+                 supports {}) — rebuild the pack",
+                manifest.schema_version, SCHEMA_VERSION
+            )
+        };
+        return Err(Error::Schema(reason));
+    }
+
+    // 4. Vector format version: the on-disk `vec0` format is a
+    // pack-compatibility surface exactly like the embedder hash (plan risk
+    // note) — v1 requires an exact match. A future format-compatible
+    // sqlite-vec bump would extend this to an accepted-set as a
+    // coordinated, deliberate event, not silently accepted here.
+    if manifest.vec_format_version != VEC_FORMAT_VERSION {
         return Err(Error::Schema(format!(
-            "this pack was built by a newer version of the app (pack schema {}, \
-             this build supports {}) — please update",
-            manifest.schema_version, SCHEMA_VERSION
+            "this pack uses vector format {} but this app builds/reads {} — update the app",
+            manifest.vec_format_version, VEC_FORMAT_VERSION
         )));
     }
 
     // K3: curated-only ed25519 signature verification slots in here, after
-    // all three checks above pass.
+    // all four checks above pass.
 
     Ok(())
 }
@@ -498,5 +545,106 @@ mod tests {
         }
         let result = Pack::mount(&bad_path, &ctx);
         assert!(result.is_err());
+    }
+
+    // 9. Gate happy path: embedder hash match is case-insensitive (the
+    // available set has the hash in a different case than the manifest) ->
+    // still passes. This is the security-relevant branch (t5's mirror) and
+    // was previously untested.
+    #[test]
+    fn t9_gate_embedder_hash_match_is_case_insensitive() {
+        let dir = unique_dir("t9");
+        let pack = Pack::open_or_create(dir.join("t9.kpack"), TEST_DIMS).unwrap();
+        let m = sample_manifest();
+        m.write(&pack).unwrap();
+
+        let available = vec![m.embedder_sha256.to_uppercase()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+        };
+        check_load(&m, &ctx, &pack).unwrap();
+    }
+
+    // 10. Gate refuses: an empty available_embedder_sha256 set can never
+    // match -> refuse (not a panic, not an accidental pass).
+    #[test]
+    fn t10_gate_refuses_empty_available_embedder_set() {
+        let dir = unique_dir("t10");
+        let pack = Pack::open_or_create(dir.join("t10.kpack"), TEST_DIMS).unwrap();
+        let m = sample_manifest();
+        m.write(&pack).unwrap();
+
+        let available: Vec<String> = Vec::new();
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+        };
+        let err = check_load(&m, &ctx, &pack).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+    }
+
+    // 11. license_ref = None round-trips: write a manifest with no license
+    // (personal pack), read it back, still None.
+    #[test]
+    fn t11_license_ref_none_roundtrips() {
+        let dir = unique_dir("t11");
+        let pack = Pack::open_or_create(dir.join("t11.kpack"), TEST_DIMS).unwrap();
+        let mut m = sample_manifest();
+        m.pack_tier = PackTier::Personal;
+        m.license_ref = None;
+        m.write(&pack).unwrap();
+
+        let got = Manifest::read(&pack).unwrap();
+        assert_eq!(got.license_ref, None);
+        assert_eq!(got, m);
+    }
+
+    // 12. Gate refuses: vec_format_version mismatch -> refuse (Fix 1: the
+    // previously-inert compatibility field).
+    #[test]
+    fn t12_gate_refuses_vec_format_version_mismatch() {
+        let dir = unique_dir("t12");
+        let pack = Pack::open_or_create(dir.join("t12.kpack"), TEST_DIMS).unwrap();
+        let mut m = sample_manifest();
+        m.vec_format_version = "0.0.1-not-what-we-build".to_string();
+        m.write(&pack).unwrap();
+
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+        };
+        let err = check_load(&m, &ctx, &pack).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        assert!(err.to_string().contains("vector format"));
+    }
+
+    // 13. Empty mandatory string (pack_id="") reads as missing, not valid.
+    #[test]
+    fn t13_empty_mandatory_string_refuses() {
+        let dir = unique_dir("t13");
+        let pack = Pack::open_or_create(dir.join("t13.kpack"), TEST_DIMS).unwrap();
+        sample_manifest().write(&pack).unwrap();
+        pack.manifest_set("pack_id", "").unwrap();
+
+        let err = Manifest::read(&pack).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("pack_id"), "error should name the key: {msg}");
+    }
+
+    // 14. Negative gate_abs_floor refuses: a negative absolute floor would
+    // fail OPEN in the §4 safety gate, so it must never parse as valid.
+    #[test]
+    fn t14_negative_gate_abs_floor_refuses() {
+        let dir = unique_dir("t14");
+        let pack = Pack::open_or_create(dir.join("t14.kpack"), TEST_DIMS).unwrap();
+        sample_manifest().write(&pack).unwrap();
+        pack.manifest_set("gate_abs_floor", "-0.1").unwrap();
+
+        let err = Manifest::read(&pack).unwrap_err();
+        assert!(matches!(err, Error::Schema(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gate_abs_floor"),
+            "error should name the key: {msg}"
+        );
     }
 }

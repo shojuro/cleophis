@@ -365,11 +365,17 @@ impl Pack {
     /// compares the manifest's self-report against this, so a mismatch is
     /// caught before any query runs against a wrongly-sized vector.
     pub fn vec_dims(&self) -> Result<u32> {
-        let sql: String = self.conn.query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec'",
-            [],
-            |row| row.get(0),
-        )?;
+        let sql: String = self
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                Error::Schema("not a valid .kpack: vector table missing".to_string())
+            })?;
         // This crate always creates the table as
         // `... USING vec0(chunk_id INTEGER PRIMARY KEY, embedding int8[<N>])`;
         // pull `<N>` out of the stored DDL text.
