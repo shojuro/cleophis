@@ -129,7 +129,7 @@ the scoped API token `CLOUDFLARE_API_TOKEN` in `~/.env`):
   (strict); Always Use HTTPS on.
 - A WAF custom rule **skips** bot/challenge products (`bic`,
   `securityLevel`, `uaBlock`, `zoneLockdown`, `waf`, `rateLimit`) for
-  `http.host eq "dl.cleophis.com"` — the Rust reqwest client is not a
+  `http.host eq "dl.cleophis.com"` — the Rust ureq client is not a
   browser and must never be challenged.
 - The 2 GB GGUF exceeds the Free plan's 512 MB cache ceiling, so requests
   pass through uncached. That's fine: Backblaze waives egress to
