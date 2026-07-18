@@ -18,19 +18,9 @@ import Stripe from "npm:stripe@22.3.2";
 
 const cryptoProvider = Stripe.createSubtleCryptoProvider();
 
-// In-source purchase-validation registry. Keep in sync with create-checkout's
-// MODELS registry (supabase/functions/create-checkout/index.ts) and with the
-// catalog on the client side (src/app.js / src-tauri) — this is the amount
-// and currency this webhook will accept as a valid completed purchase for a
-// given model_id. A Checkout Session that doesn't match exactly is rejected
-// rather than trusted, so a stale/misconfigured Stripe Price can't silently
-// grant an entitlement for the wrong price.
-const EXPECTED: Record<string, { amount: number; currency: string }> = {
-  "socratic-tutor": { amount: 2000, currency: "usd" },
-};
-
-// Task Sub2: in-source subscription-validation registry, alongside EXPECTED.
-// Keep in sync with create-checkout's MODELS and the catalog. Subscription
+// In-source subscription-validation registry. Keep in sync with
+// create-checkout's MODELS registry (supabase/functions/create-checkout/index.ts)
+// and the catalog on the client side (src/app.js / src-tauri). Subscription
 // entitlements are validated by PRICE ID (stronger than amount; immune to
 // proration).
 const SUB_MODELS: Record<string, { priceEnv: string }> = {
@@ -330,106 +320,19 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "invalid_signature" }, 400);
   }
 
-  // Ignore-list: this endpoint subscribes to two event types —
-  // checkout.session.completed (one-time purchases) and invoice.paid
-  // (subscription period grants/renewals, Task Sub2). Every other event
-  // Stripe might deliver to this endpoint (including async_payment_succeeded
-  // / async_payment_failed) is deliberately unhandled — card payments
-  // complete synchronously, so checkout.session.completed with
-  // payment_status: 'paid' is already the final state for the payment
-  // methods this app accepts. Returning 200 here (rather than 400) tells
-  // Stripe delivery succeeded, so it won't retry an event this function
-  // will never act on.
+  // Ignore-list: this endpoint acts on exactly one event type —
+  // invoice.paid (subscription period grants/renewals, Task Sub2).
   if (event.type === "invoice.paid") {
     return await handleInvoicePaid(event, supabaseUrl!, serviceRoleKey!);
   }
 
-  if (event.type !== "checkout.session.completed") {
-    return jsonResponse({ received: true }, 200);
-  }
-
-  const session = event.data.object as Stripe.Checkout.Session;
-
-  // Only a completed, paid, one-time payment counts — anything else
-  // (subscription mode, unpaid/no-payment-required sessions) is ignored
-  // rather than treated as an error, since Stripe can legitimately deliver
-  // checkout.session.completed for sessions this app doesn't sell through.
-  if (session.mode !== "payment" || session.payment_status !== "paid") {
-    return jsonResponse({ received: true }, 200);
-  }
-
-  const rawUserId = session.metadata?.user_id;
-  const rawModelId = session.metadata?.model_id;
-
-  // Every check below must pass before an entitlement is ever written.
-  // Each branch returns immediately (rather than accumulating a flag) so
-  // TypeScript can narrow userId/modelId to `string` afterward without a
-  // cast. Logging WHICH check failed is safe: model_id/user_id are ours,
-  // and no secret material is involved.
-  if (typeof rawUserId !== "string" || !USER_ID_RE.test(rawUserId)) {
-    console.error(
-      `stripe-webhook validation failed: check=user_id session=${session.id} ` +
-        `user_id=${String(rawUserId)} model_id=${String(rawModelId)}`,
-    );
-    return jsonResponse({ error: "validation_failed" }, 400);
-  }
-  if (typeof rawModelId !== "string" || !Object.hasOwn(EXPECTED, rawModelId)) {
-    console.error(
-      `stripe-webhook validation failed: check=model_id session=${session.id} ` +
-        `user_id=${rawUserId} model_id=${String(rawModelId)}`,
-    );
-    return jsonResponse({ error: "validation_failed" }, 400);
-  }
-  const userId = rawUserId;
-  const modelId = rawModelId;
-  const expected = EXPECTED[modelId];
-  if (session.amount_total !== expected.amount) {
-    console.error(
-      `stripe-webhook validation failed: check=amount_total session=${session.id} ` +
-        `user_id=${userId} model_id=${modelId}`,
-    );
-    return jsonResponse({ error: "validation_failed" }, 400);
-  }
-  if (session.currency !== expected.currency) {
-    console.error(
-      `stripe-webhook validation failed: check=currency session=${session.id} ` +
-        `user_id=${userId} model_id=${modelId}`,
-    );
-    return jsonResponse({ error: "validation_failed" }, 400);
-  }
-
-  const supabase = createClient(supabaseUrl!, serviceRoleKey!);
-
-  // UPSERT via service-role client — THE landmine fix. A client-writable
-  // 'trial'/'library' row for this (user_id, model_id) must be upgraded to
-  // 'purchase' in place, never dropped and recreated: a plain insert would
-  // 23505-conflict on the unique(user_id, model_id) constraint, and a
-  // delete+insert would race a concurrent download-url entitlement check
-  // and briefly show the user as unentitled for a model they just paid
-  // for (or already owned via trial/library).
-  //
-  // created_at is omitted deliberately: on conflict, Postgres leaves the
-  // existing column value untouched, so created_at keeps its original
-  // "first entitled at" meaning rather than resetting to the purchase
-  // time.
-  //
-  // Replay safety: this UPSERT is convergent — redelivering the same
-  // Stripe event re-writes the same (user_id, model_id, source: 'purchase',
-  // expires_at: null) values, a no-op in effect. No event-dedup table is
-  // needed this milestone.
-  const { error: upsertErr } = await supabase
-    .from("entitlements")
-    .upsert(
-      { user_id: userId, model_id: modelId, source: "purchase", expires_at: null },
-      { onConflict: "user_id,model_id" },
-    );
-
-  if (upsertErr) {
-    // DB error → 500 so Stripe retries; retrying an idempotent UPSERT is
-    // correct and may heal a transient failure.
-    console.error(`entitlements upsert failed: ${upsertErr.message}`);
-    return jsonResponse({ error: "storage_failed" }, 500);
-  }
-
+  // Every other event type is acknowledged and ignored. checkout.session.completed
+  // is still emitted (subscription checkouts fire it), but the subscription grant
+  // is handled ENTIRELY by invoice.paid — so there is nothing to do here. The
+  // former one-time-payment grant branch was removed in Phase-1 hardening:
+  // checkout is subscription-only, and that branch granted a lifetime entitlement
+  // on amount-only validation with no price-ID check (a latent over-grant if
+  // payment mode ever returned). Existing grandfathered lifetime rows are
+  // untouched — they live in the DB; this only removes the code that MINTED them.
   return jsonResponse({ received: true }, 200);
 });
