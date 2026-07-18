@@ -20,6 +20,19 @@ pub struct Session {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: i64,
+    /// Set once at session establishment from `sign_in`/`sign_up`'s
+    /// `remember` flag (`ephemeral = !remember`); `restore()` always
+    /// establishes a non-ephemeral session, since reaching `restore()`'s
+    /// online path at all means a refresh token was already persisted to
+    /// the keyring by a prior `remember=true` session. While `true`, the
+    /// keyring persist sites (initial + rotated-token) and the session's
+    /// on-disk cache write are skipped — the same "degrade gracefully,
+    /// never error" shape as the keyring-failure-degrades-to-memory-only
+    /// handling in `apply_and_sync`'s step 1, just chosen deliberately
+    /// instead of hit by a keyring error. The session still works
+    /// normally in memory for the rest of the process; it simply leaves
+    /// no trace for the next launch.
+    pub ephemeral: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -123,7 +136,11 @@ impl Cloud {
         // read-modify-write cycle, so it doesn't need `cache_lock`.
         let cache = store::read_cache(&self.cache_path);
         match auth::refresh(&refresh_token) {
-            Ok(tok) => self.apply_and_sync(tok, &cache),
+            // `restore()` only reaches this Ok branch when a refresh token
+            // was already found in the keyring, which only ever got there
+            // via a prior `remember=true` sign_in/sign_up — so restoring
+            // it is always non-ephemeral, preserving that same trail.
+            Ok(tok) => self.apply_and_sync(tok, &cache, false),
             // Any 4xx on refresh means the token was revoked or rotated
             // away server-side — the session cannot be re-established, so
             // purge everything and report signed out.
@@ -143,21 +160,27 @@ impl Cloud {
         }
     }
 
-    pub fn sign_in(&self, email: &str, password: &str) -> Result<SessionInfo, CloudError> {
+    /// `remember` is the front-end's "Keep me signed in" opt-in — default
+    /// unchecked. `ephemeral = !remember` is threaded into `apply_and_sync`,
+    /// which stamps it on the resulting `Session` and skips this session's
+    /// persistence sites accordingly (see `Session::ephemeral`'s doc).
+    pub fn sign_in(&self, email: &str, password: &str, remember: bool) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_in_password(email, password)?;
         let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
-        Ok(self.apply_and_sync(tok, &cache))
+        Ok(self.apply_and_sync(tok, &cache, !remember))
     }
 
+    /// `remember` — see `sign_in`'s doc; identical contract.
     pub fn sign_up(
         &self,
         email: &str,
         password: &str,
         nickname: &str,
+        remember: bool,
     ) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_up(email, password, nickname)?;
         let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
-        Ok(self.apply_and_sync(tok, &cache))
+        Ok(self.apply_and_sync(tok, &cache, !remember))
     }
 
     pub fn sign_out(&self) {
@@ -209,7 +232,10 @@ impl Cloud {
     }
 
     pub fn entitlements(&self) -> Result<Vec<Entitlement>, CloudError> {
-        let has_session = self.session.lock().unwrap().is_some();
+        let (has_session, ephemeral) = {
+            let guard = self.session.lock().unwrap();
+            (guard.is_some(), guard.as_ref().map(|s| s.ephemeral).unwrap_or(false))
+        };
         if !has_session {
             return Ok(store::read_cache(&self.cache_path).entitlements);
         }
@@ -233,7 +259,12 @@ impl Cloud {
                     let mut fresh = store::read_cache(&self.cache_path);
                     let merged = merge_pending_synthetics(&fresh, &user_id, list);
                     fresh.entitlements = merged.clone();
-                    self.write_cache_best_effort(&fresh);
+                    // Ephemeral session: mirror apply_and_sync's step-7
+                    // skip — the merge above still runs so the RETURNED
+                    // list is correct, but nothing is written to disk.
+                    if !ephemeral {
+                        self.write_cache_best_effort(&fresh);
+                    }
                     Ok(merged)
                 }
                 Err(CloudError::Offline) => Ok(store::read_cache(&self.cache_path).entitlements),
@@ -315,12 +346,20 @@ impl Cloud {
     /// is off doing network I/O, and blindly overwriting with this stale
     /// snapshot would silently lose it. Instead, the final write (step 7)
     /// takes `cache_lock`, re-reads the cache FRESH, and merges.
-    fn apply_and_sync(&self, tok: auth::TokenResponse, cache: &store::CloudCache) -> SessionInfo {
+    ///
+    /// `ephemeral` (`!remember` from `sign_in`/`sign_up`, always `false`
+    /// from `restore`) gates the two persistence sites below (step 1 and
+    /// step 7) — see `Session::ephemeral`'s doc for the shape of that skip.
+    fn apply_and_sync(&self, tok: auth::TokenResponse, cache: &store::CloudCache, ephemeral: bool) -> SessionInfo {
         // 1. Persist the refresh token FIRST (rotation discipline) — a
         // keyring failure degrades to a memory-only session rather than
-        // aborting the sign-in.
-        if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
-            eprintln!("cloud: failed to persist refresh token to keyring: {e}");
+        // aborting the sign-in. An ephemeral session chooses that same
+        // memory-only shape deliberately: skip the write, clean branch,
+        // nothing lands in the keyring for this session at all.
+        if !ephemeral {
+            if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
+                eprintln!("cloud: failed to persist refresh token to keyring: {e}");
+            }
         }
 
         // 2. Write the in-memory session. Keep our own copies of the
@@ -338,6 +377,7 @@ impl Cloud {
                 access_token: tok.access_token,
                 refresh_token: tok.refresh_token,
                 expires_at: tok.expires_at,
+                ephemeral,
             });
         } // guard dropped here, before any I/O below.
 
@@ -398,7 +438,11 @@ impl Cloud {
 
         // 7. Final write: take `cache_lock` (leaf lock — never held with
         // `session`/`refresh_gate`, never across I/O), re-read the cache
-        // FRESH, merge the sync's results into it, write.
+        // FRESH, merge the sync's results into it, write — unless this
+        // session is ephemeral, in which case the merge still runs (so
+        // `merged.entitlements` below is correct either way) but the
+        // actual disk write is skipped: a clean branch, not an error path,
+        // leaving no on-disk cache trace for this session.
         let merged = {
             let _guard = self.cache_lock.lock().unwrap();
             let fresh = store::read_cache(&self.cache_path);
@@ -411,7 +455,9 @@ impl Cloud {
                 &flushed,
                 now(),
             );
-            self.write_cache_best_effort(&merged);
+            if !ephemeral {
+                self.write_cache_best_effort(&merged);
+            }
             merged
         };
 
@@ -461,14 +507,14 @@ impl Cloud {
     fn refresh_via_gate(&self) -> Result<(String, String), CloudError> {
         let _gate = self.refresh_gate.lock().unwrap();
         let now_ts = now();
-        let refresh_token = {
+        let (refresh_token, ephemeral) = {
             let guard = self.session.lock().unwrap();
             match guard.as_ref() {
                 None => return Err(CloudError::SessionExpired),
                 Some(s) if now_ts <= s.expires_at - 60 => {
                     return Ok((s.access_token.clone(), s.user_id.clone()));
                 }
-                Some(s) => s.refresh_token.clone(),
+                Some(s) => (s.refresh_token.clone(), s.ephemeral),
             }
         }; // guard dropped here, before the network call.
 
@@ -493,8 +539,14 @@ impl Cloud {
             }
             Err(e) => return Err(e),
         };
-        if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
-            eprintln!("cloud: failed to persist rotated refresh token to keyring: {e}");
+        // Ephemeral session: skip the rotated-token persist, same clean
+        // branch as apply_and_sync's step 1 — the conceptual cousin is
+        // that block's "keyring failure degrades to memory-only" comment,
+        // just chosen deliberately here rather than hit by an error.
+        if !ephemeral {
+            if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
+                eprintln!("cloud: failed to persist rotated refresh token to keyring: {e}");
+            }
         }
         let access = tok.access_token.clone();
         let user_id = tok.user_id.clone();
@@ -506,6 +558,7 @@ impl Cloud {
                 access_token: tok.access_token,
                 refresh_token: tok.refresh_token,
                 expires_at: tok.expires_at,
+                ephemeral,
             });
         }
         Ok((access, user_id))
@@ -1145,6 +1198,7 @@ mod tests {
                 access_token: "at-s2".into(),
                 refresh_token: "rt-s2".into(),
                 expires_at: now() + 3600, // fresh -> ensure_fresh skips network
+                ephemeral: false,
             });
         }
 
@@ -1459,6 +1513,7 @@ mod tests {
                 access_token: "at-fresh".into(),
                 refresh_token: "rt-fresh".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
         set_mock_env(unused_port());
@@ -1486,6 +1541,7 @@ mod tests {
                 access_token: "at-stale".into(),
                 refresh_token: "rt-stale".into(),
                 expires_at: now() - 10,
+                ephemeral: false,
             });
         }
 
@@ -1529,6 +1585,7 @@ mod tests {
                 access_token: "at-stale-mid".into(),
                 refresh_token: "rt-stale-mid".into(),
                 expires_at: now() - 10,
+                ephemeral: false,
             });
         }
 
@@ -1561,6 +1618,7 @@ mod tests {
                 access_token: "at-rls".into(),
                 refresh_token: "rt-rls".into(),
                 expires_at: now() + 3600, // fresh -> ensure_fresh skips network
+                ephemeral: false,
             });
         }
 
@@ -1599,6 +1657,7 @@ mod tests {
                 access_token: "at-fresh-dl".into(),
                 refresh_token: "rt-fresh-dl".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1631,6 +1690,7 @@ mod tests {
                 access_token: "at-fresh-checkout".into(),
                 refresh_token: "rt-fresh-checkout".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1668,6 +1728,7 @@ mod tests {
                 access_token: "at-409".into(),
                 refresh_token: "rt-409".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1701,6 +1762,7 @@ mod tests {
                 access_token: "at-badurl".into(),
                 refresh_token: "rt-badurl".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1744,6 +1806,7 @@ mod tests {
                 access_token: "at-401".into(),
                 refresh_token: "rt-401".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1774,6 +1837,7 @@ mod tests {
                 access_token: "at-fresh-portal".into(),
                 refresh_token: "rt-fresh-portal".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1809,6 +1873,7 @@ mod tests {
                 access_token: "at-404".into(),
                 refresh_token: "rt-404".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1839,6 +1904,7 @@ mod tests {
                 access_token: "at-portal-badurl".into(),
                 refresh_token: "rt-portal-badurl".into(),
                 expires_at: now() + 3600,
+                ephemeral: false,
             });
         }
 
@@ -1855,6 +1921,133 @@ mod tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // Remember1-1. Ephemeral sign-in (remember=false): the keyring stays
+    // completely empty and no cache file is ever created, but the session
+    // still works normally in memory for the rest of the process — proven
+    // via ensure_fresh() succeeding purely off the local clock (mirrors
+    // 10a's "dead port proves no network needed" trick): the mock listener
+    // below serves exactly the 3 sign_in/apply_and_sync responses and
+    // stops accepting, so a bug that fell back to a network refresh here
+    // would fail this call outright.
+    #[test]
+    fn sign_in_ephemeral_leaves_no_keyring_or_cache_trace() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+
+        let cache_path = temp_cache_path("t-remember1-ephemeral-signin-cache.json");
+
+        let port = start_mock_server_n(vec![
+            (
+                "200 OK",
+                r#"{"access_token":"at-eph-1","token_type":"bearer","expires_in":3600,"refresh_token":"rt-eph-1","user":{"id":"user-eph-1","email":"eph1@example.com"}}"#,
+            ),
+            ("200 OK", r#"[{"nickname":"EphNick1"}]"#),
+            ("200 OK", "[]"),
+        ]);
+        set_mock_env(port);
+
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in("eph1@example.com", "hunter2", false)
+            .expect("expected sign_in to succeed");
+
+        assert!(info.signed_in);
+        assert_eq!(info.mode, "online");
+        assert_eq!(
+            store::load_refresh_token(),
+            None,
+            "expected no keyring entry for an ephemeral session"
+        );
+        assert!(!cache_path.exists(), "expected no cache file for an ephemeral session");
+
+        let (access, user_id) = cloud
+            .ensure_fresh()
+            .expect("expected the session to still work purely in memory");
+        assert_eq!(access, "at-eph-1");
+        assert_eq!(user_id, "user-eph-1");
+    }
+
+    // Remember1-2. Ephemeral refresh: forcing a rotation (stale
+    // expires_at) still updates the in-memory session and returns fresh
+    // tokens, but the rotated-token persist at apply_and_sync's
+    // refresh-path twin (~line 496 pre-task) is skipped exactly like
+    // sign-in's ~322 site — keyring stays empty.
+    #[test]
+    fn ephemeral_session_refresh_skips_rotated_token_keyring_persist() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+
+        let cache_path = temp_cache_path("t-remember1-ephemeral-refresh-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-eph-2".into(),
+                email: "eph2@example.com".into(),
+                access_token: "at-eph-2-stale".into(),
+                refresh_token: "rt-eph-2-stale".into(),
+                expires_at: now() - 10, // stale -> forces a refresh round-trip
+                ephemeral: true,
+            });
+        }
+
+        let port = start_mock_server(
+            "200 OK",
+            r#"{"access_token":"at-eph-2-rotated","token_type":"bearer","expires_in":3600,"refresh_token":"rt-eph-2-rotated","user":{"id":"user-eph-2","email":"eph2@example.com"}}"#,
+        );
+        set_mock_env(port);
+
+        let (access, user_id) = cloud.ensure_fresh().expect("expected the refresh to succeed");
+        assert_eq!(access, "at-eph-2-rotated");
+        assert_eq!(user_id, "user-eph-2");
+        assert_eq!(
+            store::load_refresh_token(),
+            None,
+            "expected the rotated token NOT to be persisted for an ephemeral session"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // Remember1-3. remember=true: sign_in behaves exactly as it always
+    // has — the keyring holds the refresh token and the cache file holds
+    // the synced session — proving the new parameter defaults through to
+    // the SAME persisted path apply_and_sync already took.
+    #[test]
+    fn sign_in_remember_true_persists_keyring_and_cache() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+
+        let cache_path = temp_cache_path("t-remember1-remember-true-cache.json");
+
+        let port = start_mock_server_n(vec![
+            (
+                "200 OK",
+                r#"{"access_token":"at-rem-1","token_type":"bearer","expires_in":3600,"refresh_token":"rt-rem-1","user":{"id":"user-rem-1","email":"rem1@example.com"}}"#,
+            ),
+            ("200 OK", r#"[{"nickname":"RemNick1"}]"#),
+            ("200 OK", "[]"),
+        ]);
+        set_mock_env(port);
+
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in("rem1@example.com", "hunter2", true)
+            .expect("expected sign_in to succeed");
+
+        assert!(info.signed_in);
+        assert_eq!(info.mode, "online");
+        assert_eq!(store::load_refresh_token(), Some("rt-rem-1".to_string()));
+
+        let cached = store::read_cache(&cache_path);
+        assert_eq!(cached.user_id, "user-rem-1");
 
         let _ = std::fs::remove_file(&cache_path);
     }

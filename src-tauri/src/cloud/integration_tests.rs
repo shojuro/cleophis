@@ -115,8 +115,11 @@ fn live_auth_and_entitlements_roundtrip() {
     // returns a session directly (no EmailNotConfirmed detour). A successful
     // `nickname == "A8 Test"` proves the DB trigger (handle_new_user) ran
     // and the profile readback (rest::get_profile_nickname) round-tripped.
+    // remember=true: this test's later assertions (cache file present
+    // then deleted by sign_out, keyring restored by the guard) all assume
+    // the historical always-persisted path, so preserve it explicitly.
     let info = cloud
-        .sign_up(&email, &password, nickname)
+        .sign_up(&email, &password, nickname, true)
         .expect("sign_up should succeed against the live project");
     assert!(info.signed_in, "expected signed_in after sign_up");
     assert_eq!(info.mode, "online");
@@ -208,4 +211,83 @@ fn live_auth_and_entitlements_roundtrip() {
     // test does not have. Print the email so the coordinator can clean it
     // up out-of-band.
     eprintln!("a8: leftover live test user email: {email}");
+}
+
+#[test]
+#[ignore]
+fn live_remember_restore_cycle() {
+    // Reproduces the user-reported "logs me out even with the box checked"
+    // cycle against the live project: remembered sign-up -> simulated app
+    // restart (fresh Cloud) -> restore -> restart -> restore again (two
+    // refresh-token rotations), then the sign_in variant of the same.
+    let _g = lock();
+    let _keyring_guard = KeyringGuard::capture();
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let email = format!("shojuro.sb+rem-{nanos}@gmail.com");
+    let password = format!("Rem-cycle-{nanos}!");
+
+    let cache_path = unique_temp_cache_path();
+    let _cache_guard = CacheGuard {
+        path: cache_path.clone(),
+    };
+
+    let cloud = Cloud::new(cache_path.clone());
+    let info = cloud
+        .sign_up(&email, &password, "Rem Test", true)
+        .expect("remembered sign_up should succeed");
+    assert!(info.signed_in);
+    assert!(
+        store::load_refresh_token().is_some(),
+        "remembered sign_up must persist a keyring token"
+    );
+    assert!(cache_path.exists(), "remembered sign_up must write the cache");
+
+    // Simulated restart #1: fresh Cloud, restore from keyring (rotation 1).
+    drop(cloud);
+    let cloud2 = Cloud::new(cache_path.clone());
+    let r1 = cloud2.restore();
+    assert!(
+        r1.signed_in,
+        "restore #1 must re-establish the remembered session (mode={})",
+        r1.mode
+    );
+    assert_eq!(r1.mode, "online", "restore #1 should be an online restore");
+
+    // Simulated restart #2: the rotated token from restore #1 must have
+    // been persisted, or this second restore finds a stale token and dies.
+    drop(cloud2);
+    let cloud3 = Cloud::new(cache_path.clone());
+    let r2 = cloud3.restore();
+    assert!(
+        r2.signed_in,
+        "restore #2 must survive the rotation from restore #1 (mode={})",
+        r2.mode
+    );
+
+    // sign_in variant (the login-modal path the user exercised): sign out,
+    // remembered sign_in, then one more restart+restore.
+    cloud3.sign_out();
+    assert!(store::load_refresh_token().is_none());
+    let cloud4 = Cloud::new(cache_path.clone());
+    let info2 = cloud4
+        .sign_in(&email, &password, true)
+        .expect("remembered sign_in should succeed");
+    assert!(info2.signed_in);
+    assert!(
+        store::load_refresh_token().is_some(),
+        "remembered sign_in must persist a keyring token"
+    );
+    drop(cloud4);
+    let cloud5 = Cloud::new(cache_path);
+    let r3 = cloud5.restore();
+    assert!(
+        r3.signed_in,
+        "restore after remembered sign_in must succeed (mode={})",
+        r3.mode
+    );
+    cloud5.sign_out();
 }
