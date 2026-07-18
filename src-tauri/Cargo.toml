@@ -12,6 +12,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.33"
 ureq = { version = "2", features = ["json"] }
+# Same URL parser ureq resolves the download host with — used by
+# download_host_allowed so the allowlist can't diverge from where the
+# request actually connects (WHATWG delimiter handling: ? # \ etc.).
+url = "2"
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["windows-native", "linux-native"] }
 sha2 = "0.10"

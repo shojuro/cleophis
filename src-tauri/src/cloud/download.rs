@@ -219,6 +219,13 @@ pub fn run_download(
                             cancel,
                         ) {
                             Ok(Some(new_auth)) => {
+                                // Re-gate the freshly minted URL — a retry
+                                // must not attach the auth token to a host
+                                // the initial gate never vetted.
+                                #[cfg(not(test))]
+                                if !download_host_allowed(&new_auth.url) {
+                                    return Err("Download source not recognized — please update the app.".to_string());
+                                }
                                 auth = new_auth;
                                 continue 'attempt;
                             }
@@ -285,6 +292,13 @@ pub fn run_download(
                             cancel,
                         ) {
                             Ok(Some(new_auth)) => {
+                                // Re-gate the freshly minted URL — a retry
+                                // must not attach the auth token to a host
+                                // the initial gate never vetted.
+                                #[cfg(not(test))]
+                                if !download_host_allowed(&new_auth.url) {
+                                    return Err("Download source not recognized — please update the app.".to_string());
+                                }
                                 auth = new_auth;
                                 continue 'attempt;
                             }
@@ -443,24 +457,25 @@ fn rehash_existing(path: &Path, hasher: &mut Sha256) -> Result<(), String> {
 /// Stripe URL-gate discipline in `cloud::session::checkout_outcome` /
 /// `portal_outcome`.
 ///
-/// Hand-parsed rather than pulling in the `url` crate (not already a dep):
-/// strip the `https://` prefix, take the authority up to the next `/`, then
-/// take everything after the LAST `@` (dropping any userinfo — `user:pass@host`,
-/// or an attacker's `@evil.com` suffix trick) and before any `:port`. The
-/// suffix check is dot-anchored (`ends_with(".backblazeb2.com")`) so
-/// `evil-backblazeb2.com` does NOT match, and equality is exact so
-/// `dl.cleophis.com.evil.com` does NOT match either.
-fn download_host_allowed(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
+/// Parsed with the `url` crate — the SAME parser ureq resolves the request
+/// host with — so the allowlist can never diverge from where the GET
+/// actually connects. A hand-rolled split on `/`/`@`/`:` looks right but
+/// misses the other WHATWG authority delimiters (`?`, `#`, `\`): a string
+/// like `https://evil.com#.backblazeb2.com/` would pass a naive suffix
+/// check yet ureq would connect to `evil.com`. Delegating to `url::Url`
+/// closes that gap by construction. Host comparison is case-insensitive
+/// (the crate lower-cases the host), equality is exact (`dl.cleophis.com.evil.com`
+/// fails), and the suffix is dot-anchored (`evil-backblazeb2.com` fails).
+fn download_host_allowed(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw) else {
         return false;
     };
-    let authority = rest.split('/').next().unwrap_or("");
-    // Host is whatever follows the LAST '@' (userinfo, per URL authority
-    // syntax, is everything before it — an unencoded '@' cannot appear
-    // inside the host itself).
-    let host_and_port = authority.rsplit('@').next().unwrap_or("");
-    let host = host_and_port.split(':').next().unwrap_or("");
-
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
     host == "dl.cleophis.com" || host.ends_with(".backblazeb2.com")
 }
 
@@ -1558,5 +1573,32 @@ mod tests {
         assert!(!download_host_allowed(
             "https://f005.backblazeb2.com@evil.com/file/abc"
         ));
+    }
+
+    // 18. Reject the WHATWG authority-delimiter divergence class: `#`, `?`,
+    // and `\` all terminate the authority for the `url` crate (the parser
+    // ureq uses), so the real connect-host is `evil.com` even though the
+    // allowed suffix appears later in the string. A naive `/`/`@`/`:` split
+    // would accept these; parsing with `url::Url` rejects them.
+    #[test]
+    fn download_host_allowed_rejects_fragment_delimiter_divergence() {
+        assert!(!download_host_allowed("https://evil.com#.backblazeb2.com/x"));
+    }
+
+    #[test]
+    fn download_host_allowed_rejects_query_delimiter_divergence() {
+        assert!(!download_host_allowed("https://evil.com?.backblazeb2.com"));
+    }
+
+    #[test]
+    fn download_host_allowed_rejects_backslash_delimiter_divergence() {
+        assert!(!download_host_allowed("https://evil.com\\.backblazeb2.com/x"));
+    }
+
+    // 19. Case-insensitive host match now works (url crate lower-cases the
+    // host) — a legit URL isn't spuriously rejected on casing.
+    #[test]
+    fn download_host_allowed_accepts_mixed_case_host() {
+        assert!(download_host_allowed("https://DL.Cleophis.com/file/abc"));
     }
 }
