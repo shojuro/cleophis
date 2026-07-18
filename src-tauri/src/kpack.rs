@@ -109,7 +109,11 @@ fn mount_pack_at(path: &Path) -> Result<PackManifestInfo, String> {
     let available = vec![EMBEDDER_SHA256.to_string()];
     let ctx = LoadContext {
         available_embedder_sha256: &available,
-        curator_key: None,
+        // Sourced from the pinned curator key, not hardcoded None — returns
+        // None today (no key pinned yet), but when §2.6 pins CURATOR_PUBLIC_KEY
+        // this app picks up curated-pack verification automatically, with no
+        // forgotten swap here.
+        curator_key: kpack_core::sign::curator_verifying_key(),
     };
     let (_pack, manifest) = Pack::mount(path, &ctx).map_err(|e| e.to_string())?;
     Ok(manifest.into())
