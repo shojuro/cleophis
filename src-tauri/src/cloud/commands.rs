@@ -21,10 +21,11 @@ pub async fn sign_up(
     email: String,
     password: String,
     nickname: String,
+    remember: bool,
     cloud: State<'_, Arc<Cloud>>,
 ) -> Result<SessionInfo, String> {
     let cloud = cloud.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || cloud.sign_up(&email, &password, &nickname))
+    tauri::async_runtime::spawn_blocking(move || cloud.sign_up(&email, &password, &nickname, remember))
         .await
         .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
         .map_err(|e: CloudError| e.user_message())
@@ -34,10 +35,11 @@ pub async fn sign_up(
 pub async fn sign_in(
     email: String,
     password: String,
+    remember: bool,
     cloud: State<'_, Arc<Cloud>>,
 ) -> Result<SessionInfo, String> {
     let cloud = cloud.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || cloud.sign_in(&email, &password))
+    tauri::async_runtime::spawn_blocking(move || cloud.sign_in(&email, &password, remember))
         .await
         .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
         .map_err(|e: CloudError| e.user_message())

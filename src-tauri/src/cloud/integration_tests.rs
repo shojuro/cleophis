@@ -115,8 +115,11 @@ fn live_auth_and_entitlements_roundtrip() {
     // returns a session directly (no EmailNotConfirmed detour). A successful
     // `nickname == "A8 Test"` proves the DB trigger (handle_new_user) ran
     // and the profile readback (rest::get_profile_nickname) round-tripped.
+    // remember=true: this test's later assertions (cache file present
+    // then deleted by sign_out, keyring restored by the guard) all assume
+    // the historical always-persisted path, so preserve it explicitly.
     let info = cloud
-        .sign_up(&email, &password, nickname)
+        .sign_up(&email, &password, nickname, true)
         .expect("sign_up should succeed against the live project");
     assert!(info.signed_in, "expected signed_in after sign_up");
     assert_eq!(info.mode, "online");

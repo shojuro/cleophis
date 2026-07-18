@@ -584,9 +584,11 @@ function hide(el) {
 function resetAuthForms() {
   $('li-email').value = '';
   $('li-pass').value = '';
+  $('li-remember').checked = false;
   $('cr-email').value = '';
   $('cr-pass').value = '';
   $('cr-nick').value = '';
+  $('cr-remember').checked = false;
   $('li-err').style.display = 'none';
   $('cr-err').style.display = 'none';
 }
@@ -663,7 +665,7 @@ $('doLogin').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Signing in…';
   try {
-    await applySession(await invoke('sign_in', { email, password }));
+    await applySession(await invoke('sign_in', { email, password, remember: $('li-remember').checked }));
   } catch (e) {
     err.style.display = 'block';
     err.textContent = String(e);
@@ -691,7 +693,7 @@ $('doCreate').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Creating…';
   try {
-    await applySession(await invoke('sign_up', { email, password, nickname: $('cr-nick').value.trim() || 'you' }));
+    await applySession(await invoke('sign_up', { email, password, nickname: $('cr-nick').value.trim() || 'you', remember: $('cr-remember').checked }));
   } catch (e) {
     err.style.display = 'block';
     err.textContent = String(e);
