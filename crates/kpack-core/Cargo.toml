@@ -8,5 +8,21 @@ edition = "2021"
 # build and retrieval paths are network-free by construction — see the crate
 # doc comment in src/lib.rs. Additions here are format/chunk/embed-math only.
 [dependencies]
+# `bundled` compiles SQLite from source (no system SQLite dependency) and,
+# as of this pinned version, ships FTS5 enabled unconditionally (there is no
+# longer a separate `fts5` cargo feature — confirmed via crates.io/context7
+# for this exact version rather than assumed from memory).
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+# sqlite-vec's `vec0` virtual table, linked as a static C lib and registered
+# as a SQLite auto-extension (see format.rs) — no dynamic loading, no network.
+# NOTE: pinned to the latest STABLE release, not the newer 0.1.10-alpha.*
+# series — those prereleases ship `sqlite-vec.c` defaulting
+# `SQLITE_VEC_ENABLE_DISKANN=1` while omitting the `sqlite-vec-diskann.c`
+# file that define requires (`#include "sqlite-vec-diskann.c"`), a genuine
+# packaging bug in the published crate (confirmed by inspecting the crate
+# source: sqlite-vec.c:25-27 vs. the file list in the .crate package) that
+# fails the MSVC build with `C1083: Cannot open include file`. 0.1.9 predates
+# the DISKANN feature and has no such gap.
+sqlite-vec = "0.1.9"
 
 [dev-dependencies]
