@@ -1,0 +1,85 @@
+[package]
+name = "kpack-core"
+version = "0.1.0"
+edition = "2021"
+
+# `test-util` exposes `embed::MockEmbedder` (normally `#[cfg(test)]`-only)
+# to test code that isn't itself compiled under `cfg(test)` — e.g. another
+# crate's dev-dependency on kpack-core, or a downstream integration test —
+# without it, a plain `cargo build`/`cargo build -p kpack-core` never
+# compiles the mock into a real build (risk note: the mock must never back
+# a determinism test).
+[features]
+test-util = []
+
+# INVARIANT: this crate must never depend on an HTTP client (`ureq`, `reqwest`,
+# `hyper`, …), `tokio`, or anything that opens a socket. The knowledge-pack
+# build and retrieval paths are network-free by construction — see the crate
+# doc comment in src/lib.rs. Additions here are format/chunk/embed-math only.
+[dependencies]
+# `bundled` compiles SQLite from source (no system SQLite dependency) and,
+# as of this pinned version, ships FTS5 enabled unconditionally (there is no
+# longer a separate `fts5` cargo feature — confirmed via crates.io/context7
+# for this exact version rather than assumed from memory).
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+# sqlite-vec's `vec0` virtual table, linked as a static C lib and registered
+# as a SQLite auto-extension (see format.rs) — no dynamic loading, no network.
+# NOTE: pinned to the latest STABLE release, not the newer 0.1.10-alpha.*
+# series — those prereleases ship `sqlite-vec.c` defaulting
+# `SQLITE_VEC_ENABLE_DISKANN=1` while omitting the `sqlite-vec-diskann.c`
+# file that define requires (`#include "sqlite-vec-diskann.c"`), a genuine
+# packaging bug in the published crate (confirmed by inspecting the crate
+# source: sqlite-vec.c:25-27 vs. the file list in the .crate package) that
+# fails the MSVC build with `C1083: Cannot open include file`. 0.1.9 predates
+# the DISKANN feature and has no such gap.
+sqlite-vec = "0.1.9"
+# Detached ed25519 signature verification for curated packs (§1.2/§2.6,
+# K3) — `verify_strict` only, against a key injected via `LoadContext`
+# (never read from the pack). Pinned to the latest stable 2.x (2.2.0);
+# deliberately NOT 3.0.0 — this pin predates that major bump and 2.x is
+# still the widely-deployed, audited line. Pure computation, no RNG/network
+# feature enabled, consistent with this crate's network-free invariant.
+# EXACT pin (`=2.2.0`, not `2.2.0`): this crate is the signature-verification
+# trust root — an ordinary `cargo update` must never silently move it within
+# 2.x. Any version bump here is a deliberate, audited event, not a side
+# effect of an unrelated dependency update.
+ed25519-dalek = "=2.2.0"
+# Markdown parsing (K6, spec §3.2: "pulldown-cmark for MD") — pure Rust,
+# no network/native dependency. EXACT pin (`=0.13.4`, confirmed the current
+# latest stable via crates.io's API rather than assumed from memory): the
+# parser module walks pulldown-cmark's event stream by hand (heading
+# levels, TagEnd variant shapes, OffsetIter byte ranges), not through a
+# small stable surface, so an unplanned minor/patch bump is a potential
+# silent behavior change rather than a routine update.
+pulldown-cmark = "=0.13.4"
+# TOML parsing for the versioned prompt contract (K7, spec §4.2, plan D5) —
+# parses the byte-pinned `contracts/prompt-contract.v1.toml`, baked into the
+# binary via `include_str!` in contract.rs. Confirmed via context7/docs.rs
+# rather than assumed from training-data memory (which predates a real
+# ecosystem change): the crate is no longer on the `0.8.x` line — a 1.0
+# release split `serde`/`parse`/`display` behind feature flags (all still
+# default-on, so no extra feature list needed here). Latest at time of
+# pinning: 1.1.3. EXACT pin (`=1.1.3`, not `1.1.3`): this crate is the sole
+# parser for the golden-render-locked contract file, so an unplanned bump is
+# exactly the kind of silent drift the byte-pinned test exists to catch —
+# any version change must be a deliberate, reviewed event, not a side effect
+# of `cargo update`. Parsed via `toml::Table` + manual field lookups, no
+# `serde` derive dependency added (the contract's flat top-level keys don't
+# need it).
+toml = "=1.1.3"
+# SHA-256 for `docs.sha256` (§1.1, K8's `build_pack`) — hashes each source's
+# raw bytes, same crate/API style as `src-tauri/src/inference.rs::model_sha256`.
+# Pure Rust, no network — consistent with this crate's network-free invariant.
+# EXACT pin (`=0.10.9`, not `0.10`): confirmed via crates.io's API (not
+# training-data memory, which predates a real ecosystem change) that 0.10.9
+# is the latest release on the 0.10.x line — crates.io's `max_stable_version`
+# now reports 0.11.0, a new major this crate deliberately does NOT track yet
+# (an unplanned major bump is exactly the kind of drift an exact pin exists
+# to prevent). This isn't even a NEW crate in the resolved tree: `sha2
+# v0.10.9` already appears as a transitive dependency of `ed25519-dalek`
+# (verified via `cargo tree -p kpack-core`), so pinning this exact version
+# adds zero new crates to the dependency graph — it only makes an
+# already-present version a direct, named dependency.
+sha2 = "=0.10.9"
+
+[dev-dependencies]

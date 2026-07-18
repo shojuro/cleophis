@@ -1,0 +1,63 @@
+# Cleophis prompt contract — v1.
+#
+# THE single source of truth for how retrieved evidence is rendered into the
+# model's prompt, and how "no evidence" is signaled. This is the load-bearing
+# artifact behind the anti-hallucination guarantee (spec §4.2): the RAG decides
+# what evidence exists; the fine-tuned model is trained to cite it or refuse.
+# Those two halves only lock together if they share this exact contract.
+#
+# BOTH consumers import THIS file — never a re-typed copy:
+#   - the on-device runtime  (kpack-core::contract renderer + NO_EVIDENCE emit)
+#   - the adapter training-data generator (the external model / LoRA track)
+#
+# A change here is a COORDINATED, versioned event across both tracks. Bump
+# `contract_version`, ship the new file to both, and record the version in the
+# adapter's training metadata (which contract it speaks). A silent drift — a
+# changed space in `citation_line`, a different `no_evidence_marker` — does not
+# crash; it silently degrades reliability as the adapter meets a format it was
+# not trained on. The runtime's golden render test byte-pins this file's output
+# so any change is deliberate and reviewed. See plan D5.
+
+contract_version = 1
+
+# --- System contract -------------------------------------------------------
+# Prepended to every grounded request. The behavioral adapter (§4.2) is trained
+# to obey exactly this: sources-only, cite every claim, refuse when uncovered,
+# delegate arithmetic to calc().
+system_contract = """
+You answer strictly from the numbered sources provided below, and nothing else. Every factual claim you make must cite its supporting source as [n]. If the sources do not cover the question, say so plainly and decline to answer — never fall back on outside or remembered knowledge, and never guess. Send every arithmetic calculation to the calc() tool; do not compute numbers yourself.
+"""
+
+# --- Citation line ---------------------------------------------------------
+# How each retrieved chunk is rendered into the prompt, one per line, in rank
+# order. Placeholders (substituted by the runtime renderer in a single pass —
+# substituted values are never re-scanned, so chunk text containing a literal
+# "{text}" is safe):
+#   {n}      citation index, 1-based
+#   {source} the source descriptor (see below)
+#   {text}   the chunk body (citation display shows ONLY {text})
+citation_line = "[{n}] ({source}): {text}"
+
+# {source} is composed by the runtime from the NON-EMPTY parts of
+# [source_title, section_path, locator], joined by `citation_source_sep`.
+# Composing from non-empty parts (rather than a fixed 3-slot template) means a
+# root chunk with an empty section_path (D6) renders cleanly as
+# "(source_title, locator)" with no dangling separator.
+# Example rendered line:
+#   [1] (Hemostasis Handbook, Ch 4 > Hemostasis > Vitamin K, p. 112): <text>
+#   [2] (Hemostasis Handbook, p. 4): <text>        # root chunk, no section
+citation_source_sep = ", "
+
+# --- No-evidence path ------------------------------------------------------
+# When the per-pack retrieval gate returns NO_EVIDENCE (§4.1), the runtime
+# injects THIS marker in place of the sources block. The adapter is trained to
+# respond to this exact marker with the refusal-with-offer below — never a
+# fabricated answer.
+no_evidence_marker = "[[NO_EVIDENCE]]"
+
+# The shape of the refusal the adapter is trained to produce on NO_EVIDENCE
+# (§4.2). The runtime does NOT emit this string (the model does); it lives here
+# so the runtime and the training track share one definition of the behavior.
+refusal_with_offer = """
+I don't have material covering that in this pack. I can tell you what the pack does cover, or you can add a source and rebuild it.
+"""
