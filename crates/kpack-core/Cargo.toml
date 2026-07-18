@@ -44,5 +44,13 @@ sqlite-vec = "0.1.9"
 # 2.x. Any version bump here is a deliberate, audited event, not a side
 # effect of an unrelated dependency update.
 ed25519-dalek = "=2.2.0"
+# Markdown parsing (K6, spec §3.2: "pulldown-cmark for MD") — pure Rust,
+# no network/native dependency. EXACT pin (`=0.13.4`, confirmed the current
+# latest stable via crates.io's API rather than assumed from memory): the
+# parser module walks pulldown-cmark's event stream by hand (heading
+# levels, TagEnd variant shapes, OffsetIter byte ranges), not through a
+# small stable surface, so an unplanned minor/patch bump is a potential
+# silent behavior change rather than a routine update.
+pulldown-cmark = "=0.13.4"
 
 [dev-dependencies]

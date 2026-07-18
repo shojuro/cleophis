@@ -25,12 +25,15 @@
 //! `llama.cpp`-backed implementation is a separate crate, `kpack-embed`,
 //! landing K4b). K5 adds `tree` (the parsed-document intermediate form K6's
 //! parsers will produce) and `chunk` (the structure-aware sliding-window
-//! chunker, spec §1.3). The rest of the module list above lands K6 onward.
+//! chunker, spec §1.3). K6 adds `parse` (Markdown + plain-text parsers
+//! producing `tree::Document`, spec §3.2). The rest of the module list
+//! above lands K6 onward.
 
 pub mod chunk;
 pub mod embed;
 pub mod format;
 pub mod manifest;
+pub mod parse;
 pub mod sign;
 pub mod tree;
 
@@ -40,5 +43,6 @@ pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, 
 pub use embed::MockEmbedder;
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
+pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};
