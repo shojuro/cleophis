@@ -58,7 +58,7 @@ WEBHOOK_TARGET_URL="https://$PROJECT_REF.supabase.co/functions/v1/stripe-webhook
 PRICE_LOOKUP_KEY="socratic-tutor-onetime"
 PRICE_LOOKUP_KEY_MONTHLY="socratic-tutor-monthly"
 WEBHOOK_API_VERSION="2024-06-20"
-PORTAL_RETURN_URL="https://shojuro.github.io/cleophis/pay/portal-return.html"
+PORTAL_RETURN_URL="https://pay.cleophis.com/pay/portal-return.html"
 
 ENV_FILE="$HOME/.env"
 

@@ -12,7 +12,9 @@
 // Supabase's shared *.supabase.co domain force-serves HTML as text/plain
 // (platform anti-phishing behavior, confirmed live), so that function is
 // deleted and the pages now live as static HTML on GitHub Pages (gh-pages
-// branch, https://shojuro.github.io/cleophis/pay/).
+// branch), served on the custom domain https://pay.cleophis.com/pay/ (the
+// old shojuro.github.io URLs redirect there, so in-flight sessions minted
+// before the domain cutover still land correctly).
 //
 // Task S3: code + commit only, no deployment. Deployment (verify_jwt: ON)
 // plus secrets (STRIPE_SECRET_KEY, STRIPE_PRICE_SOCRATIC_MONTHLY) happen at
@@ -218,8 +220,8 @@ Deno.serve(async (req: Request) => {
         // session-level metadata above doesn't carry over to the
         // subscription automatically.
         subscription_data: { metadata: { user_id: userId, model_id: modelId } },
-        success_url: "https://shojuro.github.io/cleophis/pay/success.html",
-        cancel_url: "https://shojuro.github.io/cleophis/pay/cancelled.html",
+        success_url: "https://pay.cleophis.com/pay/success.html",
+        cancel_url: "https://pay.cleophis.com/pay/cancelled.html",
         // Existing-customer reuse (see comment block above the
         // stripe_customers lookup): only set when a mapping was found, so a
         // first-ever subscriber still gets no `customer` param at all,
