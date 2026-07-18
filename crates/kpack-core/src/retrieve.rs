@@ -1,10 +1,21 @@
-//! Per-pack retrieval + reciprocal-rank fusion (RRF) — spec §4.1's first
-//! slice. Composes `format::Pack`'s two independent lanes (`vec_search`
-//! dense, `fts_search` lexical), fuses their rankings with RRF, and
-//! annotates every fused candidate with a dense cosine similarity for R2's
-//! gate to consume. Pure, network-free, and deliberately does NOT gate
-//! (R2) or fuse across packs (R3) — this module produces the per-pack
-//! fused, cosine-annotated candidate list those later slices build on.
+//! Per-pack retrieval + reciprocal-rank fusion (RRF) + the per-pack gate —
+//! spec §4.1's first two slices. Composes `format::Pack`'s two independent
+//! lanes (`vec_search` dense, `fts_search` lexical), fuses their rankings
+//! with RRF, annotates every fused candidate with a dense cosine
+//! similarity, and decides pack-level pass/fail against that pack's own
+//! calibrated thresholds. Pure, network-free, and deliberately does NOT
+//! fuse across packs or decide `NO_EVIDENCE` (R3) — this module produces
+//! the per-pack fused, gated candidate list R3 builds on.
+//!
+//! ## Per-pack gate (Δ1, §4.1)
+//! [`pack_passes_gate`] is the Δ1 safety mechanism: each mounted pack is
+//! judged on ITS OWN calibrated thresholds (`gate_abs_floor`,
+//! `gate_rel_margin`), evaluated on `dense_cosine` (not `fused_score`),
+//! strictly BEFORE any cross-pack fusion. This ordering is safety-critical
+//! — see the function's own doc comment for the full rationale on why
+//! gating must happen per-pack, pre-fusion, rather than post-fusion on
+//! "the winning pack's thresholds." [`pack_passes_gate_manifest`] is the
+//! same decision read off a pack's [`crate::manifest::Manifest`] directly.
 //!
 //! ## RRF (reciprocal rank fusion)
 //! [`rrf`] implements the standard formula: a chunk's fused score is the
@@ -29,6 +40,7 @@
 //! parsing surface left for user-supplied text to exploit.
 use crate::embed::dot_int8;
 use crate::format::{self, Pack};
+use crate::manifest::Manifest;
 use std::fmt;
 
 /// Reciprocal-rank fusion's default `k_rrf` (spec §4.1).
@@ -79,8 +91,9 @@ type Result<T> = std::result::Result<T, Error>;
 
 /// One per-pack fused retrieval candidate: a `chunk_id`, its RRF-fused
 /// score across the dense + lexical lanes, and its dense cosine similarity
-/// to the query (independent of fusion — R2's gate scores on this, not
-/// `fused_score`, per the plan's decision to gate on dense cosine).
+/// to the query (independent of fusion — [`pack_passes_gate`] scores on
+/// this, not `fused_score`, per the plan's decision to gate on dense
+/// cosine).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub chunk_id: i64,
@@ -150,7 +163,8 @@ pub fn safe_fts5_query(text: &str) -> String {
 ///    `dense_cosine = 0.0` rather than erroring the whole retrieval.
 /// 5. Returns candidates in fused order (highest `fused_score` first).
 ///
-/// Does NOT gate (R2) or fuse across packs (R3).
+/// Does not itself apply [`pack_passes_gate`] or fuse across packs (R3) —
+/// callers run the gate over this function's output.
 pub fn retrieve_pack(
     pack: &Pack,
     query_text: &str,
@@ -182,6 +196,86 @@ pub fn retrieve_pack(
             })
         })
         .collect()
+}
+
+/// Spec §4.1's Δ1 safety mechanism — the per-pack calibrated gate,
+/// evaluated on **dense cosine** (`dense_cosine`, an absolute cosine
+/// similarity), never on `fused_score` (an RRF sum with no fixed scale, so
+/// there's no meaningful "floor" to compare it against).
+///
+/// This is deliberately the *only* place a pack's candidates get judged
+/// against ITS OWN thresholds, and it runs strictly BEFORE any cross-pack
+/// fusion (R3). That ordering is the whole point (§4.1's rationale,
+/// restated): gating after cross-pack fusion on "the winning pack's
+/// thresholds" would let a weak chunk from a loosely-gated pack (e.g. an
+/// uncalibrated personal pack, §3.4) win the fused ranking and be judged by
+/// the loose gate — bypassing a strictly-calibrated pack's floor exactly on
+/// the queries where that matters. Gating each pack independently, before
+/// fusion, guarantees the loosest-calibrated mounted pack can never lower
+/// the safety floor for a stricter pack's domain. A pack that fails its own
+/// gate contributes NOTHING to the fused result — not even at a
+/// diminished weight.
+///
+/// Does not fuse across packs or decide `NO_EVIDENCE` (R3's job) — this is
+/// only the single-pack pass/fail decision.
+///
+/// ## Rule
+/// 1. Empty `candidates` → `false` (nothing to pass a gate with).
+/// 2. `top1` = the maximum `dense_cosine` among `candidates` (ranking is
+///    done internally on `dense_cosine`; caller order is irrelevant).
+/// 3. **Absolute floor:** `top1 >= abs_floor`.
+/// 4. **Relative margin:** let `cos_at_rank_min10` be the `dense_cosine` at
+///    rank `min(10, n)` (1-based, descending — the 10th-highest score, or
+///    the lowest-ranked candidate's score if `n < 10`); require `top1 -
+///    cos_at_rank_min10 >= rel_margin`.
+/// 5. **Special case, `n == 1`:** the single candidate passes on the
+///    absolute floor alone — there is no rank-10 (or any lower rank) to
+///    compare against, so the margin check is skipped entirely rather than
+///    trivially comparing `top1` against itself (which would always be a
+///    margin of `0.0` and could never pass a positive `rel_margin`).
+/// 6. For `1 < n < 10`, "rank `min(10, n)`" clamps to `n` — the LOWEST
+///    cosine among the candidates — so the margin is `top1` minus the
+///    worst-ranked candidate's cosine.
+///
+/// Both checks are inclusive (`>=`): a pack sitting exactly on either
+/// threshold passes.
+pub fn pack_passes_gate(candidates: &[Candidate], abs_floor: f64, rel_margin: f64) -> bool {
+    if candidates.is_empty() {
+        return false;
+    }
+
+    // Rank descending by dense_cosine -- independent of input order, per
+    // the gate's contract (it ranks internally, never trusts caller order).
+    let mut cosines: Vec<f64> = candidates.iter().map(|c| c.dense_cosine as f64).collect();
+    cosines.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+    let top1 = cosines[0];
+    if top1 < abs_floor {
+        return false;
+    }
+
+    // n == 1: absolute floor alone, no margin check (there is no rank-10 /
+    // lower rank to compare top1 against).
+    if cosines.len() == 1 {
+        return true;
+    }
+
+    // rank min(10, n), 1-based -> 0-based index min(10, n) - 1. For 1 < n <
+    // 10 this clamps to n - 1, the last (lowest) cosine.
+    let rank_idx = cosines.len().min(10) - 1;
+    let cos_at_rank_min10 = cosines[rank_idx];
+
+    (top1 - cos_at_rank_min10) >= rel_margin
+}
+
+/// Convenience wrapper over [`pack_passes_gate`] that pulls `abs_floor` /
+/// `rel_margin` from a mounted pack's own [`Manifest`] (`gate_abs_floor`,
+/// `gate_rel_margin`, §1.2) so callers don't have to re-plumb the two
+/// thresholds separately from the manifest they already have in hand. The
+/// raw-threshold form above stays the unit-testable core; this is a thin
+/// pass-through.
+pub fn pack_passes_gate_manifest(candidates: &[Candidate], manifest: &Manifest) -> bool {
+    pack_passes_gate(candidates, manifest.gate_abs_floor, manifest.gate_rel_margin)
 }
 
 #[cfg(test)]
@@ -408,5 +502,226 @@ mod tests {
             "the exact-query-vector-match chunk's self dot product should be the highest cosine \
              in the candidate set"
         );
+    }
+
+    /// Builds a `Candidate` for gate tests where only `dense_cosine`
+    /// matters -- `chunk_id` and `fused_score` are placeholders the gate
+    /// never reads.
+    fn candidate(chunk_id: i64, dense_cosine: f32) -> Candidate {
+        Candidate {
+            chunk_id,
+            fused_score: 0.0,
+            dense_cosine,
+        }
+    }
+
+    /// A minimal but fully valid `Manifest` for `pack_passes_gate_manifest`
+    /// tests -- every field besides the two gate thresholds is an arbitrary
+    /// valid placeholder.
+    fn test_manifest(abs_floor: f64, rel_margin: f64) -> Manifest {
+        Manifest {
+            pack_id: "gate-test-pack".to_string(),
+            pack_version: "2026.07.1".to_string(),
+            pack_tier: PackTier::Personal,
+            embedder_name: "mock-embedder-gate".to_string(),
+            embedder_sha256: "deadbeef".repeat(8),
+            embedding_dims: TEST_DIMS as u32,
+            embedding_quant: "int8".to_string(),
+            chunk_target_tokens: 400,
+            chunk_overlap_pct: 18,
+            gate_abs_floor: abs_floor,
+            gate_rel_margin: rel_margin,
+            gate_calibrated: false,
+            prefixes_present: false,
+            built_by: "device-builder-test".to_string(),
+            license_ref: None,
+            schema_version: crate::format::SCHEMA_VERSION,
+            vec_format_version: crate::manifest::VEC_FORMAT_VERSION.to_string(),
+        }
+    }
+
+    // 4. Gate: all strong (top1 well above floor, wide margin over
+    // rank-10) -> passes. 12 candidates, evenly spread, floor and margin
+    // both comfortably cleared.
+    #[test]
+    fn t4_gate_all_strong_passes() {
+        let cosines: [f32; 12] = [
+            0.95, 0.93, 0.91, 0.89, 0.87, 0.85, 0.83, 0.81, 0.79, 0.77, 0.75, 0.73,
+        ];
+        let candidates: Vec<Candidate> = cosines
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candidate(i as i64, c))
+            .collect();
+        // top1 = 0.95, rank-10 (10th highest, index 9) = 0.77, margin = 0.18.
+        assert!(pack_passes_gate(&candidates, 0.5, 0.05));
+    }
+
+    // 5. Gate: top1 below abs_floor -> fails, even with a big margin.
+    #[test]
+    fn t5_gate_top1_below_floor_fails_despite_big_margin() {
+        let candidates = vec![candidate(1, 0.3), candidate(2, 0.05)];
+        // margin = 0.3 - 0.05 = 0.25, well over rel_margin -- but top1 =
+        // 0.3 < abs_floor = 0.5, so the pack must still fail.
+        assert!(!pack_passes_gate(&candidates, 0.5, 0.1));
+    }
+
+    // 6. Gate: top1 above floor but (top1 - cos@rank10) < rel_margin (flat
+    // distribution) -> fails.
+    #[test]
+    fn t6_gate_flat_distribution_fails_margin() {
+        let cosines: [f32; 10] = [0.82, 0.815, 0.81, 0.805, 0.80, 0.80, 0.80, 0.80, 0.80, 0.80];
+        let candidates: Vec<Candidate> = cosines
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candidate(i as i64, c))
+            .collect();
+        // top1 = 0.82 >= floor 0.5 (passes the floor), rank-10 (index 9) =
+        // 0.80, margin = 0.02 < rel_margin 0.05 -- fails on margin alone.
+        assert!(!pack_passes_gate(&candidates, 0.5, 0.05));
+    }
+
+    // 7. Boundary: top1 exactly == abs_floor and margin exactly ==
+    // rel_margin -> passes (>= is inclusive on both checks). Also asserts
+    // the boundary direction explicitly: nudging either value the wrong
+    // side of its threshold by an epsilon flips the verdict to fail.
+    #[test]
+    fn t7_gate_boundary_inclusive_both_directions() {
+        // Dyadic (exact-binary-fraction) thresholds and endpoints, so the
+        // f32 dense_cosine -> f64 comparison boundary is bit-exact rather
+        // than landing a hair off from float rounding (0.1 and friends
+        // aren't exactly representable in binary and would make an
+        // "exactly on the boundary" test flaky by construction).
+        let abs_floor = 0.5; // 2^-1
+        let rel_margin = 0.125; // 2^-3
+        // 10 candidates, descending from top1 = 0.5 to rank-10 = 0.375:
+        // margin = 0.5 - 0.375 = 0.125, exactly rel_margin. The 8 interior
+        // values only need to sort between the two endpoints -- they're
+        // never compared to a threshold directly.
+        let cosines: [f32; 10] = [0.5, 0.49, 0.48, 0.47, 0.46, 0.45, 0.44, 0.43, 0.42, 0.375];
+        let candidates: Vec<Candidate> = cosines
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candidate(i as i64, c))
+            .collect();
+        assert!(
+            pack_passes_gate(&candidates, abs_floor, rel_margin),
+            "exact boundary on both checks must pass (>= is inclusive)"
+        );
+
+        // Nudge top1 just under abs_floor -> must now fail.
+        let mut below_floor = candidates.clone();
+        below_floor[0].dense_cosine = 0.499;
+        assert!(
+            !pack_passes_gate(&below_floor, abs_floor, rel_margin),
+            "top1 just below abs_floor must fail"
+        );
+
+        // Nudge rank-10 up so the margin is just under rel_margin -> must
+        // now fail (top1 unchanged at exactly the floor).
+        let mut below_margin = candidates.clone();
+        below_margin[9].dense_cosine = 0.376;
+        assert!(
+            !pack_passes_gate(&below_margin, abs_floor, rel_margin),
+            "margin just below rel_margin must fail"
+        );
+    }
+
+    // 8. Single candidate above floor passes (no margin check); single
+    // candidate below floor fails.
+    #[test]
+    fn t8_gate_single_candidate_floor_only() {
+        assert!(
+            pack_passes_gate(&[candidate(1, 0.9)], 0.5, 0.9),
+            "single candidate above floor passes on the floor alone, \
+             regardless of how strict rel_margin is -- there's no rank-10 \
+             to compare against"
+        );
+        assert!(
+            !pack_passes_gate(&[candidate(1, 0.4)], 0.5, 0.0),
+            "single candidate below floor fails even with rel_margin = 0.0"
+        );
+    }
+
+    // 9. n between 2 and 9: margin compares top1 to the LOWEST cosine
+    // (rank clamps to last, n-1 in 0-based terms). One case that passes,
+    // one that fails on exactly that comparison.
+    #[test]
+    fn t9_gate_small_n_margin_clamps_to_lowest() {
+        let passing = vec![
+            candidate(1, 0.9),
+            candidate(2, 0.85),
+            candidate(3, 0.8),
+            candidate(4, 0.75),
+            candidate(5, 0.6),
+        ];
+        // n = 5 < 10, so rank_min(10,5) = rank 5 = the lowest (0.6).
+        // margin = 0.9 - 0.6 = 0.3 >= rel_margin 0.2 -> passes.
+        assert!(pack_passes_gate(&passing, 0.5, 0.2));
+
+        let failing = vec![
+            candidate(1, 0.9),
+            candidate(2, 0.85),
+            candidate(3, 0.8),
+            candidate(4, 0.75),
+            candidate(5, 0.75),
+        ];
+        // Same shape, but the lowest cosine is raised to 0.75: margin =
+        // 0.9 - 0.75 = 0.15 < rel_margin 0.2 -> fails, even though top1
+        // clears the floor easily.
+        assert!(!pack_passes_gate(&failing, 0.5, 0.2));
+    }
+
+    // 10. pack_passes_gate_manifest reads the manifest's gate_abs_floor /
+    // gate_rel_margin and agrees with the raw-threshold form, both for a
+    // passing and a failing candidate set.
+    #[test]
+    fn t10_gate_manifest_form_agrees_with_raw_form() {
+        let manifest = test_manifest(0.5, 0.1);
+
+        let strong = vec![
+            candidate(1, 0.9),
+            candidate(2, 0.6),
+            candidate(3, 0.2),
+        ];
+        assert_eq!(
+            pack_passes_gate_manifest(&strong, &manifest),
+            pack_passes_gate(&strong, manifest.gate_abs_floor, manifest.gate_rel_margin)
+        );
+        assert!(pack_passes_gate_manifest(&strong, &manifest));
+
+        let weak = vec![candidate(1, 0.3)];
+        assert_eq!(
+            pack_passes_gate_manifest(&weak, &manifest),
+            pack_passes_gate(&weak, manifest.gate_abs_floor, manifest.gate_rel_margin)
+        );
+        assert!(!pack_passes_gate_manifest(&weak, &manifest));
+    }
+
+    // 11. Ordering independence: the same candidate set in a different
+    // input order gives the same verdict -- the gate ranks internally by
+    // dense_cosine and never trusts input order.
+    #[test]
+    fn t11_gate_ordering_independence() {
+        let in_order = vec![
+            candidate(1, 0.9),
+            candidate(2, 0.85),
+            candidate(3, 0.8),
+            candidate(4, 0.75),
+            candidate(5, 0.6),
+        ];
+        let mut shuffled = in_order.clone();
+        shuffled.reverse();
+        // Also scramble beyond a plain reversal.
+        shuffled.swap(0, 2);
+        shuffled.swap(1, 4);
+
+        let abs_floor = 0.5;
+        let rel_margin = 0.2;
+        assert_eq!(
+            pack_passes_gate(&in_order, abs_floor, rel_margin),
+            pack_passes_gate(&shuffled, abs_floor, rel_margin),
+        );
+        assert!(pack_passes_gate(&in_order, abs_floor, rel_margin));
     }
 }
