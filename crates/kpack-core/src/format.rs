@@ -304,6 +304,25 @@ impl Pack {
         Ok(())
     }
 
+    /// Read a chunk's stored int8 embedding back out of the `vec0` `vec`
+    /// table. The blob is exactly `dims` bytes, one `i8` each — the reverse
+    /// of [`i8_slice_to_blob`]. Returns `Ok(None)` if `chunk_id` has no
+    /// embedding row (a chunk that's been inserted but not yet embedded —
+    /// see the module doc comment's API split), not an error. Needed by
+    /// `retrieve` (§4.1) to recompute a candidate's dense cosine for the
+    /// per-pack gate.
+    pub fn get_embedding(&self, chunk_id: i64) -> Result<Option<Vec<i8>>> {
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT embedding FROM vec WHERE chunk_id = ?1",
+                params![chunk_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(blob.map(|bytes| bytes.iter().map(|&b| b as i8).collect()))
+    }
+
     /// K-nearest-neighbor search over the `vec0` dense lane. Returns
     /// `(chunk_id, distance)` pairs, nearest first — just enough to prove
     /// the dense lane is queryable; full retrieval fusion is §4.
@@ -791,6 +810,28 @@ mod tests {
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap()
+    }
+
+    // 10. get_embedding round-trip: insert a vector, read it back byte-for-
+    // byte equal; a chunk with no embedding row reads back None, not an
+    // error.
+    #[test]
+    fn t10_get_embedding_round_trips() {
+        let dir = unique_dir("t10");
+        let path = dir.join("t10.kpack");
+        let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+        let doc_id = pack.insert_doc(&sample_doc()).unwrap();
+        let chunk_id = pack.insert_chunk(&sample_chunk(doc_id)).unwrap();
+
+        let vector: [i8; TEST_DIMS] = [1, -2, 3, -4, 127, -127, 0, 64];
+        pack.insert_embedding(chunk_id, &vector).unwrap();
+
+        let got = pack.get_embedding(chunk_id).unwrap();
+        assert_eq!(got, Some(vector.to_vec()));
+
+        // A second chunk with no embedding row reads back None.
+        let unembedded_chunk_id = pack.insert_chunk(&sample_chunk(doc_id)).unwrap();
+        assert_eq!(pack.get_embedding(unembedded_chunk_id).unwrap(), None);
     }
 
     // 9. Foreign key enforcement: a chunk referencing a missing doc_id fails
