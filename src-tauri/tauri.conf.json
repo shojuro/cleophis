@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "assetProtocol": { "enable": true, "scope": ["$RESOURCE/**", "C:/Users/JM505 Computers/dev/cleophis/src-tauri/resources/**"] },
+      "assetProtocol": { "enable": true, "scope": ["$RESOURCE/**"] },
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*"
     }
   },
