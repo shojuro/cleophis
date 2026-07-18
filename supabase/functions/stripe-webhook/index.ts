@@ -29,6 +29,14 @@ const EXPECTED: Record<string, { amount: number; currency: string }> = {
   "socratic-tutor": { amount: 2000, currency: "usd" },
 };
 
+// Task Sub2: in-source subscription-validation registry, alongside EXPECTED.
+// Keep in sync with create-checkout's MODELS and the catalog. Subscription
+// entitlements are validated by PRICE ID (stronger than amount; immune to
+// proration).
+const SUB_MODELS: Record<string, { priceEnv: string }> = {
+  "socratic-tutor": { priceEnv: "STRIPE_PRICE_SOCRATIC_MONTHLY" },
+};
+
 const USER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -42,6 +50,215 @@ function jsonResponse(body: unknown, status: number): Response {
 function readEnv(name: string): string | null {
   const value = Deno.env.get(name);
   return value && value.length > 0 ? value : null;
+}
+
+/** Narrows an unknown value to a plain object record, or null otherwise. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+/** Like asRecord, but null unless the record has at least one own key. */
+function nonEmptyRecord(value: unknown): Record<string, unknown> | null {
+  const rec = asRecord(value);
+  return rec !== null && Object.keys(rec).length > 0 ? rec : null;
+}
+
+// Task Sub2: handles invoice.paid — the recurring-billing counterpart to the
+// checkout.session.completed branch below. Stripe delivers invoice.paid once
+// per billing period for the life of a subscription; each delivery extends
+// the entitlement's expires_at via the RPC rather than re-granting it from
+// scratch, which makes replays and out-of-order delivery harmless.
+async function handleInvoicePaid(
+  event: Stripe.Event,
+  supabaseUrl: string,
+  serviceRoleKey: string,
+): Promise<Response> {
+  const invoice = asRecord(event.data.object) ?? {};
+
+  // Subscription id extraction is defensive: newer Stripe API versions moved
+  // this field from invoice.subscription to
+  // invoice.parent.subscription_details.subscription. The webhook endpoint's
+  // configured API version (Stripe dashboard/CLI setting, independent of
+  // this file's pinned SDK apiVersion) decides which shape actually arrives,
+  // so both are checked. Absent/non-string means this invoice isn't tied to
+  // a subscription at all (e.g. a one-off invoice) — not an error, just not
+  // ours to act on.
+  let subscriptionId: string | null = null;
+  if (typeof invoice.subscription === "string") {
+    subscriptionId = invoice.subscription;
+  } else {
+    const parent = asRecord(invoice.parent);
+    const parentSubDetails = asRecord(parent?.subscription_details);
+    const nested = parentSubDetails?.subscription;
+    subscriptionId = typeof nested === "string" ? nested : null;
+  }
+  if (subscriptionId === null) {
+    console.error("invoice without subscription — ignored");
+    return jsonResponse({ received: true }, 200);
+  }
+
+  // Metadata extraction is likewise defensive across API-version shapes, and
+  // additionally falls back to the first line item's metadata (Stripe copies
+  // subscription metadata onto invoice line items). First non-empty source
+  // wins. Missing entirely, or missing the user_id/model_id keys, means this
+  // is not one of our subscriptions — 200-ignore rather than 400, since a
+  // 400 would make Stripe retry forever for an invoice we'll never claim.
+  const linesRecord = asRecord(invoice.lines);
+  const lineItems = Array.isArray(linesRecord?.data) ? (linesRecord!.data as unknown[]) : [];
+  const directSubDetails = asRecord(invoice.subscription_details);
+  const parentSubDetailsForMeta = asRecord(asRecord(invoice.parent)?.subscription_details);
+  const firstLine = asRecord(lineItems[0]);
+
+  const metadata =
+    nonEmptyRecord(directSubDetails?.metadata) ??
+    nonEmptyRecord(parentSubDetailsForMeta?.metadata) ??
+    nonEmptyRecord(firstLine?.metadata);
+
+  if (
+    metadata === null ||
+    !Object.hasOwn(metadata, "user_id") ||
+    !Object.hasOwn(metadata, "model_id")
+  ) {
+    console.error(`invoice metadata missing/incomplete — ignored: subscription=${subscriptionId}`);
+    return jsonResponse({ received: true }, 200);
+  }
+  const rawUserId = metadata.user_id;
+  const rawModelId = metadata.model_id;
+
+  // Every check below must pass before an entitlement period is ever
+  // extended. Mirrors the checkout.session.completed validation below:
+  // early-return per check (so TS narrows userId/modelId to `string`
+  // afterward), and logging WHICH check failed is safe — subscription id,
+  // user_id, model_id are ours, no secret material involved.
+  if (typeof rawUserId !== "string" || !USER_ID_RE.test(rawUserId)) {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=user_id subscription=${subscriptionId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+  if (typeof rawModelId !== "string" || !Object.hasOwn(SUB_MODELS, rawModelId)) {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=model_id subscription=${subscriptionId} ` +
+        `user_id=${rawUserId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+  const userId = rawUserId;
+  const modelId = rawModelId;
+
+  if (invoice.paid !== true) {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=paid subscription=${subscriptionId} ` +
+        `user_id=${userId} model_id=${modelId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+  if (invoice.currency !== "usd") {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=currency subscription=${subscriptionId} ` +
+        `user_id=${userId} model_id=${modelId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+
+  // Price check: at least one line item's price must match the model's
+  // configured monthly price. The price env var is resolved only now that
+  // model_id is known — mirrors how create-checkout resolves its per-model
+  // priceEnv only after its registry fence. Missing env is a deploy
+  // misconfiguration (500, name only), not a bad event (400).
+  const priceEnvName = SUB_MODELS[modelId].priceEnv;
+  const expectedPriceId = readEnv(priceEnvName);
+  if (!expectedPriceId) {
+    console.error(`stripe-webhook misconfigured: missing env ${priceEnvName}`);
+    return jsonResponse({ error: "misconfigured" }, 500);
+  }
+
+  // Single pass over line items resolves both the price check and periodEnd:
+  // matched-price periods are collected preferentially, falling back to
+  // every line's period only if none of the matched line(s) carry a usable
+  // period — "entries where the price matched if easy, else all lines" per
+  // brief.
+  let priceMatched = false;
+  const matchedPeriods: number[] = [];
+  const allPeriods: number[] = [];
+  for (const line of lineItems) {
+    const lineRec = asRecord(line);
+    if (!lineRec) continue;
+
+    const priceRec = asRecord(lineRec.price);
+    const directPriceId = typeof priceRec?.id === "string" ? priceRec.id : undefined;
+    const pricingRec = asRecord(lineRec.pricing);
+    const priceDetailsRec = asRecord(pricingRec?.price_details);
+    const pricingPriceId =
+      typeof priceDetailsRec?.price === "string" ? priceDetailsRec.price : undefined;
+    const linePriceId = directPriceId ?? pricingPriceId;
+    const isMatch = linePriceId === expectedPriceId;
+    if (isMatch) priceMatched = true;
+
+    const periodRec = asRecord(lineRec.period);
+    const periodEndRaw = periodRec?.end;
+    if (typeof periodEndRaw === "number" && Number.isFinite(periodEndRaw)) {
+      allPeriods.push(periodEndRaw);
+      if (isMatch) matchedPeriods.push(periodEndRaw);
+    }
+  }
+  if (!priceMatched) {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=price subscription=${subscriptionId} ` +
+        `user_id=${userId} model_id=${modelId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+
+  const periodCandidates = matchedPeriods.length > 0 ? matchedPeriods : allPeriods;
+  const periodEnd = periodCandidates.length > 0 ? Math.max(...periodCandidates) : null;
+  // ~400 days — longest plausible billing period + slack; an inflated
+  // period can never be walked back by the extend-only writer, and this
+  // also prevents a Date RangeError on absurd values.
+  const periodEndMax = Math.floor(Date.now() / 1000) + 400 * 86400;
+  if (periodEnd === null || !(periodEnd > 0) || periodEnd > periodEndMax) {
+    console.error(
+      `stripe-webhook invoice.paid validation failed: check=period_end subscription=${subscriptionId} ` +
+        `user_id=${userId} model_id=${modelId}`,
+    );
+    return jsonResponse({ error: "validation_failed" }, 400);
+  }
+  const periodEndIso = new Date(periodEnd * 1000).toISOString();
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+  // Entitlement write via the RPC, NOT a direct upsert — the RPC owns expiry
+  // semantics (extend-only, grandfathered-lifetime-preserving; see
+  // apply_subscription_period in supabase/migrations/0006_subscriptions.sql)
+  // and this function must not duplicate that logic. Replay-safe: the RPC is
+  // convergent/monotonic, so retrying the same or an out-of-order period is
+  // harmless.
+  const { error: rpcErr } = await supabase.rpc("apply_subscription_period", {
+    p_user_id: userId,
+    p_model_id: modelId,
+    p_period_end: periodEndIso,
+  });
+  if (rpcErr) {
+    // DB error → 500 so Stripe retries; the RPC is convergent/monotonic so
+    // retry is safe.
+    console.error(`apply_subscription_period rpc failed: ${rpcErr.message}`);
+    return jsonResponse({ error: "storage_failed" }, 500);
+  }
+
+  // Customer mapping: AFTER the entitlement write, and best-effort — the
+  // entitlement write above is the critical operation; a failure here
+  // (including a cross-user customer_id unique clash) must not fail the
+  // event or make Stripe retry an entitlement grant that already succeeded.
+  if (typeof invoice.customer === "string") {
+    const { error: mapErr } = await supabase
+      .from("stripe_customers")
+      .upsert({ user_id: userId, customer_id: invoice.customer }, { onConflict: "user_id" });
+    if (mapErr) {
+      console.error(`stripe_customers upsert failed: ${mapErr.message}`);
+    }
+  }
+
+  return jsonResponse({ received: true }, 200);
 }
 
 Deno.serve(async (req: Request) => {
@@ -113,14 +330,20 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "invalid_signature" }, 400);
   }
 
-  // Ignore-list: this endpoint subscribes to exactly one event type. Every
-  // other event Stripe might deliver to this endpoint (including
-  // async_payment_succeeded / async_payment_failed) is deliberately
-  // unhandled — card payments complete synchronously, so
-  // checkout.session.completed with payment_status: 'paid' is already the
-  // final state for the payment methods this app accepts. Returning 200
-  // here (rather than 400) tells Stripe delivery succeeded, so it won't
-  // retry an event this function will never act on.
+  // Ignore-list: this endpoint subscribes to two event types —
+  // checkout.session.completed (one-time purchases) and invoice.paid
+  // (subscription period grants/renewals, Task Sub2). Every other event
+  // Stripe might deliver to this endpoint (including async_payment_succeeded
+  // / async_payment_failed) is deliberately unhandled — card payments
+  // complete synchronously, so checkout.session.completed with
+  // payment_status: 'paid' is already the final state for the payment
+  // methods this app accepts. Returning 200 here (rather than 400) tells
+  // Stripe delivery succeeded, so it won't retry an event this function
+  // will never act on.
+  if (event.type === "invoice.paid") {
+    return await handleInvoicePaid(event, supabaseUrl!, serviceRoleKey!);
+  }
+
   if (event.type !== "checkout.session.completed") {
     return jsonResponse({ received: true }, 200);
   }

@@ -112,17 +112,17 @@ function openDrawer(id) {
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const gib = (m.fileBytes / 2 ** 30).toFixed(2);
   const btnLabel = m.real
-    ? (state.dl.installed
-        ? 'Open chat'
-        : state.dl.active
-          ? 'Downloading…'
-          : state.dl.partBytes > 0
-            ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
-            : state.pay.modelId === m.id
-              ? 'Waiting for payment… (click to cancel)'
-              : state.mine.has(m.id)
-                ? `Download · ${gib} GiB`
-                : `Get · ${m.pro ? 'Pro' : m.price}`)
+    ? (!installed
+        ? (state.pay.modelId === m.id
+            ? 'Waiting for payment… (click to cancel)'
+            : `Get · ${m.pro ? 'Pro' : m.price}`)
+        : (state.dl.installed
+            ? 'Open chat'
+            : state.dl.active
+              ? 'Downloading…'
+              : state.dl.partBytes > 0
+                ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
+                : `Download · ${gib} GiB`))
     : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
@@ -163,45 +163,46 @@ function closeDrawer() {
 /* ---------------- Get flow ---------------- */
 function runGetFlow(m, btn) {
   if (m.real) {
-    if (state.dl.installed) { enterChat(m); return; }
-    if (state.dl.active) return;
-    const startDownload = () => {
-      state.mine.add(m.id);
-      renderGrid();
-      heroDownload(m, btn);
-    };
-    if (state.mine.has(m.id) || state.dl.partBytes > 0) { startDownload(); return; }
-    if (state.pay.modelId === m.id) {
-      cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
+    const owned = state.mine.has(m.id);
+    if (!owned) {
+      if (state.pay.modelId === m.id) {
+        cancelPaymentPoll(`Get · ${m.pro ? 'Pro' : m.price}`);
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Opening checkout…';
+      (async () => {
+        let res;
+        try {
+          res = await invoke('start_checkout', { modelId: m.id });
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = `Get · ${m.pro ? 'Pro' : m.price}`;
+          const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(e);
+          return;
+        }
+        if (res.status === 'alreadyOwned') {
+          state.mine.add(m.id);
+          renderGrid();
+          if (state.dl.installed) { finishInstalled(m, btn); return; }
+          btn.textContent = '✓ Owned — starting download…';
+          heroDownload(m, btn);
+          return;
+        }
+        btn.disabled = false;
+        btn.textContent = 'Waiting for payment… (click to cancel)';
+        const el = $('errMsg');
+        el.style.display = 'block';
+        el.style.color = 'var(--muted)';
+        el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
+        beginPaymentPoll(m);
+      })();
       return;
     }
-    btn.disabled = true;
-    btn.textContent = 'Opening checkout…';
-    (async () => {
-      let res;
-      try {
-        res = await invoke('start_checkout', { modelId: m.id });
-      } catch (e) {
-        btn.disabled = false;
-        btn.textContent = `Get · ${m.pro ? 'Pro' : m.price}`;
-        const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(e);
-        return;
-      }
-      if (res.status === 'alreadyOwned') {
-        state.mine.add(m.id);
-        renderGrid();
-        btn.textContent = '✓ Owned — starting download…';
-        heroDownload(m, btn);
-        return;
-      }
-      btn.disabled = false;
-      btn.textContent = 'Waiting for payment… (click to cancel)';
-      const el = $('errMsg');
-      el.style.display = 'block';
-      el.style.color = 'var(--muted)';
-      el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
-      beginPaymentPoll(m);
-    })();
+    if (state.dl.installed) { enterChat(m); return; }
+    if (state.dl.active) return;
+    renderGrid();
+    heroDownload(m, btn);
   } else {
     if (state.mine.has(m.id)) return;
     simulateStubDownload(m, btn);
@@ -221,6 +222,19 @@ function heroDownload(m, btn) {
     btn.textContent = 'Retry download';
     const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(err);
   });
+}
+
+async function finishInstalled(m, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting engine…'; }
+  try {
+    await invoke('load_model', { modelId: m.id });
+    renderGrid();
+    enterChat(m);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Open chat'; }
+    const el = $('errMsg');
+    if (el) { el.style.display = 'block'; el.textContent = String(err); }
+  }
 }
 
 function cancelPaymentPoll(resetBtnText) {
@@ -257,8 +271,13 @@ function beginPaymentPoll(m) {
     const btn = $('dlBtn');
     if (btn && state.drawerId === m.id && $('drawer').classList.contains('show')) {
       btn.disabled = true;
-      btn.textContent = '✓ Paid — starting download…';
-      heroDownload(m, btn);
+      if (state.dl.installed) {
+        btn.textContent = '✓ Paid — starting engine…';
+        finishInstalled(m, btn);
+      } else {
+        btn.textContent = '✓ Paid — starting download…';
+        heroDownload(m, btn);
+      }
     }
   }, 3000);
 }
@@ -283,6 +302,12 @@ async function onDownloadProgress(e) {
   } else if (p.phase === 'done') {
     state.dl = { installed: true, partBytes: 0, active: false };
     if (line) line.style.display = 'none';
+    // The download outlives the session that started it (the file is
+    // machine-global). If the CURRENT session isn't entitled to this model
+    // — the starter signed out and someone else signed in mid-download —
+    // record the machine fact and stop: no engine start, no auto-enter
+    // into a paid chat.
+    if (!state.signedIn || !hero || !state.mine.has(hero.id)) { renderGrid(); return; }
     const btn = $('dlBtn');
     if (btn) { btn.textContent = 'Starting engine…'; }
     try {
@@ -499,7 +524,23 @@ function lockNudge(card) {
 
 /* ---------------- auth ---------------- */
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
-function hide(el) { el.classList.remove('show'); }
+function hide(el) {
+  el.classList.remove('show');
+  // Any dismissal of an auth modal (close button, backdrop, Escape) clears
+  // both forms — typed-but-abandoned credentials must not sit in the DOM for
+  // the next person at the keyboard.
+  if (el.id === 'loginModal' || el.id === 'createModal') resetAuthForms();
+}
+
+function resetAuthForms() {
+  $('li-email').value = '';
+  $('li-pass').value = '';
+  $('cr-email').value = '';
+  $('cr-pass').value = '';
+  $('cr-nick').value = '';
+  $('li-err').style.display = 'none';
+  $('cr-err').style.display = 'none';
+}
 
 async function applySession(info) {
   state.signedIn = true;
@@ -515,8 +556,10 @@ async function applySession(info) {
   lb.textContent = state.nick;
   lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
   $('signOutBtn').style.display = '';
+  $('billingBtn').style.display = '';
   hide($('loginModal'));
   hide($('createModal'));
+  resetAuthForms();
   renderGrid();
 }
 
@@ -613,12 +656,20 @@ $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
+  closeDrawer();
+  // Chat state is per-account: leave the chat view if it's open and drop
+  // the transcript so the next sign-in can't replay this one's messages.
+  exitChat();
+  state.chat.messages = [];
+  state.chat.model = null;
   state.signedIn = false;
   state.nick = null;
   state.device = null;
   state.mine = new Set();
+  resetAuthForms();
   $('device').style.display = 'none';
   $('signOutBtn').style.display = 'none';
+  $('billingBtn').style.display = 'none';
   const lb = $('loginBtn');
   lb.textContent = 'Log in';
   lb.title = '';
@@ -628,6 +679,18 @@ $('signOutBtn').addEventListener('click', async () => {
   }
   renderFilters();
   renderGrid();
+});
+$('billingBtn').addEventListener('click', async () => {
+  const btn = $('billingBtn');
+  btn.disabled = true;
+  try {
+    const res = await invoke('open_billing_portal');
+    if (res.status === 'noBillingAccount') showToast('No billing account yet — subscribe first.');
+  } catch (e) {
+    showToast(String(e));
+  } finally {
+    btn.disabled = false;
+  }
 });
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];

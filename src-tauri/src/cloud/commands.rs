@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::cloud::error::CloudError;
-use crate::cloud::session::{Cloud, CheckoutOutcome, SessionInfo};
+use crate::cloud::session::{Cloud, CheckoutOutcome, PortalOutcome, SessionInfo};
 use crate::cloud::store::Entitlement;
 
 /// Only reachable if the blocking task itself panics or the runtime is
@@ -120,6 +120,44 @@ pub async fn start_checkout(
                 .open_url(u, None::<&str>)
                 .map_err(|_| "Couldn't open your browser — please try again.".to_string())?;
             Ok(StartCheckoutResult {
+                status: "opened".into(),
+            })
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenBillingPortalResult {
+    /// "opened" | "noBillingAccount"
+    pub status: String,
+}
+
+/// Mints a Stripe Billing Portal session for the current user and, unless
+/// they have never subscribed, opens it in the system browser via the
+/// opener plugin (never inside the app's own webview — a billing page has
+/// no business running under this app's CSP/IPC surface).
+#[tauri::command]
+pub async fn open_billing_portal(
+    app: tauri::AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+) -> Result<OpenBillingPortalResult, String> {
+    let cloud = cloud.inner().clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || cloud.create_portal_session())
+        .await
+        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+        .map_err(|e: CloudError| e.user_message())?;
+
+    match outcome {
+        PortalOutcome::NoBillingAccount => Ok(OpenBillingPortalResult {
+            status: "noBillingAccount".into(),
+        }),
+        PortalOutcome::Url(u) => {
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_url(u, None::<&str>)
+                .map_err(|_| "Couldn't open your browser — please try again.".to_string())?;
+            Ok(OpenBillingPortalResult {
                 status: "opened".into(),
             })
         }

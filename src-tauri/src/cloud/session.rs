@@ -57,6 +57,16 @@ pub enum CheckoutOutcome {
     Url(String),
 }
 
+/// Result of a `Cloud::create_portal_session` call. `Url` carries a
+/// validated (`https://billing.stripe.com/`-prefixed), open-in-browser
+/// Stripe Billing Portal link. No `Debug`/`PartialEq` derive (mirrors
+/// `rest::PortalSessionResponse`'s rationale): the URL is a billing-portal
+/// capability and must never end up in a `{:?}`/panic message.
+pub enum PortalOutcome {
+    NoBillingAccount,
+    Url(String),
+}
+
 /// The stateful session layer. Composes `auth` (GoTrue), `rest` (PostgREST),
 /// and `store` (keyring + on-disk cache) into the six operations the
 /// front-end drives via `cloud::commands`.
@@ -269,6 +279,25 @@ impl Cloud {
                 checkout_outcome(rest::create_checkout(&access2, model_id))
             }
             result => checkout_outcome(result),
+        }
+    }
+
+    /// Create a Stripe Billing Portal session for the current user.
+    /// Refreshes the session token if needed; one forced refresh+retry on
+    /// `SessionExpired` (IDENTICAL shape to `create_checkout`'s retry). A
+    /// 404 from the function (never subscribed, so no Stripe customer yet)
+    /// maps to `NoBillingAccount` rather than an error. On success,
+    /// validates the returned URL actually points at Stripe's billing
+    /// portal host before it's ever handed to the opener plugin — see
+    /// `portal_outcome`.
+    pub fn create_portal_session(&self) -> Result<PortalOutcome, CloudError> {
+        let (access, _user_id) = self.ensure_fresh()?;
+        match rest::create_portal_session(&access) {
+            Err(CloudError::SessionExpired) => {
+                let (access2, _user_id2) = self.refresh_via_gate()?;
+                portal_outcome(rest::create_portal_session(&access2))
+            }
+            result => portal_outcome(result),
         }
     }
 
@@ -738,6 +767,28 @@ fn checkout_outcome(result: Result<rest::CheckoutSessionResponse, CloudError>) -
             }
         }
         Err(CloudError::Api { status: 409, .. }) => Ok(CheckoutOutcome::AlreadyOwned),
+        Err(e) => Err(e),
+    }
+}
+
+/// Maps a `rest::create_portal_session` result to a `PortalOutcome`: a 404
+/// (the function's "no_billing_account" response — the normal answer for a
+/// user who has never subscribed) becomes `NoBillingAccount` rather than an
+/// error; any other error passes through unchanged. On success, the URL is
+/// validated here — the one place this is unit-testable without a Tauri
+/// `AppHandle`/opener plugin in the loop — before `Cloud::create_portal_session`'s
+/// caller (`open_billing_portal`) ever trusts it enough to hand to
+/// `tauri_plugin_opener`.
+fn portal_outcome(result: Result<rest::PortalSessionResponse, CloudError>) -> Result<PortalOutcome, CloudError> {
+    match result {
+        Ok(resp) => {
+            if resp.url.starts_with("https://billing.stripe.com/") {
+                Ok(PortalOutcome::Url(resp.url))
+            } else {
+                Err(CloudError::Internal("unexpected portal url".into()))
+            }
+        }
+        Err(CloudError::Api { status: 404, .. }) => Ok(PortalOutcome::NoBillingAccount),
         Err(e) => Err(e),
     }
 }
@@ -1704,6 +1755,106 @@ mod tests {
 
         let result = cloud.create_checkout("socratic-tutor");
         assert!(matches!(result, Err(CloudError::SessionExpired)));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // Sub7-2. create_portal_session happy path: locally-fresh session, 200
+    // {"url":"https://billing.stripe.com/..."} -> Url(...) exact.
+    #[test]
+    fn create_portal_session_happy_path_returns_url() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-portal-happy-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-portal".into(),
+                email: "portal@example.com".into(),
+                access_token: "at-fresh-portal".into(),
+                refresh_token: "rt-fresh-portal".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server(
+            "200 OK",
+            r#"{"url":"https://billing.stripe.com/p/session/x"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud.create_portal_session().expect("expected success");
+        match result {
+            PortalOutcome::Url(u) => {
+                assert_eq!(u, "https://billing.stripe.com/p/session/x")
+            }
+            PortalOutcome::NoBillingAccount => panic!("expected Url, got NoBillingAccount"),
+        }
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // Sub7-3. create_portal_session 404 {"error":"no_billing_account"} ->
+    // NoBillingAccount.
+    #[test]
+    fn create_portal_session_404_is_no_billing_account() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-portal-404-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-404".into(),
+                email: "u404@example.com".into(),
+                access_token: "at-404".into(),
+                refresh_token: "rt-404".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server("404 Not Found", r#"{"error":"no_billing_account"}"#);
+        set_mock_env(port);
+
+        let result = cloud
+            .create_portal_session()
+            .expect("expected Ok(NoBillingAccount)");
+        assert!(matches!(result, PortalOutcome::NoBillingAccount));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // Sub7-4. create_portal_session 200 with a non-Stripe url ->
+    // Err(Internal("unexpected portal url")) -- validation lives in
+    // session.rs, unit-testable here without touching the browser opener.
+    #[test]
+    fn create_portal_session_non_stripe_url_rejected() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-portal-badurl-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session {
+                user_id: "user-portal-badurl".into(),
+                email: "portalbadurl@example.com".into(),
+                access_token: "at-portal-badurl".into(),
+                refresh_token: "rt-portal-badurl".into(),
+                expires_at: now() + 3600,
+            });
+        }
+
+        let port = start_mock_server("200 OK", r#"{"url":"https://evil.example/portal"}"#);
+        set_mock_env(port);
+
+        let err = cloud
+            .create_portal_session()
+            .err()
+            .expect("expected an error");
+        match err {
+            CloudError::Internal(reason) => {
+                assert!(reason.contains("unexpected portal url"), "reason was: {reason}")
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
 
         let _ = std::fs::remove_file(&cache_path);
     }

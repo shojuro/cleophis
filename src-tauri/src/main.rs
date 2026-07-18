@@ -100,6 +100,7 @@ fn main() {
             cloud::commands::grant_entitlement,
             cloud::commands::list_entitlements,
             cloud::commands::start_checkout,
+            cloud::commands::open_billing_portal,
             cloud::download::download_model,
             cloud::download::cancel_download,
             cloud::download::download_status

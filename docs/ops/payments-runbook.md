@@ -93,6 +93,167 @@ design (no shared schema), so each one needs its own entry:
    tools/deploy-function.sh download-url   # deploy-download-url.sh also works, per its own runbook
    ```
 
+## Subscriptions (monthly plan)
+
+The hero model's $20 one-time purchase became a $20/mo subscription in the
+subscriptions milestone (Stripe Checkout `mode: subscription`, price env
+`STRIPE_PRICE_SOCRATIC_MONTHLY`, lookup_key `socratic-tutor-monthly`, test
+price `price_1TuK9DDK47Qi4BpkZCnrk1Iv`). Source of truth for this section:
+`supabase/migrations/0006_subscriptions.sql`,
+`supabase/functions/stripe-webhook/index.ts`'s `handleInvoicePaid`,
+`supabase/functions/create-checkout/index.ts`'s subscription-mode session,
+`supabase/functions/customer-portal/index.ts`.
+
+### Event flow
+
+1. `create-checkout` mints a Checkout Session with `mode: "subscription"`
+   against `STRIPE_PRICE_SOCRATIC_MONTHLY`, carrying
+   `subscription_data.metadata: { user_id, model_id }` (the session-level
+   `metadata`/`client_reference_id` used by the payment branch are
+   unchanged). Its idempotency key is `subcheckout-${userId}-${modelId}` —
+   a distinct prefix from the one-time flow's `checkout-${userId}-${modelId}`,
+   so a 24h-cached key from before this milestone can never collide with
+   one minted after it.
+2. `stripe-webhook`'s **`invoice.paid`** is the single authoritative
+   subscription event — the first invoice on a new subscription and every
+   renewal invoice after it fire the same event type; there is no separate
+   "subscription created" code path. On a matched invoice the webhook
+   extracts the subscription id and `{user_id, model_id}` metadata
+   defensively (the payload shape varies by the endpoint's configured
+   Stripe API version, so both the classic `invoice.subscription` /
+   `invoice.subscription_details.metadata` shape and the newer
+   `invoice.parent.subscription_details.*` shape are read; a payload that
+   matches neither is a 200-ignore, not ours), validates `invoice.paid ===
+   true`, `currency === "usd"`, and that a line's `price.id` matches
+   `STRIPE_PRICE_SOCRATIC_MONTHLY`, then computes `periodEnd` as the max
+   `line.period.end` across the matched lines — capped at `now + 400 days`
+   upstream in the webhook, so a corrupt or absurd Stripe value can never
+   mint a multi-year grant.
+3. The webhook calls `apply_subscription_period(user_id, model_id,
+   period_end)` — the **only** code path allowed to write a non-null
+   `expires_at`. AFTER that write succeeds, it best-effort upserts
+   `stripe_customers(user_id, customer_id)` (`onConflict: "user_id"`); any
+   error there, including a cross-user `customer_id` unique clash, is
+   logged and swallowed rather than failing the event — the entitlement
+   write is the critical one, the customer mapping only powers the billing
+   portal.
+4. **Renewal is the same event.** Nothing in the webhook distinguishes a
+   subscription's first `invoice.paid` from its second, third, etc. — the
+   RPC's extend-only semantics below are what make that safe.
+
+### Replay / out-of-order safety
+
+`apply_subscription_period` is an `INSERT ... ON CONFLICT (user_id,
+model_id) DO UPDATE` whose expiry math is `GREATEST(entitlements.expires_at,
+excluded.expires_at)`. A redelivered event (Stripe retry) or two renewal
+events arriving out of order both converge to the same final `expires_at`
+(the later period end) — it can only extend, never shrink. Proven live via
+the synthetic tester's `--sub-replay` and `--sub-out-of-order` modes (see
+`docs/superpowers/verification-milestone-subscriptions.md`).
+
+### Lifetime grandfathering
+
+Rows written by the original one-time-purchase milestone — `source =
+'purchase'` with `expires_at IS NULL` — get an explicit branch in the RPC:
+```sql
+when entitlements.source = 'purchase' and entitlements.expires_at is null
+  then null
+```
+`GREATEST()` ignores `NULL` operands, so without this branch a lifetime row
+would silently receive whatever `expires_at` arrived on the next
+`invoice.paid` for that `(user_id, model_id)` pair. This branch is why that
+can't happen: lifetime rows are never migrated and never touched by
+anything in this milestone.
+
+### Soft lapse
+
+Subscription expiry gates **downloads only** — `download-url`'s entitlement
+query (`.or("expires_at.is.null,expires_at.gt.<now>")`, unchanged in shape
+since the CDN milestone and now also serving subscription rows) is the sole
+enforcement point. A model already downloaded/installed keeps chatting
+forever once a subscription lapses; there is no revocation of local model
+files and no client-side lapse UX — the app has no code path that tells a
+user their subscription has lapsed. `create-checkout` runs the identical
+expiry filter for its already-subscribed 409 check, so a lapsed row also
+falls through to a fresh Checkout Session instead of blocking re-subscribe.
+
+### Manual revocation
+
+To force-expire a subscription row for support/testing (e.g. to simulate a
+lapse without waiting for a real billing cycle):
+
+```sql
+update public.entitlements
+set expires_at = now()
+where user_id = '<uuid>'
+  and model_id = '<model>'
+  and source = 'purchase'
+  and expires_at is not null;
+```
+
+**Never touch a row where `expires_at IS NULL`.** That is a grandfathered
+lifetime purchase, not a lapsed subscription — the `and expires_at is not
+null` guard above is what keeps this statement from being able to touch
+one even by accident. Double-check the `where` clause, especially the
+`<uuid>`/`<model>` values, before running this against production.
+
+After running it, the user can re-subscribe immediately —
+`create-checkout`'s expiry-aware 409 only blocks a *future* or *null*
+expiry, so a row manually forced to `now()` falls through to a fresh
+Checkout Session exactly like a naturally lapsed one.
+
+### Known caveats
+
+- **Idempotency-key staleness window.** `create-checkout`'s subscription
+  idempotency key (`subcheckout-${userId}-${modelId}`) is deterministic, so
+  Stripe serves back the *same* cached Checkout Session for up to 24h after
+  the key's first use. A user who re-subscribes within 24h of their
+  original checkout click could be handed a stale session. Not exploitable
+  at this milestone's actual monthly cadence (a lapse is ~30 days after the
+  last successful charge, far outside any 24h window) — revisit only if a
+  sub-24h expiry or testing path is ever added to the product surface.
+- **Cap-trigger + webhook-retry interaction.** The 100-row-per-user soft
+  cap (`enforce_entitlement_cap()`,
+  `supabase/migrations/0005_entitlement_caps.sql`) fires as a `BEFORE
+  INSERT` trigger on `entitlements`, which also fires for
+  `apply_subscription_period`'s `INSERT ... ON CONFLICT DO UPDATE`
+  (Postgres runs `BEFORE INSERT` triggers ahead of conflict resolution). A
+  first-time subscriber landing exactly at the 100-row cap hits `raise
+  exception` and gets a webhook 500, which Stripe retries for 3 days — all
+  of which also 500, so the customer is paid but never entitled. This is
+  the same pre-existing class flagged for the one-time-purchase path in
+  `docs/superpowers/verification-milestone-stripe.md`; the `not exists()`
+  renewal exemption added in migration 0005 (fix `05640b1`) already
+  protects renewals on both paths equally, since 0006's RPC writes through
+  the identical `INSERT ... ON CONFLICT` shape and hits the same trigger —
+  it needed no guard of its own. Only a genuinely new `(user_id, model_id)`
+  pair landing at the cap is exposed, on either path, and only reachable
+  via deliberate self-flooding (100 distinct `model_id` rows for one user).
+- **Residual dunning-window case (two subs, one customer).** `create-checkout`
+  now reuses the mapped Stripe Customer on re-subscribe (see its
+  `stripe_customers` lookup ahead of the Checkout Session call), which
+  closes the orphaned-customer version of this problem. But if a user
+  re-subscribes while their old subscription is still inside Stripe's
+  smart-retry (dunning) window, they end up with TWO subscriptions on the
+  SAME customer — the lapsed one Stripe hasn't given up on yet, plus the
+  new one just created. Both are now portal-visible and self-serve
+  cancellable, so the support answer is simple: cancel the stale
+  subscription in the Billing Portal or the Stripe Dashboard. Future
+  hardening option: have `create-checkout` cancel any non-canceled prior
+  subscription on the customer at re-checkout time, instead of leaving two
+  live.
+- **Stale/deleted Stripe Customer id blocks checkout.** If a
+  `stripe_customers` row points at a customer that no longer exists in the
+  active Stripe mode (test-data wipe, or test-mode rows surviving the
+  live flip), `create-checkout`'s `customer` param makes Stripe reject the
+  session (`resource_missing`) and the user gets a 502
+  `payment_provider_unavailable` on every attempt — self-perpetuating,
+  because checkout never completes so no `invoice.paid` fires to rewrite
+  the mapping. Remedy: delete the offending row
+  (`delete from public.stripe_customers where user_id = '<uuid>';`) — the
+  next checkout then omits `customer` and mints a fresh one. See also
+  LIVE-MODE FLIP step 6.
+
 ## LIVE-MODE FLIP checklist
 
 Everything above and everything currently deployed runs against **Stripe
@@ -102,11 +263,13 @@ test mode**. Before real money can move, in order:
    Stripe's API refuses to set this programmatically in test mode — it's a
    one-time manual step in the Dashboard UI, and Checkout will not
    represent the business correctly to real customers until it's done.
-2. **Rotate three secrets to their live-mode values**: `STRIPE_SECRET_KEY`,
-   `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_SOCRATIC`. Live and test Stripe
+2. **Rotate four secrets to their live-mode values**: `STRIPE_SECRET_KEY`,
+   `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_SOCRATIC`, and (subscriptions
+   milestone) `STRIPE_PRICE_SOCRATIC_MONTHLY`. Live and test Stripe
    objects are entirely separate — a live secret key, a live webhook
-   endpoint (with its own live signing secret), and a live Price id (even
-   if it represents the "same" $20 product) are all needed. `~/.env` ends
+   endpoint (with its own live signing secret), and live Price ids for
+   both the one-time and monthly products (even though each represents the
+   "same" product test mode already has) are all needed. `~/.env` ends
    up with the test-mode `STRIPE_WEBHOOK_SECRET=` line still present from
    the original `tools/stripe-bootstrap.sh` run (step 4 below appends the
    live one rather than replacing it in place) — prune the stale test line
@@ -132,9 +295,43 @@ test mode**. Before real money can move, in order:
    product/price and webhook endpoint and push the resulting live secrets —
    the script's reuse-by-`lookup_key`/reuse-by-`url` idempotency means this
    is safe to run again; it will not touch or duplicate the test-mode
-   objects, which live in Stripe's separate test-mode data.
+   objects, which live in Stripe's separate test-mode data. Since the
+   subscriptions milestone, the same re-run also: (a) reuses-or-creates the
+   **live monthly price** under the same `socratic-tutor-monthly`
+   lookup_key and pushes it as `STRIPE_PRICE_SOCRATIC_MONTHLY`; (b) creates
+   the live webhook endpoint subscribed to **both**
+   `checkout.session.completed` and `invoice.paid`, pinned to the same
+   `api_version` the script hard-codes for test mode (`2024-06-20` at time
+   of writing — confirm this still matches the bootstrap script before
+   re-running, since `api_version` is creation-only and a mismatch forces a
+   delete-and-recreate that rotates the signing secret again); (c)
+   reuses-or-creates a **live-mode billing portal configuration** as the
+   account default (`is_default=true`) — portal configurations are
+   mode-scoped, so the test-mode default created earlier does not carry
+   over. The portal step is designed to degrade to a stderr warning rather
+   than abort the script on failure; if it warns, save a configuration once
+   by hand in the live Stripe Dashboard before any live subscriber clicks
+   "Manage billing" — without a live default configuration,
+   `customer-portal`'s session-create call fails and the function returns
+   its generic Stripe-failure response (502 `payment_provider_unavailable`).
 5. Redeploy `create-checkout` and `stripe-webhook` (step 3 above changes
-   their code) via `tools/deploy-function.sh`.
+   their code) via `tools/deploy-function.sh`. `customer-portal` needs no
+   redeploy for the flip — it has no test/live branching of its own, so it
+   picks up live-mode behavior automatically once `STRIPE_SECRET_KEY` is
+   rotated in step 2.
+6. **Purge test-mode `stripe_customers` rows before the first live sale.**
+   Every row written before the flip holds a *test-mode* `cus_…` id, which
+   does not exist in live mode. Because `create-checkout` now passes the
+   mapped id as `customer`, a stale row makes Stripe reject the session
+   (`resource_missing`) and the user is blocked from subscribing with a 502
+   `payment_provider_unavailable` — and stays blocked, since no
+   `invoice.paid` can fire to correct the mapping. Truncate the table (and
+   any test entitlement rows being retired) as part of the flip:
+   `delete from public.stripe_customers;` via the SQL editor.
+7. Verify customer reuse behavior in live mode: run the re-subscribe flow
+   with a live-mode card and confirm it lands on the existing Customer (no
+   new one minted) and that the Billing Portal shows the full subscription
+   history for that customer.
 
 **No app release is needed for this flip.** Nothing in the Tauri client
 (`src-tauri`, `src/app.js`) encodes test-vs-live mode, a secret value, or a
@@ -142,7 +339,7 @@ Price id — the client only ever calls `start_checkout`/`create-checkout`
 by `model_id` and opens whatever URL comes back. The entire flip is
 server-side (Supabase function secrets + code) and Stripe-Dashboard-side
 (business name, webhook endpoint); an already-installed app keeps working
-unmodified once the five steps above land.
+unmodified once the steps above land.
 
 ## Return pages (GitHub Pages)
 
