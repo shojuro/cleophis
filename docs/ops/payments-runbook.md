@@ -204,14 +204,19 @@ Checkout Session exactly like a naturally lapsed one.
 
 ### Known caveats
 
-- **Idempotency-key staleness window.** `create-checkout`'s subscription
-  idempotency key (`subcheckout-${userId}-${modelId}`) is deterministic, so
-  Stripe serves back the *same* cached Checkout Session for up to 24h after
-  the key's first use. A user who re-subscribes within 24h of their
-  original checkout click could be handed a stale session. Not exploitable
-  at this milestone's actual monthly cadence (a lapse is ~30 days after the
-  last successful charge, far outside any 24h window) — revisit only if a
-  sub-24h expiry or testing path is ever added to the product surface.
+- **Idempotency key is hour-bucketed** (`subcheckout-${userId}-${modelId}-h<hour>`;
+  lapse-UX milestone). The original fully-deterministic key
+  (`subcheckout-${userId}-${modelId}`) failed live: a same-day
+  pay→force-lapse→renew sequence replayed the morning's key with
+  *different* session params (customer reuse + new return URLs had
+  deployed in between) and Stripe rejected it with `idempotency_error`
+  → the user saw a 502 on every renew click for up to 24h. The hour
+  bucket keeps double-click dedupe (same hour + identical params → same
+  cached session) while guaranteeing renewals and post-redeploy checkouts
+  never collide with a stale cached request. An hour-boundary double-click
+  can mint two sessions — harmless, nothing charges until completion.
+  Ops takeaway: after manually force-expiring a row (Manual revocation
+  above), the user can re-subscribe immediately — no 24h wait.
 - **Cap-trigger + webhook-retry interaction.** The 100-row-per-user soft
   cap (`enforce_entitlement_cap()`,
   `supabase/migrations/0005_entitlement_caps.sql`) fires as a `BEFORE
