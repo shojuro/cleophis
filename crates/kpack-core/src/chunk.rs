@@ -149,6 +149,12 @@ fn chunk_paragraph(
         // Grow the window sentence-by-sentence while the whole window's
         // real token count (not a per-sentence sum — real tokenizers don't
         // sum linearly across a join) stays within target_tokens.
+        //
+        // TODO(K8-perf): this rebuilds and re-tokenizes the whole growing
+        // window text on every sentence (O(n²) over a section's sentence
+        // count), and the overlap walk below now does the same thing over
+        // its (smaller) trailing window. Correctness-first for K5; revisit
+        // only if K8's real-corpus determinism run turns out slow.
         let mut window_end = i;
         let mut window_text = sentences[i].clone();
         let mut window_tokens = start_tokens;
@@ -176,51 +182,86 @@ fn chunk_paragraph(
             break;
         }
 
-        // 18%-of-target overlap: carry back trailing sentences from the
-        // window just emitted, working backward from its last sentence,
-        // until their accumulated token count would exceed the overlap
-        // budget. Always includes at least one sentence (the loop's first
-        // iteration is unconditional), so adjacent chunks always share
-        // ≥1 sentence whenever the window held more than one to begin
-        // with — the case this chunker can vouch for without splitting a
-        // sentence to hit the overlap budget exactly.
-        let overlap_budget = (cfg.target_tokens as u64 * cfg.overlap_pct as u64 / 100) as usize;
+        // overlap_pct% of THIS WINDOW's own tokens (not the target) —
+        // carry back trailing sentences from the window just emitted,
+        // working backward from its last sentence, until including one
+        // more would push the carried text's real (joined) token count
+        // over that budget. Always includes at least one sentence (the
+        // walk's first step is unconditional), so adjacent chunks always
+        // share ≥1 sentence whenever the window held more than one to
+        // begin with — the case this chunker can vouch for without
+        // splitting a sentence to hit the overlap budget exactly.
+        //
+        // Bounding the budget to the window's OWN size (rather than a
+        // fixed fraction of target_tokens) is what keeps overlap bounded
+        // for small windows: a window well under target_tokens used to be
+        // able to fit its ENTIRE content inside the fixed target-sized
+        // budget, so the whole window got carried into the next one
+        // (~85-90% overlap between successive chunks, bloating the pack).
+        // Scaling the budget to the window itself means carrying the whole
+        // window would require the budget to cover 100% of it, which
+        // overlap_pct% of it (< 100%) never does once the window has more
+        // than one sentence — see the forward-progress guard below.
+        let overlap_budget = (window_tokens as u64 * cfg.overlap_pct as u64 / 100) as usize;
         let mut overlap_start = window_end;
-        let mut overlap_tokens = 0usize;
+        // Real joined-text token count (not a per-sentence sum), for
+        // consistency with the window-growth loop above — real tokenizers
+        // don't sum linearly across a join.
+        let mut overlap_text = sentences[window_end].clone();
         let mut k = window_end;
-        loop {
-            let sentence_tokens = embedder.token_count(&sentences[k]);
-            if overlap_tokens > 0 && overlap_tokens + sentence_tokens > overlap_budget {
+        while k != i {
+            let candidate_text = format!("{} {overlap_text}", sentences[k - 1]);
+            if embedder.token_count(&candidate_text) > overlap_budget {
                 break;
             }
-            overlap_tokens += sentence_tokens;
-            overlap_start = k;
-            if k == i {
-                break;
-            }
+            overlap_text = candidate_text;
+            overlap_start = k - 1;
             k -= 1;
         }
 
         // Guarantee forward progress: if the overlap walk consumed the
-        // entire just-emitted window (overlap_start == i, only possible
-        // when that window was a single sentence, since a multi-sentence
-        // window's loop always stops at k == window_end on its first
-        // iteration when window_end > i), advance past it rather than
-        // re-emitting the same window forever.
+        // entire just-emitted window (overlap_start == i), advance past it
+        // rather than re-emitting the same window forever. With the
+        // window-relative budget above, this is now expected only when the
+        // window was a single sentence (window_end == i): for a window of
+        // 2+ sentences, the unconditionally-included last sentence already
+        // spends part of the budget, leaving less than overlap_pct% of the
+        // window for the rest — never enough to also cover every sentence
+        // back to i, since together they make up the window's *entire*
+        // content (100% > overlap_pct% whenever overlap_pct < 100). Kept
+        // as a defensive guard, not relied on elsewhere as an invariant.
         i = overlap_start.max(i + 1);
     }
 }
 
 /// A minimal, dependency-free sentence splitter (spec §1.3: "sentence-
 /// snapped"). Splits on `.`, `?`, `!` immediately followed by whitespace or
-/// end-of-text. A small abbreviation guard suppresses splits after a
-/// single-letter token (initials: "J. Smith") or a short list of common
-/// abbreviations ("Dr.", "etc.", …) so those don't create spurious sentence
-/// boundaries. Not a full NLP tokenizer — good enough for the "never split
+/// end-of-text.
+///
+/// The abbreviation guard is deliberately narrow and biased toward
+/// splitting: it suppresses a boundary ONLY for (a) a curated,
+/// case-insensitive list of common abbreviations ("Dr.", "etc.", …), or (b)
+/// a multi-dot initialism chain like "U.S." or "e.g." (see
+/// [`is_multi_dot_initialism`]). It does NOT treat every single
+/// alphanumeric character before a period as an abbreviation — that
+/// earlier rule silently merged real sentence boundaries, e.g. "...see
+/// Appendix A. This concludes the chapter." or "The dose was reduced to 5.
+/// Follow up in a week." both wrongly became one sentence.
+///
+/// Known limitation: a genuine name initial not in the curated list, like
+/// "J. Smith", is NOT suppressed and over-splits into a small one-token
+/// fragment ("J."). This is intentional and considered acceptable: the
+/// sliding window in [`chunk_paragraph`] re-absorbs such fragments into a
+/// neighboring window, so it's harmless, whereas under-splitting produces
+/// a genuinely wrong sentence boundary (and can spuriously trip
+/// `oversize_sentence`). Deterministic — no locale or regex dependence.
+///
+/// Not a full NLP tokenizer — good enough for the "never split
 /// mid-sentence" guarantee without a dependency.
 fn split_sentences(text: &str) -> Vec<String> {
     const ABBREVIATIONS: &[&str] = &[
-        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "eg", "ie", "fig", "no", "vol", "approx",
+        "mr", "mrs", "ms", "dr", "prof", "fig", "figs", "eq", "no", "vol", "ch", "sec", "pp", "al", "vs", "cf",
+        "eg", "ie", "etc", "st", "jr", "sr",
     ];
 
     let chars: Vec<char> = text.chars().collect();
@@ -236,8 +277,8 @@ fn split_sentences(text: &str) -> Vec<String> {
             if next_is_boundary {
                 let word_before = word_ending_at(&chars, i);
                 let is_abbreviation = c == '.'
-                    && (word_before.chars().count() == 1
-                        || ABBREVIATIONS.contains(&word_before.to_lowercase().as_str()));
+                    && (ABBREVIATIONS.contains(&word_before.to_lowercase().as_str())
+                        || is_multi_dot_initialism(&chars, i));
                 if !is_abbreviation {
                     let sentence: String = chars[start..=i].iter().collect();
                     push_trimmed(&mut sentences, &sentence);
@@ -260,6 +301,36 @@ fn split_sentences(text: &str) -> Vec<String> {
     }
 
     sentences
+}
+
+/// True when the `.` at `chars[end]` closes a multi-dot initialism chain
+/// like `U.S.` or `e.g.` — two or more single alphanumeric characters, each
+/// immediately preceded by a `.`, with the chain not itself preceded by
+/// another alphanumeric character. That last condition is what keeps this
+/// from matching a lone digit (`5.` after a space) or a bare single-letter
+/// word (`A.` after a space): only an actual `X.Y.` chain qualifies. Used
+/// alongside the curated word list in [`split_sentences`]'s abbreviation
+/// guard.
+fn is_multi_dot_initialism(chars: &[char], end: usize) -> bool {
+    let mut pos = end;
+    let mut segments = 0usize;
+    loop {
+        if pos == 0 || !chars[pos - 1].is_alphanumeric() {
+            return segments >= 2;
+        }
+        // The character before this run must not itself be alphanumeric —
+        // otherwise it's a multi-char word (e.g. the "5" in "25."), not a
+        // lone initial.
+        if pos >= 2 && chars[pos - 2].is_alphanumeric() {
+            return segments >= 2;
+        }
+        segments += 1;
+        let letter_pos = pos - 1;
+        if letter_pos == 0 || chars[letter_pos - 1] != '.' {
+            return segments >= 2;
+        }
+        pos = letter_pos - 1;
+    }
 }
 
 /// Push `s` trimmed of surrounding whitespace, skipping it if that leaves
@@ -654,5 +725,124 @@ mod tests {
         let second = chunk_document(&doc, &embedder, &cfg);
         assert_eq!(first, second);
         assert!(!first.is_empty());
+    }
+
+    // 9-13. split_sentences abbreviation-guard regressions (review Fix 1):
+    // the old "any single char before a period is an abbreviation" rule
+    // wrongly merged real sentence boundaries. The fix removes that rule
+    // and instead only suppresses a curated word list or an actual
+    // multi-dot initialism chain.
+
+    // 9. "...see Appendix A. This concludes the chapter." must split into
+    // TWO sentences (previously merged into one via the single-char rule).
+    #[test]
+    fn t9_split_sentences_breaks_after_capital_letter_reference() {
+        let sentences = split_sentences("...see Appendix A. This concludes the chapter.");
+        assert_eq!(sentences, vec!["...see Appendix A.", "This concludes the chapter."]);
+    }
+
+    // 10. "The dose was reduced to 5. Follow up in a week." must split into
+    // TWO sentences (previously merged via the single-digit rule).
+    #[test]
+    fn t10_split_sentences_breaks_after_lone_digit() {
+        let sentences = split_sentences("The dose was reduced to 5. Follow up in a week.");
+        assert_eq!(sentences, vec!["The dose was reduced to 5.", "Follow up in a week."]);
+    }
+
+    // 11. "Dr. Smith arrived." stays ONE sentence — curated abbreviation
+    // list still suppresses the boundary.
+    #[test]
+    fn t11_split_sentences_keeps_curated_abbreviation_together() {
+        let sentences = split_sentences("Dr. Smith arrived.");
+        assert_eq!(sentences, vec!["Dr. Smith arrived."]);
+    }
+
+    // 12. "U.S. troops." stays ONE sentence — multi-dot initialism chain
+    // detection suppresses the boundary even though neither "U" nor "S"
+    // alone is in the curated word list.
+    #[test]
+    fn t12_split_sentences_keeps_multi_dot_initialism_together() {
+        let sentences = split_sentences("U.S. troops.");
+        assert_eq!(sentences, vec!["U.S. troops."]);
+    }
+
+    // 13. Documented limitation: a genuine name initial not in the curated
+    // list ("J. Smith") is NOT suppressed and over-splits into a tiny
+    // fragment. Acceptable per split_sentences's doc comment — harmless,
+    // self-healing via the sliding window — unlike under-splitting, which
+    // would be a wrong boundary.
+    #[test]
+    fn t13_split_sentences_documented_limitation_over_splits_true_initial() {
+        let sentences = split_sentences("J. Smith wrote the report.");
+        assert_eq!(sentences, vec!["J.", "Smith wrote the report."]);
+    }
+
+    // 14. Overlap-runaway regression (review Fix 2): a window made of many
+    // small sentences (each well under the fixed target-based overlap
+    // budget) followed by a large sentence used to have its ENTIRE small
+    // window carried into the next chunk as "overlap" (~85-90% overlap,
+    // not the configured 18%), because the old budget was a fixed fraction
+    // of target_tokens rather than of the window's own size. Assert the
+    // fix: overlap stays near overlap_pct% of the window's own tokens, and
+    // the next chunk is not a near-duplicate of its predecessor.
+    #[test]
+    fn t14_overlap_bounded_to_window_fraction_not_runaway() {
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig {
+            target_tokens: 100,
+            overlap_pct: 18,
+        };
+
+        // 8 small sentences, 5 tokens each ("SentenceN w0 w1 w2 w3.") = 40
+        // tokens total — well under target_tokens, so they all fit in one
+        // window. A trailing large sentence (90 tokens) doesn't fit
+        // alongside them (40 + 90 > 100), so it forces a second window.
+        let small_sentences: Vec<String> = (0..8).map(|n| format!("Sentence{n} {}.", words(4, "w"))).collect();
+        let large_sentence = format!("Big {}.", words(89, "L"));
+        let mut all_sentences = small_sentences.clone();
+        all_sentences.push(large_sentence.clone());
+        let text = all_sentences.join(" ");
+
+        let doc = doc_with_section(
+            vec![],
+            vec![Block::Paragraph {
+                text,
+                locator: "p1".to_string(),
+            }],
+        );
+
+        let chunks = chunk_document(&doc, &embedder, &cfg);
+        assert_eq!(chunks.len(), 2, "expected exactly two windows, got {}", chunks.len());
+        let (c0, c1) = (&chunks[0], &chunks[1]);
+
+        // Chunk 0 is exactly the 8 small sentences; chunk 1 is the last of
+        // those 8 (the legitimate one-sentence overlap) plus the large one.
+        assert_eq!(c0.text, small_sentences.join(" "));
+        assert_eq!(c1.text, format!("{} {}", small_sentences[7], large_sentence));
+        assert_eq!(c0.token_count, 40);
+
+        // Overlap measured in tokens: only the last small sentence (5
+        // tokens) is shared, ~12.5% of chunk 0 — close to the configured
+        // 18%, nowhere near the ~85-90% the bug produced (which would have
+        // been all 40 tokens, i.e. the entire chunk 0 repeated).
+        let shared_tokens = embedder.token_count(&small_sentences[7]);
+        let overlap_fraction = shared_tokens as f64 / c0.token_count as f64;
+        assert!(
+            overlap_fraction <= 0.20,
+            "overlap fraction {overlap_fraction} exceeds the ~overlap_pct% budget"
+        );
+        assert!(
+            overlap_fraction < 0.85,
+            "overlap runaway reproduced: fraction {overlap_fraction} approaches ~85-90%"
+        );
+
+        // No near-duplication: none of the other 7 small sentences (i.e.
+        // everything but the legitimate 1-sentence overlap) reappear in
+        // chunk 1 — chunk 1 advances by at least (100 - overlap_pct)% of
+        // chunk 0's content rather than re-emitting most of it.
+        for s in &small_sentences[0..7] {
+            assert!(!c1.text.contains(s.as_str()), "chunk 1 unexpectedly duplicates chunk 0 sentence: {s}");
+        }
+        assert!(c1.text.contains(small_sentences[7].as_str()));
     }
 }
