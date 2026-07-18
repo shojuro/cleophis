@@ -1,4 +1,8 @@
 node_modules/
+# Env files never belong in the repo — tooling reads ~/.env (home dir).
+# This is a defense-in-depth net against a repo-local .env ever being added.
+.env
+.env.*
 src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/resources/models/*.gguf

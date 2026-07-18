@@ -185,7 +185,13 @@ pub fn shutdown(engine: &Engine) {
 #[cfg(windows)]
 fn sweep_stray_servers() {
     use std::os::windows::process::CommandExt;
-    let _ = Command::new("taskkill")
+    // Absolute path, not a bare "taskkill": Windows' CreateProcess search
+    // order checks the current working directory before PATH, so a bare
+    // name would let a planted taskkill.exe in an attacker-writable CWD run
+    // instead of the real system binary (binary planting).
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let taskkill = format!(r"{system_root}\System32\taskkill.exe");
+    let _ = Command::new(&taskkill)
         .args(["/F", "/IM", "llama-server.exe"])
         .creation_flags(0x0800_0000)
         .output();

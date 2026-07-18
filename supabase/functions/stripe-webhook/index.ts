@@ -13,8 +13,8 @@
 // create-checkout. Deno has no synchronous crypto, so signature
 // verification uses Stripe's async SubtleCrypto-based provider instead of
 // the Node-only sync path the Stripe SDK uses by default.
-import { createClient } from "jsr:@supabase/supabase-js@2";
-import Stripe from "npm:stripe";
+import { createClient } from "jsr:@supabase/supabase-js@2.110.7";
+import Stripe from "npm:stripe@22.3.2";
 
 const cryptoProvider = Stripe.createSubtleCryptoProvider();
 

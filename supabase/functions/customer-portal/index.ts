@@ -26,8 +26,8 @@
 //
 // Import: pinned to jsr:@supabase/supabase-js@2 and npm:stripe, matching
 // create-checkout.
-import { createClient } from "jsr:@supabase/supabase-js@2";
-import Stripe from "npm:stripe";
+import { createClient } from "jsr:@supabase/supabase-js@2.110.7";
+import Stripe from "npm:stripe@22.3.2";
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
