@@ -2,9 +2,16 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// Chat lock-out threshold for lapsed subscriptions: local expiry dates can
+// be stale (offline-first — Stripe may have renewed while this machine was
+// offline), so chat keeps working for a grace window past the known expiry
+// and only then routes to Renew. Downloads are unaffected: the server
+// gates those at exact expiry.
+const LAPSE_GRACE_MS = 7 * 24 * 3600 * 1000;
+
 const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
-  mine: new Set(), lapsed: new Set(), catalog: [],
+  mine: new Set(), lapsed: new Set(), chatBlocked: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null },
   dl: { installed: false, partBytes: 0, active: false },
@@ -109,6 +116,7 @@ function openDrawer(id) {
   const cp = compat(m.sizeParams);
   const installed = state.mine.has(m.id);
   const lapsed = m.real && state.lapsed.has(m.id);
+  const chatBlocked = m.real && state.chatBlocked.has(m.id);
   const gb = (m.fileBytes / 2 ** 30).toFixed(2);
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const gib = (m.fileBytes / 2 ** 30).toFixed(2);
@@ -118,7 +126,7 @@ function openDrawer(id) {
         ? (state.pay.modelId === m.id
             ? waitingLabel
             : `Get · ${m.pro ? 'Pro' : m.price}`)
-        : (lapsed && !state.dl.installed
+        : ((lapsed && !state.dl.installed) || chatBlocked
             ? (state.pay.modelId === m.id
                 ? waitingLabel
                 : `Renew · ${m.pro ? 'Pro' : m.price}`)
@@ -130,7 +138,7 @@ function openDrawer(id) {
                     ? `Resume download · ${(state.dl.partBytes / 2 ** 30).toFixed(2)} of ${gib} GiB`
                     : `Download · ${gib} GiB`)))
     : (installed ? 'Installed' : `Download · ${m.pro ? 'Pro' : m.price}`);
-  const showRenewLine = lapsed && state.dl.installed;
+  const showRenewLine = lapsed && state.dl.installed && !chatBlocked;
   const renewLineHtml = showRenewLine
     ? `<div class="dlline mono" id="renewLine" style="display:block;font-size:12.5px;color:var(--muted);margin-top:8px;cursor:pointer">${state.pay.modelId === m.id ? waitingLabel : 'Subscription lapsed — downloads paused. Renew · $20/mo'}</div>`
     : '';
@@ -180,6 +188,7 @@ function runGetFlow(m, btn) {
   if (m.real) {
     const owned = state.mine.has(m.id);
     if (!owned) { startCheckoutFlow(m, btn); return; }
+    if (state.chatBlocked.has(m.id)) { startCheckoutFlow(m, btn); return; }
     if (state.dl.installed) { enterChat(m); return; }
     if (state.lapsed.has(m.id)) { startCheckoutFlow(m, btn); return; }
     if (state.dl.active) return;
@@ -237,6 +246,7 @@ function startCheckoutFlow(m, btn) {
     if (res.status === 'alreadyOwned') {
       state.mine.add(m.id);
       state.lapsed.delete(m.id);
+      state.chatBlocked.delete(m.id);
       renderGrid();
       if (state.dl.installed) { finishInstalled(m, btn); return; }
       btn.textContent = '✓ Owned — starting download…';
@@ -314,6 +324,7 @@ function beginPaymentPoll(m, btnId) {
     cancelPaymentPoll(null);
     state.mine.add(m.id);
     state.lapsed.delete(m.id);
+    state.chatBlocked.delete(m.id);
     renderGrid();
     const btn = $('dlBtn');
     if (btn && state.drawerId === m.id && $('drawer').classList.contains('show')) {
@@ -600,6 +611,9 @@ async function applySession(info) {
   state.lapsed = new Set((info.entitlements || [])
     .filter((e) => e.source === 'purchase' && e.expiresAt && Date.parse(e.expiresAt) < Date.now())
     .map((e) => e.modelId));
+  state.chatBlocked = new Set((info.entitlements || [])
+    .filter((e) => e.source === 'purchase' && e.expiresAt && Date.parse(e.expiresAt) + LAPSE_GRACE_MS < Date.now())
+    .map((e) => e.modelId));
   try {
     state.device = await invoke('detect_hardware');
     $('dev-name').textContent = state.device.gpu.replace(/NVIDIA |GeForce /g, '') || 'This machine';
@@ -721,6 +735,7 @@ $('signOutBtn').addEventListener('click', async () => {
   state.device = null;
   state.mine = new Set();
   state.lapsed = new Set();
+  state.chatBlocked = new Set();
   resetAuthForms();
   $('device').style.display = 'none';
   $('signOutBtn').style.display = 'none';
