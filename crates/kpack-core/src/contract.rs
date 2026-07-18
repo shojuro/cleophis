@@ -227,4 +227,33 @@ mod tests {
     fn no_evidence_marker_matches_contract_value() {
         assert_eq!(no_evidence_marker(), "[[NO_EVIDENCE]]");
     }
+
+    // Degenerate {source}: all three parts empty → renders "()" with no panic
+    // and no dangling separators. Locks the "no panic on empty source" property
+    // (the renderer never receives this from real data, but the artifact is
+    // byte-stable so the guarantee is pinned, not merely inspected).
+    #[test]
+    fn source_all_parts_empty_renders_empty_parens() {
+        let chunks = [RenderChunk {
+            source_title: "",
+            section_path: "",
+            locator: "",
+            text: "body",
+        }];
+        assert_eq!(render_sources(&chunks), "[1] (): body");
+    }
+
+    // An unrecognized placeholder in chunk text (e.g. "{foo}") is emitted
+    // verbatim — the single forward pass only substitutes {n}/{source}/{text},
+    // everything else is literal template/content.
+    #[test]
+    fn unrecognized_placeholder_in_text_is_literal() {
+        let chunks = [RenderChunk {
+            source_title: "T",
+            section_path: "",
+            locator: "p1",
+            text: "keep {foo} as-is",
+        }];
+        assert_eq!(render_sources(&chunks), "[1] (T, p1): keep {foo} as-is");
+    }
 }
