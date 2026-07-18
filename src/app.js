@@ -212,11 +212,16 @@ function idleLabel(m, btn) {
 // the lapsed-not-installed primary (Renew) button, and the lapsed-installed
 // renew line. `btn` is whichever element triggered the flow — its own
 // disabled/text state is updated, never a different, unrelated control.
+let checkoutOpening = false;
 function startCheckoutFlow(m, btn) {
   if (state.pay.modelId === m.id) {
     cancelPaymentPoll(idleLabel(m, btn), btn);
     return;
   }
+  // The renew control is a div — `disabled` is inert on it — so an explicit
+  // in-flight flag covers the window before state.pay.modelId is set.
+  if (checkoutOpening) return;
+  checkoutOpening = true;
   btn.disabled = true;
   btn.textContent = 'Opening checkout…';
   (async () => {
@@ -245,7 +250,7 @@ function startCheckoutFlow(m, btn) {
     el.style.color = 'var(--muted)';
     el.textContent = 'Complete your purchase in the browser window — this screen updates automatically.';
     beginPaymentPoll(m, btn.id);
-  })();
+  })().finally(() => { checkoutOpening = false; });
 }
 
 function heroDownload(m, btn) {
