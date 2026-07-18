@@ -1,0 +1,14 @@
+# Cleophis workspace root.
+#
+# Introduced in the RAG milestone (§1) so the knowledge-pack core can be a
+# crate with NO network dependency — turning the spec's "no network in the
+# build/retrieval path" hard rule into a compiler-enforced invariant (a crate
+# that never links an HTTP client can't reach the network, by construction).
+# `src-tauri` (the existing Tauri app) is a member, unchanged.
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/kpack-core",
+    "crates/kpack-embed",
+]

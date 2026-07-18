@@ -1937,6 +1937,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kpack-core"
+version = "0.1.0"
+
+[[package]]
+name = "kpack-embed"
+version = "0.1.0"
+dependencies = [
+ "kpack-core",
+]
+
+[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -3,6 +3,9 @@ node_modules/
 # This is a defense-in-depth net against a repo-local .env ever being added.
 .env
 .env.*
+# Cargo build output. The workspace (RAG milestone) builds into a single
+# root `target/`; the src-tauri path is kept for any pre-workspace checkouts.
+/target/
 src-tauri/target/
 src-tauri/gen/schemas/
 src-tauri/resources/models/*.gguf

@@ -1,0 +1,12 @@
+[package]
+name = "kpack-core"
+version = "0.1.0"
+edition = "2021"
+
+# INVARIANT: this crate must never depend on an HTTP client (`ureq`, `reqwest`,
+# `hyper`, …), `tokio`, or anything that opens a socket. The knowledge-pack
+# build and retrieval paths are network-free by construction — see the crate
+# doc comment in src/lib.rs. Additions here are format/chunk/embed-math only.
+[dependencies]
+
+[dev-dependencies]

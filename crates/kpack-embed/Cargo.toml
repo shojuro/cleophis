@@ -1,0 +1,11 @@
+[package]
+name = "kpack-embed"
+version = "0.1.0"
+edition = "2021"
+
+# The concrete linked `Embedder` implementation (llama.cpp via `llama-cpp-2`,
+# loading the bundled BGE GGUF in embedding mode) lands in K4. Kept out of
+# `kpack-core` so the format core stays dependency-light and the native build
+# toolchain (cmake/cc) is contained to this crate.
+[dependencies]
+kpack-core = { path = "../kpack-core" }
