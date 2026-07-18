@@ -3,6 +3,15 @@ name = "kpack-core"
 version = "0.1.0"
 edition = "2021"
 
+# `test-util` exposes `embed::MockEmbedder` (normally `#[cfg(test)]`-only)
+# to test code that isn't itself compiled under `cfg(test)` — e.g. another
+# crate's dev-dependency on kpack-core, or a downstream integration test —
+# without it, a plain `cargo build`/`cargo build -p kpack-core` never
+# compiles the mock into a real build (risk note: the mock must never back
+# a determinism test).
+[features]
+test-util = []
+
 # INVARIANT: this crate must never depend on an HTTP client (`ureq`, `reqwest`,
 # `hyper`, …), `tokio`, or anything that opens a socket. The knowledge-pack
 # build and retrieval paths are network-free by construction — see the crate

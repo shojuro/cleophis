@@ -19,14 +19,20 @@
 //! K1 landed the first real module: `format` (the `.kpack` SQLite schema,
 //! open/create, typed doc/chunk I/O, and the vec0 + fts5 dual-lane proof).
 //! K2 added `manifest` (self-description + load-time integrity gate). K3
-//! adds `sign` (ed25519 curated-pack signature verification, wired into
-//! `manifest::Pack::mount`). The rest of the module list above lands K4
-//! onward.
+//! added `sign` (ed25519 curated-pack signature verification, wired into
+//! `manifest::Pack::mount`). K4a adds `embed` (the `Embedder` trait, the
+//! int8 quantization math, and a deterministic mock — pure Rust; the real
+//! `llama.cpp`-backed implementation is a separate crate, `kpack-embed`,
+//! landing K4b). The rest of the module list above lands K5 onward.
 
+pub mod embed;
 pub mod format;
 pub mod manifest;
 pub mod sign;
 
+pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};
+#[cfg(any(test, feature = "test-util"))]
+pub use embed::MockEmbedder;
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
