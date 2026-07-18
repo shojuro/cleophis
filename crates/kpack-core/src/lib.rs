@@ -23,16 +23,22 @@
 //! `manifest::Pack::mount`). K4a adds `embed` (the `Embedder` trait, the
 //! int8 quantization math, and a deterministic mock — pure Rust; the real
 //! `llama.cpp`-backed implementation is a separate crate, `kpack-embed`,
-//! landing K4b). The rest of the module list above lands K5 onward.
+//! landing K4b). K5 adds `tree` (the parsed-document intermediate form K6's
+//! parsers will produce) and `chunk` (the structure-aware sliding-window
+//! chunker, spec §1.3). The rest of the module list above lands K6 onward.
 
+pub mod chunk;
 pub mod embed;
 pub mod format;
 pub mod manifest;
 pub mod sign;
+pub mod tree;
 
+pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
 pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
+pub use tree::{Block, Document, Section};
