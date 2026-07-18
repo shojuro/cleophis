@@ -105,7 +105,7 @@ function renderGrid() {
   $('grid').innerHTML = list.map((m) => {
     const cp = compat(m.sizeParams);
     return `<button class="card" data-id="${escapeHtml(m.id)}">
-      <div class="cover"><img src="${m.coverUrl}" alt="" loading="lazy"/>
+      <div class="cover"><img src="${escapeHtml(m.coverUrl)}" alt="" loading="lazy"/>
         <span class="tag ${escapeHtml(m.category)}">${m.category === 'education' ? 'Education' : 'Medical'}</span></div>
       <div class="cardbody">
         <h3>${escapeHtml(m.name)}</h3>
@@ -154,7 +154,7 @@ function openDrawer(id) {
     : '';
   $('drawer').innerHTML = `
     <button class="x" data-close>&times;</button>
-    <div class="dcover"><img src="${m.coverUrl}" alt=""/></div>
+    <div class="dcover"><img src="${escapeHtml(m.coverUrl)}" alt=""/></div>
     <span class="tag ${escapeHtml(m.category)}" style="position:static;display:inline-block;margin-top:14px">${m.category === 'education' ? 'Education' : 'Medical reference'}</span>
     <h2>${escapeHtml(m.name)}</h2>
     <div class="dsub">${escapeHtml(m.subject)} · ${gb} GiB on disk</div>
