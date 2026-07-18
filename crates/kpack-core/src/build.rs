@@ -44,10 +44,15 @@
 //!    always (calibration and build-time LLM prefixes are curated-pipeline-
 //!    only, §2.3/§2.4, neither of which K8 runs).
 //! 5. Close the connection (`Pack` drops at the end of the inner build
-//!    function, below), then atomically rename the `.part` into place. Any
-//!    failure before the rename removes the `.part` and returns the error —
-//!    a half-built file is never left where a later `Pack::open`/`mount`
-//!    could mistake it for a real pack.
+//!    function, below), then atomically rename the `.part` into place.
+//!    `build_pack` unconditionally removes any pre-existing `<out_path>.part`
+//!    before step 1 ever starts, so every build begins from a clean slate:
+//!    a leftover COMPLETE `.part` from a prior crash (or a prior build's
+//!    failed final rename) is discarded, never merged/appended-to. Any
+//!    failure during the build itself, or of the final rename, likewise
+//!    removes the `.part` and returns the error — neither a half-built nor
+//!    a stale `.part` is ever left where a later `Pack::open`/`mount` could
+//!    mistake it for a real pack.
 
 use crate::chunk::{chunk_document, ChunkConfig};
 use crate::embed::{l2_normalize, quantize_int8, EmbedError, Embedder};
@@ -185,11 +190,26 @@ pub fn build_pack(
     cfg: &ChunkConfig,
 ) -> Result<(), Error> {
     let part_path = part_path_for(out_path);
+    // Every build starts from a clean slate: unconditionally discard any
+    // pre-existing `.part` before `build_pack_into`/`Pack::open_or_create`
+    // ever touch it. A leftover COMPLETE `.part` (from a prior crash, or a
+    // prior build whose final rename below failed) would otherwise be
+    // REUSED by `open_or_create`, which opens an existing file as-is
+    // (ignoring `dims`) and APPENDS to its schema — doubling `docs`/
+    // `chunks` rows while `Pack::mount` succeeds silently on the result.
+    // Absence of a `.part` is not an error, hence `let _ =`.
+    let _ = std::fs::remove_file(&part_path);
     if let Err(e) = build_pack_into(&part_path, sources, embedder, meta, cfg) {
         let _ = std::fs::remove_file(&part_path);
         return Err(e);
     }
-    std::fs::rename(&part_path, out_path)?;
+    if let Err(e) = std::fs::rename(&part_path, out_path) {
+        // A failed rename must not leave a complete `.part` behind either —
+        // otherwise it becomes exactly the stale-leftover landmine this
+        // function guards against on its NEXT invocation.
+        let _ = std::fs::remove_file(&part_path);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -475,7 +495,21 @@ Verify the installation by checking the reported version string.
         let raw = embedder.embed_passage(known_chunk_text).unwrap();
         let quantized = quantize_int8(&l2_normalize(&raw));
         let vec_hits = pack.vec_search(&quantized, 1).unwrap();
-        assert!(!vec_hits.is_empty(), "vec_search should find the stored embedding");
+        assert_eq!(vec_hits.len(), 1, "vec_search should find the stored embedding");
+        assert_eq!(
+            vec_hits[0].1, 0.0,
+            "top hit's distance to the recomputed vector should be exactly 0 — proving the stored \
+             bytes ARE embed(known_chunk_text) quantized, not just that some row came back"
+        );
+        let hit_chunk = pack
+            .get_chunk(vec_hits[0].0)
+            .unwrap()
+            .expect("vec_search hit id should resolve to a real chunk row");
+        assert_eq!(
+            hit_chunk.text, known_chunk_text,
+            "the exact-distance hit should be the Vitamin K chunk whose vector we recomputed, \
+             not merely a nearest neighbor"
+        );
     }
 
     // 2. Build determinism (mock): building the SAME corpus twice yields
@@ -634,6 +668,70 @@ Verify the installation by checking the reported version string.
         let rendered = render_sources(&render_chunks);
         assert!(!rendered.is_empty(), "render_sources should produce non-empty citation text");
         assert!(rendered.starts_with("[1]"), "first citation should be numbered [1]");
+    }
+
+    // 4. Stale `.part` regression: simulate a crash (or a prior build whose
+    // final rename failed) that left a COMPLETE, valid `.part` sitting at
+    // `<out>.part`, then build again to the same `out_path`. Before Fix 1,
+    // `Pack::open_or_create` would REUSE that leftover file's existing
+    // schema (ignoring `dims`) and APPEND the new build's rows on top of
+    // the old ones — doubled `docs`/`chunks` counts, with `Pack::mount`
+    // succeeding silently on the corrupt-but-valid-looking result.
+    // `build_pack` must instead discard any pre-existing `.part`
+    // unconditionally before it starts, so the second build's counts match
+    // a fresh build exactly — not 2x.
+    #[test]
+    fn t4_stale_complete_part_is_discarded_not_appended_to() {
+        let dir = unique_dir("t4");
+        let out_path = dir.join("stale.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+        let sources = fixture_sources();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+
+        // Baseline: a normal, single build establishes the CORRECT
+        // doc/chunk counts we expect a second, independent build to match.
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+        let (baseline_pack, _) = Pack::mount(&out_path, &ctx).unwrap();
+        let baseline_chunk_count = all_chunks(&baseline_pack).len();
+        assert!(baseline_chunk_count > 0, "fixture corpus should produce at least one chunk");
+        drop(baseline_pack);
+
+        // Plant a leftover COMPLETE `.part`: rename the just-built pack to
+        // `<out>.part`, simulating a prior build that finished writing but
+        // crashed (or whose final rename failed) before landing at
+        // out_path. out_path itself is now gone, same as after a crash.
+        let part_path = part_path_for(&out_path);
+        std::fs::rename(&out_path, &part_path).unwrap();
+        assert!(part_path.exists(), "stale .part should be planted");
+        assert!(!out_path.exists(), "out_path should not exist yet (simulating post-crash state)");
+
+        // Build again to the SAME out_path. If the stale `.part` were
+        // reused/appended-to instead of discarded, this pack's chunk count
+        // would be 2x the baseline (and doc ids 3/4 would exist alongside
+        // the original 1/2).
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+
+        let (pack, _manifest) = Pack::mount(&out_path, &ctx).unwrap();
+        let chunks = all_chunks(&pack);
+        assert_eq!(
+            chunks.len(),
+            baseline_chunk_count,
+            "a stale .part must be discarded, not appended to — chunk count should equal a fresh \
+             build's, not be doubled"
+        );
+        assert!(pack.get_doc(1).unwrap().is_some(), "doc 1 should exist");
+        assert!(pack.get_doc(2).unwrap().is_some(), "doc 2 should exist");
+        assert!(
+            pack.get_doc(3).unwrap().is_none(),
+            "doc count should be exactly 2 (fresh build), not 4 (doubled from stale .part reuse)"
+        );
     }
 
     // civil_from_days / rfc3339_from_system_time: hand-verified against
