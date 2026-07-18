@@ -26,10 +26,13 @@
 //! landing K4b). K5 adds `tree` (the parsed-document intermediate form K6's
 //! parsers will produce) and `chunk` (the structure-aware sliding-window
 //! chunker, spec §1.3). K6 adds `parse` (Markdown + plain-text parsers
-//! producing `tree::Document`, spec §3.2). The rest of the module list
-//! above lands K6 onward.
+//! producing `tree::Document`, spec §3.2). K7 adds `contract` (the versioned
+//! prompt contract shared with the adapter-training track, and the
+//! single-pass citation renderer, spec §4.2, plan D5). The rest of the
+//! module list above lands K7 onward.
 
 pub mod chunk;
+pub mod contract;
 pub mod embed;
 pub mod format;
 pub mod manifest;
@@ -38,6 +41,10 @@ pub mod sign;
 pub mod tree;
 
 pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
+pub use contract::{
+    contract_version, no_evidence_marker, refusal_with_offer, render_sources, system_contract,
+    PromptContract, RenderChunk,
+};
 pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
