@@ -518,6 +518,8 @@ name = "cleophis"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "kpack-core",
+ "kpack-embed",
  "nvml-wrapper",
  "serde",
  "serde_json",
