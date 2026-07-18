@@ -7,4 +7,12 @@
 //! with no socket — the only integration that works on both desktop and the
 //! spec's mobile targets (iOS forbids the subprocess sidecar model).
 //!
-//! Scaffold only at K0 — the real `llama-cpp-2`-backed `Embedder` lands in K4.
+//! Scaffold only at K0 — the real `llama-cpp-2`-backed `Embedder` landed in
+//! K4b, gated behind the `real` Cargo feature (see `Cargo.toml`) so the
+//! default workspace build needs no native toolchain.
+
+#[cfg(feature = "real")]
+mod bge;
+
+#[cfg(feature = "real")]
+pub use bge::BgeEmbedder;
