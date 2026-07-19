@@ -603,6 +603,11 @@ function resetChatDom() {
 }
 
 async function openChat(id) {
+  // Switching chats must not let an in-flight stream for the OLD chat keep
+  // running against the NEW one's DOM/state — abort it first (finishStream
+  // still persists whatever partial content it already has, to the chat it
+  // actually belongs to; see sendCompletion/finishStream's turnChatId).
+  state.chat.aborter?.abort();
   let detail;
   try {
     detail = await invoke('get_chat', { id });
@@ -629,6 +634,9 @@ async function openChat(id) {
 // lazy first-message create below) inheriting the current model + packs,
 // same as ChatGPT/Claude's "new chat" always producing a visible row.
 async function newChat() {
+  // Same reasoning as openChat: never leave a stream running against a
+  // chat that's about to stop being the active one.
+  state.chat.aborter?.abort();
   const m = state.chat.model;
   let chatId = null;
   try {
@@ -770,19 +778,37 @@ function sendMessage() {
 // call sendCompletion() bare to replay an already-pushed/already-persisted
 // user turn, which must NOT be persisted a second time.
 async function sendCompletion(userText) {
+  // Streaming guard set SYNCHRONOUSLY, before any await below — otherwise a
+  // second rapid Send could slip past sendMessage's `state.chat.streaming`
+  // check (read synchronously there) and race a second sendCompletion call
+  // (and a second create_chat below). Same reasoning for the fresh
+  // AbortController: it needs to be in place before any await so a chat
+  // switch (openChat/newChat) can abort THIS turn even if the switch
+  // happens while create_chat is still in flight.
+  state.chat.streaming = true;
+  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  state.chat.aborter = new AbortController();
+
   const m = state.chat.model;
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
+  const bubble = appendBubble('assistant', '');
+  bubble.classList.add('streaming');
+  let acc = '';
 
   // Persistence (§7 S7-2): lazily create the chat record on the very first
-  // user message, then persist this turn. Wrapped in try/catch so a save
+  // user message. `turnChatId` is captured ONCE for this turn and threaded
+  // through (into finishStream/the noEvidence branch below) rather than
+  // re-read from state.chat.chatId later — switching chats (openChat/
+  // newChat/the sidebar row-click/deleting the active chat) aborts this
+  // stream AND can repoint state.chat.chatId at a different chat while
+  // create_chat is still in flight, so re-reading it after an await risks
+  // misfiling this turn into the wrong chat. Wrapped in try/catch so a save
   // failure degrades silently — it never blocks or breaks the streaming
-  // path below, it just means this chat/turn isn't saved. The create_chat
-  // await is a fast local SQLite insert; it doesn't meaningfully delay the
-  // model call that follows, and it guarantees finishStream has a chatId
-  // to append the assistant turn against.
+  // path below.
+  let turnChatId = state.chat.chatId;
   if (userText != null) {
-    try {
-      if (state.chat.chatId == null) {
+    if (turnChatId == null) {
+      try {
         const chat = await invoke('create_chat', {
           title: userText.split('\n')[0].slice(0, 40).trim() || 'New chat',
           folderId: null,
@@ -790,19 +816,21 @@ async function sendCompletion(userText) {
           modelId: m?.id ?? '',
           adapterIds: [],
         });
-        state.chat.chatId = chat.id;
-        refreshChatList();
-      }
-      await invoke('append_message', { chatId: state.chat.chatId, role: 'user', content: userText });
-    } catch (_) { /* not saved — chat keeps working locally */ }
+        turnChatId = chat.id;
+        // Only adopt it as the app's ACTIVE chat if nothing else claimed
+        // that slot while create_chat was in flight — a chat switch sets
+        // state.chat.chatId synchronously before its own await, so if
+        // it's non-null here someone else already won the race.
+        if (state.chat.chatId == null) {
+          state.chat.chatId = turnChatId;
+          refreshChatList();
+        }
+      } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
+    }
+    if (turnChatId != null) {
+      invoke('append_message', { chatId: turnChatId, role: 'user', content: userText }).catch(() => {});
+    }
   }
-
-  state.chat.streaming = true;
-  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
-  const bubble = appendBubble('assistant', '');
-  bubble.classList.add('streaming');
-  let acc = '';
-  state.chat.aborter = new AbortController();
 
   // §3a A4: when packs are attached to this chat, ground the turn through
   // rag_query BEFORE touching the model. When no packs are attached this
@@ -820,7 +848,7 @@ async function sendCompletion(userText) {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
-        if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
+        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
         // instead, same shape as the existing fetch-failure retry chip.
@@ -840,7 +868,7 @@ async function sendCompletion(userText) {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
-      if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
+      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Short-circuit to a deterministic refusal rather than handing the
         // model rag.prompt's [[NO_EVIDENCE]] marker: without the
@@ -850,23 +878,29 @@ async function sendCompletion(userText) {
         // lands, this branch can feed the marker to the model instead.
         const n = state.chat.packPaths.length;
         const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
+        // §7 S7-2: only touch the live DOM/in-memory transcript if this
+        // turn's chat is STILL the active one (mirrors finishStream below)
+        // — the user may have switched away while rag_query was in flight.
+        const isActive = turnChatId === state.chat.chatId;
         bubble.classList.remove('streaming');
-        bubble.textContent = refusal;
-        state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
-        // §7 S7-2: the deterministic refusal is still a real assistant turn
-        // — persist it (no citations) the same as any other assistant reply.
-        if (state.chat.chatId != null) {
-          try {
-            await invoke('append_message', { chatId: state.chat.chatId, role: 'assistant', content: refusal });
-            refreshChatList();
-          } catch (_) { /* not saved — chat keeps working locally */ }
+        if (isActive) {
+          bubble.textContent = refusal;
+          state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+        }
+        // Persist to the chat this turn actually belongs to, fire-and-
+        // forget (never blocks the composer restore below).
+        if (turnChatId != null) {
+          invoke('append_message', { chatId: turnChatId, role: 'assistant', content: refusal })
+            .then(refreshChatList).catch(() => {});
         }
         state.chat.streaming = false;
         $('sendBtn').hidden = false; $('stopBtn').hidden = true;
         $('sendBtn').disabled = false;
-        const pill = $('groundPill');
-        pill.hidden = false;
-        pill.textContent = 'No evidence in your packs';
+        if (isActive) {
+          const pill = $('groundPill');
+          pill.hidden = false;
+          pill.textContent = 'No evidence in your packs';
+        }
         return; // no model call — pulseCost() intentionally skipped, no inference ran
       }
       // grounded: swap this turn's system message for the assembled
@@ -912,7 +946,7 @@ async function sendCompletion(userText) {
         buf = buf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations); return; }
+        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
         try {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
@@ -923,9 +957,9 @@ async function sendCompletion(userText) {
         } catch (_) { /* partial line — ignored */ }
       }
     }
-    finishStream(bubble, acc, groundedCitations);
+    finishStream(bubble, acc, groundedCitations, turnChatId);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -944,36 +978,52 @@ async function sendCompletion(userText) {
   }
 }
 
-async function finishStream(bubble, acc, citations) {
+// `turnChatId` is the chat THIS turn belongs to, captured once at
+// turn-start in sendCompletion (never re-read from state.chat.chatId,
+// which may have moved on to a different chat by the time this runs — see
+// the sendCompletion comment). Synchronous top to bottom: the shared
+// composer state (streaming/Send/Stop/pulseCost) always restores
+// immediately; the DB write is fire-and-forget and never gates it.
+function finishStream(bubble, acc, citations, turnChatId) {
   bubble.classList.remove('streaming');
-  if (acc) {
-    const msg = { role: 'assistant', content: acc };
-    // Stash citations on the pushed message (not just rendered here) so
-    // rebuildChatDom can replay them if the chat is exited and re-entered.
-    if (citations && citations.length) {
-      msg.citations = citations;
-      renderCitations(bubble, citations);
+  // Only touch the live DOM/in-memory transcript if this turn's chat is
+  // STILL the active one — the user may have switched chats mid-stream
+  // (which aborts this turn's fetch, via openChat/newChat, but whatever
+  // partial `acc` had already accumulated still gets here). A turn whose
+  // chat is no longer active must not repaint over whatever chat is on
+  // screen now; it still gets PERSISTED to its own chat below.
+  const isActive = turnChatId === state.chat.chatId;
+  if (isActive) {
+    if (acc) {
+      const msg = { role: 'assistant', content: acc };
+      // Stash citations on the pushed message (not just rendered here) so
+      // rebuildChatDom can replay them if the chat is exited and re-entered.
+      if (citations && citations.length) {
+        msg.citations = citations;
+        renderCitations(bubble, citations);
+      }
+      state.chat.messages.push(msg);
+    } else {
+      bubble.remove();
     }
-    state.chat.messages.push(msg);
-    // §7 S7-2: persist the completed turn. chatId is only null here if the
-    // earlier create_chat in sendCompletion failed — in that case this
-    // turn silently isn't saved either (same degrade-gracefully contract).
-    if (state.chat.chatId != null) {
-      try {
-        await invoke('append_message', {
-          chatId: state.chat.chatId,
-          role: 'assistant',
-          content: acc,
-          citations: citations && citations.length ? citations : null,
-        });
-        refreshChatList(); // updated_at bump reorders the sidebar
-      } catch (_) { /* not saved — chat keeps working locally */ }
-    }
-  } else bubble.remove();
+  }
   state.chat.streaming = false;
   $('sendBtn').hidden = false; $('stopBtn').hidden = true;
   $('sendBtn').disabled = false;
   pulseCost();
+  // §7 S7-2: persist the completed turn to the chat it actually belongs
+  // to. `turnChatId` is only null here if the earlier create_chat in
+  // sendCompletion failed — in that case this turn silently isn't saved
+  // either (same degrade-gracefully contract). Fire-and-forget: the
+  // composer state above must never wait on this DB write.
+  if (acc && turnChatId != null) {
+    invoke('append_message', {
+      chatId: turnChatId,
+      role: 'assistant',
+      content: acc,
+      citations: citations && citations.length ? citations : null,
+    }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  }
 }
 
 /* ---------------- signed-out nudge ---------------- */
@@ -1200,8 +1250,10 @@ $('chatList').addEventListener('click', async (e) => {
       try { await invoke('delete_chat', { id }); } catch (_) {}
       // If the deleted chat was the active one, fall back to a clean,
       // unsaved chat rather than leaving stale messages from a chat that
-      // no longer exists in the store.
+      // no longer exists in the store — and abort any stream still running
+      // against it first (same reasoning as openChat/newChat).
       if (state.chat.chatId === id) {
+        state.chat.aborter?.abort();
         state.chat.chatId = null;
         resetChatDom();
       }
