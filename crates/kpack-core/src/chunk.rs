@@ -16,13 +16,25 @@
 //! - **Table:** serialized row-wise, one line per row, with the header
 //!   repeated in every chunk; rows are grouped up to `target_tokens` and
 //!   never split mid-row. Tables never share a chunk with paragraph text.
+//!   A row group (header included) that alone exceeds the embedder's
+//!   `max_input_tokens()` ceiling is split via [`split_to_ceiling`], same
+//!   as the paragraph path.
 //! - **Code:** kept atomic — one code block is always exactly one chunk,
-//!   even past `target_tokens`.
+//!   even past `target_tokens` — UNLESS it exceeds the embedder's
+//!   `max_input_tokens()` ceiling, in which case it too is split via
+//!   [`split_to_ceiling`] rather than handed to the embedder whole.
 //!
 //! Chunking never crosses a [`crate::tree::Block`] boundary (so tables
 //! can't merge with paragraphs) or a [`crate::tree::Section`] boundary (so
 //! chunks never straddle headings, spec §1.3 step 1) — each block is walked
 //! and chunked independently, in document order.
+//!
+//! ## The ceiling is enforced pack-wide (task B-chunkcap)
+//! No `ChunkDraft` this module emits — paragraph, table, or code — can ever
+//! have `token_count > embedder.max_input_tokens()`. `BgeEmbedder`'s
+//! `embed_raw` truncation (kpack-embed) is a pure backstop for anything
+//! that somehow slips past this, not a path this chunker relies on to stay
+//! within bounds.
 //!
 //! ## Determinism (K8's cross-build lock)
 //! `chunk_document` has no randomness, no hashing-order dependence, and no
@@ -99,19 +111,62 @@ pub fn chunk_document(doc: &Document, embedder: &dyn Embedder, cfg: &ChunkConfig
                     chunk_table(header, rows, locator, &section_path, embedder, cfg, &mut out);
                 }
                 Block::Code { text, locator } => {
-                    out.push(ChunkDraft {
-                        section_path: section_path.clone(),
-                        locator: locator.clone(),
-                        prefix: String::new(),
-                        text: text.clone(),
-                        token_count: embedder.token_count(text),
-                        oversize_sentence: false,
-                    });
+                    // Atomic whenever it fits — split only past the
+                    // embedder's ceiling (module doc: "the ceiling is
+                    // enforced pack-wide").
+                    let ceiling = embedder.max_input_tokens();
+                    push_chunk_within_ceiling(&section_path, locator, text.clone(), embedder, ceiling, &mut out);
                 }
             }
         }
     }
     out
+}
+
+/// Push `text` as a single [`ChunkDraft`] if it fits within `ceiling`;
+/// otherwise split it via [`split_to_ceiling`] and push one `ChunkDraft`
+/// per piece. Shared by the code-block path (above) and the table path
+/// ([`push_table_chunk`]) — `chunk_paragraph`'s oversize-sentence path has
+/// its own call site since it also needs to set `oversize_sentence: true`
+/// and distinguish `effective_target` from `ceiling`. Every pushed draft
+/// gets `oversize_sentence: false` (per [`ChunkDraft::oversize_sentence`]'s
+/// doc comment, that flag is specifically about the paragraph
+/// sentence-snap, not a generic "this chunk was split" marker).
+fn push_chunk_within_ceiling(
+    section_path: &str,
+    locator: &str,
+    text: String,
+    embedder: &dyn Embedder,
+    ceiling: usize,
+    out: &mut Vec<ChunkDraft>,
+) {
+    let token_count = embedder.token_count(&text);
+    if token_count <= ceiling {
+        out.push(ChunkDraft {
+            section_path: section_path.to_string(),
+            locator: locator.to_string(),
+            prefix: String::new(),
+            text,
+            token_count,
+            oversize_sentence: false,
+        });
+        return;
+    }
+
+    for (piece_text, piece_tokens) in split_to_ceiling(&text, embedder, ceiling) {
+        debug_assert!(
+            piece_tokens <= ceiling,
+            "split_to_ceiling produced a piece over the ceiling: {piece_tokens} > {ceiling}"
+        );
+        out.push(ChunkDraft {
+            section_path: section_path.to_string(),
+            locator: locator.to_string(),
+            prefix: String::new(),
+            text: piece_text,
+            token_count: piece_tokens,
+            oversize_sentence: false,
+        });
+    }
 }
 
 /// Sentence-split `text`, then slide a token window over the sentence
@@ -498,7 +553,10 @@ fn word_ending_at(chars: &[char], end: usize) -> String {
 /// rendered as `header1: v1 | header2: v2 …`. Rows are grouped into chunks
 /// up to `target_tokens`, with `header_line` repeated at the top of every
 /// chunk; a single row (with header) that alone exceeds `target_tokens`
-/// still becomes its own chunk rather than being split.
+/// still becomes its own chunk rather than being split by row-grouping —
+/// but [`push_table_chunk`] still splits that chunk's TEXT via
+/// [`split_to_ceiling`] if it's over the embedder's `max_input_tokens()`
+/// ceiling, same as the paragraph path.
 fn chunk_table(
     header: &[String],
     rows: &[Vec<String>],
@@ -511,6 +569,7 @@ fn chunk_table(
     if rows.is_empty() {
         return;
     }
+    let ceiling = embedder.max_input_tokens();
     let header_line = header.join(" | ");
     let mut current_rows: Vec<String> = Vec::new();
 
@@ -522,14 +581,14 @@ fn chunk_table(
         let candidate_tokens = embedder.token_count(&candidate_text);
 
         if candidate_tokens > cfg.target_tokens && !current_rows.is_empty() {
-            push_table_chunk(&header_line, &current_rows, locator, section_path, embedder, out);
+            push_table_chunk(&header_line, &current_rows, locator, section_path, embedder, ceiling, out);
             current_rows = vec![row_line];
         } else {
             current_rows.push(row_line);
         }
     }
     if !current_rows.is_empty() {
-        push_table_chunk(&header_line, &current_rows, locator, section_path, embedder, out);
+        push_table_chunk(&header_line, &current_rows, locator, section_path, embedder, ceiling, out);
     }
 }
 
@@ -551,18 +610,14 @@ fn push_table_chunk(
     locator: &str,
     section_path: &str,
     embedder: &dyn Embedder,
+    ceiling: usize,
     out: &mut Vec<ChunkDraft>,
 ) {
     let text = format!("{header_line}\n{}", rows.join("\n"));
-    let token_count = embedder.token_count(&text);
-    out.push(ChunkDraft {
-        section_path: section_path.to_string(),
-        locator: locator.to_string(),
-        prefix: String::new(),
-        text,
-        token_count,
-        oversize_sentence: false,
-    });
+    // Row-grouping above only bounds against cfg.target_tokens; a single
+    // very wide row (with header) can still land here over the embedder's
+    // hard ceiling, so split it the same way the paragraph/code paths do.
+    push_chunk_within_ceiling(section_path, locator, text, embedder, ceiling, out);
 }
 
 #[cfg(test)]
@@ -1142,5 +1197,120 @@ mod tests {
         let second = chunk_document(&doc, &embedder, &cfg);
         assert_eq!(first, second);
         assert!(first.len() > 1);
+    }
+
+    // 20-22. Follow-up to task B-chunkcap (opus review): the ceiling was
+    // paragraph-only — an oversize code block or an oversize table row
+    // still reached the embedder unsplit, where BgeEmbedder's truncation
+    // safety net would silently drop the tail. Extends the same
+    // split_to_ceiling path (via push_chunk_within_ceiling) to code and
+    // table chunks so the ceiling is enforced pack-wide.
+
+    // 20. Code block over the embedder's ceiling splits into multiple
+    // chunks, each within the ceiling, oversize_sentence stays false (it's
+    // a paragraph-only flag), no word lost or reordered. A code block AT
+    // or under the ceiling stays atomic (t6, unchanged).
+    #[test]
+    fn t20_code_block_splits_when_exceeding_embedder_ceiling() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 10);
+        let cfg = ChunkConfig::default();
+        let code = words(30, "tok");
+        let doc = doc_with_section(
+            vec!["Appendix"],
+            vec![Block::Code {
+                text: code.clone(),
+                locator: "c1".to_string(),
+            }],
+        );
+
+        let chunks = chunk_document(&doc, &embedder, &cfg);
+        assert!(chunks.len() > 1, "expected the oversize code block split into multiple chunks");
+        for c in &chunks {
+            assert_eq!(c.locator, "c1");
+            assert!(!c.oversize_sentence, "oversize_sentence is paragraph-only, never set for code chunks");
+            assert!(
+                c.token_count <= embedder.max_input_tokens(),
+                "chunk exceeded the embedder ceiling: {} > {}",
+                c.token_count,
+                embedder.max_input_tokens()
+            );
+            assert_eq!(c.token_count, embedder.token_count(&c.text));
+        }
+
+        let reconstructed: Vec<&str> = chunks.iter().flat_map(|c| c.text.split_whitespace()).collect();
+        let original: Vec<&str> = code.split_whitespace().collect();
+        assert_eq!(reconstructed, original, "words lost or reordered by the split");
+    }
+
+    // 21. A single table row (with header) that alone exceeds the
+    // embedder's ceiling splits into multiple chunks, each within the
+    // ceiling, oversize_sentence stays false, no word lost or reordered.
+    // Rows/groups already within cfg.target_tokens (t5) are unaffected.
+    #[test]
+    fn t21_table_row_splits_when_exceeding_embedder_ceiling() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 10);
+        let cfg = ChunkConfig::default();
+        let header = vec!["Description".to_string()];
+        let long_value = words(40, "w");
+        let rows = vec![vec![long_value]];
+        let doc = doc_with_section(
+            vec!["Data"],
+            vec![Block::Table {
+                header: header.clone(),
+                rows: rows.clone(),
+                locator: "t1".to_string(),
+            }],
+        );
+
+        let chunks = chunk_document(&doc, &embedder, &cfg);
+        assert!(chunks.len() > 1, "expected the oversize table row split into multiple chunks");
+        for c in &chunks {
+            assert_eq!(c.locator, "t1");
+            assert!(!c.oversize_sentence, "oversize_sentence is paragraph-only, never set for table chunks");
+            assert!(
+                c.token_count <= embedder.max_input_tokens(),
+                "chunk exceeded the embedder ceiling: {} > {}",
+                c.token_count,
+                embedder.max_input_tokens()
+            );
+            assert_eq!(c.token_count, embedder.token_count(&c.text));
+        }
+
+        let reconstructed: Vec<&str> = chunks.iter().flat_map(|c| c.text.split_whitespace()).collect();
+        let original_text = format!("{}\n{}", header.join(" | "), render_table_row(&header, &rows[0]));
+        let original: Vec<&str> = original_text.split_whitespace().collect();
+        assert_eq!(reconstructed, original, "words lost or reordered by the split");
+    }
+
+    // 22. Determinism through chunk_document for the new code/table split
+    // paths, together in one document: chunking twice -> identical drafts
+    // (K8b byte-identical-rebuild invariant) — split_to_ceiling is the
+    // same pure/deterministic helper the paragraph path already locked.
+    #[test]
+    fn t22_code_and_table_oversize_split_is_deterministic() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 10);
+        let cfg = ChunkConfig::default();
+        let code = words(25, "c");
+        let header = vec!["Col".to_string()];
+        let rows = vec![vec![words(30, "v")]];
+        let doc = doc_with_section(
+            vec!["Ch"],
+            vec![
+                Block::Code {
+                    text: code,
+                    locator: "c1".to_string(),
+                },
+                Block::Table {
+                    header,
+                    rows,
+                    locator: "t1".to_string(),
+                },
+            ],
+        );
+
+        let first = chunk_document(&doc, &embedder, &cfg);
+        let second = chunk_document(&doc, &embedder, &cfg);
+        assert_eq!(first, second);
+        assert!(first.len() > 2, "expected multiple split pieces from both the code and table blocks");
     }
 }
