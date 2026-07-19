@@ -679,6 +679,10 @@ async function sendCompletion() {
       try {
         rag = await invoke('rag_query', { query, packPaths: state.chat.packPaths });
       } catch (e) {
+        // If Stop was hit during the pack search, honor it: bail silently
+        // rather than surfacing a "pack search failed" retry chip for a turn
+        // the user deliberately cancelled.
+        if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
         // instead, same shape as the existing fetch-failure retry chip.
@@ -694,6 +698,11 @@ async function sendCompletion() {
         $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
         return;
       }
+      // §3a A4-fix: rag_query isn't tied to the abort signal, so a Stop
+      // clicked during "Searching your packs…" resolves here rather than
+      // cancelling the IPC. Honor it — drop the turn without committing a
+      // refusal or a grounded answer to history or the pill.
+      if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
       if (rag.status === 'noEvidence') {
         // Short-circuit to a deterministic refusal rather than handing the
         // model rag.prompt's [[NO_EVIDENCE]] marker: without the
