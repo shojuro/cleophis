@@ -1,0 +1,35 @@
+[package]
+name = "kpack-pdf"
+version = "0.1.0"
+edition = "2021"
+
+# `pdfium-render` binds a PREBUILT pdfium dynamic library at RUNTIME
+# (`Pdfium::bind_to_library`, via `libloading` under the hood) rather than
+# linking pdfium into this crate at build time — the key contrast with
+# `kpack-embed`'s `llama-cpp-2`: this crate needs NO libclang/cmake native
+# build toolchain and compiles anywhere with plain cargo. Only the
+# `#[ignore]`d real-extraction test (needs a real `pdfium.dll` on disk,
+# fetched by `tools/fetch-pdfium.mjs`) exercises the bound library.
+#
+# EXACT pin (`=0.9.3`, the latest published version as of this task —
+# confirmed via crates.io's API, not assumed from memory): `pdfium-render`
+# tracks Chromium releases and moves fast (Chromium ships roughly weekly);
+# an ordinary `cargo update` picking up a newer 0.9.x could shift which
+# pdfium build number its default FFI bindings expect, silently mismatching
+# the `pdfium_78xx` feature pinned below and the binary
+# `tools/fetch-pdfium.mjs` downloads. Bumping this pin is a deliberate,
+# re-verified event (re-check the crate version, the `pdfium_XXXX` feature,
+# AND the bblanchon/pdfium-binaries release tag together), not a side
+# effect.
+[dependencies]
+pdfium-render = { version = "=0.9.3", default-features = false, features = [
+    "pdfium_7881",
+    "thread_safe",
+] }
+
+# Do NOT depend on `kpack-core` here: this crate is pure bytes-in,
+# text-out. The `.kpack` `Document` builder that turns `PageText` output
+# into pack-buildable content lives in `kpack-core` (§3b slice B2), which
+# takes this crate's plain `Vec<PageText>` as input data rather than this
+# crate depending the other way — keeps `kpack-core` free of the pdfium
+# native-library dependency.

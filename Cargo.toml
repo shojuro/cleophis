@@ -11,4 +11,5 @@ members = [
     "src-tauri",
     "crates/kpack-core",
     "crates/kpack-embed",
+    "crates/kpack-pdf",
 ]

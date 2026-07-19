@@ -109,6 +109,16 @@ pub trait Embedder {
     /// must never be used for anything beyond this module's own unit tests
     /// — see that method's doc comment.
     fn token_count(&self, text: &str) -> usize;
+
+    /// The largest `token_count` value `embed_passage`/`embed_query` can
+    /// accept without error — the embedder's hard context-window ceiling
+    /// (`token_count` and the embedder's own internal tokenization must
+    /// agree exactly, so a chunk with `token_count(text) <= max_input_tokens()`
+    /// is guaranteed to embed successfully). K5's chunker (`chunk.rs`) reads
+    /// this to split any oversize unit before it ever reaches the embedder,
+    /// rather than relying on the embedder to reject or silently mishandle
+    /// over-length input.
+    fn max_input_tokens(&self) -> usize;
 }
 
 /// L2-normalize `v` (divide every component by the vector's Euclidean
@@ -178,12 +188,33 @@ pub fn dot_int8(a: &[i8], b: &[i8]) -> Result<i32, EmbedError> {
 #[cfg(any(test, feature = "test-util"))]
 pub struct MockEmbedder {
     dims: usize,
+    max_input_tokens: usize,
 }
+
+/// [`MockEmbedder::new`]'s default `max_input_tokens` — mirrors K4b's real
+/// `bge-base-en-v1.5` ceiling (512) so plumbing tests that don't care about
+/// the ceiling behave as if it weren't there (every `target_tokens` value
+/// used elsewhere in this crate's tests is comfortably under it). Tests
+/// that specifically exercise oversize-unit splitting construct a mock
+/// with a SMALL ceiling via [`MockEmbedder::with_max_input_tokens`] instead.
+#[cfg(any(test, feature = "test-util"))]
+const MOCK_DEFAULT_MAX_INPUT_TOKENS: usize = 512;
 
 #[cfg(any(test, feature = "test-util"))]
 impl MockEmbedder {
     pub fn new(dims: usize) -> Self {
-        MockEmbedder { dims }
+        MockEmbedder {
+            dims,
+            max_input_tokens: MOCK_DEFAULT_MAX_INPUT_TOKENS,
+        }
+    }
+
+    /// Construct with an explicit `max_input_tokens` ceiling instead of the
+    /// default — lets `chunk.rs`'s oversize-split tests exercise the
+    /// splitting path with a SMALL ceiling, without a real ~60MB GGUF
+    /// model.
+    pub fn with_max_input_tokens(dims: usize, max_input_tokens: usize) -> Self {
+        MockEmbedder { dims, max_input_tokens }
     }
 }
 
@@ -212,6 +243,10 @@ impl Embedder for MockEmbedder {
     /// real build produces.
     fn token_count(&self, text: &str) -> usize {
         text.split_whitespace().count()
+    }
+
+    fn max_input_tokens(&self) -> usize {
+        self.max_input_tokens
     }
 }
 

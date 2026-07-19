@@ -95,3 +95,56 @@ fn real_embedder_smoke() {
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
+
+/// Task B-chunkcap's defensive net: `max_input_tokens()` reports BGE's real
+/// 512-token ceiling, and an input tokenizing well past it now TRUNCATES
+/// (`Ok`, still 768 dims) instead of hard-erroring — kpack-core's chunker
+/// is supposed to keep chunks within the ceiling before they ever reach
+/// here, but this proves a chunk that somehow slips through can't abort an
+/// entire pack build.
+#[test]
+#[ignore]
+fn real_embedder_over_ceiling_input_truncates_instead_of_erroring() {
+    let model_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("src-tauri")
+        .join("resources")
+        .join("embedders")
+        .join("bge-base-en-v1.5-q8_0.gguf");
+    assert!(
+        model_path.exists(),
+        "model missing: {} — run `node tools/fetch-embedder.mjs` first",
+        model_path.display()
+    );
+
+    let embedder = BgeEmbedder::new(&model_path).expect("failed to load BgeEmbedder");
+
+    assert_eq!(
+        embedder.max_input_tokens(),
+        512,
+        "BgeEmbedder's ceiling must be bge-base-en-v1.5's real 512-token context window"
+    );
+
+    // Repeat a common word well past the ceiling (real tokenizer: ~1
+    // token/word for "hello", plus CLS/SEP overhead).
+    let long_text = "hello ".repeat(600);
+    let n = embedder.token_count(&long_text);
+    assert!(
+        n > 512,
+        "test input must tokenize over 512 tokens to exercise the truncation path, got {n}"
+    );
+
+    let result = embedder.embed_passage(&long_text);
+    assert!(
+        result.is_ok(),
+        "over-ceiling input must truncate (Ok), not hard-error: {:?}",
+        result.err()
+    );
+    let vec = result.unwrap();
+    assert_eq!(vec.len(), 768, "truncated embedding must still report 768 dims");
+    assert!(
+        vec.iter().all(|x| x.is_finite()),
+        "truncated embedding produced non-finite values"
+    );
+}
