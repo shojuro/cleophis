@@ -128,6 +128,20 @@ fn bundled_embedder_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(EMBEDDER_RELATIVE_PATH)
 }
 
+/// Where the bundled pdfium dynamic library ships, relative to
+/// `resources_root` (§3b B3) — mirrors `EMBEDDER_RELATIVE_PATH` one
+/// directory over (`resources/pdfium/...`).
+const PDFIUM_RELATIVE_PATH: &str = "pdfium/pdfium.dll";
+
+/// Resolve the bundled pdfium dynamic library's path — an exact mirror of
+/// `bundled_embedder_path` above, just for `kpack_pdf::extract_pages`'s
+/// `pdfium_lib_path` param instead of the embedder's GGUF. Same dev/prod
+/// resource-root resolution via `inference::resources_root`, same "ships
+/// with every install, never separately downloaded" story as the embedder.
+fn bundled_pdfium_path(app: &AppHandle) -> PathBuf {
+    crate::inference::resources_root(app).join(PDFIUM_RELATIVE_PATH)
+}
+
 /// Accepts `user_id` unchanged as the account's directory segment if — and
 /// only if — it's ALREADY clean: non-empty and every char is
 /// `[A-Za-z0-9_-]`. Anything else (empty, or containing so much as one
@@ -347,12 +361,17 @@ pub async fn mount_pack(path: String, app: AppHandle) -> Result<PackManifestInfo
 /// Derive a `SourceInput::source_type` from `path`'s extension:
 /// `.md`/`.markdown` and `.txt` map to `kpack_core::parse::parse`'s two
 /// recognized dispatch strings (`"md"`/`"txt"` — `parse` itself treats `"md"`
-/// and `"markdown"` as synonyms, so both normalize to `"md"` here). Anything
-/// else is unsupported for v1 (PDF/EPUB/DOCX/HTML are later milestones, per
-/// `parse.rs`'s module doc comment) and returns a clear error rather than
-/// silently feeding binary bytes through the plain-text parser as `parse`
-/// itself would if simply handed an unrecognized type — a user picking an
-/// unsupported file should see a refusal, not a garbled "personal pack".
+/// and `"markdown"` as synonyms, so both normalize to `"md"` here). `.pdf`
+/// (§3b B3) maps to `"pdf"` — not one of `parse`'s dispatch strings, since a
+/// PDF never reaches `parse`: `build_personal_pack_with_embedder` branches
+/// on this string before that call and hands PDFs to `kpack_pdf::extract_pages`
+/// + `kpack_core::document_from_pages` instead, wrapping the result in
+/// `SourceContent::Prebuilt`. Anything else is unsupported for v1
+/// (EPUB/DOCX/HTML are later milestones, per `parse.rs`'s module doc
+/// comment) and returns a clear error rather than silently feeding binary
+/// bytes through the plain-text parser as `parse` itself would if simply
+/// handed an unrecognized type — a user picking an unsupported file should
+/// see a refusal, not a garbled "personal pack".
 fn source_type_for(path: &Path) -> Result<String, String> {
     let ext = path
         .extension()
@@ -361,11 +380,23 @@ fn source_type_for(path: &Path) -> Result<String, String> {
     match ext.as_deref() {
         Some("md") | Some("markdown") => Ok("md".to_string()),
         Some("txt") => Ok("txt".to_string()),
+        Some("pdf") => Ok("pdf".to_string()),
         _ => Err(format!(
-            "unsupported file type: {} (only .md, .markdown, and .txt are supported)",
+            "unsupported file type: {} (only .md, .markdown, .txt, and .pdf are supported)",
             path.display()
         )),
     }
+}
+
+/// True if `pages` carries no usable text at all — every page's extracted
+/// text is empty or whitespace-only (a scanned/image-only PDF: pdfium found
+/// pages but no text layer). Pure and unit-testable without pdfium (§3b B3,
+/// B1-review): the emptiness check is total-across-all-pages, not
+/// per-page — a PARTIALLY-scanned PDF (some text pages, some image pages)
+/// has non-empty total text and is NOT flagged here, since it still builds
+/// a useful pack from whichever pages do have text.
+fn pdf_has_no_text(pages: &[(u32, String)]) -> bool {
+    pages.iter().all(|(_, text)| text.trim().is_empty())
 }
 
 /// A "uuid-ish" (not RFC 4122 — no `uuid` crate in this workspace, and none
@@ -479,6 +510,7 @@ fn build_personal_pack_with_embedder(
     pack_id: &str,
     out_path: &Path,
     gguf_path: &Path,
+    pdfium_path: &Path,
     cache: &EmbedderCache,
     progress: &dyn Fn(BuildProgress),
     cancel: &AtomicBool,
@@ -493,14 +525,46 @@ fn build_personal_pack_with_embedder(
     for file_path in file_paths {
         let path = Path::new(file_path);
         let source_type = source_type_for(path)?;
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
         let title = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| file_path.clone());
+
+        let content = if source_type == "pdf" {
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            // Extraction runs a native, FFI-bound PDF library (pdfium) over
+            // caller-controlled bytes. A maliciously malformed PDF could in
+            // theory crash pdfium (segfault/UB) — inherent to any FFI PDF
+            // parser, uncatchable from Rust. Low in-scope risk: pack PDFs
+            // are LOCAL files the user explicitly picks via the file
+            // picker, not untrusted network input; subprocess sandboxing is
+            // a possible future hardening, out of scope here (B1-review).
+            let pages = kpack_pdf::extract_pages(&bytes, pdfium_path).map_err(|e| {
+                format!(
+                    "Couldn't read the PDF \"{title}\" — it may be corrupted, \
+                     password-protected, or not a valid PDF. ({e})"
+                )
+            })?;
+            let pages: Vec<(u32, String)> =
+                pages.into_iter().map(|p| (p.page, p.text)).collect();
+            if pdf_has_no_text(&pages) {
+                return Err(format!(
+                    "\"{title}\" looks scanned or image-only — no text could be \
+                     extracted from it. Scanned-PDF support (OCR) isn't available \
+                     yet; try a PDF with selectable text."
+                ));
+            }
+            let doc = kpack_core::document_from_pages(&title, &pages);
+            SourceContent::Prebuilt(doc)
+        } else {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            SourceContent::Raw(text)
+        };
+
         sources.push(SourceInput {
-            content: SourceContent::Raw(content),
+            content,
             title,
             source_type,
         });
@@ -544,6 +608,7 @@ pub async fn build_personal_pack(
     builds: State<'_, Builds>,
 ) -> Result<PackEntry, String> {
     let gguf_path = bundled_embedder_path(&app);
+    let pdfium_path = bundled_pdfium_path(&app);
     // Computed here, before the spawn_blocking build, per spec §3a A2: the
     // out-path is this command's to decide now, not the caller's — `name`
     // (when it sanitizes to something non-empty) becomes the pack_id shown
@@ -611,6 +676,7 @@ pub async fn build_personal_pack(
             &pack_id_for_build,
             &out_path_for_build,
             &gguf_path,
+            &pdfium_path,
             cache.inner(),
             &progress,
             &cancel_for_build,
@@ -893,8 +959,29 @@ mod tests {
         assert_eq!(source_type_for(Path::new("a.md")).unwrap(), "md");
         assert_eq!(source_type_for(Path::new("a.MARKDOWN")).unwrap(), "md");
         assert_eq!(source_type_for(Path::new("a.txt")).unwrap(), "txt");
-        assert!(source_type_for(Path::new("a.pdf")).is_err());
+        assert_eq!(source_type_for(Path::new("a.pdf")).unwrap(), "pdf");
+        assert_eq!(source_type_for(Path::new("a.PDF")).unwrap(), "pdf");
+        assert!(source_type_for(Path::new("a.docx")).is_err());
         assert!(source_type_for(Path::new("no-extension")).is_err());
+    }
+
+    /// `pdf_has_no_text` (§3b B3, B1-review): pure, no pdfium involved —
+    /// locks down the scanned/image-only detection rule independent of the
+    /// real-library `#[ignore]`d integration test.
+    #[test]
+    fn pdf_has_no_text_flags_only_a_fully_textless_document() {
+        // Every page empty or whitespace-only -> true.
+        assert!(pdf_has_no_text(&[(1, "".to_string()), (2, "   \n\t  ".to_string())]));
+        // No pages at all -> vacuously true (nothing to build from).
+        assert!(pdf_has_no_text(&[]));
+        // Any page with real text -> false, even if other pages are blank
+        // (a partially-scanned PDF still builds from the pages that have
+        // text).
+        assert!(!pdf_has_no_text(&[
+            (1, "   ".to_string()),
+            (2, "Real extracted text.".to_string()),
+        ]));
+        assert!(!pdf_has_no_text(&[(1, "Real extracted text.".to_string())]));
     }
 
     #[test]
@@ -993,6 +1080,8 @@ mod tests {
             "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
             gguf_path.display()
         );
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
 
         let dir = unique_dir("roundtrip");
         let md_path = dir.join("source.md");
@@ -1011,6 +1100,7 @@ mod tests {
             "test-pack",
             &out_path,
             &gguf_path,
+            &pdfium_path,
             &cache,
             &|_| {},
             &cancel,
@@ -1032,15 +1122,19 @@ mod tests {
     /// refused with a clear error before the pack builder ever runs —
     /// proven with the real `BgeEmbedder`/`EmbedderCache` in the loop (not
     /// just a pure-Rust unit check) so this exercises the exact refusal
-    /// path `build_personal_pack` takes in production.
+    /// path `build_personal_pack` takes in production. Uses `.docx` (still
+    /// unsupported post-§3b B3, since `.pdf` moved to the supported column —
+    /// `source_type_for`'s own unit test below covers that shift directly).
     #[test]
     #[ignore]
     fn unsupported_file_type_is_refused_before_building() {
         let gguf_path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(EMBEDDER_RELATIVE_PATH);
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
         let dir = unique_dir("unsupported");
-        let bad_path = dir.join("source.pdf");
-        std::fs::write(&bad_path, b"%PDF-not-really").unwrap();
+        let bad_path = dir.join("source.docx");
+        std::fs::write(&bad_path, b"not-really-a-docx").unwrap();
 
         let out_path = dir.join("personal.kpack");
         let cache = EmbedderCache::default();
@@ -1050,6 +1144,7 @@ mod tests {
             "test-pack",
             &out_path,
             &gguf_path,
+            &pdfium_path,
             &cache,
             &|_| {},
             &cancel,
@@ -1087,6 +1182,8 @@ mod tests {
             "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
             gguf_path.display()
         );
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
 
         let cache = EmbedderCache::default();
         let first = cache.get_or_load(&gguf_path).expect("first load should succeed");
@@ -1115,6 +1212,7 @@ mod tests {
             "test-pack",
             &out_path,
             &gguf_path,
+            &pdfium_path,
             &cache,
             &progress,
             &cancel,
@@ -1346,6 +1444,8 @@ mod tests {
             "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
             gguf_path.display()
         );
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
 
         let dir = unique_dir("build-list-delete");
         let packs_dir = dir.join("packs");
@@ -1366,6 +1466,7 @@ mod tests {
             "rt-test",
             &out_path,
             &gguf_path,
+            &pdfium_path,
             &cache,
             &|_| {},
             &cancel,
@@ -1382,6 +1483,100 @@ mod tests {
             list_packs_in(&packs_dir).is_empty(),
             "packs dir should be empty after delete"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §3b B3 end-to-end proof: build a personal pack from a real PDF
+    /// (reusing `kpack-pdf`'s own committed fixture,
+    /// `crates/kpack-pdf/tests/fixtures/sample.pdf` — two pages, "...page
+    /// one alpha" / "...page two bravo") through the exact app path
+    /// (`build_personal_pack_with_embedder`'s `.pdf` branch:
+    /// `kpack_pdf::extract_pages` -> `kpack_core::document_from_pages` ->
+    /// `SourceContent::Prebuilt`), then queries it via `rag_query_inner` and
+    /// asserts a returned citation carries a `p.N` page locator — proving
+    /// PDF -> page-locator -> citation end to end through the app, not just
+    /// through `kpack-pdf`/`kpack-core` in isolation.
+    ///
+    /// `#[ignore]`d for the same reasons as the tests above (bundled GGUF +
+    /// `real`-feature native build), plus needs `pdfium.dll` at the
+    /// resources path (`tools/fetch-pdfium.mjs`). Run explicitly with
+    /// `$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"; cargo test -p
+    /// cleophis --lib -- --ignored kpack::tests::build_from_pdf_produces_a_page_locator_citation`.
+    #[test]
+    #[ignore]
+    fn build_from_pdf_produces_a_page_locator_citation() {
+        let gguf_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(EMBEDDER_RELATIVE_PATH);
+        assert!(
+            gguf_path.exists(),
+            "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
+            gguf_path.display()
+        );
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
+        assert!(
+            pdfium_path.exists(),
+            "pdfium.dll missing at {} — run tools/fetch-pdfium.mjs first",
+            pdfium_path.display()
+        );
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("crates")
+            .join("kpack-pdf")
+            .join("tests")
+            .join("fixtures")
+            .join("sample.pdf");
+        assert!(
+            fixture_path.exists(),
+            "PDF fixture missing at {} — kpack-pdf's own fixture should already be committed",
+            fixture_path.display()
+        );
+
+        let dir = unique_dir("pdf-build");
+        let packs_dir = dir.join("packs");
+        std::fs::create_dir_all(&packs_dir).unwrap();
+
+        let out_path = packs_dir.join(unique_pack_filename());
+        let cache = EmbedderCache::default();
+        let cancel = AtomicBool::new(false);
+        let manifest = build_personal_pack_with_embedder(
+            &[fixture_path.to_string_lossy().into_owned()],
+            "pdf-test",
+            &out_path,
+            &gguf_path,
+            &pdfium_path,
+            &cache,
+            &|_| {},
+            &cancel,
+        )
+        .expect("build from a real PDF should succeed");
+        assert_eq!(manifest.pack_tier, "personal");
+
+        let result = rag_query_inner(
+            "kpack-pdf fixture page one alpha",
+            &[out_path.to_string_lossy().into_owned()],
+            &packs_dir,
+            &gguf_path,
+            Tier::Large,
+            &cache,
+        )
+        .expect("rag_query_inner should succeed against the PDF-built pack");
+
+        match result.status.as_str() {
+            "grounded" => {
+                assert!(!result.citations.is_empty(), "expected at least one citation");
+                assert!(
+                    result.citations.iter().any(|c| c.locator.starts_with("p.")),
+                    "expected a p.N page locator among citations, got: {:?}",
+                    result.citations
+                );
+            }
+            other => panic!(
+                "expected a grounded retrieval for an in-corpus PDF query, got {other}: {:?}",
+                result.prompt
+            ),
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

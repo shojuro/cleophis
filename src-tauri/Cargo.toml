@@ -31,6 +31,10 @@ tauri-plugin-dialog = "2"
 # says it must for any consumer that turns this feature on.
 kpack-core = { path = "../crates/kpack-core" }
 kpack-embed = { path = "../crates/kpack-embed", features = ["real"] }
+# §3b B3: PDF text extraction for the pack builder. A normal dep — no
+# feature/toolchain needed to compile; it binds pdfium.dll at runtime (see
+# `kpack-pdf`'s module doc comment) rather than linking it in.
+kpack-pdf = { path = "../crates/kpack-pdf" }
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"
