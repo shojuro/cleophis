@@ -56,6 +56,29 @@
 //! search does — reusing `kpack_core::retrieve::safe_fts5_query` (already a
 //! transitive dependency via `kpack-core`) rather than re-implementing the
 //! same quoting logic here.
+//!
+//! ## Inference provenance (forward-compat for the future LoRA-adapter track)
+//! `chats.model_id`/`chats.adapter_ids` record which model + adapters were
+//! active when a chat was created, the same way `mounted_packs` already
+//! records which knowledge packs were active — so that when the
+//! adapter-swapping track lands, opening an old chat can restore its
+//! specialist exactly as it already remounts packs, with zero future schema
+//! change. `model_id` is a constant hero-model value today (there's only
+//! one model); `adapter_ids` is `[]` today (no adapters exist yet) — both
+//! stamped once at `create_chat` time and otherwise immutable (unlike
+//! `mounted_packs`, there's no `set_chat_model`/`set_chat_adapters`: v1 has
+//! nothing for such a setter to change). Deliberately chat-level, not
+//! per-message: per-message citations already give per-message PACK
+//! provenance, but per-message model/adapter provenance is a possible
+//! future refinement, not needed yet.
+//!
+//! A dev database created before these two columns existed gets them via a
+//! tiny defensive migration in [`ConvStore::from_connection`]
+//! (`PRAGMA table_info(chats)` + `ALTER TABLE ... ADD COLUMN` for whichever
+//! is missing) — `CREATE TABLE IF NOT EXISTS` alone is a no-op against an
+//! already-existing `chats` table of the OLD shape, so without this an
+//! existing dev DB would error on the next `INSERT`/`SELECT` that touches
+//! either column.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -75,7 +98,9 @@ CREATE TABLE IF NOT EXISTS chats (
   id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
   title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
-  mounted_packs TEXT
+  mounted_packs TEXT,
+  model_id TEXT NOT NULL DEFAULT '',
+  adapter_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
@@ -90,8 +115,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(title, content);
 /// Column list shared by every `chats` read query, so the positional
 /// `chat_from_row` mapping below stays correct no matter which query built
 /// the row.
-const CHAT_COLUMNS: &str =
-    "id, folder_id, title, created_at, updated_at, pinned, archived, mounted_packs";
+const CHAT_COLUMNS: &str = "id, folder_id, title, created_at, updated_at, pinned, archived, \
+     mounted_packs, model_id, adapter_ids";
 
 /// Column list shared by every `messages` read query — same rationale as
 /// `CHAT_COLUMNS`.
@@ -129,9 +154,52 @@ impl ConvStore {
 
     fn from_connection(conn: Connection) -> Result<ConvStore, String> {
         conn.execute_batch(SCHEMA_SQL).map_err(|e| e.to_string())?;
+        Self::migrate_chats_columns(&conn)?;
         Ok(ConvStore {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Defensive migration for a dev `conversations.db` created before
+    /// `chats.model_id`/`chats.adapter_ids` existed — see the module doc
+    /// comment's "Inference provenance" section. `CREATE TABLE IF NOT
+    /// EXISTS` in `SCHEMA_SQL` is a no-op against an already-existing
+    /// `chats` table regardless of its column shape, so this checks
+    /// `PRAGMA table_info(chats)` for each of the two columns and
+    /// `ALTER TABLE ... ADD COLUMN`s whichever is missing. Both defaults
+    /// are plain string literals (`''`/`'[]'`), which SQLite allows on a
+    /// `NOT NULL ADD COLUMN` (it backfills every existing row with that
+    /// literal) — only a non-constant default like `CURRENT_TIMESTAMP`
+    /// would be rejected there. A brand-new database (via `SCHEMA_SQL`'s
+    /// `CREATE TABLE`) already has both columns, so this is a no-op for it.
+    fn migrate_chats_columns(conn: &Connection) -> Result<(), String> {
+        let mut existing = std::collections::HashSet::new();
+        {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(chats)")
+                .map_err(|e| e.to_string())?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names {
+                existing.insert(name.map_err(|e| e.to_string())?);
+            }
+        }
+        if !existing.contains("model_id") {
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN model_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !existing.contains("adapter_ids") {
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN adapter_ids TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     // ---- Folders ----------------------------------------------------
@@ -195,20 +263,27 @@ impl ConvStore {
 
     // ---- Chats --------------------------------------------------------
 
+    /// `model_id`/`adapter_ids` are the inference provenance stamped once at
+    /// creation (see the module doc comment's "Inference provenance"
+    /// section) — the FE passes the currently-active model/adapters, the
+    /// same way it passes the currently-active `mounted_packs`.
     pub fn create_chat(
         &self,
         title: &str,
         folder_id: Option<i64>,
         mounted_packs: Option<Vec<String>>,
+        model_id: &str,
+        adapter_ids: Vec<String>,
     ) -> Result<ChatInfo, String> {
         let conn = self.conn.lock().unwrap();
         let now = now_iso();
         let mounted_packs = mounted_packs.unwrap_or_default();
         let packs_json = serde_json::to_string(&mounted_packs).map_err(|e| e.to_string())?;
+        let adapter_ids_json = serde_json::to_string(&adapter_ids).map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO chats (folder_id, title, created_at, updated_at, pinned, archived, mounted_packs)
-             VALUES (?1, ?2, ?3, ?3, 0, 0, ?4)",
-            params![folder_id, title, now, packs_json],
+            "INSERT INTO chats (folder_id, title, created_at, updated_at, pinned, archived, mounted_packs, model_id, adapter_ids)
+             VALUES (?1, ?2, ?3, ?3, 0, 0, ?4, ?5, ?6)",
+            params![folder_id, title, now, packs_json, model_id, adapter_ids_json],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
@@ -230,6 +305,8 @@ impl ConvStore {
             pinned: false,
             archived: false,
             mounted_packs,
+            model_id: model_id.to_string(),
+            adapter_ids,
         })
     }
 
@@ -436,6 +513,8 @@ fn chat_from_row(row: &rusqlite::Row) -> rusqlite::Result<ChatInfo> {
     let mounted_packs = mounted_packs_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         .unwrap_or_default();
+    let adapter_ids_json: String = row.get(9)?;
+    let adapter_ids = serde_json::from_str::<Vec<String>>(&adapter_ids_json).unwrap_or_default();
     Ok(ChatInfo {
         id: row.get(0)?,
         folder_id: row.get(1)?,
@@ -445,6 +524,8 @@ fn chat_from_row(row: &rusqlite::Row) -> rusqlite::Result<ChatInfo> {
         pinned: row.get(5)?,
         archived: row.get(6)?,
         mounted_packs,
+        model_id: row.get(8)?,
+        adapter_ids,
     })
 }
 
@@ -472,7 +553,11 @@ pub struct FolderInfo {
 /// A camelCase, front-end-facing view of a `chats` row — `mounted_packs`
 /// round-trips through the column's JSON-array-of-paths encoding (spec
 /// §7.1's comment on the `chats.mounted_packs` column) to a plain
-/// `Vec<String>` here.
+/// `Vec<String>` here, and `adapter_ids` round-trips the same way from its
+/// JSON-array-of-ids column. `model_id`/`adapter_ids` are the chat's
+/// inference provenance (see the module doc comment's "Inference
+/// provenance" section) — constant (`"hero-llama"`-style value / `[]`)
+/// today, stamped once at `create_chat` time.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatInfo {
@@ -484,6 +569,8 @@ pub struct ChatInfo {
     pub pinned: bool,
     pub archived: bool,
     pub mounted_packs: Vec<String>,
+    pub model_id: String,
+    pub adapter_ids: Vec<String>,
 }
 
 /// A camelCase, front-end-facing view of a `messages` row — `citations`/
@@ -557,11 +644,13 @@ pub async fn create_chat(
     title: String,
     folder_id: Option<i64>,
     mounted_packs: Option<Vec<String>>,
+    model_id: String,
+    adapter_ids: Vec<String>,
     app: AppHandle,
 ) -> Result<ChatInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>()
-            .create_chat(&title, folder_id, mounted_packs)
+            .create_chat(&title, folder_id, mounted_packs, &model_id, adapter_ids)
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -668,7 +757,9 @@ mod tests {
     #[test]
     fn t1_get_chat_returns_chat_and_messages_in_order_with_citations() {
         let store = ConvStore::open_in_memory().unwrap();
-        let chat = store.create_chat("My chat", None, None).unwrap();
+        let chat = store
+            .create_chat("My chat", None, None, "hero-llama", vec![])
+            .unwrap();
 
         let m1 = store
             .append_message(chat.id, "user", "hello", None, None)
@@ -694,8 +785,12 @@ mod tests {
     #[test]
     fn t2_list_chats_orders_pinned_first_and_reflects_archived() {
         let store = ConvStore::open_in_memory().unwrap();
-        let older = store.create_chat("Older", None, None).unwrap();
-        let newer = store.create_chat("Newer", None, None).unwrap();
+        let older = store
+            .create_chat("Older", None, None, "hero-llama", vec![])
+            .unwrap();
+        let newer = store
+            .create_chat("Newer", None, None, "hero-llama", vec![])
+            .unwrap();
         store.set_chat_pinned(older.id, true).unwrap();
         store.set_chat_archived(newer.id, true).unwrap();
 
@@ -712,7 +807,9 @@ mod tests {
     fn t3_delete_folder_unfiles_chats_instead_of_deleting_them() {
         let store = ConvStore::open_in_memory().unwrap();
         let folder = store.create_folder("Work").unwrap();
-        let chat = store.create_chat("A chat", None, None).unwrap();
+        let chat = store
+            .create_chat("A chat", None, None, "hero-llama", vec![])
+            .unwrap();
         store.move_chat(chat.id, Some(folder.id)).unwrap();
 
         let folders = store.list_folders().unwrap();
@@ -733,7 +830,9 @@ mod tests {
     #[test]
     fn t4_delete_chat_leaves_no_orphan_fts_row() {
         let store = ConvStore::open_in_memory().unwrap();
-        let chat = store.create_chat("Doomed chat", None, None).unwrap();
+        let chat = store
+            .create_chat("Doomed chat", None, None, "hero-llama", vec![])
+            .unwrap();
         store
             .append_message(chat.id, "user", "unique_marker_xyz", None, None)
             .unwrap();
@@ -758,12 +857,18 @@ mod tests {
     #[test]
     fn t5_search_chats_matches_title_and_message_content_not_deleted_chats() {
         let store = ConvStore::open_in_memory().unwrap();
-        let by_title = store.create_chat("Vitamin K research", None, None).unwrap();
-        let by_content = store.create_chat("Untitled", None, None).unwrap();
+        let by_title = store
+            .create_chat("Vitamin K research", None, None, "hero-llama", vec![])
+            .unwrap();
+        let by_content = store
+            .create_chat("Untitled", None, None, "hero-llama", vec![])
+            .unwrap();
         store
             .append_message(by_content.id, "user", "tell me about blood clotting", None, None)
             .unwrap();
-        let gone = store.create_chat("clotting notes", None, None).unwrap();
+        let gone = store
+            .create_chat("clotting notes", None, None, "hero-llama", vec![])
+            .unwrap();
         store.delete_chat(gone.id).unwrap();
 
         let title_hits = store.search_chats("Vitamin").unwrap();
@@ -783,7 +888,9 @@ mod tests {
     #[test]
     fn t6_timestamps_are_iso8601_and_updated_at_advances_on_append() {
         let store = ConvStore::open_in_memory().unwrap();
-        let chat = store.create_chat("Timing", None, None).unwrap();
+        let chat = store
+            .create_chat("Timing", None, None, "hero-llama", vec![])
+            .unwrap();
         assert!(!chat.created_at.is_empty());
         assert!(!chat.updated_at.is_empty());
         assert_eq!(chat.created_at, chat.updated_at);
@@ -801,5 +908,60 @@ mod tests {
             .unwrap();
         let after_second = store.get_chat(chat.id).unwrap().chat;
         assert!(after_second.updated_at > after_first.updated_at);
+    }
+
+    /// create_chat's model_id/adapter_ids provenance round-trips through
+    /// both get_chat and list_chats (forward-compat for the future
+    /// LoRA-adapter track — see the module doc comment).
+    #[test]
+    fn t7_model_and_adapter_provenance_round_trips() {
+        let store = ConvStore::open_in_memory().unwrap();
+        let chat = store
+            .create_chat(
+                "Specialist chat",
+                None,
+                None,
+                "hero-llama",
+                vec!["med-adapter-v1".to_string()],
+            )
+            .unwrap();
+        assert_eq!(chat.model_id, "hero-llama");
+        assert_eq!(chat.adapter_ids, vec!["med-adapter-v1".to_string()]);
+
+        let fetched = store.get_chat(chat.id).unwrap().chat;
+        assert_eq!(fetched.model_id, "hero-llama");
+        assert_eq!(fetched.adapter_ids, vec!["med-adapter-v1".to_string()]);
+
+        let listed = store.list_chats().unwrap();
+        let listed_chat = listed.iter().find(|c| c.id == chat.id).unwrap();
+        assert_eq!(listed_chat.model_id, "hero-llama");
+        assert_eq!(listed_chat.adapter_ids, vec!["med-adapter-v1".to_string()]);
+    }
+
+    /// Defensive migration (task amendment): a `chats` table created with
+    /// the OLD (pre-model_id/adapter_ids) shape — simulated here by hand,
+    /// bypassing `SCHEMA_SQL` — still opens cleanly through
+    /// `ConvStore::from_connection`, and `create_chat` against it succeeds
+    /// with the new columns backfilled to their defaults rather than
+    /// erroring on the missing columns.
+    #[test]
+    fn t8_migrates_an_existing_chats_table_missing_the_new_columns() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
+                title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+                mounted_packs TEXT
+            );",
+        )
+        .unwrap();
+
+        let store = ConvStore::from_connection(conn).unwrap();
+        let chat = store
+            .create_chat("Migrated", None, None, "hero-llama", vec![])
+            .unwrap();
+        assert_eq!(chat.model_id, "hero-llama");
+        assert!(chat.adapter_ids.is_empty());
     }
 }
