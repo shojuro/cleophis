@@ -83,7 +83,7 @@ use std::time::{Duration, Instant};
 use kpack_core::retrieve::{retrieve, Citation, RetrievalResult, Tier};
 use kpack_core::{
     build_pack_with_progress, BuildMeta, BuildProgress, ChunkConfig, LoadContext, Manifest, Pack,
-    PackTier, SourceInput,
+    PackTier, SourceContent, SourceInput,
 };
 use kpack_embed::BgeEmbedder;
 use serde::Serialize;
@@ -500,7 +500,7 @@ fn build_personal_pack_with_embedder(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| file_path.clone());
         sources.push(SourceInput {
-            content,
+            content: SourceContent::Raw(content),
             title,
             source_type,
         });

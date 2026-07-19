@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kpack_core::build::{build_pack, passage_input, BuildMeta, SourceInput};
+use kpack_core::build::{build_pack, passage_input, BuildMeta, SourceContent, SourceInput};
 use kpack_core::chunk::ChunkConfig;
 use kpack_core::embed::{l2_normalize, quantize_int8, Embedder};
 use kpack_core::format::{Chunk, Pack};
@@ -77,7 +77,8 @@ fn fixture_sources() -> Vec<SourceInput> {
         SourceInput {
             title: "Vitamin K Basics".to_string(),
             source_type: "md".to_string(),
-            content: "\
+            content: SourceContent::Raw(
+                "\
 # Chapter 1
 
 ## Vitamin K
@@ -98,12 +99,14 @@ Typical adult dietary reference intakes are expressed in micrograms per \
 day, and the vitamin is fat-soluble, so absorption improves when it is \
 consumed alongside a meal containing some dietary fat.
 "
-            .to_string(),
+                .to_string(),
+            ),
         },
         SourceInput {
             title: "Getting Started".to_string(),
             source_type: "md".to_string(),
-            content: "\
+            content: SourceContent::Raw(
+                "\
 # Getting Started
 
 ## Installation
@@ -118,7 +121,8 @@ cargo install kpack-cli
 
 Verify the installation by checking the reported version string.
 "
-            .to_string(),
+                .to_string(),
+            ),
         },
     ]
 }

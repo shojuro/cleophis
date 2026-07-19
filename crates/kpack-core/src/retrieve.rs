@@ -634,7 +634,7 @@ pub fn retrieve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{build_pack, BuildMeta, SourceInput};
+    use crate::build::{build_pack, BuildMeta, SourceContent, SourceInput};
     use crate::chunk::ChunkConfig;
     use crate::embed::{l2_normalize, quantize_int8, Embedder, MockEmbedder};
     use crate::format::{Chunk, Doc};
@@ -801,13 +801,15 @@ mod tests {
             SourceInput {
                 title: "Vitamin K".to_string(),
                 source_type: "md".to_string(),
-                content: format!("# Vitamin K\n\n{vitamin_k_text}\n"),
+                content: SourceContent::Raw(format!("# Vitamin K\n\n{vitamin_k_text}\n")),
             },
             SourceInput {
                 title: "Getting Started".to_string(),
                 source_type: "md".to_string(),
-                content: "# Getting Started\n\nRun the install script to set up the build tool on this machine.\n"
-                    .to_string(),
+                content: SourceContent::Raw(
+                    "# Getting Started\n\nRun the install script to set up the build tool on this machine.\n"
+                        .to_string(),
+                ),
             },
         ];
 
@@ -876,7 +878,7 @@ mod tests {
         let sources = vec![SourceInput {
             title: "Vitamin K".to_string(),
             source_type: "md".to_string(),
-            content: format!("# Vitamin K\n\n{text}\n"),
+            content: SourceContent::Raw(format!("# Vitamin K\n\n{text}\n")),
         }];
         build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
         let pack = Pack::open(&out_path).unwrap();
@@ -1581,7 +1583,9 @@ mod tests {
         let sources = vec![SourceInput {
             title: "Only Doc".to_string(),
             source_type: "md".to_string(),
-            content: "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+            content: SourceContent::Raw(
+                "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+            ),
         }];
         build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
         let pack = Pack::open(&out_path).unwrap();
@@ -1625,7 +1629,9 @@ mod tests {
         let sources = vec![SourceInput {
             title: "Only Doc".to_string(),
             source_type: "md".to_string(),
-            content: "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+            content: SourceContent::Raw(
+                "# Only Doc\n\nThis pack has exactly one chunk of content.\n".to_string(),
+            ),
         }];
         build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
         let pack = Pack::open(&out_path).unwrap();

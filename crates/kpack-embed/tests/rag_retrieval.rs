@@ -34,7 +34,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kpack_core::build::{build_pack, BuildMeta, SourceInput};
+use kpack_core::build::{build_pack, BuildMeta, SourceContent, SourceInput};
 use kpack_core::chunk::ChunkConfig;
 use kpack_core::contract;
 use kpack_core::embed::{l2_normalize, quantize_int8, Embedder};
@@ -95,7 +95,8 @@ fn vitamin_k_sources() -> Vec<SourceInput> {
         SourceInput {
             title: "Vitamin K Basics".to_string(),
             source_type: "md".to_string(),
-            content: "\
+            content: SourceContent::Raw(
+                "\
 # Vitamin K
 
 Vitamin K is a fat-soluble vitamin that plays a central role in blood \
@@ -106,18 +107,21 @@ anticoagulant, works by antagonizing vitamin K's role in the clotting \
 cascade, so patients on warfarin are usually told to keep their dietary \
 vitamin K intake roughly consistent from week to week rather than \
 eliminating it outright.\n"
-                .to_string(),
+                    .to_string(),
+            ),
         },
         SourceInput {
             title: "Getting Started".to_string(),
             source_type: "md".to_string(),
-            content: "\
+            content: SourceContent::Raw(
+                "\
 # Getting Started
 
 Run the install script to set up the build tool on this machine, then \
 verify the installation by checking the reported version string against \
 the release notes for this build.\n"
-                .to_string(),
+                    .to_string(),
+            ),
         },
     ]
 }
@@ -129,13 +133,15 @@ fn getting_started_only_sources() -> Vec<SourceInput> {
     vec![SourceInput {
         title: "Getting Started".to_string(),
         source_type: "md".to_string(),
-        content: "\
+        content: SourceContent::Raw(
+            "\
 # Getting Started
 
 Run the install script to set up the build tool on this machine, then \
 verify the installation by checking the reported version string against \
 the release notes for this build.\n"
-            .to_string(),
+                .to_string(),
+        ),
     }]
 }
 

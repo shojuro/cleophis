@@ -52,8 +52,8 @@ pub mod sign;
 pub mod tree;
 
 pub use build::{
-    build_pack, build_pack_with_progress, passage_input, sha256_hex, BuildMeta, BuildProgress,
-    Error as BuildError, SourceInput,
+    build_pack, build_pack_with_progress, document_from_pages, passage_input, sha256_hex,
+    BuildMeta, BuildProgress, Error as BuildError, SourceContent, SourceInput,
 };
 pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
 pub use contract::{

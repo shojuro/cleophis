@@ -27,10 +27,12 @@
 //! 1. Build into `<out_path>.part`, verify-then-atomic-rename (mirrors
 //!    `src-tauri/src/cloud/download.rs`'s finalize step): open/create the
 //!    part file as a fresh `.kpack` sized for `embedder.dims()`.
-//! 2. For each [`SourceInput`]: parse to a [`crate::tree::Document`], hash
-//!    the raw source bytes ([`sha256_hex`]) for `docs.sha256`, score
-//!    [`crate::parse::extraction_quality`], insert the `docs` row, then
-//!    chunk the parsed document (`chunk::chunk_document`).
+//! 2. For each [`SourceInput`]: resolve its [`SourceContent`] to a
+//!    [`crate::tree::Document`] (`Raw` is parsed via [`crate::parse::parse`];
+//!    `Prebuilt` is used as-is — see `SourceContent`'s doc comment), hash a
+//!    stable content representation ([`sha256_hex`]) for `docs.sha256`,
+//!    score [`crate::parse::extraction_quality`], insert the `docs` row,
+//!    then chunk the document (`chunk::chunk_document`).
 //! 3. For each [`crate::chunk::ChunkDraft`]: insert the `chunks`/`fts5` row,
 //!    embed [`passage_input`]'s output (the §2.3 `prefix + "\n" + text`
 //!    formula — `text` alone when `prefix` is empty, which is every K8
@@ -59,20 +61,38 @@ use crate::embed::{l2_normalize, quantize_int8, EmbedError, Embedder};
 use crate::format::{self, Chunk, Doc, Pack};
 use crate::manifest::{Manifest, PackTier, VEC_FORMAT_VERSION};
 use crate::parse;
+use crate::tree::{Block, Document, Section};
 
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// One source document to build into a pack: its raw text content, a
-/// display title, and a type hint (`"md"` or `"txt"`) that selects
-/// [`crate::parse::parse`]'s parser. PDF/EPUB/DOCX/HTML sources are out of
-/// K8's scope (K6's parser list; §3.2's remaining formats land later).
+/// One source document to build into a pack: its content ([`SourceContent`]
+/// — either raw text for [`crate::parse::parse`] to parse, or an
+/// already-built [`crate::tree::Document`] a caller assembled itself, e.g.
+/// via [`document_from_pages`] for PDF text extracted outside this crate), a
+/// display title, and a type hint (`"md"`/`"txt"`) that selects
+/// [`crate::parse::parse`]'s parser for `Raw` content (ignored for
+/// `Prebuilt` content, which skips `parse` entirely).
 pub struct SourceInput {
-    pub content: String,
+    pub content: SourceContent,
     pub title: String,
     pub source_type: String,
+}
+
+/// [`SourceInput::content`]'s two shapes — the §3b bytes/`Document` seam.
+/// `Raw` is K8's original behavior: text `build_pack` parses itself via
+/// [`crate::parse::parse`] (MD/TXT). `Prebuilt` skips that parse step:
+/// a caller — PDF text extraction (native, e.g. `kpack-pdf`), entirely
+/// outside this dependency-free crate — hands in an already-built
+/// [`crate::tree::Document`] (see [`document_from_pages`]), and `build_pack`
+/// chunks/embeds it exactly like any parsed `Document`, since a `Document`
+/// is a `Document` regardless of origin.
+#[derive(Debug, Clone)]
+pub enum SourceContent {
+    Raw(String),
+    Prebuilt(Document),
 }
 
 /// Everything [`build_pack`] needs about the pack being built that isn't
@@ -196,13 +216,137 @@ pub fn passage_input(prefix: &str, text: &str) -> String {
 /// `src-tauri/src/inference.rs::model_sha256` uses (`{b:02x}` per byte),
 /// via the same incremental `Digest::update`/`finalize` API that function's
 /// streaming read loop drives a chunk at a time. `bytes` here is already a
-/// fully-loaded source (`SourceInput::content`), not a multi-GB file read
-/// off disk, so there is no streaming loop to mirror — the incremental API
-/// usage is the part that stays consistent with `model_sha256`'s style.
+/// fully-loaded in-memory string — a [`SourceContent::Raw`] source's text
+/// verbatim, or a [`SourceContent::Prebuilt`] `Document`'s flattened text
+/// (see [`document_content_text`]) — not a multi-GB file read off disk, so
+/// there is no streaming loop to mirror — the incremental API usage is the
+/// part that stays consistent with `model_sha256`'s style.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A deterministic, order-preserving flattening of every block's text in
+/// `doc` — paragraph and code text verbatim, a table as its header row then
+/// each data row (cells `|`-joined), one line per block — used ONLY to give
+/// a [`SourceContent::Prebuilt`] source a stable hash/`extraction_quality`
+/// input in place of the raw source bytes a `Raw` source has (there is no
+/// original byte stream for an already-built `Document`). Two `Document`s
+/// built from the same content (e.g. via [`document_from_pages`] on the same
+/// pages) always flatten to the same string, so `docs.sha256` is stable
+/// across builds — but this is NOT comparable to a `Raw` source's hash of
+/// its actual source bytes; the two schemes are deliberately different
+/// (see `sha256_hex`'s call sites in `build_pack_into_with_progress`), and
+/// this function makes no attempt at cross-format equivalence (spec §3b's
+/// scope is a stable per-source content hash, not that).
+fn document_content_text(doc: &Document) -> String {
+    let mut out = String::new();
+    for section in &doc.sections {
+        for block in &section.blocks {
+            match block {
+                Block::Paragraph { text, .. } | Block::Code { text, .. } => {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                Block::Table { header, rows, .. } => {
+                    out.push_str(&header.join("|"));
+                    out.push('\n');
+                    for row in rows {
+                        out.push_str(&row.join("|"));
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Build a page-locatored [`Document`] from already-extracted `(page,
+/// text)` pairs — the pure half of §3b's PDF seam: PDF text extraction
+/// itself (native, `pdfium`) lives entirely outside this dependency-free
+/// crate (`kpack-pdf`), which produces exactly this `&[(u32, String)]`
+/// shape and hands it to [`SourceContent::Prebuilt`]. This is the ONLY
+/// structural knowledge kpack-core needs about PDFs: "here are pages of
+/// text with page numbers" — no pdfium, no bytes, no native dependency.
+///
+/// Mirrors [`crate::parse::parse_txt`]'s shape exactly: one root
+/// [`Section`] (empty `path` — no heading tree; kpack-core does no PDF
+/// outline/bookmark parsing in this slice), each page's text split into
+/// [`Block::Paragraph`]s on blank-line boundaries (the same rule
+/// `parse_txt` uses, deliberately re-implemented here rather than imported
+/// from `parse.rs`, since `parse_txt`'s version is fused with its
+/// whole-document line-number locator bookkeeping, which a per-page caller
+/// doesn't want) — except every block's `locator` is `"p.{page}"` (the page
+/// number) instead of `parse_txt`'s `"L12"`/`"L12-L15"` line ranges, per
+/// [`Block`]'s own doc comment ("a line/paragraph/page reference"). Pages
+/// are processed in the given order; a page whose text has no blank-line
+/// break becomes a single paragraph block; empty or whitespace-only
+/// paragraphs (and pages that are empty/whitespace-only end to end) are
+/// dropped, same as `parse_txt`. A `pages` slice that yields no blocks at
+/// all produces zero sections (matching `parse_txt("")`'s empty-input
+/// result), not an empty root `Section`.
+pub fn document_from_pages(title: &str, pages: &[(u32, String)]) -> Document {
+    let mut blocks = Vec::new();
+    for (page, text) in pages {
+        for paragraph in split_into_paragraphs(text) {
+            blocks.push(Block::Paragraph {
+                text: paragraph,
+                locator: format!("p.{page}"),
+            });
+        }
+    }
+    let sections = if blocks.is_empty() {
+        Vec::new()
+    } else {
+        vec![Section { path: Vec::new(), blocks }]
+    };
+    Document {
+        title: title.to_string(),
+        sections,
+    }
+}
+
+/// Split `text` into trimmed, non-empty paragraphs on blank-line boundaries
+/// — mirrors [`crate::parse::parse_txt`]'s paragraph-splitting rule (a blank
+/// line is a paragraph break; a paragraph's interior lines are joined with
+/// `\n`; each paragraph is trimmed) so PDF-page-sourced chunks split
+/// identically to plain-text ones. See [`document_from_pages`]'s doc
+/// comment for why this is a deliberate re-implementation, not a shared
+/// function imported from `parse.rs`.
+fn split_into_paragraphs(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut para_start: Option<usize> = None;
+    let mut para_end = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            if let Some(start) = para_start.take() {
+                push_paragraph_text(&mut out, &lines, start, para_end);
+            }
+        } else {
+            if para_start.is_none() {
+                para_start = Some(i);
+            }
+            para_end = i;
+        }
+    }
+    if let Some(start) = para_start {
+        push_paragraph_text(&mut out, &lines, start, para_end);
+    }
+    out
+}
+
+/// Join `lines[start..=end]` with `\n`, trim, and push the result onto `out`
+/// unless it's empty — the per-paragraph finishing step both blank-line-break
+/// points in [`split_into_paragraphs`] share.
+fn push_paragraph_text(out: &mut Vec<String>, lines: &[&str], start: usize, end: usize) {
+    let text = lines[start..=end].join("\n");
+    let text = text.trim();
+    if !text.is_empty() {
+        out.push(text.to_string());
+    }
 }
 
 /// Build `sources` into a `.kpack` at `out_path` using `embedder` and
@@ -327,10 +471,30 @@ fn build_pack_into_with_progress(
     let mut pending: Vec<PendingChunk> = Vec::new();
 
     // Pass 1: parse + chunk every source, inserting `docs`/`chunks` rows.
+    // `SourceContent::Raw` parses via `parse::parse` and hashes/sizes the
+    // raw source text, same as always; `SourceContent::Prebuilt` skips
+    // `parse::parse` (the Document is already built) and instead
+    // hashes/sizes/scores `document_content_text`'s flattening of it — see
+    // that function's and `sha256_hex`'s doc comments for why the two
+    // schemes deliberately differ.
     for (i, source) in sources.iter().enumerate() {
-        let document = parse::parse(&source.content, &source.title, &source.source_type);
-        let sha256 = sha256_hex(source.content.as_bytes());
-        let extraction_quality = parse::extraction_quality(&source.content);
+        let (document, sha256, extraction_quality, source_size) = match &source.content {
+            SourceContent::Raw(text) => (
+                parse::parse(text, &source.title, &source.source_type),
+                sha256_hex(text.as_bytes()),
+                parse::extraction_quality(text),
+                text.len() as i64,
+            ),
+            SourceContent::Prebuilt(doc) => {
+                let flattened = document_content_text(doc);
+                (
+                    doc.clone(),
+                    sha256_hex(flattened.as_bytes()),
+                    parse::extraction_quality(&flattened),
+                    flattened.len() as i64,
+                )
+            }
+        };
 
         let doc_row = Doc {
             id: 0, // ignored by insert_doc; SQLite assigns the rowid.
@@ -338,7 +502,7 @@ fn build_pack_into_with_progress(
             source_type: Some(source.source_type.clone()),
             sha256,
             source_path: None,
-            source_size: Some(source.content.len() as i64),
+            source_size: Some(source_size),
             source_mtime: None,
             extraction_quality: Some(extraction_quality),
             added_at: rfc3339_now(),
@@ -514,7 +678,8 @@ mod tests {
             SourceInput {
                 title: "Vitamin K Basics".to_string(),
                 source_type: "md".to_string(),
-                content: "\
+                content: SourceContent::Raw(
+                    "\
 # Chapter 1
 
 ## Vitamin K
@@ -526,12 +691,14 @@ Vitamin K is a fat-soluble vitamin involved in blood clotting. It also plays a r
 | Warfarin | VKA |
 | Heparin | Anticoagulant |
 "
-                .to_string(),
+                    .to_string(),
+                ),
             },
             SourceInput {
                 title: "Getting Started".to_string(),
                 source_type: "md".to_string(),
-                content: "\
+                content: SourceContent::Raw(
+                    "\
 # Getting Started
 
 ## Installation
@@ -544,7 +711,8 @@ cargo install kpack-cli
 
 Verify the installation by checking the reported version string.
 "
-                .to_string(),
+                    .to_string(),
+                ),
             },
         ]
     }
@@ -1021,5 +1189,151 @@ Verify the installation by checking the reported version string.
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    // document_from_pages: two pages, each multi-paragraph -> the right
+    // block count, "p.1"/"p.2" locators on the right blocks, one root
+    // section with an empty section_path (no heading tree in this slice).
+    #[test]
+    fn document_from_pages_splits_paragraphs_and_locates_by_page() {
+        let pages = vec![
+            (1u32, "First paragraph on page one.\n\nSecond paragraph on page one.".to_string()),
+            (2u32, "Only paragraph on page two, no blank lines inside it.".to_string()),
+        ];
+        let doc = document_from_pages("Scanned Book", &pages);
+
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.sections[0].path, Vec::<String>::new());
+
+        let blocks = &doc.sections[0].blocks;
+        assert_eq!(blocks.len(), 3, "2 paragraphs on page 1 + 1 on page 2 = 3 blocks");
+
+        let expect = |b: &Block, text: &str, locator: &str| match b {
+            Block::Paragraph { text: t, locator: l } => {
+                assert_eq!(t, text);
+                assert_eq!(l, locator);
+            }
+            other => panic!("expected Block::Paragraph, got {other:?}"),
+        };
+        expect(&blocks[0], "First paragraph on page one.", "p.1");
+        expect(&blocks[1], "Second paragraph on page one.", "p.1");
+        expect(
+            &blocks[2],
+            "Only paragraph on page two, no blank lines inside it.",
+            "p.2",
+        );
+    }
+
+    // document_from_pages: empty/whitespace-only paragraphs (and a
+    // whitespace-only page) are dropped entirely, same as parse_txt.
+    #[test]
+    fn document_from_pages_drops_empty_and_whitespace_only_paragraphs() {
+        let pages = vec![
+            (1u32, "Real content.\n\n   \n\n\nMore real content.\n\n".to_string()),
+            (2u32, "   \n\n  \t  \n".to_string()), // whitespace-only page -> no blocks at all
+        ];
+        let doc = document_from_pages("Doc", &pages);
+
+        assert_eq!(doc.sections.len(), 1);
+        let blocks = &doc.sections[0].blocks;
+        assert_eq!(blocks.len(), 2, "the whitespace-only paragraphs and page 2 should contribute nothing");
+        for b in blocks {
+            match b {
+                Block::Paragraph { locator, .. } => assert_eq!(locator, "p.1"),
+                other => panic!("expected Block::Paragraph, got {other:?}"),
+            }
+        }
+    }
+
+    // document_from_pages: every page empty/whitespace-only -> zero
+    // sections (matches parse_txt("")'s empty-input result), not an empty
+    // root Section.
+    #[test]
+    fn document_from_pages_all_empty_pages_yields_no_sections() {
+        let pages = vec![(1u32, "".to_string()), (2u32, "   \n\n".to_string())];
+        let doc = document_from_pages("Doc", &pages);
+        assert!(doc.sections.is_empty());
+    }
+
+    // document_from_pages's paragraph splitting matches parse_txt's exactly
+    // (same blank-line-boundary rule) on the same source text — the direct
+    // proof that PDF-page-sourced chunks split identically to plain-text
+    // ones, as the brief requires.
+    #[test]
+    fn document_from_pages_paragraph_split_matches_parse_txt_behavior() {
+        let text = "First paragraph,\nstill first.\n\nSecond paragraph.\n\n\nThird paragraph.\n";
+
+        let txt_doc = parse::parse_txt(text, "Notes");
+        let page_doc = document_from_pages("Notes", &[(1, text.to_string())]);
+
+        let paragraph_texts = |doc: &Document| -> Vec<String> {
+            doc.sections[0]
+                .blocks
+                .iter()
+                .map(|b| match b {
+                    Block::Paragraph { text, .. } => text.clone(),
+                    other => panic!("expected Block::Paragraph, got {other:?}"),
+                })
+                .collect()
+        };
+
+        assert_eq!(paragraph_texts(&txt_doc), paragraph_texts(&page_doc));
+    }
+
+    // Round-trip: a SourceContent::Prebuilt(document_from_pages(...)) fed
+    // through build_pack (mock embedder) mounts, and a vec_search/fts_search
+    // hit's chunk carries the "p.N" locator — proving the page locator
+    // survives parse-skip -> chunk -> citation, not just that
+    // document_from_pages builds a well-formed Document in isolation.
+    #[test]
+    fn prebuilt_document_round_trips_through_build_pack_with_page_locator() {
+        let dir = unique_dir("prebuilt-round-trip");
+        let out_path = dir.join("prebuilt.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let clotting_text = "Vitamin K is a fat-soluble vitamin involved in blood clotting.";
+        let pages = vec![
+            (1u32, clotting_text.to_string()),
+            (2u32, "Warfarin is a vitamin K antagonist used as an anticoagulant.".to_string()),
+        ];
+        let document = document_from_pages("Extracted PDF", &pages);
+        let sources = vec![SourceInput {
+            title: "Extracted PDF".to_string(),
+            source_type: "pdf".to_string(),
+            content: SourceContent::Prebuilt(document),
+        }];
+
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+        let (pack, _manifest) = Pack::mount(&out_path, &ctx).unwrap();
+
+        // fts5 lane: the chunk containing "clotting" carries the page-1
+        // locator its originating block was built with.
+        let fts_hits = pack.fts_search("clotting", 5).unwrap();
+        assert!(!fts_hits.is_empty(), "fts_search should find the prebuilt-document's chunk");
+        let hit_chunk = pack
+            .get_chunk(fts_hits[0])
+            .unwrap()
+            .expect("fts hit id should resolve to a real chunk row");
+        assert_eq!(
+            hit_chunk.locator, "p.1",
+            "the page locator must survive parse-skip -> chunk -> citation"
+        );
+
+        // vec0 lane: a query vector recomputed for the exact page-1 text
+        // should also find a stored embedding (pass 2 embedded the
+        // Prebuilt document's chunks same as any parsed one).
+        let raw = embedder.embed_passage(clotting_text).unwrap();
+        let query_i8 = quantize_int8(&l2_normalize(&raw));
+        let vec_hits = pack.vec_search(&query_i8, 1).unwrap();
+        assert_eq!(vec_hits.len(), 1);
+        assert_eq!(vec_hits[0].1, 0.0, "stored vector should exactly match the recomputed one");
     }
 }
