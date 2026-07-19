@@ -10,16 +10,43 @@
 //! (`mount_pack_at` / `build_personal_pack_with_embedder`) — so the
 //! `#[ignore]`d integration test at the bottom of this file can exercise the
 //! real pipeline without constructing a Tauri `AppHandle`.
+//!
+//! ## Cached embedder + build progress/cancel (spec §3a A1)
+//! `BgeEmbedder::new` loads a 118 MB GGUF via `llama.cpp` — reloading it on
+//! every `rag_query`/`build_personal_pack` call (K9's original behavior)
+//! would make grounded chat unusable. [`EmbedderCache`] loads it once,
+//! lazily, behind a `Mutex`-guarded `Option<Arc<BgeEmbedder>>`; every
+//! subsequent call clones the `Arc` (cheap — `BgeEmbedder` wraps a
+//! `Send + Sync` `LlamaModel` and makes a fresh context per embed call, so a
+//! shared `Arc` is safe for concurrent embeds). It's managed directly
+//! (`.manage(EmbedderCache::default())` in `main.rs`, not wrapped in an
+//! outer `Arc`) — a command needing it inside a `spawn_blocking` closure
+//! clones the `AppHandle` (already `Clone + Send + 'static`) into the
+//! closure and re-fetches `app.state::<EmbedderCache>()` there, the same
+//! `main.rs:114/117` idiom this app already uses for `Arc<Engine>`/
+//! `Arc<Downloads>` from `on_window_event`; that avoids requiring
+//! `EmbedderCache: Clone` just to cross the `spawn_blocking` boundary.
+//!
+//! [`Builds`] is `build_personal_pack`'s single-slot active-build registry
+//! (an `Arc<AtomicBool>` cancel flag, cleared by a `ClearActiveOnDrop`-style
+//! guard), mirroring `cloud::download::Downloads`. Unlike a download, a
+//! build's command doesn't return until the build finishes (no detached
+//! worker thread), so the guard lives in the command's own async body
+//! rather than a spawned thread's.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use kpack_core::retrieve::{retrieve, Citation, RetrievalResult, Tier};
 use kpack_core::{
-    build_pack, BuildMeta, ChunkConfig, LoadContext, Manifest, Pack, PackTier, SourceInput,
+    build_pack_with_progress, BuildMeta, BuildProgress, ChunkConfig, LoadContext, Manifest, Pack,
+    PackTier, SourceInput,
 };
 use kpack_embed::BgeEmbedder;
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Only reachable if the blocking task itself panics or the runtime is
 /// shutting down — mirrors `cloud::commands::JOIN_ERROR_MESSAGE`.
@@ -56,6 +83,79 @@ const EMBEDDER_RELATIVE_PATH: &str = "embedders/bge-base-en-v1.5-q8_0.gguf";
 /// every install (fat and thin alike), it is never separately downloaded.
 fn bundled_embedder_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(EMBEDDER_RELATIVE_PATH)
+}
+
+/// A lazily-loaded, shared `BgeEmbedder` (spec §3a A1's load-bearing fix —
+/// see the module doc comment). `get_or_load` locks only for the check +
+/// (on a miss) the load + store; once populated, every subsequent call is a
+/// lock + `Arc::clone` — cheap, and safe to call concurrently from multiple
+/// `rag_query`/`build_personal_pack` invocations (they'll serialize briefly
+/// on the `Mutex`, then share the same `Arc<BgeEmbedder>`).
+#[derive(Default)]
+pub struct EmbedderCache {
+    inner: Mutex<Option<Arc<BgeEmbedder>>>,
+}
+
+impl EmbedderCache {
+    /// Returns the cached embedder for `gguf_path`, loading it first if this
+    /// is the first call. Does NOT check whether a previously cached
+    /// embedder was loaded from a DIFFERENT path — this app has exactly one
+    /// bundled embedder GGUF (`EMBEDDER_RELATIVE_PATH`, fixed per install),
+    /// so every real call site passes the same `gguf_path` every time; a
+    /// path-keyed cache would be solving a problem this app doesn't have.
+    pub fn get_or_load(&self, gguf_path: &Path) -> Result<Arc<BgeEmbedder>, String> {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(embedder) = guard.as_ref() {
+            return Ok(embedder.clone());
+        }
+        let embedder = Arc::new(BgeEmbedder::new(gguf_path).map_err(|e| e.to_string())?);
+        *guard = Some(embedder.clone());
+        Ok(embedder)
+    }
+}
+
+/// The single-slot active-build registry (spec §3a A1), mirroring
+/// `cloud::download::Downloads` — only one personal-pack build runs at a
+/// time app-wide. Holds just the cancel flag: `build_personal_pack` reports
+/// progress via `app.emit` directly (no separate poll-able byte/phase state
+/// the way `Downloads` tracks for `download_status`), so there's nothing
+/// else to register here.
+#[derive(Default)]
+pub struct Builds {
+    active: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+impl Builds {
+    /// Sets the active build's cancel flag if one is running; no-op
+    /// otherwise. Used by the `cancel_build` command.
+    pub fn request_cancel(&self) {
+        if let Some(cancel) = self.active.lock().unwrap().as_ref() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The `build-progress` event payload (spec §3a A1): a camelCase,
+/// `Serialize`-deriving mirror of `kpack_core::BuildProgress` — the same
+/// "core type stays Tauri-free; this file wraps it for IPC" pattern already
+/// used for `Manifest`/`Citation` (see `PackManifestInfo`/`CitationInfo`
+/// below), and the same shape as `cloud::download::DownloadProgress`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildProgressEvent {
+    pub phase: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+impl From<BuildProgress> for BuildProgressEvent {
+    fn from(p: BuildProgress) -> Self {
+        BuildProgressEvent {
+            phase: p.phase,
+            done: p.done,
+            total: p.total,
+        }
+    }
 }
 
 /// A camelCase, front-end-facing view of `kpack_core::Manifest` — the exact
@@ -176,23 +276,29 @@ fn build_timestamp() -> String {
         .to_string()
 }
 
-/// Pure build logic behind the `build_personal_pack` command: load
-/// `gguf_path` as a real `BgeEmbedder`, read and type every file in
-/// `file_paths`, build a `Personal`-tier pack at `out_path`, then mount it
-/// back (proving the round-trip, not just that the build call returned Ok)
-/// and hand back its manifest. Factored out (no `AppHandle`) so the
-/// `#[ignore]`d integration test below can call it directly against a temp
-/// file and the bundled GGUF.
+/// Pure build logic behind the `build_personal_pack` command: resolve
+/// `gguf_path` through `cache` (a real `BgeEmbedder`, loaded at most once —
+/// see [`EmbedderCache`]'s doc comment), read and type every file in
+/// `file_paths`, build a `Personal`-tier pack at `out_path` reporting
+/// progress through `progress` and honoring `cancel` (spec §3a A1's
+/// `kpack_core::build_pack_with_progress`), then mount it back (proving the
+/// round-trip, not just that the build call returned Ok) and hand back its
+/// manifest. Factored out (no `AppHandle`) so the `#[ignore]`d integration
+/// tests below can call it directly against a temp file, the bundled GGUF,
+/// and a plain `EmbedderCache::default()` — no Tauri `AppHandle` needed.
 fn build_personal_pack_with_embedder(
     file_paths: &[String],
     out_path: &Path,
     gguf_path: &Path,
+    cache: &EmbedderCache,
+    progress: &dyn Fn(BuildProgress),
+    cancel: &AtomicBool,
 ) -> Result<PackManifestInfo, String> {
     if file_paths.is_empty() {
         return Err("no source files given".to_string());
     }
 
-    let embedder = BgeEmbedder::new(gguf_path).map_err(|e| e.to_string())?;
+    let embedder = cache.get_or_load(gguf_path)?;
 
     let mut sources = Vec::with_capacity(file_paths.len());
     for file_path in file_paths {
@@ -220,24 +326,105 @@ fn build_personal_pack_with_embedder(
         built_by: "device-builder v1".to_string(),
     };
 
-    build_pack(&sources, &embedder, &meta, out_path, &ChunkConfig::default())
-        .map_err(|e| e.to_string())?;
+    build_pack_with_progress(
+        &sources,
+        embedder.as_ref(),
+        &meta,
+        out_path,
+        &ChunkConfig::default(),
+        progress,
+        cancel,
+    )
+    .map_err(|e| e.to_string())?;
 
     mount_pack_at(out_path)
 }
+
+/// How often a throttled `"embedding"` progress tick is allowed to reach
+/// `app.emit` — mirrors `cloud::download::stream_response`'s `>=500ms`
+/// byte-progress gate (same rationale: a build's chunk count can run into
+/// the hundreds, and the webview doesn't need — or want — an IPC message
+/// per chunk).
+const BUILD_PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 
 #[tauri::command]
 pub async fn build_personal_pack(
     file_paths: Vec<String>,
     out_path: String,
     app: AppHandle,
+    builds: State<'_, Builds>,
 ) -> Result<PackManifestInfo, String> {
     let gguf_path = bundled_embedder_path(&app);
-    tauri::async_runtime::spawn_blocking(move || {
-        build_personal_pack_with_embedder(&file_paths, Path::new(&out_path), &gguf_path)
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = builds.active.lock().unwrap();
+        if guard.is_some() {
+            return Err("A build is already in progress.".to_string());
+        }
+        *guard = Some(cancel.clone());
+    }
+
+    // A Drop guard so an early return (a mapped error below) or a panic
+    // unwinding out of the `spawn_blocking` join can't wedge the active
+    // slot forever — mirrors `cloud::download::download_model`'s
+    // `ClearActiveOnDrop`, just scoped to this command's own async body
+    // rather than a detached worker thread's: a build's command doesn't
+    // return until the build finishes, so there's no separate thread that
+    // needs its own guard.
+    struct ClearActiveOnDrop<'a> {
+        builds: &'a Builds,
+    }
+    impl Drop for ClearActiveOnDrop<'_> {
+        fn drop(&mut self) {
+            *self.builds.active.lock().unwrap() = None;
+        }
+    }
+    let _clear_guard = ClearActiveOnDrop { builds: &builds };
+
+    // Throttled per the module-level doc comment: every non-"embedding"
+    // phase (parsing/writing/done) always emits — each fires at most once
+    // per source or once total, never per-chunk — and the LAST "embedding"
+    // tick (done == total) always emits too, so the front end's progress bar
+    // never gets stuck short of 100%.
+    let last_embedding_emit = Mutex::new(Instant::now() - BUILD_PROGRESS_THROTTLE);
+    let app_for_progress = app.clone();
+    let progress = move |p: BuildProgress| {
+        if p.phase == "embedding" && p.done < p.total {
+            let mut last = last_embedding_emit.lock().unwrap();
+            if last.elapsed() < BUILD_PROGRESS_THROTTLE {
+                return;
+            }
+            *last = Instant::now();
+        }
+        let _ = app_for_progress.emit("build-progress", &BuildProgressEvent::from(p));
+    };
+
+    let cancel_for_build = cancel.clone();
+    let app_for_thread = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let cache = app_for_thread.state::<EmbedderCache>();
+        build_personal_pack_with_embedder(
+            &file_paths,
+            Path::new(&out_path),
+            &gguf_path,
+            cache.inner(),
+            &progress,
+            &cancel_for_build,
+        )
     })
     .await
-    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?;
+
+    result
+}
+
+/// Flips the active build's cancel flag (spec §3a A1); no-op if no build is
+/// running. Mirrors `cloud::download::cancel_download`.
+#[tauri::command]
+pub async fn cancel_build(builds: State<'_, Builds>) -> Result<(), String> {
+    builds.request_cancel();
+    Ok(())
 }
 
 /// A camelCase, front-end-facing view of `kpack_core::retrieve::Citation` —
@@ -307,20 +494,22 @@ fn map_retrieval_result(result: RetrievalResult) -> RagQueryResult {
 
 /// Pure inner logic behind the `rag_query` command: mount every pack in
 /// `pack_paths` against this device's pinned embedder hash (the exact same
-/// `LoadContext` gate `mount_pack_at` uses), load `gguf_path` as a real
-/// `BgeEmbedder`, run `kpack_core::retrieve::retrieve`, and map the result
-/// via `map_retrieval_result`. Factored out (no `AppHandle`) so real-embedder
-/// integration tests can exercise this exact path without constructing a
-/// Tauri `AppHandle` — mirrors `mount_pack_at`/`build_personal_pack_with_embedder`'s
-/// existing pattern in this file. (`crates/kpack-embed/tests/`'s own
-/// integration tests call `kpack_core::retrieve::retrieve` directly rather
-/// than this fn, since that crate can't depend on this one — the Tauri
-/// binary — but the logic they exercise is identical: mount, embed, retrieve.)
+/// `LoadContext` gate `mount_pack_at` uses), resolve `gguf_path` through
+/// `cache` (spec §3a A1's cached embedder), run `kpack_core::retrieve::retrieve`,
+/// and map the result via `map_retrieval_result`. Factored out (no
+/// `AppHandle`) so real-embedder integration tests can exercise this exact
+/// path without constructing a Tauri `AppHandle` — mirrors
+/// `mount_pack_at`/`build_personal_pack_with_embedder`'s existing pattern in
+/// this file. (`crates/kpack-embed/tests/`'s own integration tests call
+/// `kpack_core::retrieve::retrieve` directly rather than this fn, since that
+/// crate can't depend on this one — the Tauri binary — but the logic they
+/// exercise is identical: mount, embed, retrieve.)
 fn rag_query_inner(
     query: &str,
     pack_paths: &[String],
     gguf_path: &Path,
     tier: Tier,
+    cache: &EmbedderCache,
 ) -> Result<RagQueryResult, String> {
     let available = vec![EMBEDDER_SHA256.to_string()];
     let ctx = LoadContext {
@@ -334,8 +523,8 @@ fn rag_query_inner(
         mounted.push((pack, manifest));
     }
 
-    let embedder = BgeEmbedder::new(gguf_path).map_err(|e| e.to_string())?;
-    let result = retrieve(query, &mounted, &embedder, tier).map_err(|e| e.to_string())?;
+    let embedder = cache.get_or_load(gguf_path)?;
+    let result = retrieve(query, &mounted, embedder.as_ref(), tier).map_err(|e| e.to_string())?;
 
     Ok(map_retrieval_result(result))
 }
@@ -364,7 +553,8 @@ pub async fn rag_query(
         _ => Tier::Large,
     };
     tauri::async_runtime::spawn_blocking(move || {
-        rag_query_inner(&query, &pack_paths, &gguf_path, tier)
+        let cache = app.state::<EmbedderCache>();
+        rag_query_inner(&query, &pack_paths, &gguf_path, tier, cache.inner())
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -490,10 +680,15 @@ mod tests {
         .unwrap();
 
         let out_path = dir.join("personal.kpack");
+        let cache = EmbedderCache::default();
+        let cancel = AtomicBool::new(false);
         let manifest = build_personal_pack_with_embedder(
             &[md_path.to_string_lossy().into_owned()],
             &out_path,
             &gguf_path,
+            &cache,
+            &|_| {},
+            &cancel,
         )
         .expect("build_personal_pack_with_embedder should succeed against the real embedder");
 
@@ -508,8 +703,8 @@ mod tests {
     }
 
     /// Same real-embedder gate as above: an unsupported file extension is
-    /// refused with a clear error before the embedder or the pack builder
-    /// ever runs — proven with the real `BgeEmbedder::new` in the loop (not
+    /// refused with a clear error before the pack builder ever runs —
+    /// proven with the real `BgeEmbedder`/`EmbedderCache` in the loop (not
     /// just a pure-Rust unit check) so this exercises the exact refusal
     /// path `build_personal_pack` takes in production.
     #[test]
@@ -522,14 +717,94 @@ mod tests {
         std::fs::write(&bad_path, b"%PDF-not-really").unwrap();
 
         let out_path = dir.join("personal.kpack");
+        let cache = EmbedderCache::default();
+        let cancel = AtomicBool::new(false);
         let err = build_personal_pack_with_embedder(
             &[bad_path.to_string_lossy().into_owned()],
             &out_path,
             &gguf_path,
+            &cache,
+            &|_| {},
+            &cancel,
         )
         .unwrap_err();
         assert!(err.contains("unsupported file type"), "error was: {err}");
         assert!(!out_path.exists(), "no pack should be written on refusal");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Spec §3a A1's real-embedder proof: (1) `EmbedderCache::get_or_load`
+    /// called twice against the same GGUF path returns the SAME `Arc` (not
+    /// a second load — `Arc::ptr_eq`, the strongest form of "same
+    /// instance," stronger than a load-count that could pass even if two
+    /// different `BgeEmbedder`s happened to occupy the same heap slot
+    /// across two frees); (2) a real build through that cache emits every
+    /// `BuildProgress` phase (`"parsing"`/`"embedding"`/`"writing"`/`"done"`),
+    /// proving `build_pack_with_progress` and the cache compose correctly
+    /// end to end, not just against the mock embedder (`kpack-core`'s own
+    /// `t5_build_pack_with_progress_...` test already covers the mock case).
+    ///
+    /// `#[ignore]`d for the same reason as the tests above: needs the
+    /// bundled GGUF on disk and the `real`-feature native build. Run
+    /// explicitly with `$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin";
+    /// cargo test -p cleophis --lib -- --ignored
+    /// kpack::tests::embedder_cache_loads_once_and_build_emits_progress_phases`.
+    #[test]
+    #[ignore]
+    fn embedder_cache_loads_once_and_build_emits_progress_phases() {
+        let gguf_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(EMBEDDER_RELATIVE_PATH);
+        assert!(
+            gguf_path.exists(),
+            "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
+            gguf_path.display()
+        );
+
+        let cache = EmbedderCache::default();
+        let first = cache.get_or_load(&gguf_path).expect("first load should succeed");
+        let second = cache.get_or_load(&gguf_path).expect("second call should reuse the cache");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "get_or_load should return the SAME Arc on a second call — the model must load once"
+        );
+
+        let dir = unique_dir("cache-progress");
+        let md_path = dir.join("source.md");
+        std::fs::write(
+            &md_path,
+            "# Vitamin K\n\nVitamin K is a fat-soluble vitamin involved in blood clotting.\n\n\
+             ## More\n\nIt also plays a role in bone metabolism, and interacts with warfarin.\n",
+        )
+        .unwrap();
+        let out_path = dir.join("personal.kpack");
+
+        let events: Mutex<Vec<BuildProgress>> = Mutex::new(Vec::new());
+        let progress = |p: BuildProgress| events.lock().unwrap().push(p);
+        let cancel = AtomicBool::new(false);
+
+        let manifest = build_personal_pack_with_embedder(
+            &[md_path.to_string_lossy().into_owned()],
+            &out_path,
+            &gguf_path,
+            &cache,
+            &progress,
+            &cancel,
+        )
+        .expect("build should succeed against the real embedder, reusing the cached Arc");
+        assert_eq!(manifest.pack_tier, "personal");
+
+        let events = events.into_inner().unwrap();
+        let phases: Vec<&str> = events.iter().map(|p| p.phase.as_str()).collect();
+        assert!(phases.contains(&"parsing"), "phases: {phases:?}");
+        assert!(phases.contains(&"embedding"), "phases: {phases:?}");
+        assert!(phases.contains(&"writing"), "phases: {phases:?}");
+        assert!(phases.contains(&"done"), "phases: {phases:?}");
+
+        // The cache still holds exactly the model loaded before the build —
+        // the build's own internal `get_or_load` call did not reload it.
+        let third = cache.get_or_load(&gguf_path).expect("post-build call should reuse the cache");
+        assert!(Arc::ptr_eq(&first, &third));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

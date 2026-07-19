@@ -87,6 +87,17 @@ fn main() {
             )));
             app.manage(Arc::new(cloud::download::Downloads::new()));
 
+            // §3a A1: the shared, lazily-loaded embedder (rag_query and
+            // build_personal_pack both resolve it through this instead of
+            // reloading the 118 MB GGUF per call) and the single-slot
+            // active-build registry backing build_personal_pack's progress
+            // events + cancel_build. Managed directly (not wrapped in an
+            // outer Arc) — see kpack.rs's module doc comment for why that's
+            // enough even though build_personal_pack/rag_query access them
+            // from inside a spawn_blocking closure.
+            app.manage(kpack::EmbedderCache::default());
+            app.manage(kpack::Builds::default());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -96,6 +107,7 @@ fn main() {
             load_model,
             kpack::mount_pack,
             kpack::build_personal_pack,
+            kpack::cancel_build,
             kpack::rag_query,
             cloud::commands::sign_up,
             cloud::commands::sign_in,

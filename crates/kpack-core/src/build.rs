@@ -63,6 +63,7 @@ use crate::parse;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One source document to build into a pack: its raw text content, a
 /// display title, and a type hint (`"md"` or `"txt"`) that selects
@@ -104,15 +105,42 @@ pub const PLACEHOLDER_GATE_ABS_FLOOR: f64 = 0.5;
 /// [`PLACEHOLDER_GATE_ABS_FLOOR`]'s doc comment; same caveat applies.
 pub const PLACEHOLDER_GATE_REL_MARGIN: f64 = 0.05;
 
-/// Errors from [`build_pack`]: a small enum wrapping the three failure
-/// sources ([`format::Error`], [`EmbedError`], and [`std::io::Error`] from
-/// the final rename), hand-rolled (no `thiserror`, matching this crate's
-/// other error types).
+/// One progress tick from [`build_pack_with_progress`] (spec §3a A1).
+/// `phase` is one of `"parsing"` (per source, as each is parsed+chunked),
+/// `"embedding"` (per chunk, once the total chunk count is known),
+/// `"writing"` (the single tick just before the manifest write + atomic
+/// rename), or `"done"` (the final tick, after the rename succeeds) —
+/// `done`/`total` are chunk counts for `"embedding"`, and mirror the total
+/// chunk count for `"writing"`/`"done"` (both `0` if the build produced no
+/// chunks at all). Deliberately plain Rust (`Debug`/`Clone`/`PartialEq`/`Eq`
+/// only, no `serde`) — this crate is Tauri-free (module doc comment) and its
+/// other IPC-facing types (e.g. `Manifest`) are likewise serde-free here;
+/// `src-tauri` wraps this in its own camelCase, `Serialize`-deriving event
+/// type before it crosses the IPC boundary, the same `From`-conversion
+/// pattern `kpack::PackManifestInfo`/`CitationInfo` already use for
+/// `Manifest`/`Citation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildProgress {
+    pub phase: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Errors from [`build_pack`]/[`build_pack_with_progress`]: a small enum
+/// wrapping the three failure sources ([`format::Error`], [`EmbedError`],
+/// and [`std::io::Error`] from the final rename) plus a fourth,
+/// cancellation ([`Error::Cancelled`], spec §3a A1) — hand-rolled (no
+/// `thiserror`, matching this crate's other error types).
 #[derive(Debug)]
 pub enum Error {
     Format(format::Error),
     Embed(EmbedError),
     Io(std::io::Error),
+    /// The caller's `cancel` flag was observed set between chunks (spec §3a
+    /// A1). The `.part` file has already been removed by the time this is
+    /// returned — same clean-slate guarantee as any other build failure
+    /// (see the module doc comment's step 5).
+    Cancelled,
 }
 
 impl fmt::Display for Error {
@@ -121,6 +149,7 @@ impl fmt::Display for Error {
             Error::Format(e) => write!(f, "pack format error: {e}"),
             Error::Embed(e) => write!(f, "embedder error: {e}"),
             Error::Io(e) => write!(f, "I/O error: {e}"),
+            Error::Cancelled => write!(f, "build cancelled"),
         }
     }
 }
@@ -182,6 +211,11 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// error, leaving `out_path` untouched (never a half-built file at the
 /// final path). On success, the `.part` is atomically renamed to
 /// `out_path`.
+///
+/// Back-compat shim (spec §3a A1): delegates to
+/// [`build_pack_with_progress`] with a no-op progress callback and a
+/// `cancel` flag that is constructed fresh here and never set — so this
+/// function's behavior, signature, and callers are all unchanged.
 pub fn build_pack(
     sources: &[SourceInput],
     embedder: &dyn Embedder,
@@ -189,20 +223,52 @@ pub fn build_pack(
     out_path: &Path,
     cfg: &ChunkConfig,
 ) -> Result<(), Error> {
+    let cancel = AtomicBool::new(false);
+    build_pack_with_progress(sources, embedder, meta, out_path, cfg, &|_| {}, &cancel)
+}
+
+/// [`build_pack`], plus progress reporting and cooperative cancellation
+/// (spec §3a A1 — the build-progress-bar + cancel button seam). `progress`
+/// is called synchronously on this thread (no channel, no async — pure
+/// callback, same "closure, no network" shape as `download.rs`'s `emit`)
+/// for every phase transition; see [`BuildProgress`]'s doc comment for the
+/// exact phase sequence and what `done`/`total` mean in each. `cancel` is
+/// checked once per chunk, between chunks (never mid-embed-call) — if it's
+/// set, the `.part` is removed (same clean-slate guarantee as any other
+/// build failure) and this returns `Err(Error::Cancelled)`.
+///
+/// Builds into `<out_path>.part` first; any failure — including
+/// cancellation — removes the `.part` and returns the error, leaving
+/// `out_path` untouched. On success, the `.part` is atomically renamed to
+/// `out_path`.
+pub fn build_pack_with_progress(
+    sources: &[SourceInput],
+    embedder: &dyn Embedder,
+    meta: &BuildMeta,
+    out_path: &Path,
+    cfg: &ChunkConfig,
+    progress: &dyn Fn(BuildProgress),
+    cancel: &AtomicBool,
+) -> Result<(), Error> {
     let part_path = part_path_for(out_path);
     // Every build starts from a clean slate: unconditionally discard any
-    // pre-existing `.part` before `build_pack_into`/`Pack::open_or_create`
-    // ever touch it. A leftover COMPLETE `.part` (from a prior crash, or a
-    // prior build whose final rename below failed) would otherwise be
-    // REUSED by `open_or_create`, which opens an existing file as-is
-    // (ignoring `dims`) and APPENDS to its schema — doubling `docs`/
-    // `chunks` rows while `Pack::mount` succeeds silently on the result.
-    // Absence of a `.part` is not an error, hence `let _ =`.
+    // pre-existing `.part` before `build_pack_into_with_progress`/
+    // `Pack::open_or_create` ever touch it. A leftover COMPLETE `.part`
+    // (from a prior crash, or a prior build whose final rename below
+    // failed) would otherwise be REUSED by `open_or_create`, which opens an
+    // existing file as-is (ignoring `dims`) and APPENDS to its schema —
+    // doubling `docs`/`chunks` rows while `Pack::mount` succeeds silently on
+    // the result. Absence of a `.part` is not an error, hence `let _ =`.
     let _ = std::fs::remove_file(&part_path);
-    if let Err(e) = build_pack_into(&part_path, sources, embedder, meta, cfg) {
-        let _ = std::fs::remove_file(&part_path);
-        return Err(e);
-    }
+    let total_chunks = match build_pack_into_with_progress(
+        &part_path, sources, embedder, meta, cfg, progress, cancel,
+    ) {
+        Ok(total_chunks) => total_chunks,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part_path);
+            return Err(e);
+        }
+    };
     if let Err(e) = std::fs::rename(&part_path, out_path) {
         // A failed rename must not leave a complete `.part` behind either —
         // otherwise it becomes exactly the stale-leftover landmine this
@@ -210,23 +276,58 @@ pub fn build_pack(
         let _ = std::fs::remove_file(&part_path);
         return Err(e.into());
     }
+    progress(BuildProgress {
+        phase: "done".to_string(),
+        done: total_chunks,
+        total: total_chunks,
+    });
     Ok(())
 }
 
-/// The actual build, writing into `part_path`. Split from [`build_pack`] so
-/// the `Pack` (and its `Connection`) is guaranteed to drop — closing the
-/// file — at this function's return, before the caller ever attempts the
-/// rename.
-fn build_pack_into(
+/// The actual build, writing into `part_path`. Split from
+/// [`build_pack_with_progress`] so the `Pack` (and its `Connection`) is
+/// guaranteed to drop — closing the file — at this function's return,
+/// before the caller ever attempts the rename. Returns the total chunk
+/// count on success, so the caller's final `"done"` progress tick (fired
+/// only after the rename succeeds, so it's not this function's job) can
+/// report accurate `done`/`total` values.
+///
+/// Two passes over `sources`, not one, so the total chunk count is known
+/// before the first `"embedding"` progress tick fires (spec §3a A1): pass 1
+/// parses + chunks every source, inserting each `docs`/`chunks` row as it
+/// goes (chunk embeddings aren't known yet, so `vec0` rows aren't inserted
+/// here); pass 2 walks every chunk inserted in pass 1, in the same order,
+/// embedding and inserting its `vec0` row — this is also where `cancel` is
+/// checked, once per chunk between chunks.
+fn build_pack_into_with_progress(
     part_path: &Path,
     sources: &[SourceInput],
     embedder: &dyn Embedder,
     meta: &BuildMeta,
     cfg: &ChunkConfig,
-) -> Result<(), Error> {
+    progress: &dyn Fn(BuildProgress),
+    cancel: &AtomicBool,
+) -> Result<usize, Error> {
     let pack = Pack::open_or_create(part_path, embedder.dims())?;
 
-    for source in sources {
+    /// A chunk row already inserted into `pack` in pass 1, carrying just
+    /// what pass 2 needs to embed it: its rowid (`format::Pack::insert_chunk`'s
+    /// return) and the exact text pass 2 hands `embedder` (`prefix`/`text`,
+    /// already combined via `passage_input`, kept as the two source fields
+    /// rather than the combined string alone — matching the `Chunk` row's
+    /// own shape, for a debug print/future field addition, at zero extra
+    /// cost here).
+    struct PendingChunk {
+        chunk_id: i64,
+        prefix: String,
+        text: String,
+    }
+
+    let n_sources = sources.len();
+    let mut pending: Vec<PendingChunk> = Vec::new();
+
+    // Pass 1: parse + chunk every source, inserting `docs`/`chunks` rows.
+    for (i, source) in sources.iter().enumerate() {
         let document = parse::parse(&source.content, &source.title, &source.source_type);
         let sha256 = sha256_hex(source.content.as_bytes());
         let extraction_quality = parse::extraction_quality(&source.content);
@@ -254,15 +355,46 @@ fn build_pack_into(
                 text: draft.text,
                 token_count: draft.token_count as i64,
             };
-            let embedding_input = passage_input(&chunk_row.prefix, &chunk_row.text);
+            let prefix = chunk_row.prefix.clone();
+            let text = chunk_row.text.clone();
             let chunk_id = pack.insert_chunk(&chunk_row)?;
-
-            let raw_vector = embedder.embed_passage(&embedding_input)?;
-            let normalized = l2_normalize(&raw_vector);
-            let quantized = quantize_int8(&normalized);
-            pack.insert_embedding(chunk_id, &quantized)?;
+            pending.push(PendingChunk { chunk_id, prefix, text });
         }
+
+        progress(BuildProgress {
+            phase: "parsing".to_string(),
+            done: i + 1,
+            total: n_sources,
+        });
     }
+
+    // Pass 2: embed every chunk pass 1 inserted, in order. `cancel` is
+    // checked here, once per chunk before that chunk's (potentially slow,
+    // real-model) embed call — never mid-call.
+    let total_chunks = pending.len();
+    for (i, p) in pending.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
+
+        let embedding_input = passage_input(&p.prefix, &p.text);
+        let raw_vector = embedder.embed_passage(&embedding_input)?;
+        let normalized = l2_normalize(&raw_vector);
+        let quantized = quantize_int8(&normalized);
+        pack.insert_embedding(p.chunk_id, &quantized)?;
+
+        progress(BuildProgress {
+            phase: "embedding".to_string(),
+            done: i + 1,
+            total: total_chunks,
+        });
+    }
+
+    progress(BuildProgress {
+        phase: "writing".to_string(),
+        done: total_chunks,
+        total: total_chunks,
+    });
 
     let manifest = Manifest {
         pack_id: meta.pack_id.clone(),
@@ -285,7 +417,7 @@ fn build_pack_into(
     };
     manifest.write(&pack)?;
 
-    Ok(())
+    Ok(total_chunks)
 }
 
 /// `<path>.part` — same path, `.part` appended to the whole file name.
@@ -732,6 +864,123 @@ Verify the installation by checking the reported version string.
             pack.get_doc(3).unwrap().is_none(),
             "doc count should be exactly 2 (fresh build), not 4 (doubled from stale .part reuse)"
         );
+    }
+
+    // 5. Progress: build_pack_with_progress fires "parsing" (one per
+    // source), then "embedding" (one per chunk, done reaching total), then
+    // "writing", then "done" — in that order — and the final "done" tick's
+    // done/total match the actual chunk count, not just some number.
+    #[test]
+    fn t5_build_pack_with_progress_phases_fire_in_order_and_embedding_reaches_total() {
+        let dir = unique_dir("t5");
+        let out_path = dir.join("progress.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+        let sources = fixture_sources();
+
+        let events: std::sync::Mutex<Vec<BuildProgress>> = std::sync::Mutex::new(Vec::new());
+        let progress = |p: BuildProgress| events.lock().unwrap().push(p);
+        let cancel = AtomicBool::new(false);
+
+        build_pack_with_progress(&sources, &embedder, &meta, &out_path, &cfg, &progress, &cancel)
+            .unwrap();
+
+        let events = events.into_inner().unwrap();
+        assert!(!events.is_empty(), "expected at least one progress tick");
+        let phases: Vec<&str> = events.iter().map(|p| p.phase.as_str()).collect();
+
+        let first_parsing = phases.iter().position(|&p| p == "parsing");
+        let first_embedding = phases.iter().position(|&p| p == "embedding");
+        let writing_idx = phases.iter().position(|&p| p == "writing");
+        let done_idx = phases.iter().position(|&p| p == "done");
+        assert!(
+            first_parsing.is_some()
+                && first_embedding.is_some()
+                && writing_idx.is_some()
+                && done_idx.is_some(),
+            "expected all four phases to fire at least once, got phases: {phases:?}"
+        );
+        assert!(first_parsing.unwrap() < first_embedding.unwrap(), "phases: {phases:?}");
+        assert!(first_embedding.unwrap() < writing_idx.unwrap(), "phases: {phases:?}");
+        assert!(writing_idx.unwrap() < done_idx.unwrap(), "phases: {phases:?}");
+
+        // Two "parsing" ticks (one per fixture source), each with the
+        // correct total.
+        let parsing_ticks: Vec<&BuildProgress> =
+            events.iter().filter(|p| p.phase == "parsing").collect();
+        assert_eq!(parsing_ticks.len(), sources.len());
+        assert!(parsing_ticks.iter().all(|p| p.total == sources.len()));
+        assert_eq!(parsing_ticks.last().unwrap().done, sources.len());
+
+        // The embedding count reaches total: the LAST "embedding" tick's
+        // done == total, and that total matches the fixture's real chunk
+        // count (>0, and the number of "embedding" ticks fired).
+        let embedding_ticks: Vec<&BuildProgress> =
+            events.iter().filter(|p| p.phase == "embedding").collect();
+        let last_embedding = embedding_ticks.last().unwrap();
+        assert!(last_embedding.total > 0);
+        assert_eq!(last_embedding.done, last_embedding.total);
+        assert_eq!(embedding_ticks.len(), last_embedding.total);
+
+        // "writing" and "done" both carry done == total == the same chunk
+        // count "embedding" finished at.
+        let writing_tick = &events[writing_idx.unwrap()];
+        assert_eq!(writing_tick.done, writing_tick.total);
+        assert_eq!(writing_tick.total, last_embedding.total);
+        let done_tick = &events[done_idx.unwrap()];
+        assert_eq!(done_tick.done, done_tick.total);
+        assert_eq!(done_tick.total, last_embedding.total);
+
+        assert!(out_path.exists());
+        assert!(!part_path_for(&out_path).exists());
+    }
+
+    // 6. Cancel: setting `cancel` from inside the progress callback right
+    // after the FIRST chunk's "embedding" tick must stop the build before
+    // any further chunk is embedded, return Error::Cancelled, and leave NO
+    // output file — only the `.part`, itself removed (never left half-built
+    // at either path). The fixture corpus produces more than one chunk (a
+    // paragraph + a table in doc 1, a paragraph + a code block in doc 2), so
+    // this genuinely proves an early stop, not an artifact of a one-chunk
+    // corpus.
+    #[test]
+    fn t6_cancel_after_first_chunk_returns_cancelled_and_leaves_no_output() {
+        let dir = unique_dir("t6");
+        let out_path = dir.join("cancelled.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+        let sources = fixture_sources();
+
+        let cancel = AtomicBool::new(false);
+        let embedding_ticks_seen = std::sync::Mutex::new(0usize);
+        let progress = |p: BuildProgress| {
+            if p.phase == "embedding" {
+                *embedding_ticks_seen.lock().unwrap() += 1;
+                if p.done == 1 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+        };
+
+        let result =
+            build_pack_with_progress(&sources, &embedder, &meta, &out_path, &cfg, &progress, &cancel);
+
+        assert!(
+            matches!(result, Err(Error::Cancelled)),
+            "expected Err(Error::Cancelled), got {result:?}"
+        );
+        assert_eq!(result.unwrap_err().to_string(), "build cancelled");
+        assert!(!out_path.exists(), "no output file should exist after a cancelled build");
+        assert!(
+            !part_path_for(&out_path).exists(),
+            "the .part file should be removed after a cancelled build"
+        );
+        // Only the first chunk's "embedding" tick fired — the cancel check
+        // at the top of the NEXT chunk's iteration stopped the build before
+        // a second chunk was ever embedded.
+        assert_eq!(*embedding_ticks_seen.lock().unwrap(), 1);
     }
 
     // civil_from_days / rfc3339_from_system_time: hand-verified against
