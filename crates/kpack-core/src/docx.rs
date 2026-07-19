@@ -209,6 +209,7 @@ fn collapse_whitespace(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use docx_rust::document::{TableCell, TableRow};
 
     /// A tiny, real `.docx` — Heading1 "Chapter 1" > paragraph, Heading2
     /// "Section A" (nested under Chapter 1) > paragraph — generated via
@@ -277,5 +278,45 @@ mod tests {
         assert_eq!(heading_level("Heading0"), None, "out of the 1..=9 range");
         assert_eq!(heading_level("Normal"), None, "not a heading style at all");
         assert_eq!(heading_level("HeadingA"), None, "non-numeric suffix");
+    }
+
+    // 5. Table flattening (review gap — sample.docx has no table): a
+    // 2-row (header + data), 2-cell-per-row `Table` built in memory via
+    // docx-rust's own builder API, run through `Walker::visit_table`
+    // directly — each row becomes one Block::Paragraph, cells tab-joined
+    // in order, no cell dropped, and rows consume the running "¶{n}"
+    // locator the same as ordinary paragraphs (module doc comment's
+    // "Tables" section).
+    #[test]
+    fn t5_visit_table_flattens_rows_to_tab_joined_paragraphs_no_cell_dropped() {
+        let table = Table::default()
+            .push_row(
+                TableRow::default()
+                    .push_cell(TableCell::paragraph(Paragraph::default().push_text("Name")))
+                    .push_cell(TableCell::paragraph(Paragraph::default().push_text("Age"))),
+            )
+            .push_row(
+                TableRow::default()
+                    .push_cell(TableCell::paragraph(Paragraph::default().push_text("Alice")))
+                    .push_cell(TableCell::paragraph(Paragraph::default().push_text("30"))),
+            );
+
+        let mut walker = Walker::default();
+        walker.visit_table(&table);
+        let doc = walker.finish("Table Test");
+
+        assert_eq!(doc.sections.len(), 1, "no heading was ever opened -> one root section");
+        assert_eq!(doc.sections[0].path, Vec::<String>::new());
+
+        let blocks = &doc.sections[0].blocks;
+        assert_eq!(blocks.len(), 2, "one Block::Paragraph per table row, no cell dropped");
+        assert_eq!(
+            blocks[0],
+            Block::Paragraph { text: "Name\tAge".to_string(), locator: "\u{b6}1".to_string() }
+        );
+        assert_eq!(
+            blocks[1],
+            Block::Paragraph { text: "Alice\t30".to_string(), locator: "\u{b6}2".to_string() }
+        );
     }
 }
