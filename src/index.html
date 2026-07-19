@@ -32,6 +32,7 @@
         <div class="device" id="device"><span class="chip-dot"></span><b id="dev-name">—</b><span id="dev-spec"></span></div>
         <button class="btn" id="loginBtn">Log in</button>
         <button class="btn" id="billingBtn" title="Manage billing" style="display:none">Billing</button>
+        <button class="btn" id="packsBtn" title="Knowledge packs" style="display:none">Packs</button>
         <button class="btn" id="signOutBtn" title="Sign out" style="display:none">Sign out</button>
       </div>
     </header>
@@ -101,6 +102,21 @@
     <div class="errmsg" id="cr-err"></div>
     <button class="btn primary block" id="doCreate">Create account</button>
     <div class="foot"><span>Already have an account?</span><button class="btn" id="toLogin">Log in</button></div>
+  </div>
+</div>
+
+<div class="modal" id="packsModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <h2>Knowledge packs</h2>
+    <p class="sub">Build a private pack from your own .md or .txt files. Answers cite these sources — or say when there's no evidence.</p>
+    <div class="field"><input type="text" id="packName" placeholder="Pack name (optional)" autocomplete="off"/></div>
+    <button class="btn primary block" id="packBuildBtn">Choose files &amp; build</button>
+    <div class="prog" id="packProg" style="display:none"><i></i></div>
+    <div class="dlline mono" id="packLine" style="display:none"></div>
+    <button class="btn" id="packCancelBtn" style="display:none">Cancel</button>
+    <div class="errmsg" id="packErr"></div>
+    <div id="packsList"></div>
   </div>
 </div>
 

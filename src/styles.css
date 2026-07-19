@@ -126,6 +126,8 @@ nav.top button.active{color:var(--teal)}
 .field input:focus{border-color:var(--teal)}
 .modal .remember{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:12px;cursor:pointer}
 .modal .foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;font-size:13px;color:var(--muted)}
+.packrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.packmeta{color:var(--muted);font-size:12.5px;margin-top:2px}
 
 footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-align:center;padding:22px}
 @media (max-width:900px){ nav.top,.offline{display:none} .hero h1{font-size:24px} }

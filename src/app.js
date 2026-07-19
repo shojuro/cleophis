@@ -37,6 +37,7 @@ async function boot() {
   await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); });
   await listen('engine-failed', (e) => { showEngineBanner('Local engine failed: ' + e.payload); setComposerEnabled(false); });
   await listen('download-progress', onDownloadProgress);
+  await listen('build-progress', onBuildProgress);
   state.catalog = await invoke('get_catalog');
   for (const m of state.catalog) m.coverUrl = convertFileSrc(m.coverAbs);
   const heroEntry = state.catalog.find((m) => m.real);
@@ -405,6 +406,104 @@ async function onDownloadProgress(e) {
   }
 }
 
+/* ---------------- knowledge packs ---------------- */
+async function openPacksModal() {
+  show($('packsModal'));
+  await refreshPacksList();
+}
+
+async function refreshPacksList() {
+  const list = $('packsList');
+  let packs;
+  try {
+    packs = await invoke('list_packs');
+  } catch (e) {
+    const err = $('packErr');
+    if (err) { err.style.display = 'block'; err.textContent = String(e); }
+    return;
+  }
+  if (!list) return;
+  if (!packs.length) {
+    list.innerHTML = `<div style="color:var(--muted);padding:14px 2px">No packs yet — build one from your notes.</div>`;
+    return;
+  }
+  list.innerHTML = packs.map((p) => {
+    const m = p.manifest;
+    return `<div class="packrow">
+      <div>
+        <div>${escapeHtml(m.packId)}</div>
+        <div class="packmeta">${escapeHtml(m.embeddingDims)}-dim · ${escapeHtml(m.chunkTargetTokens)}-tok chunks · built ${escapeHtml(m.builtBy)}</div>
+      </div>
+      <button class="btn" data-del="${escapeHtml(p.path)}">Delete</button>
+    </div>`;
+  }).join('');
+}
+
+async function startBuild() {
+  let sel;
+  try {
+    sel = await window.__TAURI__.dialog.open({
+      multiple: true,
+      filters: [{ name: 'Text & Markdown', extensions: ['md', 'markdown', 'txt'] }],
+    });
+  } catch (e) {
+    const err = $('packErr');
+    if (err) { err.style.display = 'block'; err.textContent = String(e); }
+    return;
+  }
+  if (sel == null) return;
+  const filePaths = Array.isArray(sel) ? sel : [sel];
+
+  const prog = $('packProg'), bar = prog ? prog.firstElementChild : null;
+  const line = $('packLine');
+  const cancelBtn = $('packCancelBtn');
+  const buildBtn = $('packBuildBtn');
+  const nameInput = $('packName');
+  const err = $('packErr');
+  if (bar) bar.style.width = '0%';
+  if (prog) prog.style.display = 'block';
+  if (line) line.style.display = 'none';
+  if (cancelBtn) cancelBtn.style.display = '';
+  if (buildBtn) buildBtn.disabled = true;
+  if (nameInput) nameInput.disabled = true;
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+
+  const name = nameInput ? (nameInput.value.trim() || null) : null;
+  try {
+    await invoke('build_personal_pack', { filePaths, name });
+    if (prog) prog.style.display = 'none';
+    if (line) line.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    if (buildBtn) buildBtn.disabled = false;
+    if (nameInput) { nameInput.disabled = false; nameInput.value = ''; }
+    await refreshPacksList();
+  } catch (e) {
+    if (err) { err.style.display = 'block'; err.textContent = String(e); }
+    if (prog) prog.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    if (buildBtn) buildBtn.disabled = false;
+    if (nameInput) nameInput.disabled = false;
+  }
+}
+
+function onBuildProgress(e) {
+  const p = e.payload;
+  const prog = $('packProg');
+  const bar = prog ? prog.firstElementChild : null;
+  const line = $('packLine');
+  if (p.phase === 'parsing') {
+    if (line) { line.style.display = 'block'; line.textContent = 'Reading your files…'; }
+  } else if (p.phase === 'embedding') {
+    if (line) { line.style.display = 'block'; line.textContent = `Embedding ${p.done}/${p.total} chunks`; }
+    if (bar && p.total > 0) bar.style.width = `${Math.floor((p.done / p.total) * 100)}%`;
+  } else if (p.phase === 'writing') {
+    if (line) { line.style.display = 'block'; line.textContent = 'Finalizing pack…'; }
+    if (bar) bar.style.width = '100%';
+  }
+  // 'done' is left to startBuild's success path, which resets the UI once
+  // the build_personal_pack promise itself resolves.
+}
+
 function simulateStubDownload(m, btn) {
   const prog = $('prog'), bar = prog.firstElementChild;
   prog.style.display = 'block'; btn.disabled = true; btn.style.opacity = 0.7;
@@ -635,6 +734,7 @@ async function applySession(info) {
   lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
   $('signOutBtn').style.display = '';
   $('billingBtn').style.display = '';
+  $('packsBtn').style.display = '';
   hide($('loginModal'));
   hide($('createModal'));
   resetAuthForms();
@@ -663,7 +763,7 @@ $('grid').addEventListener('click', (e) => {
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); }
+  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); }
 });
 $('loginBtn').addEventListener('click', () => {
   if (state.signedIn) {
@@ -672,7 +772,24 @@ $('loginBtn').addEventListener('click', () => {
     renderFilters(); renderGrid();
   } else show($('loginModal'));
 });
-document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); }));
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); }));
+$('packsBtn').addEventListener('click', () => openPacksModal());
+$('packBuildBtn').addEventListener('click', () => startBuild());
+$('packCancelBtn').addEventListener('click', async () => {
+  try { await invoke('cancel_build'); } catch (_) {}
+});
+$('packsList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-del]');
+  if (!btn) return;
+  const err = $('packErr');
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  try {
+    await invoke('delete_pack', { path: btn.dataset.del });
+    await refreshPacksList();
+  } catch (e2) {
+    if (err) { err.style.display = 'block'; err.textContent = String(e2); }
+  }
+});
 $('toCreate').addEventListener('click', () => { hide($('loginModal')); show($('createModal')); });
 $('toLogin').addEventListener('click', () => { hide($('createModal')); show($('loginModal')); });
 $('doLogin').addEventListener('click', async () => {
@@ -726,7 +843,7 @@ $('doCreate').addEventListener('click', async () => {
     btn.textContent = 'Create account';
   }
 });
-[$('loginModal'), $('createModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
+[$('loginModal'), $('createModal'), $('packsModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
 $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -735,6 +852,7 @@ $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
   closeDrawer();
+  hide($('packsModal'));
   // Chat state is per-account: leave the chat view if it's open and drop
   // the transcript so the next sign-in can't replay this one's messages.
   exitChat();
@@ -750,6 +868,7 @@ $('signOutBtn').addEventListener('click', async () => {
   $('device').style.display = 'none';
   $('signOutBtn').style.display = 'none';
   $('billingBtn').style.display = 'none';
+  $('packsBtn').style.display = 'none';
   const lb = $('loginBtn');
   lb.textContent = 'Log in';
   lb.title = '';
