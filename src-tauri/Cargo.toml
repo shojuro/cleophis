@@ -35,6 +35,17 @@ kpack-embed = { path = "../crates/kpack-embed", features = ["real"] }
 # feature/toolchain needed to compile; it binds pdfium.dll at runtime (see
 # `kpack-pdf`'s module doc comment) rather than linking it in.
 kpack-pdf = { path = "../crates/kpack-pdf" }
+# §7 S7-1: the local conversation store (folders/chats/messages + fts5
+# search) in convstore.rs. Same exact version pin as kpack-core's rusqlite
+# dep (`bundled` compiles SQLite from source and ships FTS5) — already a
+# transitive dependency via kpack-core, so this adds zero new crates to the
+# resolved graph, it only makes an already-present version a direct,
+# named dependency (same rationale as kpack-core's own sha2 pin comment).
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+# §7 S7-1: local ISO-8601 `+TZ` timestamps for chats/messages
+# (`convstore::now_iso`). `clock` is the only feature needed — this reads
+# the system clock, nothing more.
+chrono = { version = "0.4", features = ["clock"] }
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"

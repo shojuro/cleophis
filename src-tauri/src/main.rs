@@ -2,6 +2,7 @@
 
 mod catalog;
 mod cloud;
+mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
@@ -88,6 +89,18 @@ fn main() {
             )));
             app.manage(Arc::new(cloud::download::Downloads::new()));
 
+            // §7 S7-1: the local conversation store (folders/chats/messages
+            // + fts5 search), managed directly like `kpack::EmbedderCache`/
+            // `kpack::Builds` below — not wrapped in an outer `Arc`, since
+            // its commands re-fetch `app.state::<convstore::ConvStore>()`
+            // inside their own `spawn_blocking` closures (see
+            // `convstore.rs`'s module doc comment). `ConvStore::open`
+            // returns `Result<_, String>`, and `?` here converts that via
+            // std's `impl From<String> for Box<dyn Error>`.
+            app.manage(convstore::ConvStore::open(
+                &cloud_dir.join("conversations.db"),
+            )?);
+
             // §3a A1: the shared, lazily-loaded embedder (rag_query and
             // build_personal_pack both resolve it through this instead of
             // reloading the 118 MB GGUF per call) and the single-slot
@@ -122,7 +135,22 @@ fn main() {
             cloud::commands::open_billing_portal,
             cloud::download::download_model,
             cloud::download::cancel_download,
-            cloud::download::download_status
+            cloud::download::download_status,
+            convstore::create_folder,
+            convstore::list_folders,
+            convstore::rename_folder,
+            convstore::delete_folder,
+            convstore::create_chat,
+            convstore::list_chats,
+            convstore::get_chat,
+            convstore::rename_chat,
+            convstore::delete_chat,
+            convstore::set_chat_pinned,
+            convstore::set_chat_archived,
+            convstore::move_chat,
+            convstore::set_chat_packs,
+            convstore::append_message,
+            convstore::search_chats
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
