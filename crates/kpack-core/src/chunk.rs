@@ -7,7 +7,12 @@
 //! - **Paragraph:** sentence-split, then slid through a token window
 //!   (target 400 tokens, 18% overlap by default) that never splits a
 //!   sentence. A single sentence longer than the target is its own chunk,
-//!   flagged `oversize_sentence`.
+//!   flagged `oversize_sentence` — UNLESS it's also longer than the
+//!   embedder's `max_input_tokens()` ceiling (a real embedder hard-errors
+//!   or truncates past that), in which case it's split deterministically
+//!   into pieces that each stay within the ceiling (see
+//!   [`split_to_ceiling`]) — PDF-extracted text in particular can contain
+//!   long runs with no sentence breaks at all.
 //! - **Table:** serialized row-wise, one line per row, with the header
 //!   repeated in every chunk; rows are grouped up to `target_tokens` and
 //!   never split mid-row. Tables never share a chunk with paragraph text.
@@ -113,7 +118,12 @@ pub fn chunk_document(doc: &Document, embedder: &dyn Embedder, cfg: &ChunkConfig
 /// stream (spec §1.3 step 2), emitting one [`ChunkDraft`] per window and
 /// carrying an `overlap_pct`-sized trailing-sentence overlap into the next
 /// window. A sentence alone over `target_tokens` becomes its own chunk,
-/// `oversize_sentence = true`, and consumes no overlap budget.
+/// `oversize_sentence = true`, and consumes no overlap budget — UNLESS it's
+/// also over `embedder.max_input_tokens()` (the embedder's hard ceiling),
+/// in which case it's deterministically split into multiple
+/// `oversize_sentence = true` pieces that each stay within the ceiling (see
+/// [`split_to_ceiling`]), so no chunk this function emits can ever exceed
+/// what the embedder can actually accept.
 fn chunk_paragraph(
     text: &str,
     locator: &str,
@@ -127,28 +137,54 @@ fn chunk_paragraph(
         return;
     }
 
+    let ceiling = embedder.max_input_tokens();
+    // Belt-and-suspenders: today target_tokens (400) < ceiling (512), so
+    // this is a no-op — but if target_tokens were ever configured above the
+    // embedder's ceiling, clamp the window's effective growth cap so no
+    // window this loop grows can exceed what the embedder accepts.
+    let effective_target = cfg.target_tokens.min(ceiling);
+
     let mut i = 0usize;
     while i < sentences.len() {
         let start_tokens = embedder.token_count(&sentences[i]);
 
         // A single sentence longer than the target window is its own
-        // chunk, flagged, and never split (spec §1.3 step 2).
-        if start_tokens > cfg.target_tokens {
-            out.push(ChunkDraft {
-                section_path: section_path.to_string(),
-                locator: locator.to_string(),
-                prefix: String::new(),
-                text: sentences[i].clone(),
-                token_count: start_tokens,
-                oversize_sentence: true,
-            });
+        // chunk, flagged (spec §1.3 step 2) — split only if it also
+        // breaches the embedder's hard ceiling; otherwise emitted whole, as
+        // before.
+        if start_tokens > effective_target {
+            if start_tokens <= ceiling {
+                out.push(ChunkDraft {
+                    section_path: section_path.to_string(),
+                    locator: locator.to_string(),
+                    prefix: String::new(),
+                    text: sentences[i].clone(),
+                    token_count: start_tokens,
+                    oversize_sentence: true,
+                });
+            } else {
+                for (piece_text, piece_tokens) in split_to_ceiling(&sentences[i], embedder, ceiling) {
+                    debug_assert!(
+                        piece_tokens <= ceiling,
+                        "split_to_ceiling produced a piece over the ceiling: {piece_tokens} > {ceiling}"
+                    );
+                    out.push(ChunkDraft {
+                        section_path: section_path.to_string(),
+                        locator: locator.to_string(),
+                        prefix: String::new(),
+                        text: piece_text,
+                        token_count: piece_tokens,
+                        oversize_sentence: true,
+                    });
+                }
+            }
             i += 1;
             continue;
         }
 
         // Grow the window sentence-by-sentence while the whole window's
         // real token count (not a per-sentence sum — real tokenizers don't
-        // sum linearly across a join) stays within target_tokens.
+        // sum linearly across a join) stays within effective_target.
         //
         // TODO(K8-perf): this rebuilds and re-tokenizes the whole growing
         // window text on every sentence (O(n²) over a section's sentence
@@ -161,7 +197,7 @@ fn chunk_paragraph(
         while window_end + 1 < sentences.len() {
             let candidate_text = format!("{window_text} {}", sentences[window_end + 1]);
             let candidate_tokens = embedder.token_count(&candidate_text);
-            if candidate_tokens > cfg.target_tokens {
+            if candidate_tokens > effective_target {
                 break;
             }
             window_text = candidate_text;
@@ -169,6 +205,10 @@ fn chunk_paragraph(
             window_end += 1;
         }
 
+        debug_assert!(
+            window_tokens <= ceiling,
+            "chunk window exceeded the embedder's ceiling: {window_tokens} > {ceiling}"
+        );
         out.push(ChunkDraft {
             section_path: section_path.to_string(),
             locator: locator.to_string(),
@@ -232,6 +272,102 @@ fn chunk_paragraph(
         // as a defensive guard, not relied on elsewhere as an invariant.
         i = overlap_start.max(i + 1);
     }
+}
+
+/// Deterministically split `text` into consecutive pieces, each with
+/// `embedder.token_count(piece) <= ceiling`, covering the whole text with
+/// no words lost and no UTF-8 code point ever split. Used by
+/// [`chunk_paragraph`] when a single sentence exceeds the embedder's hard
+/// ceiling (common in PDF-extracted text: dense passages with no sentence
+/// breaks at all).
+///
+/// Greedy left-to-right word accumulation: `text` is split on whitespace;
+/// words are joined by a single space and accumulated into the current
+/// piece while the growing piece's real token count stays within `ceiling`.
+/// When the next word would push it over, the accumulated piece is emitted
+/// and a new one starts with that word. A single word whose OWN token count
+/// already exceeds `ceiling` (pathological — e.g. a long token-less blob
+/// with no whitespace) is hard-split at char boundaries by
+/// [`split_word_to_ceiling`] instead.
+///
+/// Pure and deterministic in `text` + `ceiling` alone (no randomness, no
+/// `HashMap`/hashing-order dependence) — required for the pack's
+/// byte-identical-rebuild guarantee (spec's K8 determinism invariant).
+fn split_to_ceiling(text: &str, embedder: &dyn Embedder, ceiling: usize) -> Vec<(String, usize)> {
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if embedder.token_count(&candidate) <= ceiling {
+            current = candidate;
+            continue;
+        }
+
+        // `word` doesn't fit onto the current piece — flush what's
+        // accumulated so far (if anything).
+        if !current.is_empty() {
+            let tokens = embedder.token_count(&current);
+            pieces.push((std::mem::take(&mut current), tokens));
+        }
+
+        if embedder.token_count(word) <= ceiling {
+            current = word.to_string();
+        } else {
+            // Pathological: even this single word alone breaches the
+            // ceiling. Hard-split it at char boundaries and leave `current`
+            // empty for the next word to start fresh.
+            pieces.extend(split_word_to_ceiling(word, embedder, ceiling));
+        }
+    }
+
+    if !current.is_empty() {
+        let tokens = embedder.token_count(&current);
+        pieces.push((current, tokens));
+    }
+
+    pieces
+}
+
+/// Hard-split a single pathological "word" (no internal whitespace) whose
+/// own `token_count` exceeds `ceiling` into consecutive char-boundary
+/// pieces, each with `token_count <= ceiling`. Grows each piece one char at
+/// a time from its own start (never rescanning from the beginning of
+/// `word`), so total work across all pieces is linear in `word`'s length.
+/// Every piece boundary lands on a `char_indices` boundary, so a UTF-8 code
+/// point is never split. If even a single char's `token_count` exceeds
+/// `ceiling`, that char is still emitted alone (the minimum splittable
+/// unit) rather than looping forever — `ceiling` simply can't be honored
+/// below one code point in that case.
+fn split_word_to_ceiling(word: &str, embedder: &dyn Embedder, ceiling: usize) -> Vec<(String, usize)> {
+    let mut boundaries: Vec<usize> = word.char_indices().map(|(i, _)| i).collect();
+    boundaries.push(word.len());
+
+    let mut pieces = Vec::new();
+    let mut start_b = 0usize; // index into `boundaries` of the piece's start char
+
+    while start_b + 1 < boundaries.len() {
+        let mut end_b = start_b + 1; // always include at least one char
+        loop {
+            let next_b = end_b + 1;
+            if next_b >= boundaries.len() {
+                break;
+            }
+            if embedder.token_count(&word[boundaries[start_b]..boundaries[next_b]]) > ceiling {
+                break;
+            }
+            end_b = next_b;
+        }
+        let piece = &word[boundaries[start_b]..boundaries[end_b]];
+        pieces.push((piece.to_string(), embedder.token_count(piece)));
+        start_b = end_b;
+    }
+
+    pieces
 }
 
 /// A minimal, dependency-free sentence splitter (spec §1.3: "sentence-
@@ -432,7 +568,7 @@ fn push_table_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embed::MockEmbedder;
+    use crate::embed::{EmbedError, MockEmbedder};
     use crate::tree::{Document, Section};
 
     fn doc_with_section(path: Vec<&str>, blocks: Vec<Block>) -> Document {
@@ -844,5 +980,167 @@ mod tests {
             assert!(!c1.text.contains(s.as_str()), "chunk 1 unexpectedly duplicates chunk 0 sentence: {s}");
         }
         assert!(c1.text.contains(small_sentences[7].as_str()));
+    }
+
+    // 15-19. Task B-chunkcap: chunks must never exceed the embedder's hard
+    // token ceiling (`Embedder::max_input_tokens`). A user hit this
+    // building a PDF pack — PDF-extracted text can contain long runs with
+    // no sentence breaks at all, so the old "oversize sentence, emitted
+    // unsplit, no upper bound" path could hand the embedder a chunk over
+    // its context window. These tests cover the new `split_to_ceiling` /
+    // `split_word_to_ceiling` helpers directly (pure, unit-testable) and
+    // the integration through `chunk_paragraph`.
+
+    /// A test-only `Embedder` whose `token_count` is a plain char count,
+    /// not a whitespace word count like `MockEmbedder`. Needed only for
+    /// t17: `MockEmbedder`'s whitespace-based counting can never make a
+    /// no-whitespace "word" exceed 1 token on its own, so it can't exercise
+    /// `split_word_to_ceiling`'s pathological single-word case.
+    struct CharCountEmbedder;
+
+    impl Embedder for CharCountEmbedder {
+        fn dims(&self) -> usize {
+            8
+        }
+        fn embed_passage(&self, _text: &str) -> Result<Vec<f32>, EmbedError> {
+            unimplemented!("split_word_to_ceiling tests only need token_count")
+        }
+        fn embed_query(&self, _text: &str) -> Result<Vec<f32>, EmbedError> {
+            unimplemented!("split_word_to_ceiling tests only need token_count")
+        }
+        fn token_count(&self, text: &str) -> usize {
+            text.chars().count()
+        }
+        fn max_input_tokens(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    // 15. split_to_ceiling (pure): an oversize word-run (no sentence
+    // punctuation, so it can't rely on sentence boundaries) whose
+    // token_count > ceiling splits into multiple pieces, each
+    // token_count <= ceiling, and the pieces' words concatenate back to the
+    // original words in order — no word lost, none reordered.
+    #[test]
+    fn t15_split_to_ceiling_splits_oversize_run_no_loss_each_piece_within_ceiling() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 5);
+        let text = words(23, "word");
+        assert!(embedder.token_count(&text) > 5);
+
+        let pieces = split_to_ceiling(&text, &embedder, 5);
+        assert!(pieces.len() > 1, "expected the run split into multiple pieces");
+        for (piece_text, piece_tokens) in &pieces {
+            assert_eq!(*piece_tokens, embedder.token_count(piece_text));
+            assert!(*piece_tokens <= 5, "piece exceeded ceiling: {piece_tokens}");
+        }
+
+        let reconstructed: Vec<&str> = pieces.iter().flat_map(|(t, _)| t.split_whitespace()).collect();
+        let original: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(reconstructed, original, "words lost or reordered by the split");
+    }
+
+    // 16. split_to_ceiling determinism: called twice on the same input ->
+    // byte-identical output — the pack-determinism invariant (K8b:
+    // byte-identical rebuilds) depends on this.
+    #[test]
+    fn t16_split_to_ceiling_is_deterministic() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 7);
+        let text = words(41, "tok");
+        let first = split_to_ceiling(&text, &embedder, 7);
+        let second = split_to_ceiling(&text, &embedder, 7);
+        assert_eq!(first, second);
+        assert!(first.len() > 1);
+    }
+
+    // 17. split_word_to_ceiling (pure): a pathological single "word" (no
+    // internal whitespace) whose own token_count exceeds ceiling
+    // hard-splits into pieces each token_count <= ceiling, reconstructs
+    // exactly, and never panics on a multibyte string — if a piece
+    // boundary ever landed mid-code-point, the `&str` slice itself would
+    // panic, so "no panic" here IS the UTF-8-safety proof.
+    #[test]
+    fn t17_split_word_to_ceiling_hard_splits_pathological_multibyte_word_no_panic() {
+        let embedder = CharCountEmbedder;
+        let ceiling = 5;
+        // "café" repeated: "é" is a multibyte UTF-8 char (2 bytes, 1 char)
+        // — a byte-offset split landing between its two bytes would panic.
+        let word: String = "café".repeat(10);
+        assert!(embedder.token_count(&word) > ceiling);
+
+        let pieces = split_word_to_ceiling(&word, &embedder, ceiling);
+        assert!(!pieces.is_empty());
+        let mut reconstructed = String::new();
+        for (piece_text, piece_tokens) in &pieces {
+            assert_eq!(*piece_tokens, embedder.token_count(piece_text));
+            assert!(*piece_tokens <= ceiling, "piece exceeded ceiling: {piece_tokens}");
+            reconstructed.push_str(piece_text);
+        }
+        assert_eq!(reconstructed, word, "text lost or reordered by the hard split");
+    }
+
+    // 18. chunk_paragraph integration: a single sentence-less run whose
+    // token_count exceeds the embedder's max_input_tokens() ceiling is
+    // split into multiple oversize_sentence chunks, each within the
+    // ceiling, with no word lost or reordered — the actual bug report
+    // (dense PDF text, no sentence breaks, one chunk over the embedder's
+    // context window).
+    #[test]
+    fn t18_chunk_paragraph_splits_run_exceeding_embedder_ceiling() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 10);
+        let cfg = ChunkConfig {
+            target_tokens: 5,
+            overlap_pct: 18,
+        };
+        let long_run = words(50, "w");
+        let doc = doc_with_section(
+            vec!["Ch 1"],
+            vec![Block::Paragraph {
+                text: long_run.clone(),
+                locator: "p1".to_string(),
+            }],
+        );
+
+        let chunks = chunk_document(&doc, &embedder, &cfg);
+        assert!(chunks.len() > 1, "expected the oversize run split into multiple chunks");
+        for c in &chunks {
+            assert!(c.oversize_sentence);
+            assert!(
+                c.token_count <= embedder.max_input_tokens(),
+                "chunk exceeded the embedder ceiling: {} > {}",
+                c.token_count,
+                embedder.max_input_tokens()
+            );
+            assert_eq!(c.token_count, embedder.token_count(&c.text));
+        }
+
+        let reconstructed: Vec<&str> = chunks.iter().flat_map(|c| c.text.split_whitespace()).collect();
+        let original: Vec<&str> = long_run.split_whitespace().collect();
+        assert_eq!(reconstructed, original, "words lost or reordered by the split");
+    }
+
+    // 19. Determinism through the full chunk_document path: chunking the
+    // same oversize input twice -> identical drafts (K8b's
+    // byte-identical-rebuild invariant), exercised through the split
+    // branch specifically.
+    #[test]
+    fn t19_chunk_document_oversize_split_is_deterministic() {
+        let embedder = MockEmbedder::with_max_input_tokens(8, 10);
+        let cfg = ChunkConfig {
+            target_tokens: 5,
+            overlap_pct: 18,
+        };
+        let long_run = words(73, "tok");
+        let doc = doc_with_section(
+            vec![],
+            vec![Block::Paragraph {
+                text: long_run,
+                locator: "p1".to_string(),
+            }],
+        );
+
+        let first = chunk_document(&doc, &embedder, &cfg);
+        let second = chunk_document(&doc, &embedder, &cfg);
+        assert_eq!(first, second);
+        assert!(first.len() > 1);
     }
 }

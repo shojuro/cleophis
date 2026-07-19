@@ -23,7 +23,10 @@
 //! (not expressible in safe Rust without an unsafe pinning trick). Instead
 //! each `embed_raw` call creates its own short-lived context with a fixed
 //! [`BGE_N_CTX`] (512) slots — the model's context length; over-length
-//! inputs are rejected before decode. This is
+//! inputs are truncated to fit before decode (a defensive net — see
+//! `embed_raw`'s truncation comment; kpack-core's chunker enforces this
+//! ceiling via `max_input_tokens` before a chunk ever reaches here, so this
+//! path should be unreachable in normal operation). This is
 //! simpler and trivially thread-safe (`LlamaModel` is `Send + Sync`; each
 //! call gets an independent context, no shared mutable state) at the cost
 //! of re-paying context-alloc overhead per call — acceptable for a
@@ -60,10 +63,13 @@ const BGE_DIMS: usize = 768;
 
 /// `bge-base-en-v1.5`'s trained max sequence length (BERT-style
 /// `max_position_embeddings`; also llama.cpp's default `n_ctx` of 512,
-/// unrelated coincidence but convenient). Inputs tokenizing longer than
-/// this are rejected rather than silently truncated or run past the
-/// model's trained positions (either of which would produce a
-/// bad-but-plausible vector, not an error).
+/// unrelated coincidence but convenient). This is [`Embedder::max_input_tokens`]'s
+/// return value for `BgeEmbedder`: kpack-core's chunker (task B-chunkcap)
+/// uses it to keep every chunk within this ceiling before it ever reaches
+/// `embed_raw`. Inputs that tokenize longer than this anyway (a defensive
+/// net, not the normal path — see `embed_raw`) are truncated to fit rather
+/// than hard-erroring, so one pathological chunk can never abort an entire
+/// pack build.
 const BGE_N_CTX: u32 = 512;
 
 /// Lazily-initialized, process-wide `llama.cpp` backend handle. See the
@@ -144,7 +150,7 @@ impl BgeEmbedder {
         // this GGUF's own tokenizer metadata for a BERT/WordPiece vocab —
         // adds both the leading `[CLS]` and trailing `[SEP]`, i.e. real
         // BGE-style tokenization, not just a bare BOS.
-        let tokens = self
+        let mut tokens = self
             .model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| EmbedError::Backend(format!("tokenize: {e}")))?;
@@ -155,10 +161,21 @@ impl BgeEmbedder {
             ));
         }
         if tokens.len() as u32 > BGE_N_CTX {
-            return Err(EmbedError::Backend(format!(
-                "input tokenizes to {} tokens, exceeds bge-base-en-v1.5's {BGE_N_CTX}-token context window",
+            // Defensive net, not the normal path: kpack-core's chunker
+            // (task B-chunkcap) enforces `max_input_tokens` on every chunk
+            // before it reaches here, so this should be unreachable in
+            // practice. Truncate rather than hard-error so one
+            // pathological chunk — or any other caller that bypasses the
+            // chunker's ceiling enforcement — can never abort an entire
+            // pack build. `AddBos::Always` put `[CLS]` at position 0, and
+            // CLS pooling (see module doc) only reads that position's
+            // final hidden state, so dropping the tail is a safe, standard
+            // over-length behavior for this pooling strategy.
+            eprintln!(
+                "bge embedder: truncating input from {} to {BGE_N_CTX} tokens (chunker should have prevented this)",
                 tokens.len()
-            )));
+            );
+            tokens.truncate(BGE_N_CTX as usize);
         }
 
         let mut ctx = self
@@ -212,5 +229,13 @@ impl Embedder for BgeEmbedder {
             .str_to_token(text, AddBos::Always)
             .map(|tokens| tokens.len())
             .unwrap_or(0)
+    }
+
+    /// [`BGE_N_CTX`] (512) — the same tokenizer (`str_to_token` via
+    /// `AddBos::Always`) backs both `token_count` and `embed_raw`, so
+    /// `token_count(x) <= max_input_tokens()` is guaranteed to embed
+    /// without hitting `embed_raw`'s truncation fallback.
+    fn max_input_tokens(&self) -> usize {
+        BGE_N_CTX as usize
     }
 }

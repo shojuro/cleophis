@@ -1665,6 +1665,10 @@ mod tests {
         fn token_count(&self, text: &str) -> usize {
             text.split_whitespace().count()
         }
+
+        fn max_input_tokens(&self) -> usize {
+            usize::MAX
+        }
     }
 
     // 24. retrieve(): an Embedder that fails embed_query surfaces as
