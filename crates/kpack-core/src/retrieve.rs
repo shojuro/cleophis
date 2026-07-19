@@ -54,11 +54,40 @@
 use crate::contract::{self, RenderChunk};
 use crate::embed::{dot_int8, l2_normalize, quantize_int8, Embedder};
 use crate::format::{self, Pack};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, PackTier};
 use std::fmt;
 
 /// Reciprocal-rank fusion's default `k_rrf` (spec §4.1).
 pub const DEFAULT_K_RRF: f64 = 60.0;
+
+/// RAG-quality quick win: a LENIENT interim runtime gate floor for
+/// PERSONAL-tier packs only, overriding whatever `gate_abs_floor` was baked
+/// into that pack's manifest at build time. The baked personal-pack default
+/// (`build::PLACEHOLDER_GATE_ABS_FLOOR`, 0.5) turned out to over-reject
+/// reasonable queries over a user's own PDF pack (e.g. "what is the title?"
+/// → `NoEvidence`) — the user wants the model to at least TRY on personal
+/// content. This is an override applied at query time in [`assemble`], not a
+/// change to the build-time constant, so EXISTING already-built personal
+/// packs benefit immediately without a rebuild. Curated packs are
+/// unaffected — they keep using their own manifest's calibrated thresholds
+/// (§2.4/§3.4).
+///
+/// Still heuristic, NOT calibrated: 0.30 was chosen to still reject the
+/// §4-measured out-of-scope case (the Mongolia-vs-hemostasis query, cosine
+/// 0.2746), while admitting the in-scope queries the 0.5 placeholder was
+/// wrongly rejecting. The real fixes are §2.4/§3.4's calibration work and
+/// the contract-trained adapter track (parked, not this task) — this is
+/// only a quick retrieval-side win in the meantime.
+pub const PERSONAL_RUNTIME_GATE_ABS_FLOOR: f64 = 0.30;
+/// RAG-quality quick win: the paired relative-margin override for
+/// PERSONAL-tier packs — see [`PERSONAL_RUNTIME_GATE_ABS_FLOOR`]'s doc
+/// comment for the full rationale. `0.0` makes personal packs effectively
+/// abs-floor-only: the relative-margin check (`top1` vs. the rank-`min(10,
+/// n)` cosine) is a calibration-dependent heuristic that adds false
+/// refusals for personal use, where a small, uncalibrated pack's score
+/// distribution has no reason to resemble a curated pack's. Still heuristic,
+/// NOT calibrated — same caveat as the floor above.
+pub const PERSONAL_RUNTIME_GATE_REL_MARGIN: f64 = 0.0;
 
 /// The int8 quantization scale (127², spec §1.4: L2-normalize then ×127,
 /// clamped to `[-127, 127]`) that turns a raw `dot_int8` accumulation back
@@ -419,13 +448,17 @@ fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f
 /// final grounded prompt.
 ///
 /// 1. **Per-pack gate (Δ1 — BEFORE any cross-pack mixing):** keep only
-///    `hits` where [`pack_passes_gate_manifest`] is true for that pack's
-///    OWN `candidates`/`manifest`. A failing pack contributes NOTHING —
-///    not even at a diminished weight — to anything that follows. This is
-///    the Δ1 ordering [`pack_passes_gate`]'s doc comment explains in full:
-///    gating each pack independently, before fusion, guarantees the
-///    loosest-calibrated mounted pack can never lower the safety floor for
-///    a stricter pack's domain.
+///    `hits` where [`pack_passes_gate`] is true for that pack's OWN
+///    `candidates`, evaluated against that pack's EFFECTIVE thresholds:
+///    [`PERSONAL_RUNTIME_GATE_ABS_FLOOR`]/[`PERSONAL_RUNTIME_GATE_REL_MARGIN`]
+///    for a [`crate::manifest::PackTier::Personal`] pack (a runtime override
+///    of its baked manifest values — see those constants' doc comments),
+///    otherwise the pack's own `manifest.gate_abs_floor`/`gate_rel_margin`
+///    unchanged. A failing pack contributes NOTHING — not even at a
+///    diminished weight — to anything that follows. This is the Δ1 ordering
+///    [`pack_passes_gate`]'s doc comment explains in full: gating each pack
+///    independently, before fusion, guarantees the loosest-gated mounted
+///    pack can never lower the safety floor for a stricter pack's domain.
 /// 2. **`NO_EVIDENCE`:** if no pack passes its gate, return
 ///    [`RetrievalResult::NoEvidence`] — no prompt, no citations.
 /// 3. **Cross-pack RRF over gate-passers only:** each surviving pack
@@ -446,22 +479,48 @@ fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f
 ///    `pack.get_chunk(chunk_id)`.
 /// 5. **Assemble:** for each selected chunk (in rank order), fetch its doc
 ///    title (`get_doc(chunk.doc_id)`), build a `contract::RenderChunk`, and
-///    render the numbered sources block via `contract::render_sources`. The
-///    final `prompt` is `contract::system_contract()` (trailing whitespace
-///    trimmed, so the layout doesn't depend on the contract file's exact
-///    trailing newline) + a blank line + the rendered sources block — kept
-///    to that one fixed two-part layout, nothing else. `citations` mirrors
-///    the rendered sources 1:1, `n` matching each line's `[n]`.
+///    render the numbered sources block via `contract::render_sources`. Also
+///    collect the DISTINCT, non-empty titles of those same resolved docs
+///    (first-seen order) into a short `doc_context` line ("These sources are
+///    excerpts from: …") — a RUNTIME addition (not part of the versioned
+///    contract) that gives the model the document's identity as legitimate
+///    context, so "what is the title / what is this about" is answerable
+///    even though a title never appears in a chunk's searchable body text.
+///    The final `prompt` is `contract::system_contract()` (trailing
+///    whitespace trimmed, so the layout doesn't depend on the contract
+///    file's exact trailing newline) + a blank line + `doc_context` (when
+///    non-empty) + a blank line + the rendered sources block; when
+///    `doc_context` is empty (no resolved doc had a non-empty title), the
+///    layout falls back to the original two-part form — no dangling blank
+///    section. `citations` mirrors the rendered sources 1:1, `n` matching
+///    each line's `[n]`.
 pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
     // 1. Per-pack gate -- Δ1: every mounted pack judged on its OWN
-    // calibrated thresholds, strictly before any cross-pack mixing. Index
-    // is `hits`' own index, not a re-numbering of the survivors -- kept
-    // stable so step 3's (pack_index, chunk_id) identity can always be
-    // traced back to `hits[pack_index]` in steps 4-5.
+    // thresholds, strictly before any cross-pack mixing. Index is `hits`'
+    // own index, not a re-numbering of the survivors -- kept stable so step
+    // 3's (pack_index, chunk_id) identity can always be traced back to
+    // `hits[pack_index]` in steps 4-5.
+    //
+    // RAG-quality quick win: PERSONAL-tier packs use the lenient RUNTIME
+    // override thresholds ([`PERSONAL_RUNTIME_GATE_ABS_FLOOR`]/
+    // [`PERSONAL_RUNTIME_GATE_REL_MARGIN`]) instead of whatever was baked
+    // into their manifest at build time -- see those constants' doc
+    // comments. CURATED packs are unaffected: they still read their own
+    // manifest's calibrated `gate_abs_floor`/`gate_rel_margin`. Only the
+    // threshold VALUES differ by tier; the gate-before-fusion ORDERING
+    // (Δ1) and the NaN-fail-closed rule inside `pack_passes_gate` are
+    // untouched.
     let passing: Vec<(usize, &PackHit<'_>)> = hits
         .iter()
         .enumerate()
-        .filter(|(_, hit)| pack_passes_gate_manifest(&hit.candidates, hit.manifest))
+        .filter(|(_, hit)| {
+            let (abs_floor, rel_margin) = if hit.manifest.pack_tier == PackTier::Personal {
+                (PERSONAL_RUNTIME_GATE_ABS_FLOOR, PERSONAL_RUNTIME_GATE_REL_MARGIN)
+            } else {
+                (hit.manifest.gate_abs_floor, hit.manifest.gate_rel_margin)
+            };
+            pack_passes_gate(&hit.candidates, abs_floor, rel_margin)
+        })
         .collect();
 
     // 2. NO_EVIDENCE: no mounted pack passed its own gate.
@@ -556,7 +615,46 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         })
         .collect();
     let sources_block = contract::render_sources(&render_chunks);
-    let prompt = format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block);
+
+    // RAG-quality quick win: the book/document's TITLE lives in doc
+    // metadata (`doc.title`, already shown in each citation), not the
+    // searchable body text -- so retrieval alone can never surface it as a
+    // "match", and a query like "what is the title?" / "what is this
+    // about?" would otherwise have nothing to ground on. Collect the
+    // DISTINCT titles of the docs actually cited (the same docs already
+    // resolved for `render_chunks`/citations above), preserving first-seen
+    // order, and state them as a short context line the model can answer
+    // identity questions from -- without touching the numbered-sources
+    // semantics `render_sources` owns.
+    let mut titles: Vec<&str> = Vec::new();
+    for (_, _, doc) in &resolved {
+        let title = doc.title.trim();
+        if !title.is_empty() && !titles.contains(&title) {
+            titles.push(title);
+        }
+    }
+    let doc_context = if titles.is_empty() {
+        String::new()
+    } else {
+        format!("These sources are excerpts from: {}.", titles.join("; "))
+    };
+
+    // TODO(adapter): `doc_context` is a runtime-only addition, not part of
+    // the versioned prompt contract (`contracts/prompt-contract.v1.toml` /
+    // `contract::system_contract()`) -- when the contract-trained adapter
+    // track starts, fold this doc-identity line into the versioned contract
+    // so the adapter is trained on the same format the runtime actually
+    // sends, rather than this drifting silently ahead of it.
+    let prompt = if doc_context.is_empty() {
+        format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block)
+    } else {
+        format!(
+            "{}\n\n{}\n\n{}",
+            contract::system_contract().trim_end(),
+            doc_context,
+            sources_block
+        )
+    };
 
     let citations: Vec<Citation> = resolved
         .iter()
@@ -1287,7 +1385,11 @@ mod tests {
 
     // 16. All packs fail their gate -> NoEvidence. Two packs, both with a
     // single candidate whose dense_cosine sits below that pack's own
-    // gate_abs_floor.
+    // gate_abs_floor. CURATED tier (not test_manifest's default Personal),
+    // so this pins the raw manifest floor (0.9) rather than the
+    // PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30) override -- both candidates
+    // (0.3, 0.4) would otherwise clear the lenient personal floor and flip
+    // this to Grounded; t25-27 cover the personal-tier override itself.
     #[test]
     fn t16_assemble_all_packs_fail_gate_yields_no_evidence() {
         let pack_a = empty_pack("t16-fail-pack-a");
@@ -1295,8 +1397,10 @@ mod tests {
         let chunk_a = insert_test_chunk(&pack_a, "A", "p.1", "pack a chunk");
         let chunk_b = insert_test_chunk(&pack_b, "B", "p.1", "pack b chunk");
 
-        let manifest_a = test_manifest(0.9, 0.05);
-        let manifest_b = test_manifest(0.9, 0.05);
+        let mut manifest_a = test_manifest(0.9, 0.05);
+        manifest_a.pack_tier = PackTier::Curated;
+        let mut manifest_b = test_manifest(0.9, 0.05);
+        manifest_b.pack_tier = PackTier::Curated;
 
         let hit_a = PackHit {
             pack: &pack_a,
@@ -1329,17 +1433,28 @@ mod tests {
     // strictly BEFORE cross-pack fusion (Δ1), the strict pack contributes
     // NOTHING: the result must contain only the loose pack's citation, and
     // the strict pack's chunk_id must never appear.
+    //
+    // CURATED tier (not test_manifest's default Personal): this test is
+    // specifically about the raw manifest-threshold-driven Δ1 ordering, so
+    // both packs are pinned to Curated to keep their own gate_abs_floor
+    // (0.9 / 0.2) authoritative -- under Personal tier both candidates
+    // (0.85, 0.25) would instead be judged against the shared
+    // PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30), which would invert this
+    // test's strict-vs-loose setup entirely. The personal-tier override
+    // itself is covered separately by t25-27.
     #[test]
     fn t17_assemble_delta1_gate_before_fusion_regression() {
         let strict_pack = empty_pack("t17-strict-pack");
         let strict_chunk_id = insert_test_chunk(&strict_pack, "S", "p.1", "strict pack chunk");
         let mut strict_manifest = test_manifest(0.9, 0.05);
         strict_manifest.pack_id = "strict-pack".to_string();
+        strict_manifest.pack_tier = PackTier::Curated;
 
         let loose_pack = empty_pack("t17-loose-pack");
         let loose_chunk_id = insert_test_chunk(&loose_pack, "L", "p.1", "loose pack chunk");
         let mut loose_manifest = test_manifest(0.2, 0.0);
         loose_manifest.pack_id = "loose-pack".to_string();
+        loose_manifest.pack_tier = PackTier::Curated;
 
         let strict_hit = PackHit {
             pack: &strict_pack,
@@ -1617,7 +1732,10 @@ mod tests {
     // 23. retrieve(): an impossible gate_abs_floor (2.0, outside a cosine's
     // [-1, 1] range) always fails every pack's gate regardless of query or
     // candidates -- proving `retrieve` surfaces `assemble`'s NoEvidence
-    // path end to end, not just its Grounded one.
+    // path end to end, not just its Grounded one. CURATED tier, so this
+    // pins the manifest's own 2.0 floor rather than being overridden by
+    // PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30), which a real MockEmbedder
+    // cosine could plausibly clear.
     #[test]
     fn t23_retrieve_end_to_end_no_evidence_when_gate_impossible() {
         let dir = unique_dir("t23-retrieve-no-evidence");
@@ -1636,7 +1754,8 @@ mod tests {
         build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
         let pack = Pack::open(&out_path).unwrap();
 
-        let manifest = test_manifest(2.0, 0.0); // no real cosine can ever reach 2.0
+        let mut manifest = test_manifest(2.0, 0.0); // no real cosine can ever reach 2.0
+        manifest.pack_tier = PackTier::Curated;
 
         let packs = vec![(pack, manifest)];
         let result = retrieve("only doc content", &packs, &embedder, Tier::Small).unwrap();
@@ -1682,6 +1801,185 @@ mod tests {
         assert!(
             matches!(result, Err(Error::Embed(_))),
             "expected Error::Embed, got {result:?}"
+        );
+    }
+
+    // ---- RAG-quality quick wins: personal-pack runtime gate + doc-title
+    // context (see PERSONAL_RUNTIME_GATE_ABS_FLOOR's doc comment). ----
+
+    // 25. Gentler personal gate: a PERSONAL pack whose manifest bakes
+    // gate_abs_floor=0.5 (the build-time placeholder), with a single
+    // candidate at dense_cosine=0.40 -- BELOW the baked 0.5 floor, so
+    // pack_passes_gate_manifest(&candidates, &manifest) would fail -- now
+    // PASSES under assemble's PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30)
+    // override, yielding Grounded rather than the NoEvidence the baked
+    // value alone would produce.
+    #[test]
+    fn t25_assemble_personal_pack_runtime_floor_admits_below_manifest_floor() {
+        let pack = empty_pack("t25-personal-runtime-floor");
+        let chunk_id = insert_test_chunk(&pack, "Intro", "p.1", "hello world");
+
+        let manifest = test_manifest(0.5, 0.05); // baked placeholder; pack_tier is Personal
+        assert!(
+            !pack_passes_gate_manifest(&[candidate(chunk_id, 0.40)], &manifest),
+            "sanity check: 0.40 must fail the BAKED manifest floor of 0.5"
+        );
+
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.40)],
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        match result {
+            RetrievalResult::Grounded { citations, .. } => {
+                assert_eq!(citations.len(), 1);
+                assert_eq!(citations[0].chunk_id, chunk_id);
+            }
+            RetrievalResult::NoEvidence => {
+                panic!("expected Grounded -- the personal runtime floor (0.30) should admit 0.40")
+            }
+        }
+    }
+
+    // 26. Gentler personal gate, lower bound: a candidate at dense_cosine
+    // 0.2746 (the §4-measured out-of-scope Mongolia-vs-hemostasis case) is
+    // still below PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30) -- must still
+    // yield NoEvidence, proving the lenient floor doesn't admit everything.
+    #[test]
+    fn t26_assemble_personal_pack_runtime_floor_still_rejects_out_of_scope() {
+        let pack = empty_pack("t26-personal-out-of-scope");
+        let chunk_id = insert_test_chunk(&pack, "Intro", "p.1", "hello world");
+
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.2746)],
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        assert_eq!(
+            result,
+            RetrievalResult::NoEvidence,
+            "0.2746 is below the 0.30 personal runtime floor and must still refuse"
+        );
+    }
+
+    // 27. Curated packs are unaffected by the personal runtime override: a
+    // CURATED manifest with gate_abs_floor=0.6, a candidate at 0.5 -- above
+    // the personal runtime floor (0.30) but below the curated pack's OWN
+    // manifest floor (0.6) -- must still yield NoEvidence, proving assemble
+    // reads the manifest's own thresholds for a non-Personal pack rather
+    // than applying the personal override universally.
+    #[test]
+    fn t27_assemble_curated_pack_still_uses_manifest_floor() {
+        let pack = empty_pack("t27-curated-manifest-floor");
+        let chunk_id = insert_test_chunk(&pack, "Intro", "p.1", "hello world");
+
+        let mut manifest = test_manifest(0.6, 0.05);
+        manifest.pack_tier = PackTier::Curated;
+
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.5)],
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        assert_eq!(
+            result,
+            RetrievalResult::NoEvidence,
+            "a curated pack must be gated on its OWN manifest floor (0.6), not the personal \
+             runtime override -- 0.5 clears the personal floor but not this pack's own"
+        );
+    }
+
+    /// Inserts one doc (with the given `title`) + one chunk into `pack`,
+    /// returning the chunk's id -- like `insert_test_chunk`, but lets
+    /// doc-title-context tests control the title directly (`sample_doc()`
+    /// always uses a fixed "Test Doc" title).
+    fn insert_test_chunk_with_title(pack: &Pack, title: &str, section_path: &str, locator: &str, text: &str) -> i64 {
+        let mut doc = sample_doc();
+        doc.title = title.to_string();
+        let doc_id = pack.insert_doc(&doc).unwrap();
+        let chunk = Chunk {
+            id: 0,
+            doc_id,
+            section_path: section_path.to_string(),
+            locator: locator.to_string(),
+            prefix: String::new(),
+            text: text.to_string(),
+            token_count: text.split_whitespace().count() as i64,
+        };
+        pack.insert_chunk(&chunk).unwrap()
+    }
+
+    // 28. Doc-title context: a Grounded result's prompt contains "These
+    // sources are excerpts from:" followed by the cited doc's title,
+    // inserted between the system contract and the rendered sources block.
+    #[test]
+    fn t28_assemble_grounded_prompt_carries_doc_title_context() {
+        let pack = empty_pack("t28-doc-title-context");
+        let chunk_id =
+            insert_test_chunk_with_title(&pack, "The Great Cookbook", "Intro", "p.1", "hello world");
+
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.9)],
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        let RetrievalResult::Grounded { prompt, .. } = result else {
+            panic!("expected Grounded");
+        };
+        assert!(
+            prompt.contains("These sources are excerpts from: The Great Cookbook."),
+            "prompt should state the cited doc's title as context: {prompt}"
+        );
+        // Placement: between the system contract and the sources block, per
+        // assemble's doc comment -- the contract text appears BEFORE the
+        // doc-context line, which appears BEFORE the numbered source line.
+        let contract_pos = prompt.find(contract::system_contract().trim_end()).unwrap();
+        let context_pos = prompt.find("These sources are excerpts from:").unwrap();
+        let sources_pos = prompt.find("[1] (").unwrap();
+        assert!(contract_pos < context_pos, "contract must precede doc context");
+        assert!(context_pos < sources_pos, "doc context must precede the sources block");
+    }
+
+    // 29. Doc-title context, empty title: a build with an empty doc title
+    // omits the context line entirely -- no doubled blank lines, no
+    // dangling "from: .". Falls back to the original two-part
+    // contract+blank-line+sources layout.
+    #[test]
+    fn t29_assemble_grounded_prompt_omits_doc_context_for_empty_title() {
+        let pack = empty_pack("t29-empty-doc-title");
+        let chunk_id = insert_test_chunk_with_title(&pack, "", "Intro", "p.1", "hello world");
+
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.9)],
+        };
+        let result = assemble(&[hit], Tier::Small).unwrap();
+        let RetrievalResult::Grounded { prompt, .. } = result else {
+            panic!("expected Grounded");
+        };
+        assert!(
+            !prompt.contains("These sources are excerpts from"),
+            "an empty title must omit the doc-context line entirely: {prompt}"
+        );
+        assert!(!prompt.contains("from: ."), "must not render a dangling empty title: {prompt}");
+        assert!(
+            !prompt.contains("\n\n\n"),
+            "must not leave a doubled blank line where the omitted context line was: {prompt}"
+        );
+        // Falls back to exactly the original two-part layout: contract +
+        // one blank line + sources block.
+        let expected_prefix = format!("{}\n\n", contract::system_contract().trim_end());
+        assert!(
+            prompt.starts_with(&expected_prefix),
+            "must fall back to the original contract+blank-line+sources layout: {prompt}"
         );
     }
 }
