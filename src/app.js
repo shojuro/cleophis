@@ -444,7 +444,7 @@ async function startBuild() {
   try {
     sel = await window.__TAURI__.dialog.open({
       multiple: true,
-      filters: [{ name: 'Documents (Markdown, text, PDF)', extensions: ['md', 'markdown', 'txt', 'pdf'] }],
+      filters: [{ name: 'Documents (Markdown, text, PDF, HTML, Word, EPUB)', extensions: ['md', 'markdown', 'txt', 'pdf', 'html', 'htm', 'docx', 'epub'] }],
     });
   } catch (e) {
     const err = $('packErr');
