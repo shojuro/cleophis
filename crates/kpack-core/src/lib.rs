@@ -41,12 +41,20 @@
 //! vector to score against. The formats slice adds `html` — HTML ingestion
 //! (`scraper`, pure Rust, no native/network dependency), the first of the
 //! pure-Rust document formats; `html::html_to_document` is `pub` because
-//! the follow-on EPUB parser reuses it per-chapter.
+//! the follow-on EPUB parser reuses it per-chapter. That follow-on lands
+//! here too: `docx` (`docx-rust`, bytes → `Document`, `"¶{n}"` locators)
+//! and `epub` (the `epub` crate, bytes → `Document`; EPUB is "a zip of
+//! XHTML," so `epub::document_from_epub` reuses `html::html_to_document`
+//! per chapter rather than re-parsing HTML itself) — both pure Rust, both
+//! BINARY formats that skip `parse::parse` and go straight to
+//! `SourceContent::Prebuilt`, same as PDF.
 
 pub mod build;
 pub mod chunk;
 pub mod contract;
+pub mod docx;
 pub mod embed;
+pub mod epub;
 pub mod format;
 pub mod html;
 pub mod manifest;
@@ -64,9 +72,11 @@ pub use contract::{
     contract_version, no_evidence_marker, refusal_with_offer, render_sources, system_contract,
     PromptContract, RenderChunk,
 };
+pub use docx::{document_from_docx, Error as DocxError};
 pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
+pub use epub::{document_from_epub, Error as EpubError};
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
 pub use html::html_to_document;
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};

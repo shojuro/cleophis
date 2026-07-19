@@ -90,5 +90,24 @@ sha2 = "=0.10.9"
 # extraction API, so an unplanned minor bump is a potential silent behavior
 # change — pinned to the current 0.27.x line.
 scraper = "0.27"
+# DOCX parsing (formats slice) — `docx-rust` (crates.io name; repo
+# cstkingkey, a read-focused fork of bokuweb's write-first `docx-rs`), pure
+# Rust (`zip` + `hard-xml`), no native/network dependency (confirmed via
+# `cargo tree -p kpack-core`). Smoke-tested against a real committed .docx
+# fixture (src/docx.rs's own tests) before committing to this crate, per the
+# FMT-DOCX-EPUB brief's caution that it's smaller/less-proven than the
+# write-first fork — it cleanly extracts paragraph text and `w:pStyle`
+# ("Heading1".."Heading9") from a real python-docx-generated fixture, so no
+# zip+quick-xml fallback was needed. EXACT pin (`=0.1.11`): this crate's
+# public surface is thin/sparsely documented, so an unplanned bump is a
+# potential silent behavior change, same rationale as pulldown-cmark's pin
+# above.
+docx-rust = "=0.1.11"
+# EPUB parsing (formats slice) — pure Rust (`zip` + `xml-rs`), no native/
+# network dependency (confirmed via `cargo tree -p kpack-core`). An EPUB is
+# "a zip of XHTML chapters"; src/epub.rs reuses `html::html_to_document` per
+# chapter rather than re-implementing HTML parsing. EXACT pin (`=2.1.5`):
+# same rationale as the other format-parser pins in this file.
+epub = "=2.1.5"
 
 [dev-dependencies]

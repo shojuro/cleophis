@@ -1200,6 +1200,92 @@ Verify the installation by checking the reported version string.
         assert!(chunk.text.contains("HTML ingestion proves"));
     }
 
+    // 8. DOCX round-trip (formats slice): a SourceContent::Prebuilt(
+    // document_from_docx(fixture)) fed through build_pack (mock embedder)
+    // mounts, and a retrieved chunk carries a "¶{n}" locator — proving the
+    // DOCX locator survives parse-skip -> chunk -> citation, the same
+    // Prebuilt-path proof `prebuilt_document_round_trips_through_build_pack_
+    // with_page_locator` gives PDF's "p.{page}" locator.
+    #[test]
+    fn t8_docx_source_round_trips_through_build_and_mount_with_paragraph_locator() {
+        let dir = unique_dir("t8-docx");
+        let out_path = dir.join("docx.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let sample_docx: &[u8] = include_bytes!("../tests/fixtures/sample.docx");
+        let document = crate::docx::document_from_docx(sample_docx, "Sample DOCX").unwrap();
+        let sources = vec![SourceInput {
+            title: "Sample DOCX".to_string(),
+            source_type: "docx".to_string(),
+            content: SourceContent::Prebuilt(document),
+        }];
+
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+        let (pack, _manifest) = Pack::mount(&out_path, &ctx).unwrap();
+
+        let fts_hits = pack.fts_search("chapter", 5).unwrap();
+        assert!(!fts_hits.is_empty(), "fts_search should find a chunk from the DOCX fixture");
+        let hit_chunk = pack
+            .get_chunk(fts_hits[0])
+            .unwrap()
+            .expect("fts hit id should resolve to a real chunk row");
+        assert!(
+            hit_chunk.locator.starts_with('\u{00b6}'),
+            "DOCX chunks should carry a \"\u{00b6}{{n}}\" locator, got {:?}",
+            hit_chunk.locator
+        );
+    }
+
+    // 9. EPUB round-trip (formats slice): the EPUB analog of t8 — a
+    // SourceContent::Prebuilt(document_from_epub(fixture)) mounts, and a
+    // retrieved chunk's locator carries the chapter href prefix
+    // document_from_epub stamps on (see epub.rs's module doc comment).
+    #[test]
+    fn t9_epub_source_round_trips_through_build_and_mount_with_chapter_locator() {
+        let dir = unique_dir("t9-epub");
+        let out_path = dir.join("epub.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let sample_epub: &[u8] = include_bytes!("../tests/fixtures/sample.epub");
+        let document = crate::epub::document_from_epub(sample_epub, "Sample EPUB").unwrap();
+        let sources = vec![SourceInput {
+            title: "Sample EPUB".to_string(),
+            source_type: "epub".to_string(),
+            content: SourceContent::Prebuilt(document),
+        }];
+
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+        let (pack, _manifest) = Pack::mount(&out_path, &ctx).unwrap();
+
+        let fts_hits = pack.fts_search("paragraph", 5).unwrap();
+        assert!(!fts_hits.is_empty(), "fts_search should find a chunk from the EPUB fixture");
+        let hit_chunk = pack
+            .get_chunk(fts_hits[0])
+            .unwrap()
+            .expect("fts hit id should resolve to a real chunk row");
+        assert!(
+            hit_chunk.locator.contains(".xhtml#"),
+            "EPUB chunks should carry a chapter-href-prefixed locator, got {:?}",
+            hit_chunk.locator
+        );
+    }
+
     // civil_from_days / rfc3339_from_system_time: hand-verified against
     // independently computed reference dates (Python's datetime), not just
     // round-tripped against this module's own arithmetic.

@@ -371,9 +371,12 @@ pub async fn mount_pack(path: String, app: AppHandle) -> Result<PackManifestInfo
 /// (`parse.rs`'s `"html"` arm → `kpack_core::html::html_to_document`), so
 /// HTML needs no special-cased branch in `build_personal_pack_with_embedder`
 /// at all: it's text, so it takes the existing `read_to_string` →
-/// `SourceContent::Raw` path the same way `"md"`/`"txt"` do. Anything else
-/// is unsupported for v1 (EPUB/DOCX are later milestones, per `parse.rs`'s
-/// module doc comment) and returns a clear error rather than silently
+/// `SourceContent::Raw` path the same way `"md"`/`"txt"` do. `.docx` and
+/// `.epub` (FMT-DOCX-EPUB) map to `"docx"`/`"epub"` — BINARY, like `.pdf`:
+/// `build_personal_pack_with_embedder` branches on these strings too, and
+/// hands them to `kpack_core::document_from_docx`/`document_from_epub`
+/// instead, also wrapping the result in `SourceContent::Prebuilt`. Anything
+/// else is unsupported and returns a clear error rather than silently
 /// feeding binary bytes through the plain-text parser as `parse` itself
 /// would if simply handed an unrecognized type — a user picking an
 /// unsupported file should see a refusal, not a garbled "personal pack".
@@ -387,8 +390,10 @@ fn source_type_for(path: &Path) -> Result<String, String> {
         Some("txt") => Ok("txt".to_string()),
         Some("pdf") => Ok("pdf".to_string()),
         Some("html") | Some("htm") => Ok("html".to_string()),
+        Some("docx") => Ok("docx".to_string()),
+        Some("epub") => Ok("epub".to_string()),
         _ => Err(format!(
-            "unsupported file type: {} (only .md, .markdown, .txt, .pdf, .html, and .htm are supported)",
+            "unsupported file type: {} (only .md, .markdown, .txt, .pdf, .html, .htm, .docx, and .epub are supported)",
             path.display()
         )),
     }
@@ -562,6 +567,26 @@ fn build_personal_pack_with_embedder(
                 ));
             }
             let doc = kpack_core::document_from_pages(&title, &pages);
+            SourceContent::Prebuilt(doc)
+        } else if source_type == "docx" {
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            let doc = kpack_core::document_from_docx(&bytes, &title).map_err(|e| {
+                format!(
+                    "Couldn't read the DOCX \"{title}\" — it may be corrupted or not a valid \
+                     file. ({e})"
+                )
+            })?;
+            SourceContent::Prebuilt(doc)
+        } else if source_type == "epub" {
+            let bytes = std::fs::read(path)
+                .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+            let doc = kpack_core::document_from_epub(&bytes, &title).map_err(|e| {
+                format!(
+                    "Couldn't read the EPUB \"{title}\" — it may be corrupted or not a valid \
+                     file. ({e})"
+                )
+            })?;
             SourceContent::Prebuilt(doc)
         } else {
             let text = std::fs::read_to_string(path)
@@ -970,7 +995,11 @@ mod tests {
         assert_eq!(source_type_for(Path::new("a.html")).unwrap(), "html");
         assert_eq!(source_type_for(Path::new("a.htm")).unwrap(), "html");
         assert_eq!(source_type_for(Path::new("a.HTML")).unwrap(), "html");
-        assert!(source_type_for(Path::new("a.docx")).is_err());
+        assert_eq!(source_type_for(Path::new("a.docx")).unwrap(), "docx");
+        assert_eq!(source_type_for(Path::new("a.DOCX")).unwrap(), "docx");
+        assert_eq!(source_type_for(Path::new("a.epub")).unwrap(), "epub");
+        assert_eq!(source_type_for(Path::new("a.EPUB")).unwrap(), "epub");
+        assert!(source_type_for(Path::new("a.doc")).is_err(), "the old binary .doc format is not supported");
         assert!(source_type_for(Path::new("no-extension")).is_err());
     }
 
