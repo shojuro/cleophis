@@ -33,6 +33,18 @@
 //! build's command doesn't return until the build finishes (no detached
 //! worker thread), so the guard lives in the command's own async body
 //! rather than a spawned thread's.
+//!
+//! ## App-data pack store (spec §3a A2)
+//! Personal packs no longer land wherever the caller names: `build_personal_pack`
+//! now computes its own out-path under [`packs_dir`], an app-data `packs/`
+//! directory it owns. [`list_packs`]/[`delete_pack`] are the read/delete
+//! halves of that store — both `spawn_blocking` around pure, `AppHandle`-free
+//! inner functions (`list_packs_in`/`delete_pack_in`, mirroring this file's
+//! existing `*_at`/`*_with_embedder` pattern) so they're unit-testable
+//! without a real Tauri app. `delete_pack_in`'s path-safety check (canonicalize
+//! both sides, require the target's parent to BE the packs dir and its
+//! extension to be `kpack`) is what keeps a path from the front end from ever
+//! deleting anything outside that one managed directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -83,6 +95,19 @@ const EMBEDDER_RELATIVE_PATH: &str = "embedders/bge-base-en-v1.5-q8_0.gguf";
 /// every install (fat and thin alike), it is never separately downloaded.
 fn bundled_embedder_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(EMBEDDER_RELATIVE_PATH)
+}
+
+/// App-data `packs/` — the one managed home for personal `.kpack` files
+/// (spec §3a A2). Created on demand; every personal pack the builder writes
+/// and every pack `list_packs`/`delete_pack` sees lives directly here.
+fn packs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("packs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 /// A lazily-loaded, shared `BgeEmbedder` (spec §3a A1's load-bearing fix —
@@ -201,6 +226,16 @@ impl From<Manifest> for PackManifestInfo {
     }
 }
 
+/// A personal pack on disk: its absolute path (the FE attaches packs to a
+/// chat BY path in A4) plus its manifest view. Returned by both
+/// `build_personal_pack` (the just-built pack) and `list_packs`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackEntry {
+    pub path: String,
+    pub manifest: PackManifestInfo,
+}
+
 /// Pure mount logic behind the `mount_pack` command: mount the `.kpack` at
 /// `path` against this device's pinned embedder hash and return its
 /// manifest. The core's `Error` values are already user-safe plain-language
@@ -263,6 +298,74 @@ fn generate_pack_id() -> String {
     format!("personal-{}-{nanos}", std::process::id())
 }
 
+/// A unique on-disk filename for a newly built personal pack — independent
+/// of its (possibly user-chosen, possibly duplicate) display name, so two
+/// packs built back-to-back, or two packs sharing a display name, never
+/// collide under `packs_dir`. Same "pid + nanos" idiom as `generate_pack_id`,
+/// factored out separately since the filename and the `pack_id` are no
+/// longer always the same value (spec §3a A2: `name` becomes the `pack_id`
+/// when given).
+fn unique_pack_filename() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("personal-{}-{nanos}.kpack", std::process::id())
+}
+
+/// Sanitizes a user-supplied display `name` into a manifest-safe `pack_id`
+/// (spec §3a A2): trim, lowercase, collapse whitespace runs to a single
+/// `-`, drop everything outside `[a-z0-9_-]`, collapse repeated `-`, cap at
+/// 64 chars. Returns `None` if nothing survives (e.g. `"   "` or `"!!!"`) —
+/// the caller then falls back to `generate_pack_id()`.
+fn sanitize_pack_name(name: &str) -> Option<String> {
+    let lower = name.trim().to_lowercase();
+
+    // Pass 1: collapse whitespace runs to a single '-', drop anything that
+    // isn't ascii-alphanumeric/'_'/'-'.
+    let mut filtered = String::with_capacity(lower.len());
+    let mut last_was_space = false;
+    for ch in lower.chars() {
+        if ch.is_whitespace() {
+            if !filtered.is_empty() && !last_was_space {
+                filtered.push('-');
+            }
+            last_was_space = true;
+        } else if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            filtered.push(ch);
+            last_was_space = false;
+        }
+        // Anything else (punctuation, non-ascii) is silently dropped.
+    }
+
+    // Pass 2: collapse literal repeated '-' runs that pass 1's whitespace
+    // handling doesn't catch (e.g. a source string with "--" already in it).
+    let mut collapsed = String::with_capacity(filtered.len());
+    let mut last_was_dash = false;
+    for ch in filtered.chars() {
+        if ch == '-' {
+            if !last_was_dash {
+                collapsed.push('-');
+            }
+            last_was_dash = true;
+        } else {
+            collapsed.push(ch);
+            last_was_dash = false;
+        }
+    }
+
+    collapsed.truncate(64);
+    while collapsed.ends_with('-') {
+        collapsed.pop();
+    }
+
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
+}
+
 /// A monotonic-enough `pack_version` for a personal build: whole seconds
 /// since the Unix epoch, decimal. `build.rs`'s own RFC 3339 formatter
 /// (`rfc3339_now`) is private to that module, so this is a deliberately
@@ -283,11 +386,15 @@ fn build_timestamp() -> String {
 /// progress through `progress` and honoring `cancel` (spec §3a A1's
 /// `kpack_core::build_pack_with_progress`), then mount it back (proving the
 /// round-trip, not just that the build call returned Ok) and hand back its
-/// manifest. Factored out (no `AppHandle`) so the `#[ignore]`d integration
-/// tests below can call it directly against a temp file, the bundled GGUF,
-/// and a plain `EmbedderCache::default()` — no Tauri `AppHandle` needed.
+/// manifest. `pack_id` is caller-supplied (spec §3a A2: the sanitized `name`
+/// or a `generate_pack_id()` fallback — the command's job, not this fn's) —
+/// this fn just stamps it into `BuildMeta` unchanged. Factored out (no
+/// `AppHandle`) so the `#[ignore]`d integration tests below can call it
+/// directly against a temp file, the bundled GGUF, and a plain
+/// `EmbedderCache::default()` — no Tauri `AppHandle` needed.
 fn build_personal_pack_with_embedder(
     file_paths: &[String],
+    pack_id: &str,
     out_path: &Path,
     gguf_path: &Path,
     cache: &EmbedderCache,
@@ -318,7 +425,7 @@ fn build_personal_pack_with_embedder(
     }
 
     let meta = BuildMeta {
-        pack_id: generate_pack_id(),
+        pack_id: pack_id.to_string(),
         pack_version: build_timestamp(),
         pack_tier: PackTier::Personal,
         embedder_name: EMBEDDER_NAME.to_string(),
@@ -350,11 +457,22 @@ const BUILD_PROGRESS_THROTTLE: Duration = Duration::from_millis(500);
 #[tauri::command]
 pub async fn build_personal_pack(
     file_paths: Vec<String>,
-    out_path: String,
+    name: Option<String>,
     app: AppHandle,
     builds: State<'_, Builds>,
-) -> Result<PackManifestInfo, String> {
+) -> Result<PackEntry, String> {
     let gguf_path = bundled_embedder_path(&app);
+    // Computed here, before the spawn_blocking build, per spec §3a A2: the
+    // out-path is this command's to decide now, not the caller's — `name`
+    // (when it sanitizes to something non-empty) becomes the pack_id shown
+    // in the picker/citations, but the on-disk filename is always the
+    // unique pid+nanos idiom, so two packs sharing a display name never
+    // collide on disk.
+    let out_path = packs_dir(&app)?.join(unique_pack_filename());
+    let pack_id = name
+        .as_deref()
+        .and_then(sanitize_pack_name)
+        .unwrap_or_else(generate_pack_id);
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -402,11 +520,14 @@ pub async fn build_personal_pack(
 
     let cancel_for_build = cancel.clone();
     let app_for_thread = app.clone();
+    let out_path_for_build = out_path.clone();
+    let pack_id_for_build = pack_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let cache = app_for_thread.state::<EmbedderCache>();
         build_personal_pack_with_embedder(
             &file_paths,
-            Path::new(&out_path),
+            &pack_id_for_build,
+            &out_path_for_build,
             &gguf_path,
             cache.inner(),
             &progress,
@@ -416,7 +537,10 @@ pub async fn build_personal_pack(
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?;
 
-    result
+    result.map(|manifest| PackEntry {
+        path: out_path.to_string_lossy().into_owned(),
+        manifest,
+    })
 }
 
 /// Flips the active build's cancel flag (spec §3a A1); no-op if no build is
@@ -560,6 +684,93 @@ pub async fn rag_query(
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
+/// Pure directory scan behind the `list_packs` command (spec §3a A2): read
+/// every `*.kpack` file directly in `dir` and try `mount_pack_at` on each —
+/// on success it becomes a `PackEntry`; on failure (corrupt file, or a pack
+/// built with a different embedder than this device's) it's silently
+/// SKIPPED rather than failing the whole list, so one bad pack can't hide
+/// every other one. Takes `dir` explicitly (not an `AppHandle`) so it's
+/// unit-testable without constructing a Tauri app. Sorted by path for a
+/// stable order across calls — directory read order is not guaranteed.
+fn list_packs_in(dir: &Path) -> Vec<PackEntry> {
+    let mut entries: Vec<PackEntry> = Vec::new();
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return entries;
+    };
+    for dir_entry in read_dir.flatten() {
+        let path = dir_entry.path();
+        let is_kpack = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        if is_kpack.as_deref() != Some("kpack") {
+            continue;
+        }
+        if let Ok(manifest) = mount_pack_at(&path) {
+            entries.push(PackEntry {
+                path: path.to_string_lossy().into_owned(),
+                manifest,
+            });
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
+}
+
+#[tauri::command]
+pub async fn list_packs(app: AppHandle) -> Result<Vec<PackEntry>, String> {
+    let dir = packs_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || list_packs_in(&dir))
+        .await
+        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())
+}
+
+/// Pure path-safety + delete logic behind the `delete_pack` command (spec
+/// §3a A2 — SECURITY CRITICAL): canonicalizes both `packs_dir` (it exists —
+/// `packs_dir()` already `create_dir_all`s it) and `target`, then refuses
+/// unless the canonicalized target's PARENT is exactly the canonicalized
+/// `packs_dir` — a file living DIRECTLY in the managed dir, not a subdir,
+/// not reached via `..`, not a symlink escape — AND its extension is
+/// `kpack` (ASCII-lowercased). Canonicalizing BOTH sides resolves `..`
+/// components and symlinks on both, so the `parent ==` comparison is sound
+/// on Windows (`\\?\`-prefixed both sides) and Unix alike. This is what
+/// keeps `delete_pack` from ever becoming an arbitrary-file-delete
+/// primitive, even if the front end (or a compromised renderer) hands it a
+/// traversal or absolute path.
+fn delete_pack_in(packs_dir: &Path, target: &str) -> Result<(), String> {
+    let canonical_dir = packs_dir
+        .canonicalize()
+        .map_err(|e| format!("packs dir unavailable: {e}"))?;
+
+    let target_path = Path::new(target);
+    if !target_path.exists() {
+        return Err("no such pack".to_string());
+    }
+    let canonical_target = target_path
+        .canonicalize()
+        .map_err(|e| format!("couldn't resolve {target}: {e}"))?;
+
+    let is_kpack = canonical_target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let lives_directly_in_packs_dir = canonical_target.parent() == Some(canonical_dir.as_path());
+
+    if is_kpack.as_deref() != Some("kpack") || !lives_directly_in_packs_dir {
+        return Err("refusing to delete a path outside the packs store".to_string());
+    }
+
+    std::fs::remove_file(&canonical_target).map_err(|e| format!("couldn't delete pack: {e}"))
+}
+
+#[tauri::command]
+pub async fn delete_pack(path: String, app: AppHandle) -> Result<(), String> {
+    let dir = packs_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || delete_pack_in(&dir, &path))
+        .await
+        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +895,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let manifest = build_personal_pack_with_embedder(
             &[md_path.to_string_lossy().into_owned()],
+            "test-pack",
             &out_path,
             &gguf_path,
             &cache,
@@ -692,6 +904,7 @@ mod tests {
         )
         .expect("build_personal_pack_with_embedder should succeed against the real embedder");
 
+        assert_eq!(manifest.pack_id, "test-pack");
         assert_eq!(manifest.pack_tier, "personal");
         assert_eq!(manifest.embedding_dims, 768);
         assert_eq!(manifest.embedder_sha256, EMBEDDER_SHA256);
@@ -721,6 +934,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let err = build_personal_pack_with_embedder(
             &[bad_path.to_string_lossy().into_owned()],
+            "test-pack",
             &out_path,
             &gguf_path,
             &cache,
@@ -785,6 +999,7 @@ mod tests {
 
         let manifest = build_personal_pack_with_embedder(
             &[md_path.to_string_lossy().into_owned()],
+            "test-pack",
             &out_path,
             &gguf_path,
             &cache,
@@ -805,6 +1020,167 @@ mod tests {
         // the build's own internal `get_or_load` call did not reload it.
         let third = cache.get_or_load(&gguf_path).expect("post-build call should reuse the cache");
         assert!(Arc::ptr_eq(&first, &third));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_pack_name_maps_display_names_to_safe_ids() {
+        assert_eq!(sanitize_pack_name("My Notes").as_deref(), Some("my-notes"));
+        assert_eq!(sanitize_pack_name("a/b\\c").as_deref(), Some("abc"));
+        assert_eq!(sanitize_pack_name("  padded  ").as_deref(), Some("padded"));
+        assert_eq!(
+            sanitize_pack_name("already-clean_123").as_deref(),
+            Some("already-clean_123")
+        );
+        assert_eq!(sanitize_pack_name("   "), None);
+        assert_eq!(sanitize_pack_name("!!!"), None);
+
+        let long = "a".repeat(100);
+        let sanitized = sanitize_pack_name(&long).expect("all-alnum input should survive");
+        assert_eq!(sanitized.len(), 64, "over-long name should be capped at 64 chars");
+    }
+
+    /// Path-safety tests for `delete_pack_in` (spec §3a A2 — SECURITY
+    /// CRITICAL). No real pack format needed: `delete_pack_in` only cares
+    /// about paths + extension, so empty files stand in for real `.kpack`s.
+    #[test]
+    fn delete_pack_in_deletes_a_real_kpack_directly_in_the_packs_dir() {
+        let dir = unique_dir("delete-ok");
+        let target = dir.join("foo.kpack");
+        std::fs::write(&target, b"").unwrap();
+
+        delete_pack_in(&dir, &target.to_string_lossy()).expect("should delete");
+        assert!(!target.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_pack_in_refuses_the_wrong_extension() {
+        let dir = unique_dir("delete-wrong-ext");
+        let target = dir.join("foo.txt");
+        std::fs::write(&target, b"").unwrap();
+
+        let err = delete_pack_in(&dir, &target.to_string_lossy()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(target.exists(), "wrong-extension file must be left untouched");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE security assertion: a path outside the packs dir — whether a
+    /// plain sibling path or a `..`-traversal string that resolves right
+    /// back into that same sibling — must be refused, and the file left
+    /// untouched. This is what proves `delete_pack` can never become an
+    /// arbitrary-file-delete primitive, un-skippable per the task brief.
+    #[test]
+    fn delete_pack_in_refuses_a_path_outside_the_packs_dir() {
+        let root = unique_dir("delete-outside-root");
+        let packs = root.join("packs");
+        std::fs::create_dir_all(&packs).unwrap();
+        let outside = root.join("escape.kpack");
+        std::fs::write(&outside, b"").unwrap();
+
+        // Directly outside, as a plain absolute path.
+        let err = delete_pack_in(&packs, &outside.to_string_lossy()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(outside.exists(), "file outside the packs dir must be left untouched");
+
+        // The same file, reached via a `..` traversal string rooted at packs/.
+        let traversal = packs.join("..").join("escape.kpack");
+        let err = delete_pack_in(&packs, &traversal.to_string_lossy()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(
+            outside.exists(),
+            "traversal path must also be refused, file left untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_pack_in_refuses_a_file_in_a_subdirectory_of_the_packs_dir() {
+        let dir = unique_dir("delete-subdir");
+        let sub = dir.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        let target = sub.join("foo.kpack");
+        std::fs::write(&target, b"").unwrap();
+
+        let err = delete_pack_in(&dir, &target.to_string_lossy()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(target.exists(), "file in a subdir must be left untouched");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_pack_in_reports_a_clean_error_for_a_nonexistent_path() {
+        let dir = unique_dir("delete-missing");
+        let missing = dir.join("nope.kpack");
+
+        let err = delete_pack_in(&dir, &missing.to_string_lossy()).unwrap_err();
+        assert_eq!(err, "no such pack");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end proof that build → list → delete compose (spec §3a A2):
+    /// build a personal pack with a caller-supplied `pack_id` into a temp
+    /// "packs" dir, confirm `list_packs_in` sees exactly that one entry with
+    /// the right id and path, then delete it through `delete_pack_in` and
+    /// confirm the dir is empty again.
+    ///
+    /// `#[ignore]`d for the same reason as the round-trip test above: needs
+    /// the bundled GGUF on disk and the `real`-feature native build. Run
+    /// explicitly with `$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin";
+    /// cargo test -p cleophis --lib -- --ignored kpack::tests::build_list_delete_compose_with_real_embedder`.
+    #[test]
+    #[ignore]
+    fn build_list_delete_compose_with_real_embedder() {
+        let gguf_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(EMBEDDER_RELATIVE_PATH);
+        assert!(
+            gguf_path.exists(),
+            "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
+            gguf_path.display()
+        );
+
+        let dir = unique_dir("build-list-delete");
+        let packs_dir = dir.join("packs");
+        std::fs::create_dir_all(&packs_dir).unwrap();
+
+        let md_path = dir.join("source.md");
+        std::fs::write(
+            &md_path,
+            "# Vitamin K\n\nVitamin K is a fat-soluble vitamin involved in blood clotting.\n",
+        )
+        .unwrap();
+
+        let out_path = packs_dir.join(unique_pack_filename());
+        let cache = EmbedderCache::default();
+        let cancel = AtomicBool::new(false);
+        build_personal_pack_with_embedder(
+            &[md_path.to_string_lossy().into_owned()],
+            "rt-test",
+            &out_path,
+            &gguf_path,
+            &cache,
+            &|_| {},
+            &cancel,
+        )
+        .expect("build should succeed against the real embedder");
+
+        let listed = list_packs_in(&packs_dir);
+        assert_eq!(listed.len(), 1, "expected exactly one pack, got {listed:?}");
+        assert_eq!(listed[0].manifest.pack_id, "rt-test");
+        assert_eq!(listed[0].path, out_path.to_string_lossy());
+
+        delete_pack_in(&packs_dir, &listed[0].path).expect("delete should succeed");
+        assert!(
+            list_packs_in(&packs_dir).is_empty(),
+            "packs dir should be empty after delete"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -67,6 +67,7 @@ async fn load_model(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
@@ -109,6 +110,8 @@ fn main() {
             kpack::build_personal_pack,
             kpack::cancel_build,
             kpack::rag_query,
+            kpack::list_packs,
+            kpack::delete_pack,
             cloud::commands::sign_up,
             cloud::commands::sign_in,
             cloud::commands::sign_out,
@@ -127,6 +130,15 @@ fn main() {
                 window
                     .app_handle()
                     .state::<Arc<cloud::download::Downloads>>()
+                    .request_cancel();
+                // §3a A2: mirror the download cancel above for an in-flight
+                // personal-pack build — `Builds` is managed directly (not
+                // wrapped in an outer Arc, see kpack.rs's module doc
+                // comment), so this is `state::<kpack::Builds>()`, not
+                // `state::<Arc<kpack::Builds>>()`.
+                window
+                    .app_handle()
+                    .state::<kpack::Builds>()
                     .request_cancel();
             }
         })
