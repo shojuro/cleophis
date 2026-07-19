@@ -13,7 +13,7 @@ const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
   mine: new Set(), lapsed: new Set(), chatBlocked: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
-  chat: { model: null, messages: [], streaming: false, aborter: null },
+  chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [] },
   dl: { installed: false, partBytes: 0, active: false },
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
@@ -504,6 +504,45 @@ function onBuildProgress(e) {
   // the build_personal_pack promise itself resolves.
 }
 
+/* ---------------- chat pack attachment (§3a A4) ---------------- */
+async function openAttachModal() {
+  show($('attachModal'));
+  await renderAttachList();
+}
+
+async function renderAttachList() {
+  const list = $('attachList');
+  let packs;
+  try {
+    packs = await invoke('list_packs');
+  } catch (e) {
+    list.innerHTML = `<div style="color:var(--muted);padding:14px 2px">${escapeHtml(String(e))}</div>`;
+    return;
+  }
+  if (!packs.length) {
+    list.innerHTML = `<div style="color:var(--muted);padding:14px 2px">No packs yet — build one from the Packs button in your library, then attach it here.</div>`;
+    return;
+  }
+  // Checkbox view onto the same list_packs data A3's picker uses — not a
+  // delete view, so it's its own small renderer rather than a refactor of
+  // refreshPacksList. packId/path come from filenames (untrusted): escape
+  // both, especially inside the data-path attribute.
+  list.innerHTML = packs.map((p) => {
+    const checked = state.chat.packPaths.includes(p.path) ? 'checked' : '';
+    return `<label class="attachrow"><input type="checkbox" data-path="${escapeHtml(p.path)}" ${checked}/> <span>${escapeHtml(p.manifest.packId)}</span></label>`;
+  }).join('');
+}
+
+function updateGroundPill() {
+  const pill = $('groundPill');
+  if (state.chat.packPaths.length) {
+    pill.hidden = false;
+    pill.textContent = `Packs: ${state.chat.packPaths.length} attached`;
+  } else {
+    pill.hidden = true;
+  }
+}
+
 function simulateStubDownload(m, btn) {
   const prog = $('prog'), bar = prog.firstElementChild;
   prog.style.display = 'block'; btn.disabled = true; btn.style.opacity = 0.7;
@@ -524,10 +563,16 @@ function simulateStubDownload(m, btn) {
 
 /* ---------------- chat ---------------- */
 function enterChat(m) {
+  // A pack attached in one chat shouldn't silently carry into another
+  // model's chat (e.g. a medical pack leaking into an education chat).
+  // Re-entering the SAME model's chat keeps the attachment, mirroring how
+  // state.chat.messages persists across exit/re-enter.
+  if (state.chat.model && state.chat.model.id !== m.id) state.chat.packPaths = [];
   state.chat.model = m;
   $('chatModelName').textContent = m.name;
   $('chatCover').src = m.coverUrl;
   rebuildChatDom();
+  updateGroundPill();
   closeDrawer();
   const views = $('views');
   views.classList.add('in-chat');
@@ -549,16 +594,40 @@ function rebuildChatDom() {
   const box = $('chatMessages');
   box.innerHTML = '';
   appendBubble('assistant', m.greeting || 'Hi!');
-  for (const msg of state.chat.messages) appendBubble(msg.role, msg.content);
+  // A stored assistant message's .citations (set by finishStream on a
+  // grounded turn) is replayed here so citations don't vanish when the
+  // chat is exited and re-entered. .noEvidence messages carry no citations
+  // and render like any other bubble — their content IS the refusal text.
+  for (const msg of state.chat.messages) appendBubble(msg.role, msg.content, msg.citations);
 }
 
-function appendBubble(role, text) {
+function appendBubble(role, text, citations) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
   $('chatMessages').appendChild(el);
+  if (citations && citations.length) renderCitations(el, citations);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return el;
+}
+
+// §3a A4: citations render via DOM textContent, never innerHTML — docTitle/
+// sectionPath/locator come from user-attached pack content (untrusted),
+// so textContent avoids any markup-injection risk without needing escaping.
+function renderCitations(afterEl, citations) {
+  const box = document.createElement('div');
+  box.className = 'citations';
+  for (const c of citations) {
+    const row = document.createElement('div');
+    row.className = 'cite';
+    row.textContent = `[${c.n}] ${c.docTitle}` +
+      (c.sectionPath ? ` · ${c.sectionPath}` : '') +
+      (c.locator ? ` · ${c.locator}` : '');
+    box.appendChild(row);
+  }
+  afterEl.insertAdjacentElement('afterend', box);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
 }
 
 function setComposerEnabled(on) {
@@ -596,6 +665,67 @@ async function sendCompletion() {
   bubble.classList.add('streaming');
   let acc = '';
   state.chat.aborter = new AbortController();
+
+  // §3a A4: when packs are attached to this chat, ground the turn through
+  // rag_query BEFORE touching the model. When no packs are attached this
+  // whole block is skipped and everything below runs exactly as it did
+  // before A4 — same fetch, same SSE parsing, same system message.
+  let groundedPrompt = null, groundedCitations = null;
+  if (state.chat.packPaths.length > 0) {
+    const query = state.chat.messages[state.chat.messages.length - 1]?.content;
+    if (query != null) {
+      bubble.textContent = 'Searching your packs…';
+      let rag;
+      try {
+        rag = await invoke('rag_query', { query, packPaths: state.chat.packPaths });
+      } catch (e) {
+        // Do NOT silently fall through to an ungrounded send — that would
+        // betray the "this answer cites your packs" promise. Fail the turn
+        // instead, same shape as the existing fetch-failure retry chip.
+        bubble.remove();
+        state.chat.streaming = false;
+        $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+        $('sendBtn').disabled = false;
+        const retry = document.createElement('button');
+        retry.className = 'retrychip';
+        retry.textContent = `⟳ Pack search failed (${String(e)}) — tap to retry`;
+        retry.onclick = () => { retry.remove(); sendCompletion(); };
+        $('chatMessages').appendChild(retry);
+        $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+        return;
+      }
+      if (rag.status === 'noEvidence') {
+        // Short-circuit to a deterministic refusal rather than handing the
+        // model rag.prompt's [[NO_EVIDENCE]] marker: without the
+        // contract-trained adapter (parked track — see the §3a plan) the
+        // base model won't reliably refuse on its own, so a scripted
+        // refusal is the honest, demo-safe interim. Once the adapter
+        // lands, this branch can feed the marker to the model instead.
+        const n = state.chat.packPaths.length;
+        const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
+        bubble.classList.remove('streaming');
+        bubble.textContent = refusal;
+        state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+        state.chat.streaming = false;
+        $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+        $('sendBtn').disabled = false;
+        const pill = $('groundPill');
+        pill.hidden = false;
+        pill.textContent = 'No evidence in your packs';
+        return; // no model call — pulseCost() intentionally skipped, no inference ran
+      }
+      // grounded: swap this turn's system message for the assembled
+      // grounded prompt (contract + numbered sources) and continue into
+      // the normal streaming path below.
+      groundedPrompt = rag.prompt;
+      groundedCitations = rag.citations;
+      bubble.textContent = '';
+      const pill = $('groundPill');
+      pill.hidden = false;
+      pill.textContent = `Grounded in ${groundedCitations.length} source${groundedCitations.length === 1 ? '' : 's'}`;
+    }
+  }
+
   try {
     const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
       method: 'POST',
@@ -603,7 +733,7 @@ async function sendCompletion() {
       signal: state.chat.aborter.signal,
       body: JSON.stringify({
         messages: [
-          { role: 'system', content: m.systemPrompt },
+          { role: 'system', content: groundedPrompt ?? m.systemPrompt },
           { role: 'assistant', content: m.greeting },
           ...state.chat.messages,
         ],
@@ -627,7 +757,7 @@ async function sendCompletion() {
         buf = buf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc); return; }
+        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations); return; }
         try {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
@@ -638,9 +768,9 @@ async function sendCompletion() {
         } catch (_) { /* partial line — ignored */ }
       }
     }
-    finishStream(bubble, acc);
+    finishStream(bubble, acc, groundedCitations);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -659,10 +789,18 @@ async function sendCompletion() {
   }
 }
 
-function finishStream(bubble, acc) {
+function finishStream(bubble, acc, citations) {
   bubble.classList.remove('streaming');
-  if (acc) state.chat.messages.push({ role: 'assistant', content: acc });
-  else bubble.remove();
+  if (acc) {
+    const msg = { role: 'assistant', content: acc };
+    // Stash citations on the pushed message (not just rendered here) so
+    // rebuildChatDom can replay them if the chat is exited and re-entered.
+    if (citations && citations.length) {
+      msg.citations = citations;
+      renderCitations(bubble, citations);
+    }
+    state.chat.messages.push(msg);
+  } else bubble.remove();
   state.chat.streaming = false;
   $('sendBtn').hidden = false; $('stopBtn').hidden = true;
   $('sendBtn').disabled = false;
@@ -695,10 +833,22 @@ function lockNudge(card) {
 function show(el) { el.classList.add('show'); const i = el.querySelector('input'); if (i) setTimeout(() => i.focus(), 50); }
 function hide(el) {
   el.classList.remove('show');
-  // Any dismissal of an auth modal (close button, backdrop, Escape) clears
-  // both forms — typed-but-abandoned credentials must not sit in the DOM for
-  // the next person at the keyboard.
+  // Any dismissal of a modal (close button, backdrop, Escape) clears its
+  // typed-but-abandoned transient state — it must not sit in the DOM for
+  // the next open. loginModal/createModal clear their forms; packsModal
+  // clears the build-name field + any build error; attachModal clears its
+  // (unsubmitted, since Done already copied checked boxes into
+  // state.chat.packPaths) checkbox list, which renderAttachList rebuilds
+  // fresh from state on the next open anyway.
   if (el.id === 'loginModal' || el.id === 'createModal') resetAuthForms();
+  else if (el.id === 'packsModal') {
+    $('packName').value = '';
+    const err = $('packErr');
+    err.style.display = 'none';
+    err.textContent = '';
+  } else if (el.id === 'attachModal') {
+    $('attachList').innerHTML = '';
+  }
 }
 
 function resetAuthForms() {
@@ -763,7 +913,7 @@ $('grid').addEventListener('click', (e) => {
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); }
+  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }
 });
 $('loginBtn').addEventListener('click', () => {
   if (state.signedIn) {
@@ -772,8 +922,15 @@ $('loginBtn').addEventListener('click', () => {
     renderFilters(); renderGrid();
   } else show($('loginModal'));
 });
-document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); }));
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }));
 $('packsBtn').addEventListener('click', () => openPacksModal());
+$('attachPacksBtn').addEventListener('click', () => openAttachModal());
+$('attachDoneBtn').addEventListener('click', () => {
+  const checked = $('attachList').querySelectorAll('input[type=checkbox]:checked');
+  state.chat.packPaths = [...checked].map((cb) => cb.dataset.path);
+  hide($('attachModal'));
+  updateGroundPill();
+});
 $('packBuildBtn').addEventListener('click', () => startBuild());
 $('packCancelBtn').addEventListener('click', async () => {
   try { await invoke('cancel_build'); } catch (_) {}
@@ -843,7 +1000,7 @@ $('doCreate').addEventListener('click', async () => {
     btn.textContent = 'Create account';
   }
 });
-[$('loginModal'), $('createModal'), $('packsModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
+[$('loginModal'), $('createModal'), $('packsModal'), $('attachModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
 $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -853,11 +1010,13 @@ $('signOutBtn').addEventListener('click', async () => {
   cancelPaymentPoll(null);
   closeDrawer();
   hide($('packsModal'));
+  hide($('attachModal'));
   // Chat state is per-account: leave the chat view if it's open and drop
   // the transcript so the next sign-in can't replay this one's messages.
   exitChat();
   state.chat.messages = [];
   state.chat.model = null;
+  state.chat.packPaths = [];
   state.signedIn = false;
   state.nick = null;
   state.device = null;

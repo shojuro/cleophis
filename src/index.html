@@ -59,6 +59,8 @@
         <b id="chatModelName">—</b>
         <span class="pill" id="chatStatusPill"><span class="pill-dot"></span>Local · offline</span>
       </div>
+      <button class="btn" id="attachPacksBtn" title="Attach knowledge packs">Packs</button>
+      <span class="groundpill" id="groundPill" hidden></span>
       <div class="grow"></div>
       <div class="cost mono" id="costCounter" title="Total inference cost this session">$0.00</div>
     </div>
@@ -117,6 +119,16 @@
     <button class="btn" id="packCancelBtn" style="display:none">Cancel</button>
     <div class="errmsg" id="packErr"></div>
     <div id="packsList"></div>
+  </div>
+</div>
+
+<div class="modal" id="attachModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <h2>Attach knowledge packs</h2>
+    <p class="sub">Answers in this chat will cite the packs you attach — or say when there's no evidence in them.</p>
+    <div id="attachList"></div>
+    <button class="btn primary block" id="attachDoneBtn">Done</button>
   </div>
 </div>
 
