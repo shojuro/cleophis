@@ -1336,4 +1336,83 @@ Verify the installation by checking the reported version string.
         assert_eq!(vec_hits.len(), 1);
         assert_eq!(vec_hits[0].1, 0.0, "stored vector should exactly match the recomputed one");
     }
+
+    // Prebuilt-hash determinism (B2-review follow-up): t2 above only proves
+    // build_pack is deterministic for Raw sources; document_content_text
+    // (docs.sha256's input for a Prebuilt source) and document_from_pages
+    // are deterministic by inspection today, but weren't locked by a test.
+    // Building the SAME SourceContent::Prebuilt(document_from_pages(...))
+    // document twice must yield byte-identical docs.sha256 and
+    // byte-identical stored int8 embeddings across both builds — mirroring
+    // t2's proof, for the Prebuilt path this time.
+    #[test]
+    fn prebuilt_document_build_is_deterministic() {
+        let dir = unique_dir("prebuilt-determinism");
+        let path_a = dir.join("a.kpack");
+        let path_b = dir.join("b.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let pages = vec![
+            (
+                1u32,
+                "Vitamin K is a fat-soluble vitamin involved in blood clotting.\n\n\
+                 It also plays a role in bone metabolism."
+                    .to_string(),
+            ),
+            (2u32, "Warfarin is a vitamin K antagonist used as an anticoagulant.".to_string()),
+        ];
+        let document = document_from_pages("Extracted PDF", &pages);
+        let sources = vec![SourceInput {
+            title: "Extracted PDF".to_string(),
+            source_type: "pdf".to_string(),
+            content: SourceContent::Prebuilt(document),
+        }];
+
+        build_pack(&sources, &embedder, &meta, &path_a, &cfg).unwrap();
+        build_pack(&sources, &embedder, &meta, &path_b, &cfg).unwrap();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+        let (pack_a, _) = Pack::mount(&path_a, &ctx).unwrap();
+        let (pack_b, _) = Pack::mount(&path_b, &ctx).unwrap();
+
+        // docs.sha256: document_content_text's flattening of the SAME
+        // Prebuilt Document must hash the same both times.
+        let doc_a = pack_a.get_doc(1).unwrap().expect("doc 1 should exist in pack A");
+        let doc_b = pack_b.get_doc(1).unwrap().expect("doc 1 should exist in pack B");
+        assert_eq!(doc_a.sha256.len(), 64);
+        assert_eq!(
+            doc_a.sha256, doc_b.sha256,
+            "docs.sha256 must be byte-identical across two builds of the same Prebuilt document"
+        );
+
+        // Stored int8 embeddings: same (section_path, locator, text,
+        // token_count) chunk keys, and byte-identical stored vectors —
+        // t2's exact proof technique, applied to the Prebuilt path.
+        let chunks_a = all_chunks(&pack_a);
+        let chunks_b = all_chunks(&pack_b);
+        assert!(!chunks_a.is_empty(), "fixture pages should produce at least one chunk");
+
+        let key = |c: &Chunk| (c.section_path.clone(), c.locator.clone(), c.text.clone(), c.token_count);
+        let keys_a: Vec<_> = chunks_a.iter().map(key).collect();
+        let keys_b: Vec<_> = chunks_b.iter().map(key).collect();
+        assert_eq!(keys_a, keys_b, "the two builds' chunk sets must match");
+
+        for chunk in &chunks_a {
+            let input = passage_input(&chunk.prefix, &chunk.text);
+            let expected = quantize_int8(&l2_normalize(&embedder.embed_passage(&input).unwrap()));
+
+            let hit_a = pack_a.vec_search(&expected, 1).unwrap();
+            let hit_b = pack_b.vec_search(&expected, 1).unwrap();
+            assert_eq!(hit_a.len(), 1);
+            assert_eq!(hit_b.len(), 1);
+            assert_eq!(hit_a[0].1, 0.0, "pack A's stored vector should exactly match the recomputed one");
+            assert_eq!(hit_b[0].1, 0.0, "pack B's stored vector should exactly match the recomputed one");
+        }
+    }
 }
