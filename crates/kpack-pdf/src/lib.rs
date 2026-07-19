@@ -28,9 +28,26 @@
 //! linearly within a page. That's inherent to any PDF text extractor (PDF
 //! has no built-in concept of "reading order"); this crate does no
 //! reordering, trimming, or filtering beyond what pdfium itself returns.
+//!
+//! ## Binding pdfium exactly once per process (the part that's easy to get
+//! silently wrong)
+//! `Pdfium::bind_to_library` performs a **process-global, one-time** native
+//! library load — a second call anywhere in the same process (a second
+//! `extract_pages`, whether a second PDF, a second pack build, or a retry)
+//! errors `PdfiumLibraryBindingsAlreadyInitialized` rather than returning a
+//! second handle. [`pdfium`] (mirrors `kpack-embed::bge::shared_backend`'s
+//! `OnceLock` pattern for `LlamaBackend::init()`, the exact same
+//! process-global-singleton shape) binds the library at most once and
+//! caches the bound `Pdfium` — or the bind error — for every later call to
+//! reuse. A caller passing a *different* `pdfium_lib_path` on a later call
+//! than the one that won the race is a no-op: the first-bound library keeps
+//! being used, which is the only sane behavior given the binding is
+//! inherently process-global (there's no way to rebind to a different
+//! library after the fact).
 
 use std::fmt;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use pdfium_render::prelude::*;
 
@@ -72,6 +89,29 @@ impl fmt::Display for PdfError {
 
 impl std::error::Error for PdfError {}
 
+/// Process-wide, lazily-bound `Pdfium` handle. See the module doc's
+/// "Binding pdfium exactly once per process" section for why this can't
+/// just be `Pdfium::bind_to_library` inside `extract_pages` directly. The
+/// `thread_safe` Cargo feature (enabled in `Cargo.toml`) is what makes
+/// `Pdfium` itself `Send + Sync` and therefore legal to hold in a `static`
+/// at all — without it this wouldn't compile.
+static PDFIUM: OnceLock<Result<Pdfium, String>> = OnceLock::new();
+
+/// Bind (once) or reuse the cached process-wide pdfium handle. The bind
+/// error, if any, is cached too — every caller after the first sees the
+/// same [`PdfError::LibraryLoad`] rather than re-attempting (and
+/// re-failing differently on) a doomed bind.
+fn pdfium(pdfium_lib_path: &Path) -> Result<&'static Pdfium, PdfError> {
+    let result = PDFIUM.get_or_init(|| {
+        Pdfium::bind_to_library(pdfium_lib_path)
+            .map(Pdfium::new)
+            .map_err(|e| e.to_string())
+    });
+    result
+        .as_ref()
+        .map_err(|msg| PdfError::LibraryLoad(msg.clone()))
+}
+
 /// Extract text from every page of a PDF, in page order.
 ///
 /// `pdf_bytes` is the raw file content — no filesystem access here, callers
@@ -81,14 +121,13 @@ impl std::error::Error for PdfError {}
 /// bundled with this crate — callers resolve it (dev:
 /// `tools/fetch-pdfium.mjs`'s output path; shipped app: B4's
 /// resources-relative path, mirroring
-/// `src-tauri::kpack::bundled_embedder_path`).
+/// `src-tauri::kpack::bundled_embedder_path`). Only the FIRST call in a
+/// process actually binds the library at this path — see [`pdfium`].
 ///
 /// No password support: an encrypted PDF fails with [`PdfError::Parse`]
 /// rather than silently returning empty text.
 pub fn extract_pages(pdf_bytes: &[u8], pdfium_lib_path: &Path) -> Result<Vec<PageText>, PdfError> {
-    let bindings = Pdfium::bind_to_library(pdfium_lib_path)
-        .map_err(|e| PdfError::LibraryLoad(e.to_string()))?;
-    let pdfium = Pdfium::new(bindings);
+    let pdfium = pdfium(pdfium_lib_path)?;
 
     let document = pdfium
         .load_pdf_from_byte_slice(pdf_bytes, None)
@@ -123,5 +162,49 @@ mod tests {
 
         let parse_err = PdfError::Parse("bad xref table".to_string());
         assert!(parse_err.to_string().contains("could not read"));
+    }
+
+    // Regression test for the field bug this fix addresses: a second
+    // `extract_pages` call in the same process used to error
+    // `PdfiumLibraryBindingsAlreadyInitialized` because `bind_to_library`
+    // was called fresh every time — pdfium's library binding is a
+    // process-global one-time init. The original smoke test never caught
+    // this because it only ever called `extract_pages` once per process.
+    // Needs the real dll (`node tools/fetch-pdfium.mjs` first) and the
+    // fixture PDF, so it's `#[ignore]`d like the other real-library tests.
+    #[test]
+    #[ignore]
+    fn extract_pages_can_be_called_twice_in_one_process() {
+        let pdfium_lib_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("src-tauri")
+            .join("resources")
+            .join("pdfium")
+            .join("pdfium.dll");
+        assert!(
+            pdfium_lib_path.exists(),
+            "pdfium.dll missing: {} — run `node tools/fetch-pdfium.mjs` first",
+            pdfium_lib_path.display()
+        );
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sample.pdf");
+        let pdf_bytes = std::fs::read(&fixture_path)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", fixture_path.display()));
+
+        let first = extract_pages(&pdf_bytes, &pdfium_lib_path);
+        assert!(first.is_ok(), "first extract_pages call failed: {first:?}");
+
+        let second = extract_pages(&pdf_bytes, &pdfium_lib_path);
+        assert!(
+            second.is_ok(),
+            "second extract_pages call in the same process failed (this is the \
+             PdfiumLibraryBindingsAlreadyInitialized regression): {second:?}"
+        );
+
+        assert_eq!(first.unwrap(), second.unwrap(), "both calls should extract identical pages");
     }
 }
