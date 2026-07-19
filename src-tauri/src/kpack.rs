@@ -359,19 +359,24 @@ pub async fn mount_pack(path: String, app: AppHandle) -> Result<PackManifestInfo
 }
 
 /// Derive a `SourceInput::source_type` from `path`'s extension:
-/// `.md`/`.markdown` and `.txt` map to `kpack_core::parse::parse`'s two
+/// `.md`/`.markdown` and `.txt` map to `kpack_core::parse::parse`'s
 /// recognized dispatch strings (`"md"`/`"txt"` — `parse` itself treats `"md"`
 /// and `"markdown"` as synonyms, so both normalize to `"md"` here). `.pdf`
 /// (§3b B3) maps to `"pdf"` — not one of `parse`'s dispatch strings, since a
 /// PDF never reaches `parse`: `build_personal_pack_with_embedder` branches
 /// on this string before that call and hands PDFs to `kpack_pdf::extract_pages`
 /// + `kpack_core::document_from_pages` instead, wrapping the result in
-/// `SourceContent::Prebuilt`. Anything else is unsupported for v1
-/// (EPUB/DOCX/HTML are later milestones, per `parse.rs`'s module doc
-/// comment) and returns a clear error rather than silently feeding binary
-/// bytes through the plain-text parser as `parse` itself would if simply
-/// handed an unrecognized type — a user picking an unsupported file should
-/// see a refusal, not a garbled "personal pack".
+/// `SourceContent::Prebuilt`. `.html`/`.htm` (formats slice) map to
+/// `"html"` — UNLIKE `.pdf`, this IS one of `parse`'s dispatch strings
+/// (`parse.rs`'s `"html"` arm → `kpack_core::html::html_to_document`), so
+/// HTML needs no special-cased branch in `build_personal_pack_with_embedder`
+/// at all: it's text, so it takes the existing `read_to_string` →
+/// `SourceContent::Raw` path the same way `"md"`/`"txt"` do. Anything else
+/// is unsupported for v1 (EPUB/DOCX are later milestones, per `parse.rs`'s
+/// module doc comment) and returns a clear error rather than silently
+/// feeding binary bytes through the plain-text parser as `parse` itself
+/// would if simply handed an unrecognized type — a user picking an
+/// unsupported file should see a refusal, not a garbled "personal pack".
 fn source_type_for(path: &Path) -> Result<String, String> {
     let ext = path
         .extension()
@@ -381,8 +386,9 @@ fn source_type_for(path: &Path) -> Result<String, String> {
         Some("md") | Some("markdown") => Ok("md".to_string()),
         Some("txt") => Ok("txt".to_string()),
         Some("pdf") => Ok("pdf".to_string()),
+        Some("html") | Some("htm") => Ok("html".to_string()),
         _ => Err(format!(
-            "unsupported file type: {} (only .md, .markdown, .txt, and .pdf are supported)",
+            "unsupported file type: {} (only .md, .markdown, .txt, .pdf, .html, and .htm are supported)",
             path.display()
         )),
     }
@@ -961,6 +967,9 @@ mod tests {
         assert_eq!(source_type_for(Path::new("a.txt")).unwrap(), "txt");
         assert_eq!(source_type_for(Path::new("a.pdf")).unwrap(), "pdf");
         assert_eq!(source_type_for(Path::new("a.PDF")).unwrap(), "pdf");
+        assert_eq!(source_type_for(Path::new("a.html")).unwrap(), "html");
+        assert_eq!(source_type_for(Path::new("a.htm")).unwrap(), "html");
+        assert_eq!(source_type_for(Path::new("a.HTML")).unwrap(), "html");
         assert!(source_type_for(Path::new("a.docx")).is_err());
         assert!(source_type_for(Path::new("no-extension")).is_err());
     }

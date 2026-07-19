@@ -38,13 +38,17 @@
 //! rank fusion (RRF), each fused candidate annotated with a dense cosine
 //! similarity for R2's per-pack gate; `format::Pack::get_embedding` is the
 //! small accessor R1 adds to `format` so that gate has a chunk's stored
-//! vector to score against.
+//! vector to score against. The formats slice adds `html` — HTML ingestion
+//! (`scraper`, pure Rust, no native/network dependency), the first of the
+//! pure-Rust document formats; `html::html_to_document` is `pub` because
+//! the follow-on EPUB parser reuses it per-chapter.
 
 pub mod build;
 pub mod chunk;
 pub mod contract;
 pub mod embed;
 pub mod format;
+pub mod html;
 pub mod manifest;
 pub mod parse;
 pub mod retrieve;
@@ -64,6 +68,7 @@ pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, 
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
+pub use html::html_to_document;
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
 pub use retrieve::{

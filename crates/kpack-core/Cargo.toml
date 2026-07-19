@@ -81,5 +81,14 @@ toml = "=1.1.3"
 # adds zero new crates to the dependency graph — it only makes an
 # already-present version a direct, named dependency.
 sha2 = "=0.10.9"
+# HTML parsing (formats slice, spec §3.2's remaining formats) — html5ever-
+# based, pure Rust: no native dependency, and (confirmed via `cargo tree -p
+# kpack-core`) its own tree pulls in no HTTP client/tokio/socket crate, so
+# it holds this crate's network-free invariant (see the crate doc comment in
+# src/lib.rs). `html_to_document` (src/html.rs) walks the DOM directly via
+# `scraper::Html`/`ElementRef`/`Selector`, not through a higher-level
+# extraction API, so an unplanned minor bump is a potential silent behavior
+# change — pinned to the current 0.27.x line.
+scraper = "0.27"
 
 [dev-dependencies]

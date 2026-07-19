@@ -2,8 +2,11 @@
 //! step 1 "Parse to a heading tree"; §3.2's parser list: "pulldown-cmark for
 //! MD"). This module produces what [`crate::chunk`] (K5) consumes; the two
 //! sides agree on the shape defined in [`crate::tree`], not on anything
-//! here. PDF/EPUB/DOCX/HTML parsers are out of scope for K6 and land later
-//! (§3.2's remaining formats).
+//! here. PDF/EPUB/DOCX parsers are out of scope for K6 and land later
+//! (§3.2's remaining formats); HTML lands in the formats slice as
+//! [`crate::html::html_to_document`], dispatched from [`parse`] below —
+//! it's a separate module (not here) because the follow-on EPUB parser
+//! reuses it directly, per-chapter.
 //!
 //! ## Heading tree walk (markdown)
 //! [`parse_markdown`] walks `pulldown-cmark`'s event stream with a running
@@ -43,6 +46,7 @@
 //! precomputed line-start offsets — no locale or iteration-order
 //! dependence, so the same source always yields the same locators.
 
+use crate::html::html_to_document;
 use crate::tree::{Block, Document, Section};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -293,13 +297,16 @@ fn push_txt_paragraph(blocks: &mut Vec<Block>, lines: &[&str], start: usize, end
 }
 
 /// Dispatch on `source_type`: `"md"`/`"markdown"` → [`parse_markdown`],
-/// anything else (including `"txt"`) → [`parse_txt`] (spec §3.2's parser
-/// selection; unrecognized extensions degrade to plain text rather than
-/// failing the whole file, consistent with "parser failures degrade
-/// per-file, never per-build").
+/// `"html"` → [`html_to_document`] (the formats slice's first pure-Rust
+/// format — HTML is text-native, so it reaches this dispatcher the same
+/// way MD/TXT do, via `SourceContent::Raw`), anything else (including
+/// `"txt"`) → [`parse_txt`] (spec §3.2's parser selection; unrecognized
+/// extensions degrade to plain text rather than failing the whole file,
+/// consistent with "parser failures degrade per-file, never per-build").
 pub fn parse(source: &str, title: &str, source_type: &str) -> Document {
     match source_type {
         "md" | "markdown" => parse_markdown(source, title),
+        "html" => html_to_document(source, title),
         _ => parse_txt(source, title),
     }
 }

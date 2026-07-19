@@ -1151,6 +1151,55 @@ Verify the installation by checking the reported version string.
         assert_eq!(*embedding_ticks_seen.lock().unwrap(), 1);
     }
 
+    // 7. HTML round-trip (formats slice): a SourceContent::Raw HTML source
+    // with source_type "html" takes the SAME Raw path as md/txt (no
+    // build-time branch — see source_type_for's doc comment in
+    // src-tauri/src/kpack.rs) all the way to a mounted, queryable chunk
+    // whose locator is HTML-derived (the heading's "#id" anchor, not a
+    // markdown line ref) — proving parse::parse's "html" arm ->
+    // html::html_to_document -> chunk -> format seam works end to end, the
+    // same way t1 proves it for markdown.
+    #[test]
+    fn t7_html_source_round_trips_through_build_and_mount_with_html_locator() {
+        let dir = unique_dir("t7");
+        let out_path = dir.join("html.kpack");
+        let embedder = MockEmbedder::new(8);
+        let cfg = ChunkConfig::default();
+        let meta = test_meta();
+
+        let html = "\
+<html><body>
+<h1 id=\"intro\">Introduction</h1>
+<p>HTML ingestion proves the parse to chunk to format seam works end to end.</p>
+</body></html>";
+        let sources = vec![SourceInput {
+            title: "HTML Doc".to_string(),
+            source_type: "html".to_string(),
+            content: SourceContent::Raw(html.to_string()),
+        }];
+
+        build_pack(&sources, &embedder, &meta, &out_path, &cfg).unwrap();
+
+        let available = vec![meta.embedder_sha256.clone()];
+        let ctx = LoadContext {
+            available_embedder_sha256: &available,
+            curator_key: None,
+        };
+        let (pack, _manifest) = Pack::mount(&out_path, &ctx).unwrap();
+
+        let chunk = pack
+            .get_chunk(1)
+            .unwrap()
+            .expect("expected at least one chunk from the HTML source");
+        assert_eq!(chunk.section_path, "Introduction");
+        assert_eq!(
+            chunk.locator, "#intro",
+            "an HTML chunk's locator should be the enclosing heading's id anchor, \
+             not a markdown-style line reference"
+        );
+        assert!(chunk.text.contains("HTML ingestion proves"));
+    }
+
     // civil_from_days / rfc3339_from_system_time: hand-verified against
     // independently computed reference dates (Python's datetime), not just
     // round-tripped against this module's own arithmetic.
