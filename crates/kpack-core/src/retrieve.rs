@@ -89,6 +89,24 @@ pub const PERSONAL_RUNTIME_GATE_ABS_FLOOR: f64 = 0.30;
 /// NOT calibrated — same caveat as the floor above.
 pub const PERSONAL_RUNTIME_GATE_REL_MARGIN: f64 = 0.0;
 
+/// INTERIM grounded system prompt for the un-adapted BASE model we ship today.
+///
+/// NOT the versioned prompt contract (`contracts/prompt-contract.v1.toml` /
+/// `contract::system_contract()`) — that stays the target the LoRA adapter
+/// track is trained against. The base model reads that contract's abstract
+/// `[n]` citation placeholder too literally and emits a bare `[n]` (or
+/// over-refuses); this interim prompt uses concrete `[1]`/`[2]` examples and
+/// plain instructions so today's model produces real, grounded, cited
+/// answers. It relaxes the strict "decline to answer" rigidity slightly in
+/// favor of actually answering when the excerpts are relevant, while keeping
+/// the anti-hallucination core (answer ONLY from the excerpts, no outside
+/// knowledge).
+///
+/// TODO(adapter): when the contract-trained adapter ships, switch `assemble`
+/// back to `contract::system_contract()` (the adapter's format) and delete
+/// this interim prompt — do NOT let the two silently diverge in the meantime.
+const INTERIM_GROUNDED_SYSTEM_PROMPT: &str = "You are a knowledgeable assistant. Answer the user's question using only the numbered source excerpts provided below — do not rely on outside or remembered knowledge. Write a clear, direct, genuinely helpful answer, and you may summarize or combine information across the excerpts. After each statement that draws on a source, cite that source by its number in square brackets, like [1] or [2] (use the real numbers of the excerpts you used). If the excerpts truly do not contain what the question asks, say so briefly — but when they are relevant, use them and give a real answer rather than declining.";
+
 /// The int8 quantization scale (127², spec §1.4: L2-normalize then ×127,
 /// clamped to `[-127, 127]`) that turns a raw `dot_int8` accumulation back
 /// into an approximate cosine similarity: `dot_int8(a, b) / 16129 ≈
@@ -486,14 +504,16 @@ fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f
 ///    contract) that gives the model the document's identity as legitimate
 ///    context, so "what is the title / what is this about" is answerable
 ///    even though a title never appears in a chunk's searchable body text.
-///    The final `prompt` is `contract::system_contract()` (trailing
-///    whitespace trimmed, so the layout doesn't depend on the contract
-///    file's exact trailing newline) + a blank line + `doc_context` (when
-///    non-empty) + a blank line + the rendered sources block; when
-///    `doc_context` is empty (no resolved doc had a non-empty title), the
-///    layout falls back to the original two-part form — no dangling blank
-///    section. `citations` mirrors the rendered sources 1:1, `n` matching
-///    each line's `[n]`.
+///    The final `prompt` is [`INTERIM_GROUNDED_SYSTEM_PROMPT`] (trailing
+///    whitespace trimmed) — NOT `contract::system_contract()`; see that
+///    const's doc comment for why the base model we ship today needs a
+///    different, concrete-citation-example prompt than the versioned
+///    contract the future adapter is trained against — + a blank line +
+///    `doc_context` (when non-empty) + a blank line + the rendered sources
+///    block; when `doc_context` is empty (no resolved doc had a non-empty
+///    title), the layout falls back to the original two-part form — no
+///    dangling blank section. `citations` mirrors the rendered sources 1:1,
+///    `n` matching each line's `[n]`.
 pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
     // 1. Per-pack gate -- Δ1: every mounted pack judged on its OWN
     // thresholds, strictly before any cross-pack mixing. Index is `hits`'
@@ -645,12 +665,22 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
     // track starts, fold this doc-identity line into the versioned contract
     // so the adapter is trained on the same format the runtime actually
     // sends, rather than this drifting silently ahead of it.
+    //
+    // Base-model interim prompt: the grounded system prompt here is
+    // INTERIM_GROUNDED_SYSTEM_PROMPT, not contract::system_contract() -- see
+    // that const's doc comment. The versioned contract's abstract "as [n]"
+    // instruction is correct for the future contract-trained adapter but the
+    // un-adapted base model we run today reads it too literally (emits a
+    // bare "[n]", or over-refuses); this interim prompt uses concrete
+    // [1]/[2] examples instead. TODO(adapter): switch back to
+    // contract::system_contract() once the adapter ships, and delete this
+    // interim prompt -- do not let the two silently diverge until then.
     let prompt = if doc_context.is_empty() {
-        format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block)
+        format!("{}\n\n{}", INTERIM_GROUNDED_SYSTEM_PROMPT.trim_end(), sources_block)
     } else {
         format!(
             "{}\n\n{}\n\n{}",
-            contract::system_contract().trim_end(),
+            INTERIM_GROUNDED_SYSTEM_PROMPT.trim_end(),
             doc_context,
             sources_block
         )
@@ -1343,9 +1373,11 @@ mod tests {
     }
 
     // 15. Single pack passes its gate -> Grounded: the prompt contains the
-    // system contract text AND a rendered "[1] (...)" source line;
-    // citations map 1:1 to the rendered sources (one candidate in, one
-    // citation out, numbered from 1); citation count <= tier.n().
+    // INTERIM base-model system prompt (not the versioned
+    // contract::system_contract(), and not its literal "as [n]" placeholder
+    // instruction) AND a rendered "[1] (...)" source line; citations map 1:1
+    // to the rendered sources (one candidate in, one citation out, numbered
+    // from 1); citation count <= tier.n().
     #[test]
     fn t15_assemble_single_pack_passes_gate_yields_grounded() {
         let pack = empty_pack("t15-single-pack-grounded");
@@ -1364,8 +1396,17 @@ mod tests {
         match result {
             RetrievalResult::Grounded { prompt, citations } => {
                 assert!(
-                    prompt.contains(contract::system_contract().trim_end()),
-                    "prompt must contain the system contract text"
+                    prompt.contains("using only the numbered source excerpts"),
+                    "prompt must contain the interim base-model system prompt: {prompt}"
+                );
+                assert!(
+                    prompt.contains("like [1] or [2]"),
+                    "prompt must contain the interim prompt's concrete citation example: {prompt}"
+                );
+                assert!(
+                    !prompt.contains("as [n]"),
+                    "prompt must NOT regress to the versioned contract's literal placeholder \
+                     instruction, which the base model reads too literally: {prompt}"
                 );
                 assert!(
                     prompt.contains("[1] ("),
@@ -1721,8 +1762,8 @@ mod tests {
         match result {
             RetrievalResult::Grounded { prompt, citations } => {
                 assert!(
-                    prompt.contains(contract::system_contract().trim_end()),
-                    "prompt must contain the system contract text"
+                    prompt.contains("using only the numbered source excerpts"),
+                    "prompt must contain the interim base-model system prompt: {prompt}"
                 );
                 assert!(
                     prompt.contains("[1] ("),
@@ -1920,7 +1961,8 @@ mod tests {
 
     // 28. Doc-title context: a Grounded result's prompt contains "These
     // sources are excerpts from:" followed by the cited doc's title,
-    // inserted between the system contract and the rendered sources block.
+    // inserted between the interim base-model system prompt and the
+    // rendered sources block.
     #[test]
     fn t28_assemble_grounded_prompt_carries_doc_title_context() {
         let pack = empty_pack("t28-doc-title-context");
@@ -1941,13 +1983,16 @@ mod tests {
             prompt.contains("These sources are excerpts from: The Great Cookbook."),
             "prompt should state the cited doc's title as context: {prompt}"
         );
-        // Placement: between the system contract and the sources block, per
-        // assemble's doc comment -- the contract text appears BEFORE the
-        // doc-context line, which appears BEFORE the numbered source line.
-        let contract_pos = prompt.find(contract::system_contract().trim_end()).unwrap();
+        // Placement: between the interim system prompt and the sources
+        // block, per assemble's doc comment -- the interim prompt text
+        // appears BEFORE the doc-context line, which appears BEFORE the
+        // numbered source line.
+        let prompt_pos = prompt
+            .find("using only the numbered source excerpts")
+            .unwrap();
         let context_pos = prompt.find("These sources are excerpts from:").unwrap();
         let sources_pos = prompt.find("[1] (").unwrap();
-        assert!(contract_pos < context_pos, "contract must precede doc context");
+        assert!(prompt_pos < context_pos, "system prompt must precede doc context");
         assert!(context_pos < sources_pos, "doc context must precede the sources block");
     }
 
@@ -1979,9 +2024,9 @@ mod tests {
             !prompt.contains("\n\n\n"),
             "must not leave a doubled blank line where the omitted context line was: {prompt}"
         );
-        // Falls back to exactly the original two-part layout: contract +
-        // one blank line + sources block.
-        let expected_prefix = format!("{}\n\n", contract::system_contract().trim_end());
+        // Falls back to exactly the original two-part layout: interim system
+        // prompt + one blank line + sources block.
+        let expected_prefix = format!("{}\n\n", INTERIM_GROUNDED_SYSTEM_PROMPT.trim_end());
         assert!(
             prompt.starts_with(&expected_prefix),
             "must fall back to the original contract+blank-line+sources layout: {prompt}"
