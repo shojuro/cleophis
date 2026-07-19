@@ -128,24 +128,28 @@ fn bundled_embedder_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(EMBEDDER_RELATIVE_PATH)
 }
 
-/// Keeps only `[A-Za-z0-9_-]` from a user id — a Supabase UUID passes
-/// through unchanged. Returns `None` if nothing survives (empty input, or
-/// input that's entirely separators/punctuation): a hard safety net so a
-/// malformed id can never sanitize down to an empty path segment, which
-/// would join back into the shared `packs/` root and reopen the very leak
-/// this module exists to close. Also strips path separators (`/`, `\`) and
-/// `.` outright, so `..`/absolute-path tricks in a (theoretically already-
-/// impossible, since this only ever sees a Supabase-issued UUID) malformed
-/// id can never escape into another account's directory.
+/// Accepts `user_id` unchanged as the account's directory segment if — and
+/// only if — it's ALREADY clean: non-empty and every char is
+/// `[A-Za-z0-9_-]`. Anything else (empty, or containing so much as one
+/// `.`/`/`/`\`/`:`/NUL/unicode/whitespace char) is a hard `None`, not a
+/// stripped-down remainder. Reject, don't strip: stripping is non-injective
+/// (`"a.b"` and `"ab"` would both collapse to the same segment `"ab"`), so
+/// two distinct account ids could theoretically alias onto the same
+/// directory — silently reopening the exact cross-account leak this module
+/// exists to close. Rejecting keeps the mapping trivially injective (the
+/// segment IS the id, verbatim) at the cost of refusing anything that isn't
+/// already clean — the only shape a Supabase-issued UUID ever has, so real
+/// accounts are unaffected; a malformed/foreign id just gets a hard `Err`
+/// via `user_packs_dir` instead of a best-effort, alias-prone directory.
 fn account_dir_segment(user_id: &str) -> Option<String> {
-    let segment: String = user_id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .collect();
-    if segment.is_empty() {
-        None
+    let is_clean = !user_id.is_empty()
+        && user_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if is_clean {
+        Some(user_id.to_string())
     } else {
-        Some(segment)
+        None
     }
 }
 
@@ -1158,21 +1162,24 @@ mod tests {
         assert_eq!(account_dir_segment(uuid).as_deref(), Some(uuid));
     }
 
-    /// Separators and traversal dots never survive into the segment — the
-    /// hard safety net that keeps a malformed id from escaping `packs/` via
-    /// `..` or a path separator (spec §3a A6).
+    /// Any non-clean id — separators, traversal dots, or anything else
+    /// outside `[A-Za-z0-9_-]` — is REJECTED outright, not stripped down to
+    /// a shortened remainder (spec §3a A6 review hardening: stripping is
+    /// non-injective and could alias two distinct ids onto the same
+    /// directory, reopening the leak).
     #[test]
-    fn account_dir_segment_strips_separators_and_traversal_dots() {
-        assert_eq!(account_dir_segment("../evil").as_deref(), Some("evil"));
-        assert_eq!(account_dir_segment("a/b").as_deref(), Some("ab"));
-        assert_eq!(account_dir_segment("a\\b").as_deref(), Some("ab"));
+    fn account_dir_segment_rejects_ids_containing_separators_or_traversal_dots() {
+        assert_eq!(account_dir_segment("../evil"), None);
+        assert_eq!(account_dir_segment("a/b"), None);
+        assert_eq!(account_dir_segment("a\\b"), None);
+        assert_eq!(account_dir_segment(".."), None);
     }
 
     /// Nothing survives (empty input, or input that's entirely punctuation)
     /// -> `None`, never an empty string that could collapse the path back to
     /// the shared `packs/` root.
     #[test]
-    fn account_dir_segment_none_when_nothing_survives() {
+    fn account_dir_segment_none_when_input_is_empty_or_all_punctuation() {
         assert_eq!(account_dir_segment(""), None);
         assert_eq!(account_dir_segment("!!!"), None);
     }
