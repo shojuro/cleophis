@@ -20,6 +20,9 @@ tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["windows-native", "linux-native"] }
 sha2 = "0.10"
 tauri-plugin-opener = "2"
+# §3a A2: native file picker for the personal-pack builder (A3's
+# `window.__TAURI__.dialog.open`); this crate is Rust-only glue, no FE here.
+tauri-plugin-dialog = "2"
 # K9: the on-device knowledge-pack core + its real embedder backend. Pulling
 # in `kpack-embed` with `features = ["real"]` here (not just `kpack-core`)
 # is deliberate — the shipping app carries the real bge-base-en-v1.5

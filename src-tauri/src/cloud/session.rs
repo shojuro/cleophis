@@ -183,6 +183,16 @@ impl Cloud {
         Ok(self.apply_and_sync(tok, &cache, !remember))
     }
 
+    /// The authoritative signed-in user id (a Supabase UUID, `Session.user_id`),
+    /// or `None` if signed out. This is the ONE place on-device, per-account
+    /// resources (e.g. `kpack::packs_dir`) should read identity from — never
+    /// the front end, which a compromised renderer could lie to. Lock/copy/
+    /// drop, per this file's discipline: never held across anything else.
+    pub fn current_user_id(&self) -> Option<String> {
+        let guard = self.session.lock().unwrap();
+        guard.as_ref().map(|s| s.user_id.clone())
+    }
+
     pub fn sign_out(&self) {
         // Read/copy the access token under the session lock, then drop the
         // guard before the (best-effort) network logout call below — the

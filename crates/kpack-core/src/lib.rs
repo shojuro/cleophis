@@ -51,7 +51,10 @@ pub mod retrieve;
 pub mod sign;
 pub mod tree;
 
-pub use build::{build_pack, passage_input, sha256_hex, BuildMeta, Error as BuildError, SourceInput};
+pub use build::{
+    build_pack, build_pack_with_progress, passage_input, sha256_hex, BuildMeta, BuildProgress,
+    Error as BuildError, SourceInput,
+};
 pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
 pub use contract::{
     contract_version, no_evidence_marker, refusal_with_offer, render_sources, system_contract,
