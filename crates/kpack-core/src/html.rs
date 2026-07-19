@@ -275,11 +275,19 @@ impl Walker {
 }
 
 /// `row`'s cell text, in document order, from its DIRECT `<td>`/`<th>`
-/// children only (a nested table inside a cell has its own `<tr>`s, picked
-/// up separately by `element.select("tr")` in [`Walker::visit_table`], not
-/// folded into this row). Every cell is included even if its text is
-/// empty, to preserve column alignment — matches `parse_markdown`'s GFM
-/// table-cell handling, which never skips an empty cell either.
+/// children only. Every cell is included even if its text is empty, to
+/// preserve column alignment — matches `parse_markdown`'s GFM table-cell
+/// handling, which never skips an empty cell either.
+///
+/// KNOWN v1 LIMITATION — nested tables are DUPLICATED, not cleanly nested:
+/// `cell.text()` collects ALL descendant text, so a `<table>` nested inside a
+/// cell has its text folded into that cell's string; AND
+/// [`Walker::visit_table`]'s `element.select("tr")` is a *descendant* select,
+/// so that nested table's own `<tr>`s ALSO surface as (ragged) rows in the
+/// SAME `Block::Table`. Net: nested-table content appears twice. No content is
+/// dropped and nothing panics; nested content tables are rare in real
+/// documents, so scoping row selection to the outer table's direct rows is a
+/// fast-follow, not a v1 blocker.
 fn table_row_cells(row: ElementRef) -> Vec<String> {
     row.children()
         .filter_map(ElementRef::wrap)
