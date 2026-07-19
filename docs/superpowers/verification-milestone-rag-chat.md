@@ -94,6 +94,44 @@ Because this is the first time the whole loop runs against the **real** model in
 6. Clicking **Stop** during *"Searching your packs…"* cancels cleanly (no committed
    turn).
 
+## Security fix — per-account pack isolation (A6)
+
+**The bug (user-reported, high priority):** personal packs lived in one
+device-global `app_data/packs/` dir with no account scoping, so any signed-in
+cloud account could see and query every account's packs on the device — a
+real privacy leak on a shared/family computer, a child account, or a guest.
+Live-reported: signing in as account A showed packs account B had built.
+
+**The fix:** `packs_dir` is now scoped to `packs/<account>/`, where
+`<account>` is the AUTHORITATIVE current user id read from the Rust `Cloud`
+session state (`Cloud::current_user_id()`) — never the front end, which a
+compromised renderer could lie to. Because `build_personal_pack`/
+`list_packs`/`delete_pack` all resolve through this one `packs_dir`, scoping
+it there scopes all three at once. The READ path got the same boundary:
+`rag_query` and `mount_pack` now resolve every pack path through the shared
+`resolve_pack_in_dir` check (factored out of `delete_pack_in`'s existing
+path-safety logic) against the *current user's* dir — a crafted call naming
+another account's pack path is a hard `Err`, not a silent skip, so UI-level
+list scoping alone can't be bypassed by calling the command surface directly.
+Proven with an explicit, un-skippable cross-account isolation test
+(`resolve_pack_in_dir_refuses_a_pack_in_a_different_accounts_dir`): a pack
+written into account A's directory resolves for A but is refused when
+checked against B's directory.
+
+**Migration / orphans:** packs built before this fix sit flat in
+`packs/*.kpack` and are now invisible (`list_packs` only reads
+`packs/<account>/`). They are **not** auto-migrated to whichever account
+signs in first — ownership of a pre-fix pack is unknown, and assigning it to
+the first signer-in would recreate the exact leak this closes. They become
+inert; existing test packs must be rebuilt per account.
+
+**Honest scope boundary:** this isolates pack VISIBILITY and in-app ACCESS
+per cloud account, under the same OS user. Pack files remain plaintext under
+that OS user's app-data dir — a DIFFERENT OS user, or raw filesystem access,
+is a separate and deeper boundary (OS ACLs / at-rest encryption) this fix
+does NOT provide. Flagged as a possible follow-up, not oversold here as
+at-rest isolation.
+
 ## Honest carve-outs (documented, not hidden)
 
 - Generation uses the base Llama; cite-or-refuse is imperfect until the parked

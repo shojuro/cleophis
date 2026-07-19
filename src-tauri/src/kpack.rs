@@ -41,10 +41,39 @@
 //! halves of that store — both `spawn_blocking` around pure, `AppHandle`-free
 //! inner functions (`list_packs_in`/`delete_pack_in`, mirroring this file's
 //! existing `*_at`/`*_with_embedder` pattern) so they're unit-testable
-//! without a real Tauri app. `delete_pack_in`'s path-safety check (canonicalize
-//! both sides, require the target's parent to BE the packs dir and its
-//! extension to be `kpack`) is what keeps a path from the front end from ever
-//! deleting anything outside that one managed directory.
+//! without a real Tauri app. `delete_pack_in`'s path-safety check (now
+//! [`resolve_pack_in_dir`], shared with `rag_query`/`mount_pack` below) is
+//! what keeps a path from the front end from ever reaching anything outside
+//! that one managed directory.
+//!
+//! ## Per-account pack isolation (spec §3a A6 — SECURITY)
+//! `packs_dir` is scoped to `packs/<account>/`, where `<account>` is the
+//! AUTHORITATIVE current user id read from `Cloud::current_user_id()` — the
+//! Rust session state, never the front end. Signed-out has no pack store
+//! (`Err`); the Packs UI is already sign-in-gated, this is the server-side
+//! backstop. Because `build_personal_pack`/`list_packs`/`delete_pack` all
+//! resolve through this one function, scoping it here scopes all three at
+//! once — WITHOUT this fix, any signed-in account on a shared device could
+//! see and query every other account's packs, which is exactly the bug this
+//! closes. `resolve_pack_in_dir`'s parent-must-equal-the-managed-dir check
+//! is what turns that scoping into an enforced boundary on the READ path
+//! too (`rag_query`, `mount_pack`): a crafted call naming another account's
+//! pack path is a hard `Err`, not a silent skip — a path resolving into a
+//! different account's subdirectory has a different canonical parent and is
+//! refused exactly like an outside-the-store path.
+//!
+//! Honest scope boundary: this isolates pack VISIBILITY and in-app ACCESS
+//! per cloud account, under the same OS user/device-data directory. Pack
+//! files remain plaintext under that OS user's app-data dir — a DIFFERENT OS
+//! user, or raw filesystem access, is a separate and deeper boundary (OS
+//! ACLs / at-rest encryption) this does NOT provide; a possible follow-up,
+//! not oversold here as at-rest isolation.
+//!
+//! Migration note: packs built before this fix sit flat in `packs/*.kpack`
+//! and are now invisible (`list_packs` only reads `packs/<account>/`).
+//! They are NOT auto-migrated to whichever account signs in first — ownership
+//! of a pre-fix pack is unknown, and guessing would recreate the exact leak
+//! this closes. They become inert; rebuild them per account.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +88,8 @@ use kpack_core::{
 use kpack_embed::BgeEmbedder;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::cloud::session::Cloud;
 
 /// Only reachable if the blocking task itself panics or the runtime is
 /// shutting down — mirrors `cloud::commands::JOIN_ERROR_MESSAGE`.
@@ -97,15 +128,52 @@ fn bundled_embedder_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(EMBEDDER_RELATIVE_PATH)
 }
 
-/// App-data `packs/` — the one managed home for personal `.kpack` files
-/// (spec §3a A2). Created on demand; every personal pack the builder writes
-/// and every pack `list_packs`/`delete_pack` sees lives directly here.
+/// Keeps only `[A-Za-z0-9_-]` from a user id — a Supabase UUID passes
+/// through unchanged. Returns `None` if nothing survives (empty input, or
+/// input that's entirely separators/punctuation): a hard safety net so a
+/// malformed id can never sanitize down to an empty path segment, which
+/// would join back into the shared `packs/` root and reopen the very leak
+/// this module exists to close. Also strips path separators (`/`, `\`) and
+/// `.` outright, so `..`/absolute-path tricks in a (theoretically already-
+/// impossible, since this only ever sees a Supabase-issued UUID) malformed
+/// id can never escape into another account's directory.
+fn account_dir_segment(user_id: &str) -> Option<String> {
+    let segment: String = user_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    if segment.is_empty() {
+        None
+    } else {
+        Some(segment)
+    }
+}
+
+/// Pure join behind `packs_dir`: `<app_data>/packs/<sanitized user_id>`.
+/// Never returns the bare `packs/` root — a malformed/empty `user_id` is a
+/// hard `Err` here, not a silent fallback to the shared directory. Takes
+/// `app_data`/`user_id` explicitly (no `AppHandle`) so it's unit-testable
+/// directly, without a Tauri app or a `Cloud` session in the loop.
+fn user_packs_dir(app_data: &Path, user_id: &str) -> Result<PathBuf, String> {
+    let segment = account_dir_segment(user_id).ok_or_else(|| "invalid account id".to_string())?;
+    Ok(app_data.join("packs").join(segment))
+}
+
+/// App-data `packs/<account>/` — the one managed home for personal `.kpack`
+/// files (spec §3a A2), scoped per signed-in cloud account (spec §3a A6 —
+/// SECURITY; see the module doc comment). The account segment comes from
+/// `Cloud::current_user_id()` — the AUTHORITATIVE session state, never the
+/// front end. `None` (signed out) is a hard `Err`: there is no pack store
+/// to hand back. Created on demand; every personal pack the builder writes
+/// and every pack `list_packs`/`delete_pack`/`rag_query`/`mount_pack` sees
+/// lives directly under this one account's directory.
 fn packs_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("packs");
+    let user_id = app
+        .state::<Arc<Cloud>>()
+        .current_user_id()
+        .ok_or_else(|| "Sign in to use knowledge packs.".to_string())?;
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = user_packs_dir(&app_data, &user_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -255,11 +323,21 @@ fn mount_pack_at(path: &Path) -> Result<PackManifestInfo, String> {
     Ok(manifest.into())
 }
 
+/// `mount_pack` is currently FE-unused, but registered and reachable from
+/// the front end regardless — apply the same `resolve_pack_in_dir` gate
+/// `delete_pack`/`rag_query` use before ever mounting `path`, for
+/// consistency/defense (spec §3a A6): a crafted call naming another
+/// account's pack (or anything outside the current user's `packs_dir`) is
+/// refused here too, not just silently allowed because nothing calls it yet.
 #[tauri::command]
-pub async fn mount_pack(path: String, _app: AppHandle) -> Result<PackManifestInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || mount_pack_at(Path::new(&path)))
-        .await
-        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+pub async fn mount_pack(path: String, app: AppHandle) -> Result<PackManifestInfo, String> {
+    let user_packs_dir = packs_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let canonical = resolve_pack_in_dir(&user_packs_dir, &path)?;
+        mount_pack_at(&canonical)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
 /// Derive a `SourceInput::source_type` from `path`'s extension:
@@ -616,21 +694,27 @@ fn map_retrieval_result(result: RetrievalResult) -> RagQueryResult {
     }
 }
 
-/// Pure inner logic behind the `rag_query` command: mount every pack in
-/// `pack_paths` against this device's pinned embedder hash (the exact same
-/// `LoadContext` gate `mount_pack_at` uses), resolve `gguf_path` through
-/// `cache` (spec §3a A1's cached embedder), run `kpack_core::retrieve::retrieve`,
-/// and map the result via `map_retrieval_result`. Factored out (no
-/// `AppHandle`) so real-embedder integration tests can exercise this exact
-/// path without constructing a Tauri `AppHandle` — mirrors
-/// `mount_pack_at`/`build_personal_pack_with_embedder`'s existing pattern in
-/// this file. (`crates/kpack-embed/tests/`'s own integration tests call
-/// `kpack_core::retrieve::retrieve` directly rather than this fn, since that
-/// crate can't depend on this one — the Tauri binary — but the logic they
-/// exercise is identical: mount, embed, retrieve.)
+/// Pure inner logic behind the `rag_query` command: resolve every path in
+/// `pack_paths` through `resolve_pack_in_dir(packs_dir, ..)` — spec §3a A6's
+/// per-account read-path guard — before ever mounting it, so a crafted call
+/// naming a path outside the current user's `packs_dir` (including another
+/// account's pack) is a hard `Err`, not a silent skip; mounts each resolved
+/// pack against this device's pinned embedder hash (the exact same
+/// `LoadContext` gate `mount_pack_at` uses), resolves `gguf_path` through
+/// `cache` (spec §3a A1's cached embedder), runs
+/// `kpack_core::retrieve::retrieve`, and maps the result via
+/// `map_retrieval_result`. Factored out (no `AppHandle`) so real-embedder
+/// integration tests can exercise this exact path without constructing a
+/// Tauri `AppHandle` — mirrors `mount_pack_at`/`build_personal_pack_with_embedder`'s
+/// existing pattern in this file. (`crates/kpack-embed/tests/`'s own
+/// integration tests call `kpack_core::retrieve::retrieve` directly rather
+/// than this fn, since that crate can't depend on this one — the Tauri
+/// binary — but the logic they exercise is identical: mount, embed,
+/// retrieve.)
 fn rag_query_inner(
     query: &str,
     pack_paths: &[String],
+    packs_dir: &Path,
     gguf_path: &Path,
     tier: Tier,
     cache: &EmbedderCache,
@@ -643,7 +727,8 @@ fn rag_query_inner(
 
     let mut mounted: Vec<(Pack, Manifest)> = Vec::with_capacity(pack_paths.len());
     for path in pack_paths {
-        let (pack, manifest) = Pack::mount(Path::new(path), &ctx).map_err(|e| e.to_string())?;
+        let canonical = resolve_pack_in_dir(packs_dir, path)?;
+        let (pack, manifest) = Pack::mount(&canonical, &ctx).map_err(|e| e.to_string())?;
         mounted.push((pack, manifest));
     }
 
@@ -660,6 +745,13 @@ pub async fn rag_query(
     app: AppHandle,
 ) -> Result<RagQueryResult, String> {
     let gguf_path = bundled_embedder_path(&app);
+    // Resolved on the async side, before spawn_blocking — same "packs_dir()
+    // is this command's to compute up front" idiom as build_personal_pack's
+    // out_path. This is the current user's dir (spec §3a A6): every path in
+    // pack_paths gets checked against it below via resolve_pack_in_dir, so a
+    // pack belonging to a different account can never be mounted here even
+    // if the front end (or a compromised renderer) hands us its path.
+    let user_packs_dir = packs_dir(&app)?;
     // Tier (spec §4.3): reuse the existing hardware tier
     // (`hardware::detect`, spec §6's three-level "low"/"mid"/"high" device
     // classification) rather than inventing a second notion of device
@@ -678,7 +770,7 @@ pub async fn rag_query(
     };
     tauri::async_runtime::spawn_blocking(move || {
         let cache = app.state::<EmbedderCache>();
-        rag_query_inner(&query, &pack_paths, &gguf_path, tier, cache.inner())
+        rag_query_inner(&query, &pack_paths, &user_packs_dir, &gguf_path, tier, cache.inner())
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -725,19 +817,28 @@ pub async fn list_packs(app: AppHandle) -> Result<Vec<PackEntry>, String> {
         .map_err(|_| JOIN_ERROR_MESSAGE.to_string())
 }
 
-/// Pure path-safety + delete logic behind the `delete_pack` command (spec
-/// §3a A2 — SECURITY CRITICAL): canonicalizes both `packs_dir` (it exists —
-/// `packs_dir()` already `create_dir_all`s it) and `target`, then refuses
-/// unless the canonicalized target's PARENT is exactly the canonicalized
-/// `packs_dir` — a file living DIRECTLY in the managed dir, not a subdir,
-/// not reached via `..`, not a symlink escape — AND its extension is
-/// `kpack` (ASCII-lowercased). Canonicalizing BOTH sides resolves `..`
-/// components and symlinks on both, so the `parent ==` comparison is sound
-/// on Windows (`\\?\`-prefixed both sides) and Unix alike. This is what
-/// keeps `delete_pack` from ever becoming an arbitrary-file-delete
-/// primitive, even if the front end (or a compromised renderer) hands it a
-/// traversal or absolute path.
-fn delete_pack_in(packs_dir: &Path, target: &str) -> Result<(), String> {
+/// The path-safety boundary shared by `delete_pack_in`/`rag_query_inner`/
+/// `mount_pack` (spec §3a A2 — SECURITY CRITICAL; spec §3a A6 — now also the
+/// per-account boundary, see the module doc comment): canonicalizes both
+/// `packs_dir` (it exists — `packs_dir()` already `create_dir_all`s it) and
+/// `target`, then refuses unless the canonicalized target's PARENT is
+/// exactly the canonicalized `packs_dir` — a file living DIRECTLY in the
+/// managed dir, not a subdir, not reached via `..`, not a symlink escape —
+/// AND its extension is `kpack` (ASCII-lowercased). Canonicalizing BOTH
+/// sides resolves `..` components and symlinks on both, so the `parent ==`
+/// comparison is sound on Windows (`\\?\`-prefixed both sides) and Unix
+/// alike. Returns the canonical target on success.
+///
+/// Because every call site passes the CURRENT USER's `packs_dir` (never the
+/// shared root), this single check does double duty as the cross-account
+/// boundary: a path resolving into a different account's subdirectory has a
+/// different canonical parent and is refused here exactly like an
+/// outside-the-store path — the account that built a pack is the only
+/// account that can delete, mount, or query it. This is what keeps
+/// `delete_pack`/`rag_query`/`mount_pack` from ever letting a path from the
+/// front end (or a compromised renderer) reach a traversal, an absolute
+/// path, or another account's pack.
+fn resolve_pack_in_dir(packs_dir: &Path, target: &str) -> Result<PathBuf, String> {
     let canonical_dir = packs_dir
         .canonicalize()
         .map_err(|e| format!("packs dir unavailable: {e}"))?;
@@ -757,9 +858,17 @@ fn delete_pack_in(packs_dir: &Path, target: &str) -> Result<(), String> {
     let lives_directly_in_packs_dir = canonical_target.parent() == Some(canonical_dir.as_path());
 
     if is_kpack.as_deref() != Some("kpack") || !lives_directly_in_packs_dir {
-        return Err("refusing to delete a path outside the packs store".to_string());
+        return Err("refusing to use a path outside the packs store".to_string());
     }
 
+    Ok(canonical_target)
+}
+
+/// Pure delete logic behind the `delete_pack` command: resolve `target`
+/// through `resolve_pack_in_dir` (see its doc comment for the full
+/// path-safety/cross-account story), then remove the resolved path.
+fn delete_pack_in(packs_dir: &Path, target: &str) -> Result<(), String> {
+    let canonical_target = resolve_pack_in_dir(packs_dir, target)?;
     std::fs::remove_file(&canonical_target).map_err(|e| format!("couldn't delete pack: {e}"))
 }
 
@@ -1039,6 +1148,91 @@ mod tests {
         let long = "a".repeat(100);
         let sanitized = sanitize_pack_name(&long).expect("all-alnum input should survive");
         assert_eq!(sanitized.len(), 64, "over-long name should be capped at 64 chars");
+    }
+
+    /// Per-account isolation (spec §3a A6 — SECURITY): a Supabase UUID
+    /// passes through `account_dir_segment` intact.
+    #[test]
+    fn account_dir_segment_keeps_a_uuid_intact() {
+        let uuid = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+        assert_eq!(account_dir_segment(uuid).as_deref(), Some(uuid));
+    }
+
+    /// Separators and traversal dots never survive into the segment — the
+    /// hard safety net that keeps a malformed id from escaping `packs/` via
+    /// `..` or a path separator (spec §3a A6).
+    #[test]
+    fn account_dir_segment_strips_separators_and_traversal_dots() {
+        assert_eq!(account_dir_segment("../evil").as_deref(), Some("evil"));
+        assert_eq!(account_dir_segment("a/b").as_deref(), Some("ab"));
+        assert_eq!(account_dir_segment("a\\b").as_deref(), Some("ab"));
+    }
+
+    /// Nothing survives (empty input, or input that's entirely punctuation)
+    /// -> `None`, never an empty string that could collapse the path back to
+    /// the shared `packs/` root.
+    #[test]
+    fn account_dir_segment_none_when_nothing_survives() {
+        assert_eq!(account_dir_segment(""), None);
+        assert_eq!(account_dir_segment("!!!"), None);
+    }
+
+    /// `user_packs_dir`: two different user ids resolve to two different
+    /// directories under the same app-data root (spec §3a A6).
+    #[test]
+    fn user_packs_dir_scopes_different_users_to_different_dirs() {
+        let app_data = unique_dir("user-packs-dir-scope");
+        let a = user_packs_dir(&app_data, "user-aaaa").unwrap();
+        let b = user_packs_dir(&app_data, "user-bbbb").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a, app_data.join("packs").join("user-aaaa"));
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// A malformed/empty user id is a hard `Err` — `user_packs_dir` must
+    /// NEVER return the bare `packs/` root, since that would re-open the
+    /// device-global leak this fix closes.
+    #[test]
+    fn user_packs_dir_refuses_a_malformed_id_never_returns_the_shared_root() {
+        let app_data = unique_dir("user-packs-dir-malformed");
+        assert!(user_packs_dir(&app_data, "").is_err());
+        assert!(user_packs_dir(&app_data, "!!!").is_err());
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// THE cross-account isolation assertion (spec §3a A6 — the security
+    /// fix this task exists for): a pack built and written into account A's
+    /// directory is resolvable by account A, but `resolve_pack_in_dir`
+    /// against account B's directory refuses it — its canonical parent is
+    /// A's dir, not B's. Since `delete_pack_in`, `rag_query_inner`, and the
+    /// `mount_pack` command all route through this exact check with the
+    /// caller's OWN `packs_dir`, this proves account B can neither delete
+    /// nor read (query/mount) account A's pack. Deliberately un-skippable —
+    /// no `#[ignore]`.
+    #[test]
+    fn resolve_pack_in_dir_refuses_a_pack_in_a_different_accounts_dir() {
+        let root = unique_dir("cross-account-isolation");
+        let account_a_dir = user_packs_dir(&root, "user-aaaa").unwrap();
+        let account_b_dir = user_packs_dir(&root, "user-bbbb").unwrap();
+        std::fs::create_dir_all(&account_a_dir).unwrap();
+        std::fs::create_dir_all(&account_b_dir).unwrap();
+
+        let account_a_pack = account_a_dir.join("secret.kpack");
+        std::fs::write(&account_a_pack, b"").unwrap();
+
+        // Account A can resolve its own pack.
+        assert!(resolve_pack_in_dir(&account_a_dir, &account_a_pack.to_string_lossy()).is_ok());
+
+        // Account B, handed the exact same path, cannot: its canonical
+        // parent is account A's dir, not account B's.
+        let err = resolve_pack_in_dir(&account_b_dir, &account_a_pack.to_string_lossy()).unwrap_err();
+        assert!(!err.is_empty());
+        assert!(
+            account_a_pack.exists(),
+            "a refused cross-account resolve must never touch the file"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Path-safety tests for `delete_pack_in` (spec §3a A2 — SECURITY
