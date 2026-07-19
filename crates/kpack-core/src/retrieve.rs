@@ -1707,8 +1707,13 @@ mod tests {
 
         // gate_abs_floor well below any cosine's possible range -- ANY
         // candidate passes, isolating this test to the wiring rather than a
-        // specific mock cosine value.
-        let manifest = test_manifest(-2.0, 0.0);
+        // specific mock cosine value. Pinned to Curated so this extreme -2.0
+        // floor is actually honored: a Personal-tier manifest would have its
+        // floor overridden by PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30), silently
+        // recoupling this wiring test to whether the mock cosine clears 0.30
+        // (mirrors t16/t17/t23).
+        let mut manifest = test_manifest(-2.0, 0.0);
+        manifest.pack_tier = PackTier::Curated;
 
         let packs = vec![(pack, manifest)];
         let result = retrieve("only doc content", &packs, &embedder, Tier::Small).unwrap();
