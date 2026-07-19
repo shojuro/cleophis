@@ -33,7 +33,12 @@
 //! (`parse` → `chunk` → `embed` → `format` → `manifest`), proven against
 //! `embed::MockEmbedder` (see that module's own determinism caveat: K8's
 //! mock-based tests prove the build CODE is deterministic, not spec §5's
-//! real cross-build claim, which needs K4b's real tokenizer).
+//! real cross-build claim, which needs K4b's real tokenizer). R1 (spec §4.1)
+//! adds `retrieve` — per-pack dense+lexical retrieval fused with reciprocal
+//! rank fusion (RRF), each fused candidate annotated with a dense cosine
+//! similarity for R2's per-pack gate; `format::Pack::get_embedding` is the
+//! small accessor R1 adds to `format` so that gate has a chunk's stored
+//! vector to score against.
 
 pub mod build;
 pub mod chunk;
@@ -42,6 +47,7 @@ pub mod embed;
 pub mod format;
 pub mod manifest;
 pub mod parse;
+pub mod retrieve;
 pub mod sign;
 pub mod tree;
 
@@ -57,5 +63,8 @@ pub use embed::MockEmbedder;
 pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
 pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
+pub use retrieve::{
+    retrieve_pack, rrf, safe_fts5_query, Candidate, Error as RetrieveError, DEFAULT_K_RRF,
+};
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};

@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use kpack_core::retrieve::{retrieve, Citation, RetrievalResult, Tier};
 use kpack_core::{
     build_pack, BuildMeta, ChunkConfig, LoadContext, Manifest, Pack, PackTier, SourceInput,
 };
@@ -239,6 +240,136 @@ pub async fn build_personal_pack(
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
+/// A camelCase, front-end-facing view of `kpack_core::retrieve::Citation` —
+/// the numbered source mapping a chat UI (§7, later) shows next to the
+/// model's answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationInfo {
+    pub n: usize,
+    pub pack_id: String,
+    pub chunk_id: i64,
+    pub doc_title: String,
+    pub section_path: String,
+    pub locator: String,
+}
+
+impl From<Citation> for CitationInfo {
+    fn from(c: Citation) -> Self {
+        CitationInfo {
+            n: c.n,
+            pack_id: c.pack_id,
+            chunk_id: c.chunk_id,
+            doc_title: c.doc_title,
+            section_path: c.section_path,
+            locator: c.locator,
+        }
+    }
+}
+
+/// The `rag_query` command's camelCase result (spec §4: returning §4.1–4.2's
+/// retrieval outcome across the Tauri IPC boundary; the chat send/generate
+/// wiring that actually USES this is §3, a later milestone — this command
+/// only runs retrieval and hands back what it found). `status` is
+/// `"grounded"` or `"noEvidence"`. `prompt` is always populated but means a
+/// different thing in each case: the full assembled grounded prompt (system
+/// contract + numbered sources, ready to hand to the model) when `status ==
+/// "grounded"`; the contract's fixed `no_evidence_marker()` text when
+/// `status == "noEvidence"` — so the front end has ONE field to render
+/// either way, and switches on `status` to decide whether `citations` is
+/// meaningful. `citations` is always empty on `"noEvidence"`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagQueryResult {
+    pub status: String,
+    pub prompt: Option<String>,
+    pub citations: Vec<CitationInfo>,
+}
+
+/// `RetrievalResult` -> the IPC-facing `RagQueryResult`, factored out as a
+/// pure function (no I/O) so it's directly unit-testable without a real
+/// pack/embedder. See `RagQueryResult`'s doc comment for what each field
+/// means in each branch.
+fn map_retrieval_result(result: RetrievalResult) -> RagQueryResult {
+    match result {
+        RetrievalResult::Grounded { prompt, citations } => RagQueryResult {
+            status: "grounded".to_string(),
+            prompt: Some(prompt),
+            citations: citations.into_iter().map(CitationInfo::from).collect(),
+        },
+        RetrievalResult::NoEvidence => RagQueryResult {
+            status: "noEvidence".to_string(),
+            prompt: Some(kpack_core::contract::no_evidence_marker().to_string()),
+            citations: Vec::new(),
+        },
+    }
+}
+
+/// Pure inner logic behind the `rag_query` command: mount every pack in
+/// `pack_paths` against this device's pinned embedder hash (the exact same
+/// `LoadContext` gate `mount_pack_at` uses), load `gguf_path` as a real
+/// `BgeEmbedder`, run `kpack_core::retrieve::retrieve`, and map the result
+/// via `map_retrieval_result`. Factored out (no `AppHandle`) so real-embedder
+/// integration tests can exercise this exact path without constructing a
+/// Tauri `AppHandle` — mirrors `mount_pack_at`/`build_personal_pack_with_embedder`'s
+/// existing pattern in this file. (`crates/kpack-embed/tests/`'s own
+/// integration tests call `kpack_core::retrieve::retrieve` directly rather
+/// than this fn, since that crate can't depend on this one — the Tauri
+/// binary — but the logic they exercise is identical: mount, embed, retrieve.)
+fn rag_query_inner(
+    query: &str,
+    pack_paths: &[String],
+    gguf_path: &Path,
+    tier: Tier,
+) -> Result<RagQueryResult, String> {
+    let available = vec![EMBEDDER_SHA256.to_string()];
+    let ctx = LoadContext {
+        available_embedder_sha256: &available,
+        curator_key: kpack_core::sign::curator_verifying_key(),
+    };
+
+    let mut mounted: Vec<(Pack, Manifest)> = Vec::with_capacity(pack_paths.len());
+    for path in pack_paths {
+        let (pack, manifest) = Pack::mount(Path::new(path), &ctx).map_err(|e| e.to_string())?;
+        mounted.push((pack, manifest));
+    }
+
+    let embedder = BgeEmbedder::new(gguf_path).map_err(|e| e.to_string())?;
+    let result = retrieve(query, &mounted, &embedder, tier).map_err(|e| e.to_string())?;
+
+    Ok(map_retrieval_result(result))
+}
+
+#[tauri::command]
+pub async fn rag_query(
+    query: String,
+    pack_paths: Vec<String>,
+    app: AppHandle,
+) -> Result<RagQueryResult, String> {
+    let gguf_path = bundled_embedder_path(&app);
+    // Tier (spec §4.3): reuse the existing hardware tier
+    // (`hardware::detect`, spec §6's three-level "low"/"mid"/"high" device
+    // classification) rather than inventing a second notion of device
+    // capability. RAG's own tier concept is coarser — two levels, not three
+    // — so "low" (the constrained, no-dGPU/<16GB-RAM tier §6 already treats
+    // as the weakest) maps to `Tier::Small` (N=3, the 1-2 GB budget spec
+    // §4.3 describes); "mid" and "high" both map to `Tier::Large` (N=5) —
+    // there's no RAG-specific reason to further split the two stronger
+    // hardware tiers. `hardware::detect()` always returns one of the three
+    // strings (see its own tests), so the `_ => Tier::Large` arm is a
+    // defensive default (documented per the task brief's "else default
+    // Tier::Large"), not an expected path.
+    let tier = match crate::hardware::detect().tier.as_str() {
+        "low" => Tier::Small,
+        _ => Tier::Large,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        rag_query_inner(&query, &pack_paths, &gguf_path, tier)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +381,57 @@ mod tests {
         assert_eq!(source_type_for(Path::new("a.txt")).unwrap(), "txt");
         assert!(source_type_for(Path::new("a.pdf")).is_err());
         assert!(source_type_for(Path::new("no-extension")).is_err());
+    }
+
+    #[test]
+    fn citation_info_from_maps_every_field() {
+        let c = Citation {
+            n: 1,
+            pack_id: "p".to_string(),
+            chunk_id: 42,
+            doc_title: "Doc".to_string(),
+            section_path: "Sec".to_string(),
+            locator: "p.1".to_string(),
+        };
+        let info = CitationInfo::from(c);
+        assert_eq!(info.n, 1);
+        assert_eq!(info.pack_id, "p");
+        assert_eq!(info.chunk_id, 42);
+        assert_eq!(info.doc_title, "Doc");
+        assert_eq!(info.section_path, "Sec");
+        assert_eq!(info.locator, "p.1");
+    }
+
+    #[test]
+    fn map_retrieval_result_grounded_carries_prompt_and_citations() {
+        let citation = Citation {
+            n: 1,
+            pack_id: "p".to_string(),
+            chunk_id: 1,
+            doc_title: "Doc".to_string(),
+            section_path: "Sec".to_string(),
+            locator: "p.1".to_string(),
+        };
+        let result = RetrievalResult::Grounded {
+            prompt: "the prompt".to_string(),
+            citations: vec![citation],
+        };
+        let mapped = map_retrieval_result(result);
+        assert_eq!(mapped.status, "grounded");
+        assert_eq!(mapped.prompt.as_deref(), Some("the prompt"));
+        assert_eq!(mapped.citations.len(), 1);
+        assert_eq!(mapped.citations[0].doc_title, "Doc");
+    }
+
+    #[test]
+    fn map_retrieval_result_no_evidence_carries_the_contract_marker() {
+        let mapped = map_retrieval_result(RetrievalResult::NoEvidence);
+        assert_eq!(mapped.status, "noEvidence");
+        assert_eq!(
+            mapped.prompt.as_deref(),
+            Some(kpack_core::contract::no_evidence_marker())
+        );
+        assert!(mapped.citations.is_empty());
     }
 
     #[test]
