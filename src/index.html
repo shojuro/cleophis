@@ -28,12 +28,17 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
           <input id="search" placeholder="Search models…" autocomplete="off"/>
         </div>
-        <div class="offline"><span class="dot"></span>Runs offline</div>
         <div class="device" id="device"><span class="chip-dot"></span><b id="dev-name">—</b><span id="dev-spec"></span></div>
-        <button class="btn" id="loginBtn">Log in</button>
-        <button class="btn" id="billingBtn" title="Manage billing" style="display:none">Billing</button>
         <button class="btn" id="packsBtn" title="Knowledge packs" style="display:none">Packs</button>
-        <button class="btn" id="signOutBtn" title="Sign out" style="display:none">Sign out</button>
+        <button class="btn" id="loginBtn">Log in</button>
+        <div class="profile" id="profileWrap" style="display:none">
+          <button class="avatarbtn" id="profileBtn" title="Account menu" aria-haspopup="true" aria-expanded="false"></button>
+          <div class="profilemenu" id="profileMenu">
+            <div class="profilemenu-nick" id="profileNick">—</div>
+            <button class="profilemenu-item" id="billingBtn" title="Manage billing">Billing</button>
+            <button class="profilemenu-item" id="signOutBtn" title="Sign out">Sign out</button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -118,8 +123,8 @@
     <button class="x" data-close>&times;</button>
     <h2>Knowledge packs</h2>
     <p class="sub">Build a private pack from your own .md, .txt, .pdf, .html, Word (.docx), or EPUB files. Answers cite these sources — or say when there's no evidence.</p>
-    <div class="field"><input type="text" id="packName" placeholder="Pack name (optional)" autocomplete="off"/></div>
-    <button class="btn primary block" id="packBuildBtn">Choose files &amp; build</button>
+    <div class="field"><input type="text" id="packName" placeholder="Pack name" autocomplete="off"/></div>
+    <button class="btn primary block" id="packBuildBtn" disabled>Choose files &amp; build</button>
     <div class="prog" id="packProg" style="display:none"><i></i></div>
     <div class="dlline mono" id="packLine" style="display:none"></div>
     <button class="btn" id="packCancelBtn" style="display:none">Cancel</button>

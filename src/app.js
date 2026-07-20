@@ -407,8 +407,17 @@ async function onDownloadProgress(e) {
 }
 
 /* ---------------- knowledge packs ---------------- */
+// #packBuildBtn stays disabled until #packName has a non-whitespace value —
+// pure UX guard (build_personal_pack still accepts a null name server-side).
+function syncPackBuildBtn() {
+  const nameInput = $('packName');
+  const buildBtn = $('packBuildBtn');
+  if (buildBtn && nameInput) buildBtn.disabled = !nameInput.value.trim();
+}
+
 async function openPacksModal() {
   show($('packsModal'));
+  syncPackBuildBtn();
   await refreshPacksList();
 }
 
@@ -474,15 +483,15 @@ async function startBuild() {
     if (prog) prog.style.display = 'none';
     if (line) line.style.display = 'none';
     if (cancelBtn) cancelBtn.style.display = 'none';
-    if (buildBtn) buildBtn.disabled = false;
     if (nameInput) { nameInput.disabled = false; nameInput.value = ''; }
+    syncPackBuildBtn(); // name just cleared — re-disable
     await refreshPacksList();
   } catch (e) {
     if (err) { err.style.display = 'block'; err.textContent = String(e); }
     if (prog) prog.style.display = 'none';
     if (cancelBtn) cancelBtn.style.display = 'none';
-    if (buildBtn) buildBtn.disabled = false;
     if (nameInput) nameInput.disabled = false;
+    syncPackBuildBtn(); // name is still whatever the user typed
   }
 }
 
@@ -1062,12 +1071,22 @@ function hide(el) {
   if (el.id === 'loginModal' || el.id === 'createModal') resetAuthForms();
   else if (el.id === 'packsModal') {
     $('packName').value = '';
+    syncPackBuildBtn(); // name just cleared — re-disable
     const err = $('packErr');
     err.style.display = 'none';
     err.textContent = '';
   } else if (el.id === 'attachModal') {
     $('attachList').innerHTML = '';
   }
+}
+
+function openProfileMenu() {
+  $('profileMenu').classList.add('show');
+  $('profileBtn').setAttribute('aria-expanded', 'true');
+}
+function closeProfileMenu() {
+  $('profileMenu').classList.remove('show');
+  $('profileBtn').setAttribute('aria-expanded', 'false');
 }
 
 function resetAuthForms() {
@@ -1098,11 +1117,11 @@ async function applySession(info) {
     $('dev-spec').textContent = `${state.device.ram_gb} GB RAM`;
     $('device').style.display = 'flex';
   } catch (_) { /* chip is optional — badges fall back to 'Sign in to check' */ }
-  const lb = $('loginBtn');
-  lb.textContent = state.nick;
-  lb.title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : '';
-  $('signOutBtn').style.display = '';
-  $('billingBtn').style.display = '';
+  $('loginBtn').style.display = 'none';
+  $('profileWrap').style.display = '';
+  $('profileBtn').textContent = (state.nick || '?').trim().charAt(0).toUpperCase() || '?';
+  $('profileBtn').title = info.mode === 'offlineCached' ? 'Signed in — offline, using saved account data' : 'Account menu';
+  $('profileNick').textContent = state.nick;
   $('packsBtn').style.display = '';
   hide($('loginModal'));
   hide($('createModal'));
@@ -1132,14 +1151,17 @@ $('grid').addEventListener('click', (e) => {
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }
+  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu(); }
 });
-$('loginBtn').addEventListener('click', () => {
-  if (state.signedIn) {
-    state.cat = 'mine';
-    document.querySelectorAll('#nav button').forEach((x) => x.classList.toggle('active', x.dataset.cat === 'mine'));
-    renderFilters(); renderGrid();
-  } else show($('loginModal'));
+$('loginBtn').addEventListener('click', () => show($('loginModal')));
+$('profileBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('profileMenu').classList.contains('show') ? closeProfileMenu() : openProfileMenu();
+});
+document.addEventListener('click', (e) => {
+  if (!$('profileMenu').classList.contains('show')) return;
+  if (e.target.closest('#profileWrap')) return;
+  closeProfileMenu();
 });
 document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }));
 $('packsBtn').addEventListener('click', () => openPacksModal());
@@ -1156,6 +1178,7 @@ $('attachDoneBtn').addEventListener('click', async () => {
   }
 });
 $('packBuildBtn').addEventListener('click', () => startBuild());
+$('packName').addEventListener('input', () => syncPackBuildBtn());
 $('packCancelBtn').addEventListener('click', async () => {
   try { await invoke('cancel_build'); } catch (_) {}
 });
@@ -1294,12 +1317,10 @@ $('signOutBtn').addEventListener('click', async () => {
   state.chatBlocked = new Set();
   resetAuthForms();
   $('device').style.display = 'none';
-  $('signOutBtn').style.display = 'none';
-  $('billingBtn').style.display = 'none';
+  closeProfileMenu();
+  $('profileWrap').style.display = 'none';
   $('packsBtn').style.display = 'none';
-  const lb = $('loginBtn');
-  lb.textContent = 'Log in';
-  lb.title = '';
+  $('loginBtn').style.display = '';
   if (state.cat === 'mine') {
     state.cat = 'all';
     document.querySelectorAll('#nav button').forEach((x) => x.classList.toggle('active', x.dataset.cat === 'all'));
