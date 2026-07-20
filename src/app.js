@@ -1170,7 +1170,7 @@ async function sendCompletion(userText) {
           ...win.sent,
         ],
         stream: true,
-        max_tokens: 512,
+        max_tokens: REPLY_RESERVE, // bound to the windowing reserve so the two can't drift
         temperature: 0.7,
         cache_prompt: true,
       }),
