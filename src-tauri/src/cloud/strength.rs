@@ -1,10 +1,13 @@
-//! zxcvbn password-strength gate for offline-auth enrollment. This is the
-//! authoritative guard: Task 4 calls `check_strength` before deriving an
-//! Argon2id verifier (verifier.rs), and the same function backs the
-//! `check_password_strength` command so the FE can render a live meter.
-//! Offline sign-in has no server round trip to rate-limit guesses against,
-//! so a weak password here becomes brute-forceable against the locally
-//! stored verifier — `ok` is deliberately strict on both length and score.
+//! zxcvbn password-strength gate for offline-auth. This is the authoritative
+//! strength policy at the point a password is CHOSEN: it backs the
+//! `check_password_strength` command so the FE gates account creation
+//! (sign-up) on a strong password. Enrollment itself does NOT re-check
+//! strength — any online-authenticated password is enrolled (an existing
+//! account's old password can't be retrofitted, and refusing would bar it
+//! from offline sign-in entirely). Offline sign-in has no server round trip
+//! to rate-limit guesses against, so `ok` is deliberately strict on both
+//! length and score to keep NEW passwords hard to brute-force against the
+//! locally stored Argon2id verifier.
 
 use serde::Serialize;
 

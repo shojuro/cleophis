@@ -425,13 +425,35 @@ impl Cloud {
     pub fn remove_account_auth(&self, user_id: &str) -> Result<(), CloudError> {
         let dir = store::auth_cache_dir(self.app_data_dir());
         let entry = store::read_known_account(&dir, user_id).ok_or(CloudError::UnknownAccount)?;
-
-        if self.current_user_id().as_deref() == Some(entry.user_id.as_str()) {
-            self.sign_out();
+        // The auth-cache filename is derived from the (sanitized) `user_id`
+        // argument, but the `user_id` INSIDE the file is untrusted contents —
+        // a planted/edited file could name a DIFFERENT account and redirect
+        // the deletions below. Refuse a mismatch; from here `user_id` is the
+        // canonical, sanitized id and every delete keys off it, not the body.
+        if entry.user_id != user_id {
+            return Err(CloudError::UnknownAccount);
         }
 
-        store::delete_verifier(&entry.user_id);
-        store::delete_auth_cache_entry(&dir, &entry.user_id)
+        if self.current_user_id().as_deref() == Some(user_id) {
+            self.sign_out();
+        }
+        // If the device's global session artifacts (the remembered refresh
+        // token + cloud-cache.json) belong to THIS account, purge them too.
+        // Otherwise a remember-me user who relaunched OFFLINE (session from
+        // restore()'s offline fallback) would have sign_out() only clear
+        // memory — its shared-device short-circuit — leaving the token +
+        // cache to silently rebuild the "removed" account on the next launch,
+        // breaking the modal's "sign in online again" promise. The user_id
+        // match here proves those artifacts are this account's, so purging is
+        // safe (a DIFFERENT remembered account's token is left untouched).
+        if store::read_cache(&self.cache_path).user_id == user_id {
+            store::delete_refresh_token();
+            let _guard = self.cache_lock.lock().unwrap();
+            let _ = std::fs::remove_file(&self.cache_path);
+        }
+
+        store::delete_verifier(user_id);
+        store::delete_auth_cache_entry(&dir, user_id)
     }
 
     pub fn grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
@@ -493,6 +515,17 @@ impl Cloud {
         // offline session's `ensure_fresh` always returns `Offline`
         // immediately anyway (see `Session::offline`'s doc).
         if let Some(user_id) = offline_user_id {
+            // When this offline session IS the global CloudCache's owner, that
+            // cache is the fresher, authoritative source (it receives sync +
+            // queue_grant updates; the per-account auth-cache snapshot only
+            // refreshes on an online auth). Prefer it. Only when the offline
+            // identity DIVERGES from the cache owner (shared device: A
+            // remembered online, B offline-signed-in) do we fall back to B's
+            // OWN snapshot — the cross-account-leak guard from the OA5b review.
+            let cache = store::read_cache(&self.cache_path);
+            if cache.user_id == user_id {
+                return Ok(cache.entitlements);
+            }
             let dir = store::auth_cache_dir(self.app_data_dir());
             let entitlements = store::read_auth_cache(&dir, &user_id)
                 .map(|entry| entry.entitlements)
@@ -3298,6 +3331,65 @@ mod tests {
         );
         assert!(store::load_verifier(user_id).is_none());
         assert!(store::read_auth_cache(&dir, user_id).is_none());
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA6-5 (ultrareview fix). Removing an account that OWNS the device's
+    // global session artifacts (remembered refresh token + cloud-cache.json)
+    // purges them too — even when the session is an OFFLINE (restored) one,
+    // whose sign_out() only clears memory (the shared-device short-circuit).
+    // Without the ownership purge in remove_account_auth this test fails: the
+    // token + cache survive and silently rebuild the "removed" account.
+    #[test]
+    fn remove_account_auth_purges_global_token_and_cache_for_cache_owner() {
+        let _g = lock();
+        let _kc = KeyringCleanup;
+        let user_id = "user-oa6-purge";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+        seed_offline_account(
+            user_id,
+            "oa6-purge@example.com",
+            "OA6Purge",
+            "cedar-quartz-marten-71",
+            vec![],
+            0,
+            0,
+        );
+
+        // The device's global artifacts belong to THIS account: a remembered
+        // refresh token + a cloud-cache.json owned by user_id.
+        store::delete_refresh_token();
+        store::save_refresh_token("rt-oa6-purge").expect("seed refresh token");
+        let cache_path = temp_cache_path("t-oa6-purge-cache.json");
+        let mut cache = store::CloudCache::default();
+        cache.user_id = user_id.to_string();
+        cache.email = "oa6-purge@example.com".into();
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        // A restored-offline session for that same account: its sign_out()
+        // only clears memory, so the ownership purge is what removes the
+        // token + cache.
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline(user_id.into()));
+        }
+
+        cloud.remove_account_auth(user_id).expect("removal should succeed");
+
+        assert!(store::load_verifier(user_id).is_none(), "verifier removed");
+        assert!(store::read_auth_cache(&dir, user_id).is_none(), "auth-cache removed");
+        assert!(
+            store::load_refresh_token().is_none(),
+            "the remembered refresh token must be purged (else the removed account silently rebuilds)"
+        );
+        assert!(
+            store::read_cache(&cache_path).user_id.is_empty(),
+            "cloud-cache.json must be purged for the removed cache owner"
+        );
 
         let _ = std::fs::remove_file(&cache_path);
     }

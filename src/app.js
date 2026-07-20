@@ -1597,6 +1597,13 @@ function resetPwStrength() {
 function updatePwStrength() {
   const pw = $('cr-pass').value;
   if (!pw) { resetPwStrength(); return; }
+  // Invalidate SYNCHRONOUSLY, before the debounce: the Create button must
+  // never trust an `ok` left over from a previous, stronger value. Without
+  // this, an edit — or a password manager's autofill-then-Enter — inside the
+  // 150ms window could submit a weak password, which enroll_verifier would
+  // turn into a brute-forceable offline verifier. Safety over 150ms latency.
+  state.crStrengthOk = false;
+  $('doCreate').disabled = true;
   clearTimeout(crStrengthTimer);
   crStrengthTimer = setTimeout(async () => {
     let res;

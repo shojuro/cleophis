@@ -18,10 +18,9 @@ use crate::cloud::strength::{self, StrengthResult};
 const JOIN_ERROR_MESSAGE: &str = "Something went wrong on this device. Please try again.";
 
 /// Pure/synchronous (no `Cloud` state, no network) — lets the FE render a
-/// live strength meter as the user types. `check_strength` (strength.rs)
-/// is the same function Task 4's enrollment flow calls as the authoritative
-/// gate before deriving a verifier, so the meter and the gate never
-/// disagree.
+/// live strength meter as the user types and gate sign-up on the result.
+/// `check_strength` (strength.rs) is the authoritative strength policy at
+/// the point the password is chosen; enrollment does not re-check it.
 #[tauri::command]
 pub fn check_password_strength(password: String, email: String, nickname: String) -> StrengthResult {
     strength::check_strength(&password, &[&email, &nickname])
