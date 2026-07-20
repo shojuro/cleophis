@@ -39,8 +39,6 @@ nav.top button.active{color:var(--teal)}
 #search{width:240px;max-width:30vw;background:var(--surface);border:1px solid var(--line);color:var(--text);
   border-radius:10px;padding:9px 12px 9px 36px;font-size:14px;outline:none}
 #search:focus{border-color:var(--teal)}
-.offline{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);white-space:nowrap}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 3px rgba(53,208,186,.15)}
 .btn{border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:10px;padding:9px 16px;font-size:14px;font-weight:600}
 .btn:hover{border-color:var(--faint)}
 .btn.primary{background:var(--teal);color:var(--teal-ink);border-color:var(--teal)}
@@ -50,6 +48,21 @@ nav.top button.active{color:var(--teal)}
 .device .chip-dot{width:7px;height:7px;border-radius:50%;background:var(--teal)}
 .device b{color:var(--text);font-weight:600}
 .device span{color:var(--muted)}
+
+/* ---- profile menu ---- */
+.profile{position:relative;flex:none}
+.avatarbtn{width:36px;height:36px;flex:none;border-radius:50%;background:var(--teal);color:var(--teal-ink);
+  border:1px solid var(--teal);font-size:14px;font-weight:700;display:grid;place-items:center;text-transform:uppercase}
+.avatarbtn:hover{filter:brightness(1.05)}
+.profilemenu{display:none;position:absolute;top:calc(100% + 8px);right:0;min-width:180px;z-index:45;
+  background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px;
+  box-shadow:0 12px 30px rgba(0,0,0,.4)}
+.profilemenu.show{display:block}
+.profilemenu-nick{padding:8px 10px 10px;margin-bottom:4px;border-bottom:1px solid var(--line);
+  font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profilemenu-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);
+  font-size:14px;padding:9px 10px;border-radius:8px}
+.profilemenu-item:hover{background:var(--surface2)}
 
 /* ---- hero strip ---- */
 .hero{max-width:1240px;margin:0 auto;padding:34px 24px 8px}
@@ -127,13 +140,14 @@ nav.top button.active{color:var(--teal)}
 .field input:focus{border-color:var(--teal)}
 .modal .remember{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:12px;cursor:pointer}
 .modal .foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;font-size:13px;color:var(--muted)}
+#packsList{max-height:320px;overflow-y:auto}
 .packrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
 .packmeta{color:var(--muted);font-size:12.5px;margin-top:2px}
 .attachrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:14px;cursor:pointer}
 .attachrow:first-child{border-top:0}
 
 footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-align:center;padding:22px}
-@media (max-width:900px){ nav.top,.offline{display:none} .hero h1{font-size:24px} }
+@media (max-width:900px){ nav.top{display:none} .hero h1{font-size:24px} }
 
 /* ---- chat sidebar (§7 S7-2: the conversation rail) ---- */
 #chatSidebar{width:260px;flex:none;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--line);overflow:hidden}
