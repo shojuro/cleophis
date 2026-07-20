@@ -228,7 +228,8 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .citetoggle:hover{color:var(--text)}
 .citelist{display:none;flex-direction:column;gap:4px}
 .citations.expanded .citelist{display:flex}
-.cite{font-size:12.5px;color:var(--muted)}
+.cite{font-size:12.5px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
+.cite-pack{font-size:11px;color:var(--faint)}
 .retrychip{align-self:flex-start;margin-left:24px;background:none;border:1px dashed var(--heavy);color:var(--heavy);
   border-radius:999px;padding:5px 14px;font-size:12.5px}
 /* §7 S7-4: context-window boundary — a system hint, not a message, so it

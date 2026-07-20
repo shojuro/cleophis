@@ -962,9 +962,25 @@ function renderCitations(afterEl, citations) {
   for (const c of citations) {
     const row = document.createElement('div');
     row.className = 'cite';
-    row.textContent = `[${c.n}] ${c.docTitle}` +
+    // Main line: the numbered document + where in it. textContent only —
+    // docTitle/sectionPath/locator come from user pack content (untrusted).
+    const main = document.createElement('div');
+    main.className = 'cite-main';
+    main.textContent = `[${c.n}] ${c.docTitle}` +
       (c.sectionPath ? ` · ${c.sectionPath}` : '') +
       (c.locator ? ` · ${c.locator}` : '');
+    row.appendChild(main);
+    // Which PACK this excerpt is from — the same label as the attach-modal
+    // checkbox (manifest packId), so the user can reconcile the sources
+    // against exactly what they attached. Retrieval is scoped to the
+    // attached packs; this makes that visible (a doc can live in more than
+    // one pack, and one pack can contribute several excerpts).
+    if (c.packId) {
+      const pk = document.createElement('div');
+      pk.className = 'cite-pack';
+      pk.textContent = `pack: ${c.packId}`;
+      row.appendChild(pk);
+    }
     list.appendChild(row);
   }
   box.appendChild(list);
