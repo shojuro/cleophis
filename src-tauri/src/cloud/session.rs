@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -7,6 +7,8 @@ use crate::cloud::auth;
 use crate::cloud::error::CloudError;
 use crate::cloud::rest;
 use crate::cloud::store::{self, Entitlement};
+use crate::cloud::strength;
+use crate::cloud::verifier;
 use crate::hardware;
 
 /// In-memory only — never serialized to disk as a whole. The refresh token
@@ -167,7 +169,25 @@ impl Cloud {
     pub fn sign_in(&self, email: &str, password: &str, remember: bool) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_in_password(email, password)?;
         let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
-        Ok(self.apply_and_sync(tok, &cache, !remember))
+        let info = self.apply_and_sync(tok, &cache, !remember);
+        // Offline-auth enrollment (Task 4): `apply_and_sync` always leaves a
+        // session in place on return, so this is really "if" not "maybe" —
+        // the `if let` is just the same defensive shape as every other
+        // degrade-gracefully site in this file, never a real branch in
+        // practice. Uses `info`'s authoritative post-sync email/nickname
+        // (not the raw `email` arg / no nickname arg at all here) so the
+        // enrolled auth-cache entry agrees with what `apply_and_sync` just
+        // wrote to the ONLINE `CloudCache`.
+        if let Some(user_id) = self.current_user_id() {
+            self.enroll_verifier(
+                &user_id,
+                info.email.as_deref().unwrap_or(email),
+                info.nickname.as_deref().unwrap_or(""),
+                password,
+                &info.entitlements,
+            );
+        }
+        Ok(info)
     }
 
     /// `remember` — see `sign_in`'s doc; identical contract.
@@ -180,7 +200,22 @@ impl Cloud {
     ) -> Result<SessionInfo, CloudError> {
         let tok = auth::sign_up(email, password, nickname)?;
         let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
-        Ok(self.apply_and_sync(tok, &cache, !remember))
+        let info = self.apply_and_sync(tok, &cache, !remember);
+        // Offline-auth enrollment (Task 4) — see `sign_in`'s identical call
+        // for the rationale. `nickname` here prefers `info`'s post-sync
+        // value (the server profile row apply_and_sync just wrote/read)
+        // over the raw `nickname` arg, same as `sign_in` prefers `info`'s
+        // email over its raw arg.
+        if let Some(user_id) = self.current_user_id() {
+            self.enroll_verifier(
+                &user_id,
+                info.email.as_deref().unwrap_or(email),
+                info.nickname.as_deref().unwrap_or(nickname),
+                password,
+                &info.entitlements,
+            );
+        }
+        Ok(info)
     }
 
     /// The authoritative signed-in user id (a Supabase UUID, `Session.user_id`),
@@ -482,6 +517,79 @@ impl Cloud {
             mode: "online".into(),
             entitlements: merged.entitlements,
             grace_expired: false,
+        }
+    }
+
+    /// The app-data directory, derived from `cache_path`'s parent — the SAME
+    /// source `main.rs`'s setup passes in (`cache_path = <app_data>/cloud-cache.json`)
+    /// — rather than a separately stored field, so there's exactly one
+    /// source of truth for where this account's on-device state lives.
+    /// Falls back to `cache_path` itself in the degenerate case of a path
+    /// with no parent (e.g. a bare filename in a test) — never hit by the
+    /// real app-data path Tauri hands `Cloud::new`.
+    fn app_data_dir(&self) -> &Path {
+        self.cache_path.parent().unwrap_or(&self.cache_path)
+    }
+
+    /// Offline-auth enrollment (Task 4): derives an Argon2id verifier and
+    /// writes a per-account auth-cache snapshot, so a later offline sign-in
+    /// (Task 5) can recognize this account and authenticate it without a
+    /// server round trip. Called from `sign_in`/`sign_up`'s ONLINE-success
+    /// paths only — `restore()`'s refresh-token-only path never has the
+    /// plaintext password needed to re-derive a verifier, so a restored
+    /// session leaves any existing verifier untouched rather than trying to
+    /// re-enroll.
+    ///
+    /// `check_strength` is a DEFENSE-IN-DEPTH backstop, not the primary
+    /// gate — the FE/`check_password_strength` command (Task 3/6) already
+    /// blocks a weak password from ever reaching `sign_up`. This exists so
+    /// a weak password can NEVER become a locally-stored (offline,
+    /// unrate-limited) verifier even if that gate is bypassed or absent —
+    /// e.g. `sign_in` with an old password predating the gate's rollout is
+    /// simply never enrolled if it's weak, rather than being upgraded into
+    /// an offline attack surface.
+    ///
+    /// Degrades gracefully: every failure here is logged and swallowed,
+    /// same contract as `write_cache_best_effort` — enrollment must NEVER
+    /// break or fail the online sign-in/up it's piggybacking on.
+    fn enroll_verifier(
+        &self,
+        user_id: &str,
+        email: &str,
+        nickname: &str,
+        password: &str,
+        entitlements: &[Entitlement],
+    ) {
+        let strength_result = strength::check_strength(password, &[email, nickname]);
+        if !strength_result.ok {
+            eprintln!("cloud: skipping offline-auth enrollment — password failed the strength gate");
+            return;
+        }
+
+        let stored_verifier = match verifier::derive_verifier(password) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("cloud: failed to derive offline-auth verifier: {e}");
+                return;
+            }
+        };
+        if let Err(e) = store::save_verifier(user_id, &stored_verifier) {
+            eprintln!("cloud: failed to save offline-auth verifier: {e}");
+            return;
+        }
+
+        let entry = store::AuthCacheEntry {
+            user_id: user_id.to_string(),
+            email: email.to_string(),
+            nickname: nickname.to_string(),
+            entitlements: entitlements.to_vec(),
+            last_online_auth: now(),
+            failed_attempts: 0,
+            last_failed_at: 0,
+        };
+        let dir = store::auth_cache_dir(self.app_data_dir());
+        if let Err(e) = store::write_auth_cache(&dir, &entry) {
+            eprintln!("cloud: failed to write auth-cache entry: {e}");
         }
     }
 
@@ -2060,5 +2168,72 @@ mod tests {
         assert_eq!(cached.user_id, "user-rem-1");
 
         let _ = std::fs::remove_file(&cache_path);
+    }
+
+    /// Same shape as `KeyringCleanup`, but for the per-account offline-auth
+    /// verifier OA4's enrollment tests write — cleans up its own keyring
+    /// entry via Drop (identical rationale to store.rs's
+    /// `VerifierKeyringCleanup`, just duplicated here since this module's
+    /// tests can't reach that private one).
+    struct VerifierKeyringCleanup<'a>(&'a str);
+    impl Drop for VerifierKeyringCleanup<'_> {
+        fn drop(&mut self) {
+            store::delete_verifier(self.0);
+        }
+    }
+
+    // OA4-1. sign_in's online-success path enrolls a verifier + auth-cache
+    // entry: same 3-response mock shape as Remember1-3 (refresh -> profile
+    // -> entitlements), but the password used is strong enough to pass
+    // `check_strength`'s gate (the strength.rs `strong_passphrase_passes`
+    // fixture) — a weak one would be silently skipped by design (OA4-3).
+    #[test]
+    fn sign_in_online_success_enrolls_verifier_and_auth_cache() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+        let user_id = "user-oa4-1";
+        store::delete_verifier(user_id);
+        let _verifier_cleanup = VerifierKeyringCleanup(user_id);
+
+        let cache_path = temp_cache_path("t-oa4-signin-cache.json");
+        let auth_cache_dir = store::auth_cache_dir(cache_path.parent().unwrap());
+        let entry_path = auth_cache_dir.join(format!("{user_id}.json"));
+        let _ = std::fs::remove_file(&entry_path);
+
+        let password = "wintergreen-diesel-canyon-42";
+        let port = start_mock_server_n(vec![
+            (
+                "200 OK",
+                r#"{"access_token":"at-oa4-1","token_type":"bearer","expires_in":3600,"refresh_token":"rt-oa4-1","user":{"id":"user-oa4-1","email":"oa4-1@example.com"}}"#,
+            ),
+            ("200 OK", r#"[{"nickname":"OA4Nick1"}]"#),
+            ("200 OK", "[]"),
+        ]);
+        set_mock_env(port);
+
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in("oa4-1@example.com", password, true)
+            .expect("expected sign_in to succeed");
+        assert!(info.signed_in);
+
+        let verifier = store::load_verifier(user_id).expect("expected a verifier to be enrolled");
+        assert!(
+            crate::cloud::verifier::verify(password, &verifier),
+            "expected the enrolled verifier to match the sign_in password"
+        );
+
+        let entry = store::read_auth_cache(&auth_cache_dir, user_id)
+            .expect("expected an auth-cache entry to be written");
+        assert_eq!(entry.email, "oa4-1@example.com");
+        assert!(
+            (entry.last_online_auth - now()).abs() <= 10,
+            "last_online_auth was: {}",
+            entry.last_online_auth
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+        let _ = std::fs::remove_file(&entry_path);
     }
 }
