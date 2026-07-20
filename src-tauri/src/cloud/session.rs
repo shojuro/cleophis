@@ -35,6 +35,43 @@ pub struct Session {
     /// normally in memory for the rest of the process; it simply leaves
     /// no trace for the next launch.
     pub ephemeral: bool,
+    /// Set by `Session::offline` for a session established WITHOUT a
+    /// network round-trip — `offline_sign_in`'s success arm and
+    /// `restore()`'s offline fallback. Carries the real `user_id` (so
+    /// `current_user_id()` works offline) but empty/expired token fields —
+    /// there is no access/refresh token to put in one. This flag is the
+    /// actual guard: `ensure_fresh`/`refresh_via_gate` check it FIRST and
+    /// return `Err(CloudError::Offline)` before ever attempting
+    /// `auth::refresh` with the empty refresh_token, and `sign_out` checks
+    /// it to clear ONLY the in-memory session rather than deleting the
+    /// global keyring refresh-token/cache file. Both guards exist because a
+    /// fake session with an empty/"stale" token would otherwise trip a
+    /// later refresh attempt into a `SessionExpired` purge — silently
+    /// signing out a DIFFERENT remembered account on a shared device (see
+    /// `Session::offline`'s doc for the full rationale).
+    pub offline: bool,
+}
+
+impl Session {
+    /// An offline session: carries the real `user_id` — so
+    /// `current_user_id()` and per-account resources like `packs_dir` work
+    /// offline — but no real tokens (`access_token`/`refresh_token` are
+    /// empty, `expires_at` is 0). The `offline` flag on the resulting
+    /// `Session` is the actual guard against those empty tokens ever being
+    /// used for a network call (see the field's doc); the empty/expired
+    /// values here are belt-and-suspenders, never load-bearing on their
+    /// own.
+    fn offline(user_id: String) -> Self {
+        Session {
+            user_id,
+            email: String::new(),
+            access_token: String::new(),
+            refresh_token: String::new(),
+            expires_at: 0,
+            ephemeral: false,
+            offline: true,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -158,7 +195,22 @@ impl Cloud {
             // Offline, server trouble (Api{..}), or anything else we don't
             // specifically recognize: never brick boot. Fall back to
             // whatever is cached.
-            Err(_) => self.offline_cached_info(&cache),
+            Err(_) => {
+                // OA5b: also populate a real (offline-flagged) in-memory
+                // session, so the remember-me-offline path gets
+                // current_user_id() (and therefore per-account packs/chat
+                // history) too — not just a fresh offline_sign_in. Safe for
+                // the same reason `offline_sign_in`'s does — see
+                // `Session::offline`'s doc. Guarded on a non-empty
+                // `cache.user_id` (i.e. this device has actually been
+                // signed in before) — an empty cache has nothing to
+                // populate a session with.
+                if !cache.user_id.is_empty() {
+                    *self.session.lock().unwrap() = Some(Session::offline(cache.user_id.clone()));
+                    *self.nickname.lock().unwrap() = Some(cache.nickname.clone());
+                }
+                self.offline_cached_info(&cache)
+            }
         }
     }
 
@@ -237,25 +289,24 @@ impl Cloud {
     /// Argon2id verifier — either missing means this device has never
     /// authenticated this email online, so there is nothing to fall back to.
     ///
-    /// Deliberately does NOT populate `self.session`/`self.nickname` with a
-    /// live in-memory `Session` the way `apply_and_sync` does — there is no
-    /// access/refresh token to put in one, and a `Session` carrying an empty
-    /// refresh_token would be actively dangerous: the next `ensure_fresh()`
-    /// call (e.g. from a `grant()`/`entitlements()` poll, once the network
-    /// comes back) would see it as "stale" and call `refresh_via_gate()`,
-    /// which would send that empty token to GoTrue; GoTrue's 4xx-on-refresh
-    /// reply maps to `SessionExpired`, and `refresh_via_gate`'s
-    /// `SessionExpired` branch purges the ONE global refresh-token keyring
-    /// entry and deletes `self.cache_path` — silently signing out whatever
-    /// DIFFERENT account might actually be this device's remembered one.
-    /// Returning a `SessionInfo` built directly from the `AuthCacheEntry`
-    /// instead — exactly mirroring `offline_cached_info`'s existing
-    /// `restore()`-offline-cached shape, the precedent this feature extends
-    /// — sidesteps that risk entirely. The tradeoff: `current_user_id()` —
-    /// and therefore per-account packs/chat history — stays unavailable
-    /// until a real online session is established, the same known
-    /// limitation `restore()`'s offlineCached path already has today, not a
-    /// regression Task 5 introduces.
+    /// (OA5b) On a matching password, populates a real in-memory `Session`
+    /// via `Session::offline` — carrying the enrolled `user_id` so
+    /// `current_user_id()` (and therefore per-account packs/chat history)
+    /// works offline — but flagged `offline: true` so it can never be
+    /// mistaken for a usable token. That flag is what makes this safe: a
+    /// `Session` carrying an empty refresh_token would otherwise be
+    /// actively dangerous — the next `ensure_fresh()` call (e.g. from a
+    /// `grant()`/`entitlements()` poll, once the network comes back) would
+    /// see it as "stale" and call `refresh_via_gate()`, which would send
+    /// that empty token to GoTrue; GoTrue's 4xx-on-refresh reply maps to
+    /// `SessionExpired`, and `refresh_via_gate`'s `SessionExpired` branch
+    /// purges the ONE global refresh-token keyring entry and deletes
+    /// `self.cache_path` — silently signing out whatever DIFFERENT account
+    /// might actually be this device's remembered one. `ensure_fresh`/
+    /// `refresh_via_gate` check `offline` FIRST and return
+    /// `Err(CloudError::Offline)` immediately instead, before ever
+    /// attempting that refresh — see `Session::offline`'s doc and
+    /// `ensure_fresh`'s guard for the full picture.
     fn offline_sign_in(&self, email: &str, password: &str) -> Result<SessionInfo, CloudError> {
         let dir = store::auth_cache_dir(self.app_data_dir());
         let mut entry =
@@ -278,6 +329,11 @@ impl Cloud {
             if let Err(e) = store::write_auth_cache(&dir, &entry) {
                 eprintln!("cloud: failed to reset offline-auth throttle: {e}");
             }
+            // OA5b: populate a real (offline-flagged) in-memory session now
+            // that this account is authenticated — see this method's doc
+            // and `Session::offline`'s doc for why this is safe.
+            *self.session.lock().unwrap() = Some(Session::offline(entry.user_id.clone()));
+            *self.nickname.lock().unwrap() = Some(entry.nickname.clone());
             Ok(SessionInfo {
                 signed_in: true,
                 nickname: non_empty(&entry.nickname),
@@ -307,6 +363,25 @@ impl Cloud {
     }
 
     pub fn sign_out(&self) {
+        // OA5b: an offline session's global keyring refresh-token and cache
+        // file may belong to a DIFFERENT remembered account on a shared
+        // device — offline_sign_in/restore's offline fallback have no way
+        // to know, so this in-memory session is all that's actually "signed
+        // in" here. Clear just that and stop; do NOT touch the keyring or
+        // cache file. A non-offline (real) session keeps the full purge
+        // below, unchanged.
+        let is_offline = self
+            .session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.offline)
+            .unwrap_or(false);
+        if is_offline {
+            self.clear_memory();
+            return;
+        }
+
         // Read/copy the access token under the session lock, then drop the
         // guard before the (best-effort) network logout call below — the
         // guard is a statement-local temporary, released at the semicolon.
@@ -501,6 +576,7 @@ impl Cloud {
                 refresh_token: tok.refresh_token,
                 expires_at: tok.expires_at,
                 ephemeral,
+                offline: false,
             });
         } // guard dropped here, before any I/O below.
 
@@ -673,12 +749,23 @@ impl Cloud {
 
     /// Returns fresh (access_token, user_id) copies, refreshing first if
     /// the current session is within 60s of expiring (or already expired).
+    ///
+    /// OA5b safety guard: an `offline` session's `expires_at` is 0 (see
+    /// `Session::offline`) and its `refresh_token` is empty — checked and
+    /// rejected FIRST, before the freshness check below would otherwise
+    /// treat it as stale and fall through toward `refresh_via_gate` /
+    /// `auth::refresh`. This is the choke point every `ensure_fresh`-backed
+    /// online op (`download_authorization`, `create_checkout`, `grant`,
+    /// entitlement sync) goes through, so all of them gracefully return
+    /// `Offline` for an offline session instead of ever reaching the
+    /// `SessionExpired` purge.
     fn ensure_fresh(&self) -> Result<(String, String), CloudError> {
         let now_ts = now();
         {
             let guard = self.session.lock().unwrap();
             match guard.as_ref() {
                 None => return Err(CloudError::SessionExpired),
+                Some(s) if s.offline => return Err(CloudError::Offline),
                 Some(s) if now_ts <= s.expires_at - 60 => {
                     return Ok((s.access_token.clone(), s.user_id.clone()));
                 }
@@ -700,6 +787,14 @@ impl Cloud {
     /// pre-check) as the "one forced refresh" `grant` performs when the
     /// server itself rejects an access token our local `expires_at`
     /// thought was still fresh.
+    ///
+    /// OA5b safety guard: same `offline` check as `ensure_fresh`, repeated
+    /// here defense-in-depth — every caller of this method today already
+    /// only reaches it after `ensure_fresh` has itself succeeded (meaning
+    /// the session wasn't offline), but this method is also called
+    /// directly by a few retry paths, so it must never assume that and
+    /// must never send an offline session's empty `refresh_token` to
+    /// `auth::refresh` on its own.
     fn refresh_via_gate(&self) -> Result<(String, String), CloudError> {
         let _gate = self.refresh_gate.lock().unwrap();
         let now_ts = now();
@@ -707,6 +802,7 @@ impl Cloud {
             let guard = self.session.lock().unwrap();
             match guard.as_ref() {
                 None => return Err(CloudError::SessionExpired),
+                Some(s) if s.offline => return Err(CloudError::Offline),
                 Some(s) if now_ts <= s.expires_at - 60 => {
                     return Ok((s.access_token.clone(), s.user_id.clone()));
                 }
@@ -755,6 +851,7 @@ impl Cloud {
                 refresh_token: tok.refresh_token,
                 expires_at: tok.expires_at,
                 ephemeral,
+                offline: false,
             });
         }
         Ok((access, user_id))
@@ -1417,6 +1514,7 @@ mod tests {
                 refresh_token: "rt-s2".into(),
                 expires_at: now() + 3600, // fresh -> ensure_fresh skips network
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1732,6 +1830,7 @@ mod tests {
                 refresh_token: "rt-fresh".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
         set_mock_env(unused_port());
@@ -1760,6 +1859,7 @@ mod tests {
                 refresh_token: "rt-stale".into(),
                 expires_at: now() - 10,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1804,6 +1904,7 @@ mod tests {
                 refresh_token: "rt-stale-mid".into(),
                 expires_at: now() - 10,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1837,6 +1938,7 @@ mod tests {
                 refresh_token: "rt-rls".into(),
                 expires_at: now() + 3600, // fresh -> ensure_fresh skips network
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1876,6 +1978,7 @@ mod tests {
                 refresh_token: "rt-fresh-dl".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1909,6 +2012,7 @@ mod tests {
                 refresh_token: "rt-fresh-checkout".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1947,6 +2051,7 @@ mod tests {
                 refresh_token: "rt-409".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -1981,6 +2086,7 @@ mod tests {
                 refresh_token: "rt-badurl".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -2025,6 +2131,7 @@ mod tests {
                 refresh_token: "rt-401".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -2056,6 +2163,7 @@ mod tests {
                 refresh_token: "rt-fresh-portal".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -2092,6 +2200,7 @@ mod tests {
                 refresh_token: "rt-404".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -2123,6 +2232,7 @@ mod tests {
                 refresh_token: "rt-portal-badurl".into(),
                 expires_at: now() + 3600,
                 ephemeral: false,
+                offline: false,
             });
         }
 
@@ -2212,6 +2322,7 @@ mod tests {
                 refresh_token: "rt-eph-2-stale".into(),
                 expires_at: now() - 10, // stale -> forces a refresh round-trip
                 ephemeral: true,
+                offline: false,
             });
         }
 
@@ -2651,6 +2762,173 @@ mod tests {
         assert_eq!(
             entry.failed_attempts, 0,
             "expected a success to reset the throttle counter"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // ---- OA5b: safe offline session (current_user_id() works offline,
+    // without ever risking the refresh-purge machinery) ----
+
+    // OA5b-1. offline_sign_in's success arm now populates a real (offline-
+    // flagged) in-memory session -- current_user_id() must return the
+    // enrolled user_id (was None pre-5b, the whole reason this task exists).
+    #[test]
+    fn offline_sign_in_sets_current_user_id() {
+        let _g = lock();
+        let user_id = "user-oa5b-1";
+        let email = "oa5b-1@example.com";
+        let password = "marigold-thicket-cobalt-51";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+
+        seed_offline_account(user_id, email, "OA5bNick1", password, vec![], 0, 0);
+
+        set_mock_env(unused_port()); // transport error -> offline fallback
+
+        let cache_path = temp_cache_path("t-oa5b-1-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in(email, password, false)
+            .expect("expected the offline fallback to succeed");
+
+        assert!(info.signed_in);
+        assert_eq!(info.mode, "offlineCached");
+        assert_eq!(
+            cloud.current_user_id().as_deref(),
+            Some(user_id),
+            "expected current_user_id() to return the enrolled user_id"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA5b-2. restore()'s offline fallback also populates a real (offline-
+    // flagged) in-memory session -- the remember-me-offline path gets
+    // current_user_id() too, not just a fresh offline_sign_in.
+    #[test]
+    fn restore_offline_sets_current_user_id() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+        store::save_refresh_token("seed-refresh-token-oa5b-2").expect("seed keyring");
+
+        let cache_path = temp_cache_path("t-oa5b-2-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-oa5b-2".into();
+        cache.nickname = "Nick-oa5b-2".into();
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        set_mock_env(unused_port()); // transport error -> auth::refresh returns Offline
+
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud.restore();
+
+        assert!(info.signed_in);
+        assert_eq!(info.mode, "offlineCached");
+        assert_eq!(
+            cloud.current_user_id().as_deref(),
+            Some("user-oa5b-2"),
+            "expected current_user_id() to return the cached user_id"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA5b-3. THE safety-invariant test -- the whole reason this task
+    // exists. An offline session's ensure_fresh must return Offline
+    // IMMEDIATELY, before ever attempting auth::refresh with its empty
+    // refresh_token -- proven against a mock server that WOULD map to
+    // SessionExpired (400, "Invalid Refresh Token") -- exactly like
+    // ensure_fresh_stale_session_refresh_400_purges_everything above -- if
+    // the guard were missing and that empty token reached it. The global
+    // keyring token and cache file (which may belong to a DIFFERENT
+    // remembered account on a shared device) must survive untouched.
+    #[test]
+    fn offline_session_online_op_returns_offline_not_purge() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+        store::save_refresh_token("global-remembered-token-safety").expect("seed keyring");
+
+        let cache_path = temp_cache_path("t-oa5b-safety-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-safety-other-account".into();
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline("user-safety-offline".into()));
+        }
+
+        // If the guard were missing, this offline session's empty
+        // refresh_token would reach auth::refresh here and get mapped to
+        // SessionExpired, triggering the same purge as the mid-session-
+        // expiry test above.
+        let port = start_mock_server(
+            "400 Bad Request",
+            r#"{"msg":"Invalid Refresh Token: Already Used"}"#,
+        );
+        set_mock_env(port);
+
+        let result = cloud.ensure_fresh();
+        assert!(
+            matches!(result, Err(CloudError::Offline)),
+            "expected Err(Offline), got {result:?}"
+        );
+        assert_eq!(
+            store::load_refresh_token(),
+            Some("global-remembered-token-safety".to_string()),
+            "expected the global refresh token to survive untouched"
+        );
+        assert!(
+            cache_path.exists(),
+            "expected the cache file to survive untouched"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA5b-4. sign_out on an offline session clears the in-memory session
+    // only -- the global keyring refresh-token and cache file may belong to
+    // a DIFFERENT remembered account on a shared device (offline_sign_in
+    // has no way to know), so a real (non-offline) sign_out's purge must
+    // not run here. A non-offline sign_out's existing purge behavior is
+    // unchanged -- see sign_out_purges_keyring_and_cache above.
+    #[test]
+    fn offline_sign_out_preserves_global_token() {
+        let _g = lock();
+        let _cleanup = KeyringCleanup;
+        store::delete_refresh_token();
+        store::save_refresh_token("global-remembered-token-signout").expect("seed keyring");
+
+        let cache_path = temp_cache_path("t-oa5b-signout-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = "user-signout-other-account".into();
+        store::write_cache(&cache_path, &cache).expect("seed cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline("user-signout-offline".into()));
+        }
+
+        cloud.sign_out();
+
+        assert!(
+            cloud.current_user_id().is_none(),
+            "expected the offline session to be cleared"
+        );
+        assert_eq!(
+            store::load_refresh_token(),
+            Some("global-remembered-token-signout".to_string()),
+            "expected the global refresh token to survive an offline sign_out"
+        );
+        assert!(
+            cache_path.exists(),
+            "expected the cache file to survive an offline sign_out"
         );
 
         let _ = std::fs::remove_file(&cache_path);
