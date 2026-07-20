@@ -9,6 +9,12 @@ pub enum CloudError {
     WeakPassword(String),
     RateLimited,
     SessionExpired,
+    /// Offline sign-in (Task 5) has no local record of this account on this
+    /// device — either `auth-cache/<user_id>.json` has no entry matching the
+    /// email, or the per-account keyring verifier is missing. Distinct from
+    /// `InvalidCredentials` (a wrong password IS recognized) so the FE can
+    /// show the right next step instead of "wrong password."
+    OfflineNoVerifier,
     Api { status: u16, msg: String },
     Internal(String),
 }
@@ -29,6 +35,9 @@ impl CloudError {
             CloudError::WeakPassword(msg) => format!("Password too weak: {msg}"),
             CloudError::RateLimited => "Too many attempts — wait a minute and try again.".into(),
             CloudError::SessionExpired => "Session expired — please log in again.".into(),
+            CloudError::OfflineNoVerifier => {
+                "Sign in online once on this device first.".into()
+            }
             // `msg` here is the server's own validation message (GoTrue's
             // msg/error_description, or PostgREST's message field) — the
             // doc comment above permits exactly this.

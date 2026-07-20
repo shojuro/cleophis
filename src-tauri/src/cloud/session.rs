@@ -167,7 +167,18 @@ impl Cloud {
     /// which stamps it on the resulting `Session` and skips this session's
     /// persistence sites accordingly (see `Session::ephemeral`'s doc).
     pub fn sign_in(&self, email: &str, password: &str, remember: bool) -> Result<SessionInfo, CloudError> {
-        let tok = auth::sign_in_password(email, password)?;
+        // Task 5's core security invariant: the offline fallback is
+        // reachable ONLY on `CloudError::Offline` — a transport failure,
+        // meaning the server was never reached at all. Any OTHER Err means
+        // the server WAS reached and answered (a rejection, a rate limit, an
+        // unconfirmed email, whatever) — that answer is authoritative and is
+        // returned unchanged. `offline_sign_in` must never run as a
+        // consolation prize for a server that said no.
+        let tok = match auth::sign_in_password(email, password) {
+            Ok(tok) => tok,
+            Err(CloudError::Offline) => return self.offline_sign_in(email, password),
+            Err(other) => return Err(other),
+        };
         let cache = store::read_cache(&self.cache_path); // early, unlocked fallback read
         let info = self.apply_and_sync(tok, &cache, !remember);
         // Offline-auth enrollment (Task 4): `apply_and_sync` always leaves a
@@ -216,6 +227,73 @@ impl Cloud {
             );
         }
         Ok(info)
+    }
+
+    /// The offline fallback for `sign_in` (Task 5) — reachable ONLY from
+    /// `sign_in`'s `Err(CloudError::Offline)` branch (see that call site's
+    /// doc for the invariant). Recognizes the account via its per-account
+    /// `auth-cache/<user_id>.json` entry (written by `enroll_verifier` on a
+    /// prior ONLINE sign_in/up on THIS device) and its keyring-stored
+    /// Argon2id verifier — either missing means this device has never
+    /// authenticated this email online, so there is nothing to fall back to.
+    ///
+    /// Deliberately does NOT populate `self.session`/`self.nickname` with a
+    /// live in-memory `Session` the way `apply_and_sync` does — there is no
+    /// access/refresh token to put in one, and a `Session` carrying an empty
+    /// refresh_token would be actively dangerous: the next `ensure_fresh()`
+    /// call (e.g. from a `grant()`/`entitlements()` poll, once the network
+    /// comes back) would see it as "stale" and call `refresh_via_gate()`,
+    /// which would send that empty token to GoTrue; GoTrue's 4xx-on-refresh
+    /// reply maps to `SessionExpired`, and `refresh_via_gate`'s
+    /// `SessionExpired` branch purges the ONE global refresh-token keyring
+    /// entry and deletes `self.cache_path` — silently signing out whatever
+    /// DIFFERENT account might actually be this device's remembered one.
+    /// Returning a `SessionInfo` built directly from the `AuthCacheEntry`
+    /// instead — exactly mirroring `offline_cached_info`'s existing
+    /// `restore()`-offline-cached shape, the precedent this feature extends
+    /// — sidesteps that risk entirely. The tradeoff: `current_user_id()` —
+    /// and therefore per-account packs/chat history — stays unavailable
+    /// until a real online session is established, the same known
+    /// limitation `restore()`'s offlineCached path already has today, not a
+    /// regression Task 5 introduces.
+    fn offline_sign_in(&self, email: &str, password: &str) -> Result<SessionInfo, CloudError> {
+        let dir = store::auth_cache_dir(self.app_data_dir());
+        let mut entry =
+            store::find_user_by_email(&dir, email).ok_or(CloudError::OfflineNoVerifier)?;
+        let stored_verifier =
+            store::load_verifier(&entry.user_id).ok_or(CloudError::OfflineNoVerifier)?;
+
+        // Persisted, per-account throttle: only pays a delay once >=5
+        // consecutive failures have accumulated on THIS account — see
+        // `offline_throttle_delay_secs`'s doc. `sign_in` is a synchronous
+        // call from the front end, so a blocking sleep here is the simplest
+        // way to impose it.
+        let delay = offline_throttle_delay_secs(entry.failed_attempts, entry.last_failed_at, now());
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(delay));
+        }
+
+        if verifier::verify(password, &stored_verifier) {
+            entry.failed_attempts = 0;
+            if let Err(e) = store::write_auth_cache(&dir, &entry) {
+                eprintln!("cloud: failed to reset offline-auth throttle: {e}");
+            }
+            Ok(SessionInfo {
+                signed_in: true,
+                nickname: non_empty(&entry.nickname),
+                email: non_empty(&entry.email),
+                mode: "offlineCached".into(),
+                entitlements: entry.entitlements.clone(),
+                grace_expired: store::grace_expired(entry.last_online_auth, now()),
+            })
+        } else {
+            entry.failed_attempts += 1;
+            entry.last_failed_at = now();
+            if let Err(e) = store::write_auth_cache(&dir, &entry) {
+                eprintln!("cloud: failed to persist offline-auth throttle: {e}");
+            }
+            Err(CloudError::InvalidCredentials)
+        }
     }
 
     /// The authoritative signed-in user id (a Supabase UUID, `Session.user_id`),
@@ -893,6 +971,28 @@ fn merge_synced_cache(
     }
 }
 
+/// Offline sign-in's (Task 5) persisted, per-account throttle: how many
+/// more seconds must elapse before the next offline-verify attempt is
+/// allowed. Below 5 consecutive failures, no delay at all — a fresh account
+/// (or one that just succeeded, which resets `failed_attempts` to 0) never
+/// pays this. At >=5, the delay doubles starting at 2s
+/// (`2^(failed_attempts-4)`), capped at 30s regardless of how high
+/// `failed_attempts` climbs — never a hard lockout, just a growing
+/// deterrent (see the design spec's §7 rationale). `saturating_pow` so a
+/// pathologically large `failed_attempts` (e.g. a tampered auth-cache file)
+/// clamps to the cap instead of panicking.
+///
+/// Pure function — no I/O, no sleeping, easy to unit-test directly (see
+/// `throttle_grows_and_resets`).
+fn offline_throttle_delay_secs(failed_attempts: u32, last_failed_at: i64, now_ts: i64) -> u64 {
+    if failed_attempts < 5 {
+        return 0;
+    }
+    let required = 2u64.saturating_pow(failed_attempts - 4).min(30);
+    let elapsed = (now_ts - last_failed_at).max(0) as u64;
+    required.saturating_sub(elapsed)
+}
+
 /// Merge still-pending optimistic synthetics into a fresh server list.
 /// Keeps each entitlement from `fresh.entitlements` whose model_id is in
 /// `fresh.pending_grants` owned by `user_id` and absent from `server`.
@@ -980,7 +1080,7 @@ fn non_empty(s: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cloud::error::CloudError;
-    use crate::cloud::store::{self, CloudCache, PendingGrant};
+    use crate::cloud::store::{self, AuthCacheEntry, CloudCache, PendingGrant};
     use crate::cloud::test_support::{lock, set_mock_env, start_mock_server, start_mock_server_n, unused_port};
     use std::path::PathBuf;
 
@@ -2235,5 +2335,324 @@ mod tests {
 
         let _ = std::fs::remove_file(&cache_path);
         let _ = std::fs::remove_file(&entry_path);
+    }
+
+    // ---- OA5: offline sign-in fallback (Task 5, security-critical) ----
+    //
+    // The security proof this task exists for: `server_rejection_never_falls_back`
+    // below is the invariant test — it must be impossible for a server
+    // REJECTION to open an offline session, no matter how valid the local
+    // verifier is.
+
+    /// The directory `store::auth_cache_dir` resolves for every test in
+    /// this module that uses `temp_cache_path`: that helper pushes a single
+    /// filename component onto `std::env::temp_dir()` (never a nested
+    /// directory), so `cache_path.parent()` — the same source
+    /// `Cloud::app_data_dir` reads from — is always exactly
+    /// `std::env::temp_dir()`. Computed directly here rather than via a
+    /// `Cloud` instance's cache_path so OA5's helpers don't need one on hand
+    /// yet when seeding.
+    fn oa5_auth_cache_dir() -> PathBuf {
+        store::auth_cache_dir(&std::env::temp_dir())
+    }
+
+    /// Enrolls an account directly via `store::save_verifier` +
+    /// `store::write_auth_cache` — the same two calls `enroll_verifier`
+    /// (Task 4) makes on a real online sign_in, without driving a mock
+    /// server through a whole `sign_in` call for every test below. Task 4's
+    /// own enrollment path is already covered by
+    /// `sign_in_online_success_enrolls_verifier_and_auth_cache` above; OA5's
+    /// tests only need a account that's ALREADY enrolled to exercise
+    /// `offline_sign_in`'s own logic.
+    fn seed_offline_account(
+        user_id: &str,
+        email: &str,
+        nickname: &str,
+        password: &str,
+        entitlements: Vec<store::Entitlement>,
+        failed_attempts: u32,
+        last_failed_at: i64,
+    ) {
+        let v = crate::cloud::verifier::derive_verifier(password).expect("derive verifier");
+        store::save_verifier(user_id, &v).expect("save verifier");
+        let entry = AuthCacheEntry {
+            user_id: user_id.to_string(),
+            email: email.to_string(),
+            nickname: nickname.to_string(),
+            entitlements,
+            last_online_auth: now(),
+            failed_attempts,
+            last_failed_at,
+        };
+        store::write_auth_cache(&oa5_auth_cache_dir(), &entry).expect("write auth cache");
+    }
+
+    /// Same shape as `VerifierKeyringCleanup`/`KeyringCleanup` elsewhere in
+    /// this file: cleans up BOTH the keyring verifier entry and the
+    /// per-account auth-cache JSON file via `Drop`, so a failed assertion
+    /// mid-test never leaves either behind for a later test run to trip
+    /// over (`find_user_by_email` scans this whole shared directory).
+    struct OfflineAccountCleanup<'a> {
+        user_id: &'a str,
+        dir: PathBuf,
+    }
+    impl Drop for OfflineAccountCleanup<'_> {
+        fn drop(&mut self) {
+            store::delete_verifier(self.user_id);
+            let _ = std::fs::remove_file(self.dir.join(format!("{}.json", self.user_id)));
+        }
+    }
+
+    /// Deletes any stray verifier/auth-cache entry for `user_id` up front —
+    /// same "ensure a clean slate before we start" convention as
+    /// `keyring_round_trip`/OA4-1, in case a previous run's assertion
+    /// panicked before its own `OfflineAccountCleanup` guard ran.
+    fn oa5_clean_slate(user_id: &str, dir: &Path) {
+        store::delete_verifier(user_id);
+        let _ = std::fs::remove_file(dir.join(format!("{user_id}.json")));
+    }
+
+    // 1. Offline transport error + a matching enrolled password -> an
+    // offlineCached session with the enrolled entitlements.
+    #[test]
+    fn offline_error_plus_valid_verifier_opens_offline_session() {
+        let _g = lock();
+        let user_id = "user-oa5-1";
+        let email = "oa5-1@example.com";
+        let password = "sagebrush-tundra-falcon-71";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+
+        seed_offline_account(
+            user_id,
+            email,
+            "OA5Nick1",
+            password,
+            vec![store::Entitlement {
+                model_id: "llama-8b".into(),
+                source: "purchase".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                expires_at: None,
+            }],
+            0,
+            0,
+        );
+
+        set_mock_env(unused_port()); // transport error -> auth::sign_in_password returns Offline
+
+        let cache_path = temp_cache_path("t-oa5-1-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in(email, password, false)
+            .expect("expected the offline fallback to succeed");
+
+        assert!(info.signed_in);
+        assert_eq!(info.mode, "offlineCached");
+        assert_eq!(info.nickname.as_deref(), Some("OA5Nick1"));
+        assert_eq!(info.email.as_deref(), Some(email));
+        assert_eq!(info.entitlements.len(), 1);
+        assert_eq!(info.entitlements[0].model_id, "llama-8b");
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // 2. Offline transport error + a WRONG password -> Err(InvalidCredentials)
+    // and the persisted throttle counter bumps by exactly one.
+    #[test]
+    fn offline_wrong_password_bumps_and_errors() {
+        let _g = lock();
+        let user_id = "user-oa5-2";
+        let email = "oa5-2@example.com";
+        let password = "granite-orchard-plume-82";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+
+        seed_offline_account(user_id, email, "OA5Nick2", password, vec![], 0, 0);
+
+        set_mock_env(unused_port());
+
+        let cache_path = temp_cache_path("t-oa5-2-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        let result = cloud.sign_in(email, "totally-wrong-password", false);
+        assert!(matches!(result, Err(CloudError::InvalidCredentials)));
+
+        let entry = store::read_auth_cache(&dir, user_id).expect("expected entry to still exist");
+        assert_eq!(entry.failed_attempts, 1);
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // 3. THE invariant test. A server RESPONSE (not a transport error)
+    // rejecting the credentials must win even though a valid verifier for
+    // the SAME password is enrolled locally — `offline_sign_in` must never
+    // run at all. Proven two ways: the call still returns
+    // Err(InvalidCredentials) (not Ok), AND the persisted `failed_attempts`
+    // (seeded nonzero so either branch of `offline_sign_in` would have
+    // changed it) is completely untouched.
+    #[test]
+    fn server_rejection_never_falls_back() {
+        let _g = lock();
+        let user_id = "user-oa5-3";
+        let email = "oa5-3@example.com";
+        let password = "cobalt-meridian-thistle-93";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+
+        seed_offline_account(user_id, email, "OA5Nick3", password, vec![], 3, 0);
+
+        // A real server RESPONSE, not a transport error — GoTrue rejecting
+        // the credentials.
+        let port = start_mock_server(
+            "400 Bad Request",
+            r#"{"error_code":"invalid_credentials","msg":"Invalid login credentials"}"#,
+        );
+        set_mock_env(port);
+
+        let cache_path = temp_cache_path("t-oa5-3-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        // The password below IS the correct offline password — if the
+        // offline fallback fired despite the server having answered, this
+        // would succeed. It must not.
+        let result = cloud.sign_in(email, password, false);
+        match result {
+            Err(CloudError::InvalidCredentials) => {}
+            other => panic!(
+                "expected the server's rejection to pass through unchanged, got {other:?}"
+            ),
+        }
+
+        assert!(
+            cloud.current_user_id().is_none(),
+            "expected no session to have been opened by the offline fallback"
+        );
+
+        let entry = store::read_auth_cache(&dir, user_id).expect("expected entry to still exist");
+        assert_eq!(
+            entry.failed_attempts, 3,
+            "expected offline_sign_in to never run at all -- failed_attempts must be untouched \
+             (a match would reset it to 0, a mismatch would bump it to 4)"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // 4. Offline transport error + an email never enrolled on this device
+    // -> Err(OfflineNoVerifier).
+    #[test]
+    fn no_verifier_for_email() {
+        let _g = lock();
+        let email = "oa5-4-unknown@example.com"; // never enrolled anywhere
+
+        set_mock_env(unused_port());
+
+        let cache_path = temp_cache_path("t-oa5-4-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        let result = cloud.sign_in(email, "whatever-password-1234", false);
+        assert!(matches!(result, Err(CloudError::OfflineNoVerifier)));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // 5. Per-account isolation: B's verifier can never open A's session,
+    // and A's own password still opens A's session normally.
+    #[test]
+    fn account_b_verifier_cannot_open_account_a() {
+        let _g = lock();
+        let user_a = "user-oa5-5a";
+        let user_b = "user-oa5-5b";
+        let email_a = "oa5-5a@example.com";
+        let email_b = "oa5-5b@example.com";
+        let pw_a = "howling-canyon-ember-15";
+        let pw_b = "velvet-orchid-summit-26";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_a, &dir);
+        oa5_clean_slate(user_b, &dir);
+        let _cleanup_a = OfflineAccountCleanup { user_id: user_a, dir: dir.clone() };
+        let _cleanup_b = OfflineAccountCleanup { user_id: user_b, dir: dir.clone() };
+
+        seed_offline_account(user_a, email_a, "NickA", pw_a, vec![], 0, 0);
+        seed_offline_account(user_b, email_b, "NickB", pw_b, vec![], 0, 0);
+
+        set_mock_env(unused_port());
+
+        let cache_path = temp_cache_path("t-oa5-5-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+
+        // A's email + B's password -> error, no session.
+        let cross = cloud.sign_in(email_a, pw_b, false);
+        assert!(
+            matches!(cross, Err(CloudError::InvalidCredentials)),
+            "expected B's password not to open A's session"
+        );
+
+        // A's email + A's password -> A's own session, unaffected by the
+        // failed cross-account attempt above.
+        let own = cloud
+            .sign_in(email_a, pw_a, false)
+            .expect("expected A's own password to open A's session");
+        assert!(own.signed_in);
+        assert_eq!(own.mode, "offlineCached");
+        assert_eq!(own.nickname.as_deref(), Some("NickA"));
+        assert_eq!(own.email.as_deref(), Some(email_a));
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // 6. Throttle: the delay computation grows with failed_attempts (capped
+    // at 30s, never overflows) and a successful offline sign-in resets the
+    // persisted counter. The end-to-end half seeds `last_failed_at` far
+    // enough in the past that the computed delay is 0 -- this test never
+    // actually sleeps.
+    #[test]
+    fn throttle_grows_and_resets() {
+        // Part 1: pure delay computation.
+        let t = 1_000_000i64;
+        assert_eq!(offline_throttle_delay_secs(4, t, t), 0, "below threshold: no delay");
+        assert_eq!(offline_throttle_delay_secs(5, t, t), 2, "2^1");
+        assert_eq!(offline_throttle_delay_secs(6, t, t), 4, "2^2");
+        assert_eq!(offline_throttle_delay_secs(7, t, t), 8, "2^3");
+        assert_eq!(offline_throttle_delay_secs(9, t, t), 30, "2^5=32, capped at 30");
+        assert_eq!(offline_throttle_delay_secs(50, t, t), 30, "still capped, no overflow panic");
+        assert_eq!(
+            offline_throttle_delay_secs(5, t, t + 1),
+            1,
+            "elapsed time reduces the remaining delay"
+        );
+        assert_eq!(
+            offline_throttle_delay_secs(5, t, t + 10),
+            0,
+            "elapsed exceeds required: no delay left"
+        );
+
+        // Part 2: a successful offline sign-in resets `failed_attempts`.
+        let _g = lock();
+        let user_id = "user-oa5-6";
+        let email = "oa5-6@example.com";
+        let password = "obsidian-ledger-mosaic-37";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+
+        seed_offline_account(user_id, email, "OA5Nick6", password, vec![], 7, now() - 3600);
+
+        set_mock_env(unused_port());
+
+        let cache_path = temp_cache_path("t-oa5-6-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        let info = cloud
+            .sign_in(email, password, false)
+            .expect("expected the offline fallback to succeed");
+        assert!(info.signed_in);
+
+        let entry = store::read_auth_cache(&dir, user_id).expect("expected entry to still exist");
+        assert_eq!(
+            entry.failed_attempts, 0,
+            "expected a success to reset the throttle counter"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 }
