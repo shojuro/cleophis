@@ -18,9 +18,10 @@ const state = {
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
   // §7 S7-2b: sidebar organization — folders/chats cache backing the
-  // grouped render, plus the search view and the two single-open dropdowns
-  // (a chat's "Move to…" list, a folder's Rename/Delete menu).
-  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null },
+  // grouped render, plus the search view and the three single-open
+  // dropdowns (a chat's "Move to…" list, a chat's export-format menu
+  // [§7 S7-6], a folder's Rename/Delete menu).
+  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -601,11 +602,12 @@ async function refreshChatList() {
 }
 
 // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete/
-// archive/move are static labels, not interpolated user data. `opts.nested`
-// indents a row under a folder header.
+// archive/move/export are static labels, not interpolated user data.
+// `opts.nested` indents a row under a folder header.
 function chatRowHtml(c, opts) {
   const nested = opts && opts.nested;
   const moveOpen = state.sidebar.moveMenuFor === c.id;
+  const exportOpen = state.sidebar.exportMenuFor === c.id;
   return `
     <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}${nested ? ' nested' : ''}${c.archived ? ' is-archived' : ''}" data-id="${c.id}">
       <span class="chatrow-title">${escapeHtml(c.title)}</span>
@@ -618,6 +620,14 @@ function chatRowHtml(c, opts) {
           <div class="movemenu ${moveOpen ? 'show' : ''}">
             <button class="movemenu-item" data-act="move-to" data-folder-id="">Unfiled</button>
             ${state.sidebar.folders.map((f) => `<button class="movemenu-item" data-act="move-to" data-folder-id="${f.id}">${escapeHtml(f.name)}</button>`).join('')}
+          </div>
+        </span>
+        <span class="movemenu-wrap">
+          <button class="chatrow-act" data-act="export" title="Export…">⇩</button>
+          <div class="movemenu ${exportOpen ? 'show' : ''}">
+            <button class="movemenu-item" data-act="export-to" data-format="markdown">Markdown</button>
+            <button class="movemenu-item" data-act="export-to" data-format="json">JSON</button>
+            <button class="movemenu-item" data-act="export-to" data-format="txt">Plain text</button>
           </div>
         </span>
         <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
@@ -1412,6 +1422,7 @@ $('chatList').addEventListener('click', async (e) => {
     if (act === 'toggle') {
       state.sidebar.folderMenuFor = state.sidebar.folderMenuFor === fid ? null : fid;
       state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
       renderSidebar();
     } else if (act === 'rename') {
       state.sidebar.folderMenuFor = null;
@@ -1464,11 +1475,13 @@ $('chatList').addEventListener('click', async (e) => {
     } else if (act === 'archive') {
       const archived = actBtn.dataset.archived === '1';
       state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
       try { await invoke('set_chat_archived', { id, archived: !archived }); } catch (_) {}
       await refreshChatList();
     } else if (act === 'move') {
       state.sidebar.moveMenuFor = state.sidebar.moveMenuFor === id ? null : id;
       state.sidebar.folderMenuFor = null;
+      state.sidebar.exportMenuFor = null;
       renderSidebar();
     } else if (act === 'move-to') {
       const raw = actBtn.dataset.folderId;
@@ -1476,20 +1489,63 @@ $('chatList').addEventListener('click', async (e) => {
       state.sidebar.moveMenuFor = null;
       try { await invoke('move_chat', { id, folderId }); } catch (_) {}
       await refreshChatList();
+    } else if (act === 'export') {
+      // §7 S7-6: a tiny submenu (Markdown/JSON/Plain text), same
+      // single-open-dropdown pattern as "move to…" above.
+      state.sidebar.exportMenuFor = state.sidebar.exportMenuFor === id ? null : id;
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.folderMenuFor = null;
+      renderSidebar();
+    } else if (act === 'export-to') {
+      const titleEl = row.querySelector('.chatrow-title');
+      await exportChat(id, titleEl ? titleEl.textContent : 'chat', actBtn.dataset.format);
     }
     return;
   }
   await openChat(id);
 });
-// Outside-click close for the two sidebar dropdowns (move-to / folder
-// menu) — same pattern as the profile menu below.
+// Outside-click close for the three sidebar dropdowns (move-to / export /
+// folder menu) — same pattern as the profile menu below.
 document.addEventListener('click', (e) => {
-  if (state.sidebar.moveMenuFor == null && state.sidebar.folderMenuFor == null) return;
+  if (state.sidebar.moveMenuFor == null && state.sidebar.folderMenuFor == null && state.sidebar.exportMenuFor == null) return;
   if (e.target.closest('.movemenu-wrap') || e.target.closest('.folder-menu-wrap')) return;
   state.sidebar.moveMenuFor = null;
   state.sidebar.folderMenuFor = null;
+  state.sidebar.exportMenuFor = null;
   renderSidebar();
 });
+
+// §7 S7-6: export a chat to a file the user picks via the OS save sheet —
+// no network, the data is already the user's (§7.5). `format` is the
+// export-to button's own `data-format` ('markdown'|'json'|'txt'), passed
+// straight through to `export_chat_to_file` unchanged. `dialog.save`
+// returning `null` means the user cancelled the save sheet, same shape as
+// `dialog.open` in `startBuild` above.
+const EXPORT_EXT = { markdown: 'md', json: 'json', txt: 'txt' };
+const EXPORT_FILTER_NAME = { markdown: 'Markdown', json: 'JSON', txt: 'Plain text' };
+async function exportChat(id, title, format) {
+  state.sidebar.exportMenuFor = null;
+  renderSidebar();
+  const ext = EXPORT_EXT[format] || 'txt';
+  const safeTitle = (title || 'chat').replace(/[\\/:*?"<>|]/g, '_').trim() || 'chat';
+  let path;
+  try {
+    path = await window.__TAURI__.dialog.save({
+      defaultPath: `${safeTitle}.${ext}`,
+      filters: [{ name: EXPORT_FILTER_NAME[format] || 'File', extensions: [ext] }],
+    });
+  } catch (e) {
+    showToast(String(e));
+    return;
+  }
+  if (path == null) return; // cancelled
+  try {
+    await invoke('export_chat_to_file', { id, format, path });
+    showToast('Exported to ' + path);
+  } catch (e) {
+    showToast(String(e));
+  }
+}
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
@@ -1513,7 +1569,7 @@ $('signOutBtn').addEventListener('click', async () => {
   // drop it here so the next sign-in (possibly a different account) starts
   // from a clean grouped view instead of replaying this session's search
   // query or open menus over freshly-fetched data.
-  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null };
+  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null };
   clearTimeout(chatSearchDebounce);
   $('chatSearch').value = '';
   state.signedIn = false;

@@ -643,6 +643,32 @@ impl ConvStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
+
+    // ---- Export (§7.5) -----------------------------------------------
+
+    /// Formats `id`'s chat + its messages into a single string per
+    /// `format`, deterministically — same stored data, same bytes, every
+    /// call. Goes through [`ConvStore::get_chat`] (the same
+    /// `conn_for(user_id)` path every other method here uses), so this can
+    /// only ever export the CALLER's own account's chat — see the module
+    /// doc comment's "Per-account isolation" section; there is no way to
+    /// pass another account's `id` through this and get anything back,
+    /// exactly like `get_chat` itself (a mismatched `id` is `Err("no such
+    /// chat")`, a same-numbered `id` that happens to exist in the caller's
+    /// OWN database is that caller's own row, never the other account's).
+    pub fn export_chat(
+        &self,
+        user_id: &str,
+        id: i64,
+        format: ExportFormat,
+    ) -> Result<String, String> {
+        let detail = self.get_chat(user_id, id)?;
+        Ok(match format {
+            ExportFormat::Markdown => export_markdown(&detail),
+            ExportFormat::Json => export_json(&detail)?,
+            ExportFormat::Txt => export_txt(&detail),
+        })
+    }
 }
 
 /// Sanitizes a session user id into a per-account database filename
@@ -715,6 +741,146 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
     })
 }
 
+// ---- Export formatting (§7.5) -------------------------------------------
+//
+// Free functions, not `ConvStore` methods — they're pure `ChatDetail` ->
+// `String` transforms with no I/O and nothing account-scoping-relevant left
+// to do (that already happened in `export_chat`'s `get_chat` call), so
+// there's no reason for them to carry a `&self`/`user_id`.
+
+/// `msg.role` -> the label an export turn is prefixed with — `"You"`/
+/// `"Assistant"` for the two roles every chat has today, a title-cased
+/// fallback for any other role (there is no `"system"`/tool-role message
+/// yet — `tool_calls` is unused per the module doc comment — but deriving
+/// the label from the stored value rather than a hardcoded two-arm match
+/// means an export never silently drops a future role's turns).
+fn role_label(role: &str) -> String {
+    match role {
+        "user" => "You".to_string(),
+        "assistant" => "Assistant".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "Unknown".to_string(),
+            }
+        }
+    }
+}
+
+/// One footnote line for a single stored citation object — `[n] docTitle ·
+/// sectionPath · locator`, the SAME rendering `src/app.js`'s
+/// `renderCitations` uses on-screen (§3a A4), so a Markdown export's
+/// footnotes read exactly like the citations already shown in the chat UI.
+/// Reads defensively via `Value::get`/`as_str`/`as_u64` rather than
+/// deserializing into `kpack::CitationInfo` — `kpack` isn't a dependency of
+/// this module, and this is the FRONT END's already-camelCase `citations`
+/// JSON exactly as `append_message` stored it, not a fresh `Citation` from
+/// a pack build — and skips a non-object entry or one missing `n` (`None`)
+/// rather than failing the whole export over one malformed footnote.
+fn format_citation_footnote(citation: &Value) -> Option<String> {
+    let obj = citation.as_object()?;
+    let n = obj.get("n").and_then(Value::as_u64)?;
+    let doc_title = obj.get("docTitle").and_then(Value::as_str).unwrap_or("");
+    let section_path = obj.get("sectionPath").and_then(Value::as_str).unwrap_or("");
+    let locator = obj.get("locator").and_then(Value::as_str).unwrap_or("");
+    let mut line = format!("[{n}] {doc_title}");
+    if !section_path.is_empty() {
+        line.push_str(" · ");
+        line.push_str(section_path);
+    }
+    if !locator.is_empty() {
+        line.push_str(" · ");
+        line.push_str(locator);
+    }
+    Some(line)
+}
+
+/// Markdown export (§7.5 v1 default): title, created/updated dates, then
+/// each turn as a role-labeled line with a `## {date}` header inserted
+/// whenever a message's `created_at` date (the ISO string's date portion,
+/// before the `T`) differs from the previous message's — a chat spanning
+/// several days reads like a log, a same-day chat gets exactly one header.
+/// A turn's citation footnotes are emitted directly under that turn (each
+/// message's citations are already numbered `1..n` relative to THAT
+/// message, mirroring the on-screen disclosure), so a reader never has to
+/// jump to the end of the document for a turn's sources — and because this
+/// reads straight from the stored `citations` JSON (never a live pack
+/// query), the footnotes survive a pack being renamed/rebuilt/deleted after
+/// the fact (§7.5's "citations persisted as displayed" invariant).
+fn export_markdown(detail: &ChatDetail) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", detail.chat.title));
+    out.push_str(&format!(
+        "_Created {} · Updated {}_\n\n",
+        detail.chat.created_at, detail.chat.updated_at
+    ));
+
+    let mut last_date: Option<&str> = None;
+    for msg in &detail.messages {
+        let date = msg.created_at.split('T').next().unwrap_or(&msg.created_at);
+        if last_date != Some(date) {
+            out.push_str(&format!("## {date}\n\n"));
+            last_date = Some(date);
+        }
+        out.push_str(&format!(
+            "**{}:** {}\n\n",
+            role_label(&msg.role),
+            msg.content
+        ));
+
+        if let Some(citations) = msg.citations.as_ref().and_then(Value::as_array) {
+            let footnotes: Vec<String> = citations
+                .iter()
+                .filter_map(format_citation_footnote)
+                .collect();
+            if !footnotes.is_empty() {
+                out.push_str(&footnotes.join("\n"));
+                out.push_str("\n\n");
+            }
+        }
+    }
+    out
+}
+
+/// The versioned JSON export envelope (§7.5 v1) — `ChatInfo`/`MessageInfo`
+/// already carry every column this format needs to preserve (citations,
+/// tool_calls, timestamps, model_id/adapter_ids/mounted_packs) and already
+/// serialize camelCase, so this just wraps them; no separate export-only
+/// DTO to keep in sync with the real ones. `#[serde]` default field naming
+/// (not `rename_all = "camelCase"`) is deliberate here: `export_schema` is
+/// the literal key name the round-trip/import format specifies, not a
+/// camelCase field that needs renaming.
+#[derive(Serialize)]
+struct ExportEnvelope<'a> {
+    export_schema: u32,
+    chat: &'a ChatInfo,
+    messages: &'a [MessageInfo],
+}
+
+fn export_json(detail: &ChatDetail) -> Result<String, String> {
+    let envelope = ExportEnvelope {
+        export_schema: 1,
+        chat: &detail.chat,
+        messages: &detail.messages,
+    };
+    serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())
+}
+
+/// Plain-transcript export (§7.5 v1): title, then `You: …` / `Assistant: …`
+/// lines — demo-friendly, no citations markup, no date headers (Markdown
+/// already covers that "nice to have"; this format's whole point is being
+/// the minimal one).
+fn export_txt(detail: &ChatDetail) -> String {
+    let mut out = String::new();
+    out.push_str(&detail.chat.title);
+    out.push_str("\n\n");
+    for msg in &detail.messages {
+        out.push_str(&format!("{}: {}\n\n", role_label(&msg.role), msg.content));
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderInfo {
@@ -766,6 +932,23 @@ pub struct MessageInfo {
 pub struct ChatDetail {
     pub chat: ChatInfo,
     pub messages: Vec<MessageInfo>,
+}
+
+/// Output format for [`ConvStore::export_chat`] (§7.5). `Markdown` is the
+/// v1 default (human-readable, citations rendered as footnotes exactly the
+/// way the chat UI already shows them — see `format_citation_footnote`);
+/// `Json` is the full-fidelity, versioned round-trip/import format (every
+/// column, including `tool_calls` and the chat's inference provenance);
+/// `Txt` is a minimal plain transcript with no citation markup, for a quick
+/// paste. Not `Serialize`/`Deserialize` — it never crosses IPC itself; the
+/// `export_chat_to_file` command below maps the front end's plain
+/// `"markdown" | "json" | "txt"` string to this before calling
+/// `export_chat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Markdown,
+    Json,
+    Txt,
 }
 
 // ==== Tauri commands =====================================================
@@ -980,6 +1163,43 @@ pub async fn search_chats(query: String, app: AppHandle) -> Result<Vec<ChatInfo>
     };
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>().search_chats(&user_id, &query)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
+/// Formats + writes `id`'s chat to `path` (the front end's OS save-dialog
+/// choice — see `src/app.js`'s export flow) in the requested `format`.
+/// Resolves the AUTHORITATIVE signed-in user id exactly like every other
+/// command in this module (never a front-end-supplied one) — signed-out is
+/// a clean `Err("Sign in to export.")`, the store is never touched.
+/// `format` is a plain string over IPC (`"markdown" | "json" | "txt"`,
+/// matching `src/app.js`'s export menu) rather than `ExportFormat` itself —
+/// a `serde`-derived enum here would ALSO accept a malformed shape like
+/// `{"Markdown": null}` from a compromised/buggy renderer, where a `match`
+/// on a plain string is exactly as strict as this command needs and matches
+/// every other command's primitive-typed IPC parameters. One command that
+/// both formats AND writes, rather than a general write-to-path primitive
+/// — the only file this can ever write is `path` (the user's own OS save
+/// choice), and the only content is `export_chat`'s own deterministic
+/// output, so no broader write capability is exposed here.
+#[tauri::command]
+pub async fn export_chat_to_file(
+    id: i64,
+    format: String,
+    path: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    let user_id = current_user_id(&app).ok_or_else(|| "Sign in to export.".to_string())?;
+    let fmt = match format.as_str() {
+        "markdown" => ExportFormat::Markdown,
+        "json" => ExportFormat::Json,
+        "txt" => ExportFormat::Txt,
+        other => return Err(format!("Unknown export format: {other}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let content = app.state::<ConvStore>().export_chat(&user_id, id, fmt)?;
+        std::fs::write(&path, content).map_err(|e| e.to_string())
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -1365,5 +1585,180 @@ mod tests {
         assert_eq!(account_dir_segment("a/b"), None);
         assert_eq!(account_dir_segment("a\\b"), None);
         assert_eq!(account_dir_segment("a:b"), None);
+    }
+
+    /// Markdown export: title, both turns' role labels + content, and the
+    /// citation footnote (docTitle + locator) for the message that carries
+    /// citations — the A4 `CitationInfo` shape, stored verbatim by
+    /// `append_message`.
+    #[test]
+    fn t11_export_chat_markdown_includes_title_turns_and_citation_footnote() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Export me", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "What is vitamin K?", None, None)
+            .unwrap();
+        let citations = json!([{
+            "n": 1, "packId": "p1", "chunkId": 3,
+            "docTitle": "Hematology 101", "sectionPath": "Ch. 4", "locator": "p.12"
+        }]);
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "It helps blood clot.",
+                Some(citations),
+                None,
+            )
+            .unwrap();
+
+        let md = store
+            .export_chat(USER, chat.id, ExportFormat::Markdown)
+            .unwrap();
+        assert!(md.contains("Export me"), "title must appear");
+        assert!(md.contains("**You:** What is vitamin K?"));
+        assert!(md.contains("**Assistant:** It helps blood clot."));
+        assert!(
+            md.contains("Hematology 101") && md.contains("p.12"),
+            "the citation footnote (docTitle/locator) must appear:\n{md}"
+        );
+    }
+
+    /// JSON export: `export_schema: 1`, both messages (with citations
+    /// intact) and the chat's `model_id` all round-trip.
+    #[test]
+    fn t12_export_chat_json_round_trips_schema_messages_citations_and_model_id() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "JSON export", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "hi", None, None)
+            .unwrap();
+        let citations = json!([{"n": 1, "docTitle": "Doc"}]);
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "hello",
+                Some(citations.clone()),
+                None,
+            )
+            .unwrap();
+
+        let raw = store.export_chat(USER, chat.id, ExportFormat::Json).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["export_schema"], 1);
+        assert_eq!(parsed["chat"]["modelId"], "hero-llama");
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"], "hi");
+        assert_eq!(messages[1]["content"], "hello");
+        assert_eq!(messages[1]["citations"], citations);
+    }
+
+    /// TXT export: a plain transcript (title + `You:`/`Assistant:` lines),
+    /// no citation markup even when the message carries citations.
+    #[test]
+    fn t13_export_chat_txt_is_plain_transcript_without_citation_markup() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Txt export", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "hi", None, None)
+            .unwrap();
+        let citations = json!([{"n": 1, "docTitle": "Doc", "locator": "p.1"}]);
+        store
+            .append_message(USER, chat.id, "assistant", "hello", Some(citations), None)
+            .unwrap();
+
+        let txt = store.export_chat(USER, chat.id, ExportFormat::Txt).unwrap();
+        assert!(txt.contains("Txt export"));
+        assert!(txt.contains("You: hi"));
+        assert!(txt.contains("Assistant: hello"));
+        assert!(!txt.contains("Doc"), "TXT must carry no citation markup");
+        assert!(!txt.contains("p.1"), "TXT must carry no citation markup");
+    }
+
+    /// Same chat -> identical bytes across two calls, for every format
+    /// (§7.5's determinism requirement).
+    #[test]
+    fn t14_export_chat_is_deterministic_across_calls() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Deterministic", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "one", None, None)
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "assistant", "two", None, None)
+            .unwrap();
+
+        for format in [ExportFormat::Markdown, ExportFormat::Json, ExportFormat::Txt] {
+            let a = store.export_chat(USER, chat.id, format).unwrap();
+            let b = store.export_chat(USER, chat.id, format).unwrap();
+            assert_eq!(a, b, "{format:?} export must be byte-identical across calls");
+        }
+    }
+
+    /// Account-scoping (mirrors `t9`): B cannot export A's chat.
+    #[test]
+    fn t15_export_chat_is_account_scoped_b_cannot_export_as_chat() {
+        let store = ConvStore::new_in_memory();
+        let a_chat = store
+            .create_chat(
+                "acct-a",
+                "A's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store
+            .append_message(
+                "acct-a",
+                a_chat.id,
+                "user",
+                "a_secret_marker_only_a_should_see",
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .create_chat(
+                "acct-b",
+                "B's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        // B's own database very likely also has an id-1 chat (its own first
+        // chat) — see t9's doc comment on why that numeric coincidence is
+        // expected and harmless. Either B gets a hard Err, or (since it's
+        // B's own database) B's own export back — A's content must never
+        // appear either way.
+        match store.export_chat("acct-b", a_chat.id, ExportFormat::Markdown) {
+            Err(_) => {}
+            Ok(content) => {
+                assert!(
+                    !content.contains("a_secret_marker_only_a_should_see"),
+                    "B's export must never contain A's message content"
+                );
+                assert!(
+                    !content.contains("A's private chat"),
+                    "B's export must never contain A's chat title"
+                );
+            }
+        }
     }
 }

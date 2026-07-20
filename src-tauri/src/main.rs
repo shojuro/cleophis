@@ -154,7 +154,8 @@ fn main() {
             convstore::move_chat,
             convstore::set_chat_packs,
             convstore::append_message,
-            convstore::search_chats
+            convstore::search_chats,
+            convstore::export_chat_to_file
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
