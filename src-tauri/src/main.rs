@@ -136,6 +136,7 @@ fn main() {
             cloud::commands::restore_session,
             cloud::commands::grant_entitlement,
             cloud::commands::list_entitlements,
+            cloud::commands::remove_account_from_device,
             cloud::commands::start_checkout,
             cloud::commands::open_billing_portal,
             cloud::download::download_model,

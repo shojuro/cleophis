@@ -196,6 +196,36 @@ fn packs_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Pure helper behind `delete_account_packs`: deletes `dir` (an ALREADY
+/// account-scoped `packs/<segment>/` directory) entirely, recursively.
+/// Takes the resolved directory directly (no `AppHandle`), so it's
+/// unit-testable without a real Tauri app — mirrors `delete_pack_in`'s
+/// `AppHandle`-free inner-function shape. Missing directory is not an
+/// error (idempotent — the account may never have built a pack).
+fn remove_account_packs_dir(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("couldn't delete packs: {e}")),
+    }
+}
+
+/// Task 6 ("remove account from this device")'s packs-side wipe: deletes
+/// `user_id`'s ENTIRE personal-pack directory, recursively. Goes through
+/// [`user_packs_dir`] — the SAME `account_dir_segment` sanitizer `packs_dir`
+/// itself uses — so this can only ever target the one directory `packs_dir`/
+/// `build_personal_pack` create for `user_id`; a malformed/traversal id is a
+/// hard `Err` here too, never a best-effort path. Takes `user_id` explicitly
+/// (never `Cloud::current_user_id()`) — the caller (`commands::
+/// remove_account_from_device`) has already resolved and gated the target
+/// account itself, and this wipe may target an account that ISN'T the
+/// currently signed-in one.
+pub fn delete_account_packs(app: &AppHandle, user_id: &str) -> Result<(), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = user_packs_dir(&app_data, user_id)?;
+    remove_account_packs_dir(&dir)
+}
+
 /// A lazily-loaded, shared `BgeEmbedder` (spec §3a A1's load-bearing fix —
 /// see the module doc comment). `get_or_load` locks only for the check +
 /// (on a miss) the load + store; once populated, every subsequent call is a
@@ -1341,6 +1371,57 @@ mod tests {
         assert!(user_packs_dir(&app_data, "").is_err());
         assert!(user_packs_dir(&app_data, "!!!").is_err());
         let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// Task 6 ("remove account from this device")'s packs-side wipe:
+    /// deletes the account's directory recursively, including whatever it
+    /// contains.
+    #[test]
+    fn remove_account_packs_dir_deletes_recursively() {
+        let root = unique_dir("delete-account-packs");
+        let account_dir = user_packs_dir(&root, "user-oa6-wipe").unwrap();
+        std::fs::create_dir_all(&account_dir).unwrap();
+        std::fs::write(account_dir.join("dummy.kpack"), b"dummy").unwrap();
+
+        remove_account_packs_dir(&account_dir).expect("should delete");
+        assert!(!account_dir.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A never-built account (no packs dir at all) is a clean no-op, not
+    /// an error — idempotent, mirroring `delete_pack_in`'s missing-file
+    /// tolerance elsewhere in this file.
+    #[test]
+    fn remove_account_packs_dir_missing_dir_is_not_an_error() {
+        let root = unique_dir("delete-account-packs-missing");
+        let account_dir = user_packs_dir(&root, "user-oa6-never-built").unwrap();
+        assert!(!account_dir.exists());
+
+        remove_account_packs_dir(&account_dir).expect("missing dir should be a clean no-op");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Removing one account's packs directory never touches a sibling
+    /// account's — same cross-account boundary `resolve_pack_in_dir_refuses_
+    /// a_pack_in_a_different_accounts_dir` proves for reads/deletes of a
+    /// single pack, here for the whole-directory wipe.
+    #[test]
+    fn remove_account_packs_dir_leaves_a_different_accounts_dir_untouched() {
+        let root = unique_dir("delete-account-packs-cross-account");
+        let account_a_dir = user_packs_dir(&root, "user-oa6-a").unwrap();
+        let account_b_dir = user_packs_dir(&root, "user-oa6-b").unwrap();
+        std::fs::create_dir_all(&account_a_dir).unwrap();
+        std::fs::create_dir_all(&account_b_dir).unwrap();
+        std::fs::write(account_b_dir.join("keep.kpack"), b"keep").unwrap();
+
+        remove_account_packs_dir(&account_a_dir).expect("should delete A's dir");
+
+        assert!(!account_a_dir.exists());
+        assert!(account_b_dir.join("keep.kpack").exists(), "B's pack must survive A's removal");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// THE cross-account isolation assertion (spec §3a A6 — the security

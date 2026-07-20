@@ -272,6 +272,62 @@ pub fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
+/// Sanitizes a session user id into an `auth-cache` filename segment — a
+/// VERBATIM MIRROR of `kpack.rs`'s/`convstore.rs`'s module-private
+/// `account_dir_segment` (see either's doc comment for the full "reject,
+/// don't strip" rationale; neither is `pub`/reachable from here, hence a
+/// third copy rather than a shared import — keep all three in sync if any
+/// ever changes). Accepts `user_id` unchanged if — and only if — it's
+/// already clean: non-empty, every char `[A-Za-z0-9_-]`. Anything else is a
+/// hard `None`, never a stripped-down remainder.
+///
+/// Task 6 ("remove account from this device") is the reason this exists
+/// here: unlike `read_auth_cache`/`write_auth_cache` above (only ever
+/// called with a real Supabase-issued UUID `enroll_verifier` itself
+/// produced), [`read_known_account`]/[`delete_auth_cache_entry`] below are
+/// reachable with a raw, front-end-supplied `user_id` — this is what stops
+/// `../evil` (or any other traversal/separator string) from ever reaching
+/// a `dir.join(...)` call.
+fn account_dir_segment(user_id: &str) -> Option<String> {
+    let is_clean = !user_id.is_empty()
+        && user_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if is_clean {
+        Some(user_id.to_string())
+    } else {
+        None
+    }
+}
+
+/// Task 6's KNOWN-ACCOUNT gate: `Some` only if `user_id` is both a
+/// well-formed segment ([`account_dir_segment`]) AND has an existing,
+/// parseable `auth-cache/<user_id>.json` entry in `dir`. A malformed id
+/// (traversal dots, separators, empty) is a `None` immediately, before any
+/// path join or filesystem access — the enforcement point that keeps
+/// `Cloud::remove_account_auth` from ever touching an arbitrary/foreign id.
+pub fn read_known_account(dir: &Path, user_id: &str) -> Option<AuthCacheEntry> {
+    let segment = account_dir_segment(user_id)?;
+    let contents = std::fs::read_to_string(dir.join(format!("{segment}.json"))).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Deletes `user_id`'s `auth-cache/<user_id>.json` entry, if present.
+/// Sanitized via [`account_dir_segment`] — the same as [`read_known_account`]
+/// — so a malformed id is a hard `Err`, never a best-effort/traversal-prone
+/// path join. Missing file is not an error (idempotent).
+pub fn delete_auth_cache_entry(dir: &Path, user_id: &str) -> Result<(), CloudError> {
+    let segment = account_dir_segment(user_id)
+        .ok_or_else(|| CloudError::Internal("invalid account id".into()))?;
+    match std::fs::remove_file(dir.join(format!("{segment}.json"))) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CloudError::Internal(format!(
+            "failed to delete auth-cache entry: {e}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +557,92 @@ mod tests {
             "uid-A"
         );
         assert!(find_user_by_email(&dir, "bob@example.com").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 16. Task 6's known-account gate: an enrolled entry resolves; an
+    // unenrolled id (no `.json` in `dir` at all) is `None`.
+    #[test]
+    fn read_known_account_finds_an_enrolled_entry_and_none_for_an_unknown_one() {
+        let _g = lock();
+        let dir = temp_path("auth-cache-t6-known");
+        let entry = AuthCacheEntry {
+            user_id: "uid-oa6-known".into(),
+            email: "oa6-known@example.com".into(),
+            nickname: "OA6Known".into(),
+            entitlements: vec![],
+            last_online_auth: 1000,
+            failed_attempts: 0,
+            last_failed_at: 0,
+        };
+        write_auth_cache(&dir, &entry).unwrap();
+
+        let found = read_known_account(&dir, "uid-oa6-known").expect("should find the enrolled entry");
+        assert_eq!(found.email, "oa6-known@example.com");
+
+        assert!(
+            read_known_account(&dir, "uid-oa6-never-enrolled").is_none(),
+            "an id with no auth-cache entry must never resolve"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 17. THE traversal-rejection assertion (Task 6 — SECURITY): a
+    // malformed/traversal id is `None` — never a path join outside `dir` —
+    // even when a file exists at exactly the location a naive
+    // `dir.join(format!("{user_id}.json"))` would resolve to.
+    #[test]
+    fn read_known_account_rejects_traversal_and_separator_ids() {
+        let _g = lock();
+        let dir = temp_path("auth-cache-t6-traversal");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The file a naive, unsanitized join of "../evil" would resolve to
+        // — one directory above `dir`, named `evil.json`.
+        let decoy = dir.parent().unwrap().join("evil.json");
+        std::fs::write(&decoy, br#"{"userId":"not-a-real-account"}"#).unwrap();
+
+        assert!(read_known_account(&dir, "../evil").is_none());
+        assert!(read_known_account(&dir, "a/b").is_none());
+        assert!(read_known_account(&dir, "a\\b").is_none());
+        assert!(read_known_account(&dir, "").is_none());
+        assert!(
+            decoy.exists(),
+            "a rejected traversal id must never even reach the filesystem"
+        );
+
+        let _ = std::fs::remove_file(&decoy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 18. delete_auth_cache_entry: deletes an existing entry; a missing
+    // file is a clean no-op (idempotent); a malformed id is a hard `Err`,
+    // never a best-effort delete.
+    #[test]
+    fn delete_auth_cache_entry_deletes_missing_is_noop_malformed_is_err() {
+        let _g = lock();
+        let dir = temp_path("auth-cache-t6-delete");
+        let entry = AuthCacheEntry {
+            user_id: "uid-oa6-delete".into(),
+            email: "oa6-delete@example.com".into(),
+            nickname: "OA6Delete".into(),
+            entitlements: vec![],
+            last_online_auth: 1000,
+            failed_attempts: 0,
+            last_failed_at: 0,
+        };
+        write_auth_cache(&dir, &entry).unwrap();
+        assert!(read_auth_cache(&dir, "uid-oa6-delete").is_some());
+
+        delete_auth_cache_entry(&dir, "uid-oa6-delete").expect("delete should succeed");
+        assert!(read_auth_cache(&dir, "uid-oa6-delete").is_none());
+
+        // Deleting again (already gone) is a clean no-op, not an error.
+        delete_auth_cache_entry(&dir, "uid-oa6-delete").expect("missing entry should be a no-op");
+
+        let err = delete_auth_cache_entry(&dir, "../evil").unwrap_err();
+        assert!(matches!(err, CloudError::Internal(_)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

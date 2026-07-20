@@ -402,6 +402,39 @@ impl Cloud {
         }
     }
 
+    /// Task 6 ("remove account from this device")'s offline-auth-footprint
+    /// half: deletes `user_id`'s keyring verifier and its
+    /// `auth-cache/<user_id>.json` snapshot — the ALWAYS part of removal,
+    /// independent of whether the caller also wants the optional
+    /// packs/chats wipe (that's the `kpack`/`convstore` half, performed
+    /// separately by `commands::remove_account_from_device` — this method
+    /// has no `AppHandle` and knows nothing about either store).
+    ///
+    /// The KNOWN-ACCOUNT gate — `store::read_known_account` — runs FIRST
+    /// and refuses (a hard `Err`, nothing deleted) unless `user_id` has an
+    /// existing auth-cache entry on this device; that same call also
+    /// sanitizes `user_id` via `account_dir_segment`, so a malformed or
+    /// traversal id (`"../evil"`, an embedded separator, empty) is rejected
+    /// immediately, before any path is ever joined or touched. Every
+    /// deletion below then uses `entry.user_id` — the value already proven
+    /// safe by that lookup — rather than the raw argument again.
+    ///
+    /// If `user_id` is the currently signed-in account, signs it out FIRST
+    /// (mirrors the design spec's "reversal the consent copy promises":
+    /// removing the active account must never leave a live session pointed
+    /// at credentials this call is about to delete).
+    pub fn remove_account_auth(&self, user_id: &str) -> Result<(), CloudError> {
+        let dir = store::auth_cache_dir(self.app_data_dir());
+        let entry = store::read_known_account(&dir, user_id).ok_or(CloudError::UnknownAccount)?;
+
+        if self.current_user_id().as_deref() == Some(entry.user_id.as_str()) {
+            self.sign_out();
+        }
+
+        store::delete_verifier(&entry.user_id);
+        store::delete_auth_cache_entry(&dir, &entry.user_id)
+    }
+
     pub fn grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
         if source != "trial" && source != "library" {
             return Err(CloudError::Internal("invalid source".into()));
@@ -3134,6 +3167,141 @@ mod tests {
         assert_eq!(rewritten.pending_grants.len(), 1);
         assert_eq!(rewritten.pending_grants[0].model_id, "llama-8b");
         assert_eq!(rewritten.pending_grants[0].user_id, user_id);
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // ---- Task 6: remove_account_auth ("remove account from this
+    // device")'s offline-auth-footprint half -- verifier + auth-cache
+    // deletion, the known-account gate, and signing out the active account
+    // first. The optional packs/chats wipe is a separate `kpack`/
+    // `convstore` concern, tested at those modules' own layers.
+
+    // OA6-1. A known (enrolled) account's verifier and auth-cache entry are
+    // both deleted.
+    #[test]
+    fn remove_account_auth_deletes_verifier_and_auth_cache_for_a_known_account() {
+        let _g = lock();
+        let user_id = "user-oa6-known";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+        seed_offline_account(
+            user_id,
+            "oa6-known@example.com",
+            "OA6Known",
+            "hollow-lichen-osprey-83",
+            vec![],
+            0,
+            0,
+        );
+        assert!(store::load_verifier(user_id).is_some(), "setup: verifier should be enrolled");
+        assert!(
+            store::read_auth_cache(&dir, user_id).is_some(),
+            "setup: auth-cache entry should exist"
+        );
+
+        let cache_path = temp_cache_path("t-oa6-known-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+
+        cloud.remove_account_auth(user_id).expect("removal of a known account should succeed");
+
+        assert!(store::load_verifier(user_id).is_none(), "expected the verifier to be deleted");
+        assert!(
+            store::read_auth_cache(&dir, user_id).is_none(),
+            "expected the auth-cache entry to be deleted"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA6-2. THE known-account gate (SECURITY): a `user_id` with no
+    // auth-cache entry on this device is refused outright — nothing is
+    // deleted for it (there is nothing TO delete, and no other account's
+    // state is touched either).
+    #[test]
+    fn remove_account_auth_unknown_account_refused() {
+        let _g = lock();
+        let user_id = "user-oa6-unknown-does-not-exist";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir); // ensure a clean slate: definitely no entry
+
+        let cache_path = temp_cache_path("t-oa6-unknown-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+
+        let result = cloud.remove_account_auth(user_id);
+        assert!(
+            matches!(result, Err(CloudError::UnknownAccount)),
+            "expected UnknownAccount, got {result:?}"
+        );
+        assert!(store::read_auth_cache(&dir, user_id).is_none());
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA6-3. THE traversal-rejection assertion (SECURITY): a malformed id
+    // is refused via the same gate — never a path join outside the managed
+    // `auth-cache/` dir, even when a file sits exactly where a naive,
+    // unsanitized join would resolve to.
+    #[test]
+    fn remove_account_auth_rejects_traversal_user_id() {
+        let _g = lock();
+        let cache_path = temp_cache_path("t-oa6-traversal-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+
+        let decoy = oa5_auth_cache_dir().parent().unwrap().join("evil.json");
+        std::fs::write(&decoy, br#"{"userId":"not-a-real-account"}"#).unwrap();
+
+        let result = cloud.remove_account_auth("../evil");
+        assert!(
+            matches!(result, Err(CloudError::UnknownAccount)),
+            "expected UnknownAccount, got {result:?}"
+        );
+        assert!(
+            decoy.exists(),
+            "a rejected traversal id must never touch a file outside the managed auth-cache dir"
+        );
+
+        let _ = std::fs::remove_file(&decoy);
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA6-4. Removing the CURRENTLY SIGNED-IN account signs it out first —
+    // `current_user_id()` is `None` afterward, alongside the usual
+    // verifier/auth-cache deletion.
+    #[test]
+    fn remove_account_auth_signs_out_the_active_account() {
+        let _g = lock();
+        let user_id = "user-oa6-active";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_id, &dir);
+        let _cleanup = OfflineAccountCleanup { user_id, dir: dir.clone() };
+        seed_offline_account(
+            user_id,
+            "oa6-active@example.com",
+            "OA6Active",
+            "juniper-basalt-condor-58",
+            vec![],
+            0,
+            0,
+        );
+
+        let cache_path = temp_cache_path("t-oa6-active-cache.json");
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline(user_id.into()));
+        }
+        assert_eq!(cloud.current_user_id().as_deref(), Some(user_id));
+
+        cloud.remove_account_auth(user_id).expect("removal should succeed");
+
+        assert!(
+            cloud.current_user_id().is_none(),
+            "expected the active account to be signed out"
+        );
+        assert!(store::load_verifier(user_id).is_none());
+        assert!(store::read_auth_cache(&dir, user_id).is_none());
 
         let _ = std::fs::remove_file(&cache_path);
     }

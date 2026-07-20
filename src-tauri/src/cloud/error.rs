@@ -15,6 +15,13 @@ pub enum CloudError {
     /// `InvalidCredentials` (a wrong password IS recognized) so the FE can
     /// show the right next step instead of "wrong password."
     OfflineNoVerifier,
+    /// Task 6 ("remove account from this device"): the known-account gate
+    /// refused a `user_id` that has no `auth-cache/<user_id>.json` entry on
+    /// this device — either it was never enrolled here, or (for a
+    /// malformed/traversal id) `account_dir_segment` rejected it before any
+    /// filesystem access. Distinct from `Internal` so the message is shown
+    /// verbatim rather than swallowed behind a generic one.
+    UnknownAccount,
     Api { status: u16, msg: String },
     Internal(String),
 }
@@ -38,6 +45,7 @@ impl CloudError {
             CloudError::OfflineNoVerifier => {
                 "Sign in online once on this device first.".into()
             }
+            CloudError::UnknownAccount => "No account found on this device.".into(),
             // `msg` here is the server's own validation message (GoTrue's
             // msg/error_description, or PostgREST's message field) — the
             // doc comment above permits exactly this.
