@@ -21,7 +21,7 @@ const state = {
   // grouped render, plus the search view and the three single-open
   // dropdowns (a chat's "Move to…" list, a chat's export-format menu
   // [§7 S7-6], a folder's Rename/Delete menu).
-  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null },
+  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null, expandedFolders: new Set() },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -635,12 +635,18 @@ function chatRowHtml(c, opts) {
     </div>`;
 }
 
-// name is user-renameable (untrusted) — escapeHtml it.
-function folderHeaderHtml(f) {
+// name is user-renameable (untrusted) — escapeHtml it. The header row is a
+// collapse toggle (click anywhere but the ⋯ menu → expand/collapse); a folder's
+// chats render only when expanded (default collapsed) to save vertical space.
+// `count` (a number) is shown when collapsed so hidden chats stay discoverable.
+function folderHeaderHtml(f, count) {
   const menuOpen = state.sidebar.folderMenuFor === f.id;
+  const expanded = state.sidebar.expandedFolders.has(f.id);
   return `
-    <div class="folder-header" data-folder-id="${f.id}">
+    <div class="folder-header ${expanded ? 'expanded' : 'collapsed'}" data-folder-id="${f.id}" data-folder-act="collapse-toggle">
+      <span class="folder-chevron">${expanded ? '▾' : '▸'}</span>
       <span class="folder-name">${escapeHtml(f.name)}</span>
+      ${!expanded && count ? `<span class="folder-count">${count}</span>` : ''}
       <span class="folder-menu-wrap">
         <button class="chatrow-act" data-folder-act="toggle" title="Folder options">⋯</button>
         <div class="movemenu ${menuOpen ? 'show' : ''}">
@@ -685,10 +691,12 @@ function renderSidebar() {
   if (folders.length) {
     for (const f of folders) {
       const inFolder = active.filter((c) => c.folderId === f.id);
-      html += folderHeaderHtml(f);
-      html += inFolder.length
-        ? inFolder.map((c) => chatRowHtml(c, { nested: true })).join('')
-        : `<div class="folder-empty">No chats</div>`;
+      html += folderHeaderHtml(f, inFolder.length);
+      if (state.sidebar.expandedFolders.has(f.id)) {
+        html += inFolder.length
+          ? inFolder.map((c) => chatRowHtml(c, { nested: true })).join('')
+          : `<div class="folder-empty">No chats</div>`;
+      }
     }
     const unfiled = active.filter((c) => c.folderId == null);
     html += `<div class="folder-header unfiled"><span class="folder-name">Unfiled</span></div>`;
@@ -1419,7 +1427,17 @@ $('chatList').addEventListener('click', async (e) => {
     const header = e.target.closest('.folder-header');
     const fid = Number(header.dataset.folderId);
     const act = folderActBtn.dataset.folderAct;
-    if (act === 'toggle') {
+    if (act === 'collapse-toggle') {
+      // Accordion: click the header (anything but the ⋯ menu) to show/hide
+      // this folder's chats. In-memory (default collapsed after a refresh);
+      // closes any open dropdown so a stray menu doesn't linger on toggle.
+      if (state.sidebar.expandedFolders.has(fid)) state.sidebar.expandedFolders.delete(fid);
+      else state.sidebar.expandedFolders.add(fid);
+      state.sidebar.folderMenuFor = null;
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
+      renderSidebar();
+    } else if (act === 'toggle') {
       state.sidebar.folderMenuFor = state.sidebar.folderMenuFor === fid ? null : fid;
       state.sidebar.moveMenuFor = null;
       state.sidebar.exportMenuFor = null;
@@ -1569,7 +1587,7 @@ $('signOutBtn').addEventListener('click', async () => {
   // drop it here so the next sign-in (possibly a different account) starts
   // from a clean grouped view instead of replaying this session's search
   // query or open menus over freshly-fetched data.
-  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null };
+  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null, expandedFolders: new Set() };
   clearTimeout(chatSearchDebounce);
   $('chatSearch').value = '';
   state.signedIn = false;
