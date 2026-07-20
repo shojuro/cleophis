@@ -10,6 +10,8 @@ pub mod error;
 pub mod rest;
 pub mod session;
 pub mod store;
+pub mod strength;
+pub mod verifier;
 
 #[cfg(test)]
 pub(crate) mod test_support;

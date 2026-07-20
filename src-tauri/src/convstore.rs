@@ -748,6 +748,38 @@ impl ConvStore {
             ExportFormat::Txt => export_txt(&detail),
         })
     }
+
+    // ---- Removal (§7 Task 6: "remove account from this device") -------
+
+    /// The chats-side half of an account's optional local-data wipe:
+    /// deletes `user_id`'s ENTIRE per-account database file
+    /// (`<dir>/<segment>.db`), if any. Sanitized via [`account_dir_segment`]
+    /// — the SAME sanitizer [`ConvStore::conn_for`] itself uses to open that
+    /// file — so this can only ever target the ONE file `conn_for` would
+    /// open for `user_id`; a malformed/traversal id is a hard `Err`, never a
+    /// best-effort path. Drops any already-open cached connection for the
+    /// account FIRST, under the same `conns` lock `conn_for` uses, so a
+    /// stale open handle from earlier in this process is never reused once
+    /// the file underneath it is gone. Missing file is not an error
+    /// (idempotent — the account may never have created a chat).
+    /// `StoreRoot::Memory` (tests only) has nothing on disk to delete —
+    /// dropping the cached connection above is the whole story there.
+    pub fn delete_account_conversations(&self, user_id: &str) -> Result<(), String> {
+        let segment =
+            account_dir_segment(user_id).ok_or_else(|| "invalid account id".to_string())?;
+        self.conns.lock().unwrap().remove(&segment);
+        match &self.root {
+            StoreRoot::Dir(dir) => {
+                let path = dir.join(format!("{segment}.db"));
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(format!("couldn't delete conversations: {e}")),
+                }
+            }
+            StoreRoot::Memory => Ok(()),
+        }
+    }
 }
 
 /// Sanitizes a session user id into a per-account database filename
@@ -2047,6 +2079,98 @@ mod tests {
         assert!(applied);
         let after = store.get_chat(USER, chat.id).unwrap().chat;
         assert_eq!(after.title, "Post-migration title");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn oa6_convstore_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cleophis-convstore-oa6-test-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            name
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Task 6 ("remove account from this device")'s chats-side wipe:
+    /// deletes the account's per-account `.db` file.
+    #[test]
+    fn t22_delete_account_conversations_deletes_the_per_account_db_file() {
+        let dir = oa6_convstore_dir("delete-db");
+        let store = ConvStore::new(dir.clone());
+        store
+            .create_chat(USER, "to be wiped", None, None, "hero-llama", vec![])
+            .unwrap();
+        let db_path = dir.join(format!("{USER}.db"));
+        assert!(db_path.exists(), "setup: the per-account db file should exist");
+
+        store.delete_account_conversations(USER).expect("should delete");
+        assert!(!db_path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An account that never created a chat (no `.db` file at all) is a
+    /// clean no-op, not an error — idempotent.
+    #[test]
+    fn t23_delete_account_conversations_missing_db_is_not_an_error() {
+        let dir = oa6_convstore_dir("delete-db-missing");
+        let store = ConvStore::new(dir.clone());
+
+        store
+            .delete_account_conversations("user-oa6-never-chatted")
+            .expect("missing db should be a clean no-op");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE traversal-rejection assertion (SECURITY): a malformed id is a
+    /// hard `Err`, never a best-effort/traversal-prone path join.
+    #[test]
+    fn t24_delete_account_conversations_rejects_traversal_user_id() {
+        let dir = oa6_convstore_dir("delete-db-traversal");
+        let store = ConvStore::new(dir.clone());
+
+        let err = store.delete_account_conversations("../evil").unwrap_err();
+        assert!(!err.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Removing one account's conversations never touches a sibling
+    /// account's `.db` file or its rows — same cross-account boundary
+    /// `t9_per_account_isolation_...` proves for reads, here for the
+    /// whole-database wipe.
+    #[test]
+    fn t25_delete_account_conversations_leaves_a_different_accounts_db_untouched() {
+        let dir = oa6_convstore_dir("delete-db-cross-account");
+        let store = ConvStore::new(dir.clone());
+        store
+            .create_chat("acct-oa6-a", "A's chat", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .create_chat("acct-oa6-b", "B's chat", None, None, "hero-llama", vec![])
+            .unwrap();
+
+        store
+            .delete_account_conversations("acct-oa6-a")
+            .expect("should delete A's db");
+
+        assert!(!dir.join("acct-oa6-a.db").exists());
+        assert!(
+            dir.join("acct-oa6-b.db").exists(),
+            "B's db file must survive A's removal"
+        );
+        assert_eq!(
+            store.list_chats("acct-oa6-b").unwrap().len(),
+            1,
+            "B's chats must survive A's removal"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

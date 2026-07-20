@@ -37,6 +37,7 @@
             <div class="profilemenu-nick" id="profileNick">—</div>
             <button class="profilemenu-item" id="billingBtn" title="Manage billing">Billing</button>
             <button class="profilemenu-item" id="signOutBtn" title="Sign out">Sign out</button>
+            <button class="profilemenu-item danger" id="removeAccountBtn" title="Remove this account from this device">Remove from this device</button>
           </div>
         </div>
       </div>
@@ -118,11 +119,35 @@
     <p class="sub">Save models to your library and sync your device profile.</p>
     <div class="field"><input type="email" placeholder="Email" id="cr-email" autocomplete="off"/></div>
     <div class="field"><input type="password" placeholder="Password" id="cr-pass" autocomplete="new-password"/></div>
+    <div class="pwmeter" id="cr-strength" aria-live="polite">
+      <div class="pwmeter-bar"><span></span><span></span><span></span><span></span></div>
+      <div class="pwmeter-tip" id="cr-strength-tip">Use at least 12 characters — a passphrase of a few words works well.</div>
+    </div>
     <div class="field"><input type="text" placeholder="Nickname" id="cr-nick" autocomplete="off"/></div>
     <label class="remember"><input type="checkbox" id="cr-remember"/> Keep me signed in</label>
     <div class="errmsg" id="cr-err"></div>
     <button class="btn primary block" id="doCreate">Create account</button>
     <div class="foot"><span>Already have an account?</span><button class="btn" id="toLogin">Log in</button></div>
+  </div>
+</div>
+
+<div class="modal" id="consentModal">
+  <div class="box">
+    <h2>Sign in when you're offline</h2>
+    <p class="sub">To let you sign in when offline, Cleophis stores a secure, non-reversible credential on this device. You can remove this at any time by removing the account from this device.</p>
+    <button class="btn primary block" id="consentAgree">Agree</button>
+  </div>
+</div>
+
+<div class="modal" id="removeAccountModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <h2>Remove this account?</h2>
+    <p class="sub">This removes your offline sign-in credential for this account from this device. You'll need to sign in online again to use it here.</p>
+    <label class="remember"><input type="checkbox" id="removeWipeData"/> Also delete this account's packs and chats on this device</label>
+    <div class="errmsg" id="remove-err"></div>
+    <button class="btn danger block" id="removeConfirm">Remove account</button>
+    <div class="foot"><button class="btn" id="removeCancel">Cancel</button></div>
   </div>
 </div>
 

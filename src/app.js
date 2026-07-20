@@ -1423,6 +1423,7 @@ function resetAuthForms() {
   $('cr-remember').checked = false;
   $('li-err').style.display = 'none';
   $('cr-err').style.display = 'none';
+  resetPwStrength();
 }
 
 async function applySession(info) {
@@ -1450,6 +1451,7 @@ async function applySession(info) {
   hide($('loginModal'));
   hide($('createModal'));
   resetAuthForms();
+  maybeShowConsent(info);
   renderGrid();
 }
 
@@ -1476,7 +1478,7 @@ $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu();
+    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); closeProfileMenu();
     if (state.sidebar.moveMenuFor != null || state.sidebar.folderMenuFor != null) {
       state.sidebar.moveMenuFor = null; state.sidebar.folderMenuFor = null; renderSidebar();
     }
@@ -1492,7 +1494,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('#profileWrap')) return;
   closeProfileMenu();
 });
-document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }));
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); }));
 $('packsBtn').addEventListener('click', () => openPacksModal());
 $('attachPacksBtn').addEventListener('click', () => openAttachModal());
 $('attachDoneBtn').addEventListener('click', async () => {
@@ -1558,9 +1560,9 @@ $('doCreate').addEventListener('click', async () => {
     err.textContent = 'Enter your email and password.';
     return;
   }
-  if (password.length < 8) {
+  if (!state.crStrengthOk) {
     err.style.display = 'block';
-    err.textContent = 'Password must be at least 8 characters.';
+    err.textContent = 'Choose a stronger password — at least 12 characters (a passphrase of a few words works well).';
     return;
   }
   const btn = $('doCreate');
@@ -1576,7 +1578,98 @@ $('doCreate').addEventListener('click', async () => {
     btn.textContent = 'Create account';
   }
 });
-[$('loginModal'), $('createModal'), $('packsModal'), $('attachModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
+// Offline-auth (Task 7): live password-strength meter on the sign-up form.
+// The offline verifier makes weak passwords brute-forceable with device
+// access, so account creation is gated on the backend zxcvbn policy
+// (length >= 12 AND score >= 3). state.crStrengthOk mirrors the last check;
+// the Create button stays disabled until it passes.
+let crStrengthTimer = null;
+function refreshCreateEnabled() {
+  const emailOk = $('cr-email').value.trim().length > 0;
+  $('doCreate').disabled = !(state.crStrengthOk && emailOk);
+}
+function resetPwStrength() {
+  state.crStrengthOk = false;
+  $('cr-strength').querySelectorAll('.pwmeter-bar span').forEach((b) => { b.className = ''; });
+  $('cr-strength-tip').textContent = 'Use at least 12 characters — a passphrase of a few words works well.';
+  $('doCreate').disabled = true;
+}
+function updatePwStrength() {
+  const pw = $('cr-pass').value;
+  if (!pw) { resetPwStrength(); return; }
+  // Invalidate SYNCHRONOUSLY, before the debounce: the Create button must
+  // never trust an `ok` left over from a previous, stronger value. Without
+  // this, an edit — or a password manager's autofill-then-Enter — inside the
+  // 150ms window could submit a weak password, which enroll_verifier would
+  // turn into a brute-forceable offline verifier. Safety over 150ms latency.
+  state.crStrengthOk = false;
+  $('doCreate').disabled = true;
+  clearTimeout(crStrengthTimer);
+  crStrengthTimer = setTimeout(async () => {
+    let res;
+    try {
+      res = await invoke('check_password_strength', {
+        password: pw, email: $('cr-email').value.trim(), nickname: $('cr-nick').value.trim(),
+      });
+    } catch (_) { return; }
+    if ($('cr-pass').value !== pw) return; // a stale in-flight result — ignore
+    state.crStrengthOk = !!res.ok;
+    const score = Math.max(0, Math.min(4, res.score | 0));
+    const filled = Math.max(1, score);
+    $('cr-strength').querySelectorAll('.pwmeter-bar span').forEach((b, i) => {
+      b.className = i < filled ? `on s${score}` : '';
+    });
+    $('cr-strength-tip').textContent = (res.feedback && res.feedback[0])
+      || (res.ok ? 'Looks good.' : 'Too weak — use 12+ characters or a longer passphrase.');
+    refreshCreateEnabled();
+  }, 150);
+}
+['cr-pass', 'cr-email', 'cr-nick'].forEach((id) => $(id).addEventListener('input', updatePwStrength));
+resetPwStrength(); // Create starts disabled until a strong password is entered
+
+// Offline-auth (Task 7): one-time disclosure that an offline sign-in
+// credential is stored on this device. Enrollment happens backend-side on
+// any online auth regardless; this is the user-facing notice + the pointer
+// to removal. Shown once (persisted flag), only after a genuine ONLINE auth.
+function maybeShowConsent(info) {
+  if (!info || info.mode !== 'online') return;
+  try { if (localStorage.getItem('cleophis.offlineAuthConsent')) return; } catch (_) { return; }
+  show($('consentModal'));
+}
+$('consentAgree').addEventListener('click', () => {
+  try { localStorage.setItem('cleophis.offlineAuthConsent', '1'); } catch (_) {}
+  hide($('consentModal'));
+});
+
+// Offline-auth (Task 7): "Remove account from this device" — the current
+// account only (the backend resolves current_user_id; the FE never supplies
+// a user id). On success the account + its session are gone, so reload to a
+// clean signed-out state (or whichever remembered account still restores).
+$('removeAccountBtn').addEventListener('click', () => {
+  closeProfileMenu();
+  $('removeWipeData').checked = false;
+  $('remove-err').style.display = 'none';
+  show($('removeAccountModal'));
+});
+$('removeCancel').addEventListener('click', () => hide($('removeAccountModal')));
+$('removeConfirm').addEventListener('click', async () => {
+  const btn = $('removeConfirm');
+  const err = $('remove-err');
+  err.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Removing…';
+  try {
+    await invoke('remove_current_account_from_device', { wipeLocalData: $('removeWipeData').checked });
+    window.location.reload();
+  } catch (e) {
+    err.style.display = 'block';
+    err.textContent = String(e);
+    btn.disabled = false;
+    btn.textContent = 'Remove account';
+  }
+});
+
+[$('loginModal'), $('createModal'), $('packsModal'), $('attachModal'), $('removeAccountModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
 $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
