@@ -17,6 +17,11 @@ const state = {
   dl: { installed: false, partBytes: 0, active: false },
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
+  // §7 S7-2b: sidebar organization — folders/chats cache backing the
+  // grouped render, plus the search view and the three single-open
+  // dropdowns (a chat's "Move to…" list, a chat's export-format menu
+  // [§7 S7-6], a folder's Rename/Delete menu).
+  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null, expandedFolders: new Set() },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -578,28 +583,170 @@ function simulateStubDownload(m, btn) {
 // are the sidebar's read/switch/create surface over that store.
 
 async function refreshChatList() {
-  const list = $('chatList');
-  let chats;
+  let chats, folders;
   try {
-    chats = await invoke('list_chats');
+    [chats, folders] = await Promise.all([invoke('list_chats'), invoke('list_folders')]);
   } catch (_) {
     return; // additive UI — leave whatever's already rendered on failure
   }
+  state.sidebar.chats = chats;
+  state.sidebar.folders = folders;
+  // Keep an active search live through any mutation (move/archive/rename/
+  // delete performed on a result row) — otherwise the result list would go
+  // stale relative to state.sidebar.chats and the row's shown pinned/
+  // archived/folder state could drift from what just happened.
+  if (state.sidebar.searchResults != null && state.sidebar.query.trim()) {
+    try { state.sidebar.searchResults = await invoke('search_chats', { query: state.sidebar.query }); } catch (_) {}
+  }
+  renderSidebar();
+}
+
+// title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete/
+// archive/move/export are static labels, not interpolated user data.
+// `opts.nested` indents a row under a folder header.
+function chatRowHtml(c, opts) {
+  const nested = opts && opts.nested;
+  const moveOpen = state.sidebar.moveMenuFor === c.id;
+  const exportOpen = state.sidebar.exportMenuFor === c.id;
+  return `
+    <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}${nested ? ' nested' : ''}${c.archived ? ' is-archived' : ''}" data-id="${c.id}">
+      <span class="chatrow-title">${escapeHtml(c.title)}</span>
+      <span class="chatrow-actions">
+        <button class="chatrow-act" data-act="pin" data-pinned="${c.pinned ? '1' : '0'}" title="${c.pinned ? 'Unpin' : 'Pin'}">${c.pinned ? '★' : '☆'}</button>
+        <button class="chatrow-act" data-act="archive" data-archived="${c.archived ? '1' : '0'}" title="${c.archived ? 'Unarchive' : 'Archive'}">${c.archived ? '⤒' : '⤓'}</button>
+        <button class="chatrow-act" data-act="rename" title="Rename">✎</button>
+        <span class="movemenu-wrap">
+          <button class="chatrow-act" data-act="move" title="Move to…">⇄</button>
+          <div class="movemenu ${moveOpen ? 'show' : ''}">
+            <button class="movemenu-item" data-act="move-to" data-folder-id="">Unfiled</button>
+            ${state.sidebar.folders.map((f) => `<button class="movemenu-item" data-act="move-to" data-folder-id="${f.id}">${escapeHtml(f.name)}</button>`).join('')}
+          </div>
+        </span>
+        <span class="movemenu-wrap">
+          <button class="chatrow-act" data-act="export" title="Export…">⇩</button>
+          <div class="movemenu ${exportOpen ? 'show' : ''}">
+            <button class="movemenu-item" data-act="export-to" data-format="markdown">Markdown</button>
+            <button class="movemenu-item" data-act="export-to" data-format="json">JSON</button>
+            <button class="movemenu-item" data-act="export-to" data-format="txt">Plain text</button>
+          </div>
+        </span>
+        <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
+      </span>
+    </div>`;
+}
+
+// name is user-renameable (untrusted) — escapeHtml it. The header row is a
+// collapse toggle (click anywhere but the ⋯ menu → expand/collapse); a folder's
+// chats render only when expanded (default collapsed) to save vertical space.
+// `count` (a number) is shown when collapsed so hidden chats stay discoverable.
+function folderHeaderHtml(f, count) {
+  const menuOpen = state.sidebar.folderMenuFor === f.id;
+  const expanded = state.sidebar.expandedFolders.has(f.id);
+  return `
+    <div class="folder-header ${expanded ? 'expanded' : 'collapsed'}" data-folder-id="${f.id}" data-folder-act="collapse-toggle">
+      <span class="folder-chevron">${expanded ? '▾' : '▸'}</span>
+      <span class="folder-name">${escapeHtml(f.name)}</span>
+      ${!expanded && count ? `<span class="folder-count">${count}</span>` : ''}
+      <span class="folder-menu-wrap">
+        <button class="chatrow-act" data-folder-act="toggle" title="Folder options">⋯</button>
+        <div class="movemenu ${menuOpen ? 'show' : ''}">
+          <button class="movemenu-item" data-folder-act="rename">Rename</button>
+          <button class="movemenu-item" data-folder-act="delete">Delete</button>
+        </div>
+      </span>
+    </div>`;
+}
+
+// The grouped view: each folder (sortOrder, then id) as a header + its
+// chats, then an "Unfiled" section for folderId==null — only when at least
+// one folder exists, so a fresh account with no folders renders exactly as
+// plain S7-2 did (no redundant "Unfiled" label over the whole list). A live
+// search instead renders state.sidebar.searchResults flat, ignoring both
+// grouping and the archived filter (ChatGPT/Claude-style: search finds
+// across everything). Archived chats are hidden from the grouped view
+// unless "Show archived" is toggled on, in their own trailing section.
+function renderSidebar() {
+  const list = $('chatList');
+  const footBtn = $('showArchivedBtn');
+  if (footBtn) footBtn.textContent = state.sidebar.showArchived ? 'Hide archived' : 'Show archived';
+
+  if (state.sidebar.searchResults != null) {
+    const results = state.sidebar.searchResults;
+    list.innerHTML = results.length
+      ? results.map((c) => chatRowHtml(c)).join('')
+      : `<div class="chatlist-empty">No matches.</div>`;
+    return;
+  }
+
+  const chats = state.sidebar.chats;
   if (!chats.length) {
     list.innerHTML = `<div class="chatlist-empty">No conversations yet.</div>`;
     return;
   }
-  // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete
-  // are static labels, not interpolated user data.
-  list.innerHTML = chats.map((c) => `
-    <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}" data-id="${c.id}">
-      <span class="chatrow-title">${escapeHtml(c.title)}</span>
-      <span class="chatrow-actions">
-        <button class="chatrow-act" data-act="pin" data-pinned="${c.pinned ? '1' : '0'}" title="${c.pinned ? 'Unpin' : 'Pin'}">${c.pinned ? '★' : '☆'}</button>
-        <button class="chatrow-act" data-act="rename" title="Rename">✎</button>
-        <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
-      </span>
-    </div>`).join('');
+  const active = chats.filter((c) => !c.archived);
+  const archived = chats.filter((c) => c.archived);
+  const folders = [...state.sidebar.folders].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+
+  let html = '';
+  if (folders.length) {
+    for (const f of folders) {
+      const inFolder = active.filter((c) => c.folderId === f.id);
+      html += folderHeaderHtml(f, inFolder.length);
+      if (state.sidebar.expandedFolders.has(f.id)) {
+        html += inFolder.length
+          ? inFolder.map((c) => chatRowHtml(c, { nested: true })).join('')
+          : `<div class="folder-empty">No chats</div>`;
+      }
+    }
+    const unfiled = active.filter((c) => c.folderId == null);
+    html += `<div class="folder-header unfiled"><span class="folder-name">Unfiled</span></div>`;
+    html += unfiled.length
+      ? unfiled.map((c) => chatRowHtml(c, { nested: true })).join('')
+      : `<div class="folder-empty">No chats</div>`;
+  } else if (active.length) {
+    html += active.map((c) => chatRowHtml(c)).join('');
+  } else {
+    html += `<div class="chatlist-empty">All conversations are archived — Show archived below.</div>`;
+  }
+
+  if (state.sidebar.showArchived) {
+    html += `<div class="folder-header archived-section"><span class="folder-name">Archived</span></div>`;
+    html += archived.length
+      ? archived.map((c) => chatRowHtml(c)).join('')
+      : `<div class="folder-empty">No archived chats</div>`;
+  }
+
+  list.innerHTML = html;
+}
+
+// Debounced (~150ms) query -> search_chats, guarded against an empty/
+// whitespace query (never calls search_chats with one — matches the
+// grouped view instead) and against out-of-order resolution: if the query
+// has moved on by the time this resolves, its result is discarded.
+let chatSearchDebounce = null;
+function onChatSearchInput(q) {
+  state.sidebar.query = q;
+  clearTimeout(chatSearchDebounce);
+  if (!q.trim()) {
+    state.sidebar.searchResults = null;
+    renderSidebar();
+    return;
+  }
+  chatSearchDebounce = setTimeout(() => runChatSearch(q), 150);
+}
+async function runChatSearch(q) {
+  let results;
+  try { results = await invoke('search_chats', { query: q }); } catch (_) { return; }
+  if (state.sidebar.query !== q) return; // stale — a newer query has since landed
+  state.sidebar.searchResults = results;
+  renderSidebar();
+}
+function clearChatSearch() {
+  $('chatSearch').value = '';
+  state.sidebar.query = '';
+  state.sidebar.searchResults = null;
+  clearTimeout(chatSearchDebounce);
+  renderSidebar();
 }
 
 // Clears the message DOM back to just the model's greeting, without
@@ -664,6 +811,43 @@ async function newChat() {
 }
 
 /* ---------------- chat ---------------- */
+
+// §7 S7-4: fit each request to n_ctx. Mirror the engine: server runs with
+// `-c 4096` (inference.rs) and each request reserves max_tokens for the
+// reply. We keep the most-recent messages that fit the remaining budget so
+// a long chat never overflows n_ctx (which would make llama.cpp
+// context-shift/truncate unpredictably — silent quality loss or errors).
+const N_CTX = 4096;         // must match inference.rs `-c`
+const REPLY_RESERVE = 512;  // must match the request's max_tokens
+const CTX_SAFETY = 128;     // headroom for tokenizer estimate error + framing
+// Appended to the system prompt on UNGROUNDED turns (no packs attached this
+// turn). Without grounding the base model will otherwise parrot/fabricate
+// "source titles" from earlier grounded turns still in the transcript — the
+// grounded path is hardened symmetrically in retrieve.rs. Interim mitigation;
+// the contract-trained LoRA adapter is the real fix for grounding-honesty.
+const UNGROUNDED_NO_SOURCES_NOTE = ' No documents are attached to this conversation, so you have no sources to cite. Do not list, cite, or invent source titles; if asked about your sources, say none are attached.';
+// Deliberately conservative (~3.5 chars/token OVER-estimates tokens → we
+// under-fill and stay under n_ctx rather than risk overflow).
+function estTokens(s) { return Math.ceil((s ? s.length : 0) / 3.5) + 4; /* +4 ≈ role framing */ }
+
+// Returns the most-recent contiguous suffix of `messages` that fits the
+// budget left after the fixed preamble (system + greeting) and the reply
+// reserve, plus how many older messages were dropped. Always keeps at
+// least the final message (the current user turn) even if it alone is huge
+// (degenerate — the engine will truncate that one; extremely rare). Pure —
+// no state reads — so it's trivially reasoned-about and testable.
+function windowMessages(messages, systemContent, greetingContent) {
+  const budget = N_CTX - REPLY_RESERVE - CTX_SAFETY
+    - estTokens(systemContent) - estTokens(greetingContent);
+  let used = 0, startIdx = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = estTokens(messages[i].content);
+    if (i < messages.length - 1 && used + t > budget) break; // always keep the last
+    used += t; startIdx = i;
+  }
+  return { sent: messages.slice(startIdx), droppedCount: startIdx };
+}
+
 function enterChat(m) {
   // A pack attached in one chat shouldn't silently carry into another
   // model's chat (e.g. a medical pack leaking into an education chat).
@@ -709,6 +893,7 @@ function rebuildChatDom() {
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
   for (const msg of state.chat.messages) appendBubble(msg.role, msg.content, msg.citations);
+  updateContextDivider();
 }
 
 function appendBubble(role, text, citations) {
@@ -719,6 +904,37 @@ function appendBubble(role, text, citations) {
   if (citations && citations.length) renderCitations(el, citations);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return el;
+}
+
+// §7 S7-4: mark the boundary where older messages fall outside the
+// request window — they're still saved (transcript + DB), just not sent to
+// the model. Only meaningful for the ACTIVE chat's rendered transcript and
+// only at rest (never mid-stream, since bubbles are still being appended/
+// mutated then) — callers are rebuildChatDom (on chat open) and
+// finishStream (after a completed turn is pushed, for the still-active
+// chat). Idempotent: always removes any existing divider first so it's
+// safe to call repeatedly as the chat grows.
+function updateContextDivider() {
+  const box = $('chatMessages');
+  box.querySelector('.ctx-divider')?.remove();
+  const m = state.chat.model;
+  if (!m) return;
+  // View-time approximation: we can't know if the NEXT turn will be
+  // grounded (which would shrink the window further via a larger system
+  // prompt), so this uses the plain systemPrompt as an honest baseline,
+  // not a guarantee.
+  const { droppedCount } = windowMessages(state.chat.messages, m.systemPrompt, m.greeting);
+  if (droppedCount <= 0) return;
+  // index 0 of .msg is the greeting bubble; indices 1.. map 1:1 to
+  // state.chat.messages, so messageBubbles[droppedCount] is the first
+  // bubble still inside the window.
+  const messageBubbles = [...box.querySelectorAll('.msg')].slice(1);
+  const boundary = messageBubbles[droppedCount];
+  if (!boundary) return; // DOM/state out of sync for any reason — no-op, never throw
+  const divider = document.createElement('div');
+  divider.className = 'ctx-divider';
+  divider.textContent = '⌇ Older messages are saved but aren\'t in the model\'s memory';
+  boundary.before(divider);
 }
 
 // §3a A4: citations render via DOM textContent, never innerHTML — docTitle/
@@ -746,9 +962,25 @@ function renderCitations(afterEl, citations) {
   for (const c of citations) {
     const row = document.createElement('div');
     row.className = 'cite';
-    row.textContent = `[${c.n}] ${c.docTitle}` +
+    // Main line: the numbered document + where in it. textContent only —
+    // docTitle/sectionPath/locator come from user pack content (untrusted).
+    const main = document.createElement('div');
+    main.className = 'cite-main';
+    main.textContent = `[${c.n}] ${c.docTitle}` +
       (c.sectionPath ? ` · ${c.sectionPath}` : '') +
       (c.locator ? ` · ${c.locator}` : '');
+    row.appendChild(main);
+    // Which PACK this excerpt is from — the same label as the attach-modal
+    // checkbox (manifest packId), so the user can reconcile the sources
+    // against exactly what they attached. Retrieval is scoped to the
+    // attached packs; this makes that visible (a doc can live in more than
+    // one pack, and one pack can contribute several excerpts).
+    if (c.packId) {
+      const pk = document.createElement('div');
+      pk.className = 'cite-pack';
+      pk.textContent = `pack: ${c.packId}`;
+      row.appendChild(pk);
+    }
     list.appendChild(row);
   }
   box.appendChild(list);
@@ -797,6 +1029,17 @@ async function sendCompletion(userText) {
   state.chat.streaming = true;
   $('sendBtn').hidden = true; $('stopBtn').hidden = false;
   state.chat.aborter = new AbortController();
+
+  // §7 S7-5: detect the first exchange SYNCHRONOUSLY (before any await
+  // below) — state.chat.messages is this (the ACTIVE) chat's transcript,
+  // and the just-pushed user message is present with no assistant reply
+  // for this turn yet, so `.some(assistant)` is false ONLY on the very
+  // first exchange. `userText == null` (a retry chip replaying an
+  // already-pushed turn) is never treated as a first exchange. The
+  // captured `userText` (the source for the title call) travels with this
+  // turn via `finishStream`'s `autoTitle` param, same as `turnChatId`.
+  const isFirstExchange = userText != null && !state.chat.messages.some((msg) => msg.role === 'assistant');
+  const autoTitle = isFirstExchange ? { source: userText } : null;
 
   const m = state.chat.model;
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
@@ -910,6 +1153,10 @@ async function sendCompletion(userText) {
           pill.hidden = false;
           pill.textContent = 'No evidence in your packs';
         }
+        // §7 S7-5: this branch returns without calling finishStream, so a
+        // no-evidence first turn never triggers auto-titling — the
+        // first-line title stands. Acceptable v1: a refusal has nothing
+        // worth summarizing into a title anyway.
         return; // no model call — pulseCost() intentionally skipped, no inference ran
       }
       // grounded: swap this turn's system message for the assembled
@@ -925,18 +1172,27 @@ async function sendCompletion(userText) {
   }
 
   try {
+    // §7 S7-4: fit the request to n_ctx — send only the most-recent
+    // messages that fit the budget left after the fixed preamble (system +
+    // greeting) and the reply reserve. For a grounded turn the (large)
+    // groundedPrompt is part of `sys`, so its length correctly shrinks the
+    // history budget — sources + kept history still stay within n_ctx.
+    // Short chats are unaffected: windowMessages returns the whole list
+    // (droppedCount 0), so behavior is byte-identical to before.
+    const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
+    const win = windowMessages(state.chat.messages, sys, m.greeting);
     const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: state.chat.aborter.signal,
       body: JSON.stringify({
         messages: [
-          { role: 'system', content: groundedPrompt ?? m.systemPrompt },
+          { role: 'system', content: sys },
           { role: 'assistant', content: m.greeting },
-          ...state.chat.messages,
+          ...win.sent,
         ],
         stream: true,
-        max_tokens: 512,
+        max_tokens: REPLY_RESERVE, // bound to the windowing reserve so the two can't drift
         temperature: 0.7,
         cache_prompt: true,
       }),
@@ -955,7 +1211,7 @@ async function sendCompletion(userText) {
         buf = buf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
+        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
         try {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
@@ -966,9 +1222,9 @@ async function sendCompletion(userText) {
         } catch (_) { /* partial line — ignored */ }
       }
     }
-    finishStream(bubble, acc, groundedCitations, turnChatId);
+    finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -993,7 +1249,10 @@ async function sendCompletion(userText) {
 // the sendCompletion comment). Synchronous top to bottom: the shared
 // composer state (streaming/Send/Stop/pulseCost) always restores
 // immediately; the DB write is fire-and-forget and never gates it.
-function finishStream(bubble, acc, citations, turnChatId) {
+// `autoTitle` (§7 S7-5) is `{ source: userText }` on a first exchange, or
+// null — also fire-and-forget, threaded through the same way as
+// `turnChatId` so a mid-stream chat switch still titles the RIGHT chat.
+function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
   // Only touch the live DOM/in-memory transcript if this turn's chat is
   // STILL the active one — the user may have switched chats mid-stream
@@ -1020,6 +1279,13 @@ function finishStream(bubble, acc, citations, turnChatId) {
   $('sendBtn').hidden = false; $('stopBtn').hidden = true;
   $('sendBtn').disabled = false;
   pulseCost();
+  // §7 S7-4: re-check the context-window divider now that the turn is
+  // pushed and streaming has ended for THIS chat. `isActive` (above) is
+  // exactly `turnChatId === state.chat.chatId`; `state.chat.streaming` was
+  // just set false on the line above, so this only ever runs at rest, for
+  // the chat actually on screen — never mid-stream, never on a chat the
+  // user has switched away from.
+  if (isActive && !state.chat.streaming) updateContextDivider();
   // §7 S7-2: persist the completed turn to the chat it actually belongs
   // to. `turnChatId` is only null here if the earlier create_chat in
   // sendCompletion failed — in that case this turn silently isn't saved
@@ -1032,6 +1298,64 @@ function finishStream(bubble, acc, citations, turnChatId) {
       content: acc,
       citations: citations && citations.length ? citations : null,
     }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  }
+  // §7 S7-5: fire-and-forget the auto-title generation for this turn — do
+  // NOT await it (it must never gate the composer restore above, which
+  // already ran). turnChatId-scoped like the persist above, so a
+  // mid-stream chat switch still titles the right chat.
+  if (acc && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, acc);
+}
+
+// §7 S7-5: after the first complete exchange in a NEW chat, ask the local
+// model for a concise 3–6 word title and apply it — unless the user has
+// already renamed the chat (auto_title_chat's title_auto guard handles
+// that server-side; this function never has to know). Self-contained and
+// never throws into its caller (finishStream calls it fire-and-forget):
+// every failure mode here (engine not ready, timeout, bad response, IPC
+// error) just leaves the first-line title in place.
+async function maybeAutoTitle(chatId, userText, assistantText) {
+  if (!state.engine?.port || state.engine.status !== 'Ready') return;
+  try {
+    const aborter = new AbortController();
+    const timer = setTimeout(() => aborter.abort(), 10000);
+    let res;
+    try {
+      res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: aborter.signal,
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: 'You write very short chat titles. Reply with ONLY a 3–6 word title for the conversation. No quotes, no trailing punctuation, no preamble, no "Title:".' },
+            { role: 'user', content: `User: ${userText.slice(0, 500)}\nAssistant: ${assistantText.slice(0, 500)}\n\nTitle:` },
+          ],
+          stream: false,
+          max_tokens: 24,
+          temperature: 0.3,
+          cache_prompt: false,
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return;
+    // Sanitize: first line only, strip an echoed "Title:" prefix, strip
+    // surrounding quotes/backticks/asterisks, collapse whitespace, trim,
+    // strip trailing punctuation, cap length.
+    let title = raw.split('\n')[0];
+    title = title.replace(/^\s*title\s*:\s*/i, '');
+    title = title.replace(/^[\s"'`*]+|[\s"'`*]+$/g, '');
+    title = title.replace(/\s+/g, ' ').trim();
+    title = title.replace(/[.,:;]+$/, '').trim();
+    title = title.slice(0, 60);
+    if (!title) return; // keep the first-line title
+    const applied = await invoke('auto_title_chat', { id: chatId, title });
+    if (applied === true) refreshChatList(); // sidebar row + active-row highlight update
+  } catch (_) {
+    // Network/abort/parse failure — the first-line title stands, invisibly.
   }
 }
 
@@ -1151,7 +1475,12 @@ $('grid').addEventListener('click', (e) => {
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu(); }
+  if (e.key === 'Escape') {
+    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu();
+    if (state.sidebar.moveMenuFor != null || state.sidebar.folderMenuFor != null) {
+      state.sidebar.moveMenuFor = null; state.sidebar.folderMenuFor = null; renderSidebar();
+    }
+  }
 });
 $('loginBtn').addEventListener('click', () => show($('loginModal')));
 $('profileBtn').addEventListener('click', (e) => {
@@ -1253,7 +1582,60 @@ $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 $('newChatBtn').addEventListener('click', () => newChat());
+$('newFolderBtn').addEventListener('click', async () => {
+  const name = window.prompt('New folder name');
+  if (name == null || !name.trim()) return;
+  try { await invoke('create_folder', { name: name.trim() }); } catch (_) {}
+  await refreshChatList();
+});
+$('chatSearch').addEventListener('input', (e) => onChatSearchInput(e.target.value));
+$('chatSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape') clearChatSearch(); });
+$('showArchivedBtn').addEventListener('click', () => {
+  state.sidebar.showArchived = !state.sidebar.showArchived;
+  renderSidebar();
+});
 $('chatList').addEventListener('click', async (e) => {
+  // Folder header clicks (⋯ -> Rename/Delete) are handled separately —
+  // a .folder-header is not a .chatrow, so it falls outside the row
+  // handling below.
+  const folderActBtn = e.target.closest('[data-folder-act]');
+  if (folderActBtn) {
+    e.stopPropagation();
+    const header = e.target.closest('.folder-header');
+    const fid = Number(header.dataset.folderId);
+    const act = folderActBtn.dataset.folderAct;
+    if (act === 'collapse-toggle') {
+      // Accordion: click the header (anything but the ⋯ menu) to show/hide
+      // this folder's chats. In-memory (default collapsed after a refresh);
+      // closes any open dropdown so a stray menu doesn't linger on toggle.
+      if (state.sidebar.expandedFolders.has(fid)) state.sidebar.expandedFolders.delete(fid);
+      else state.sidebar.expandedFolders.add(fid);
+      state.sidebar.folderMenuFor = null;
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
+      renderSidebar();
+    } else if (act === 'toggle') {
+      state.sidebar.folderMenuFor = state.sidebar.folderMenuFor === fid ? null : fid;
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
+      renderSidebar();
+    } else if (act === 'rename') {
+      state.sidebar.folderMenuFor = null;
+      const nameEl = header.querySelector('.folder-name');
+      const next = window.prompt('Rename folder', nameEl ? nameEl.textContent : '');
+      if (next != null && next.trim()) {
+        try { await invoke('rename_folder', { id: fid, name: next.trim() }); } catch (_) {}
+      }
+      await refreshChatList();
+    } else if (act === 'delete') {
+      state.sidebar.folderMenuFor = null;
+      if (!window.confirm('Delete this folder? Its chats move to Unfiled.')) { renderSidebar(); return; }
+      try { await invoke('delete_folder', { id: fid }); } catch (_) {}
+      await refreshChatList();
+    }
+    return;
+  }
+
   const actBtn = e.target.closest('[data-act]');
   const row = e.target.closest('.chatrow');
   if (!row) return;
@@ -1285,11 +1667,80 @@ $('chatList').addEventListener('click', async (e) => {
       const pinned = actBtn.dataset.pinned === '1';
       try { await invoke('set_chat_pinned', { id, pinned: !pinned }); } catch (_) {}
       await refreshChatList();
+    } else if (act === 'archive') {
+      const archived = actBtn.dataset.archived === '1';
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.exportMenuFor = null;
+      try { await invoke('set_chat_archived', { id, archived: !archived }); } catch (_) {}
+      await refreshChatList();
+    } else if (act === 'move') {
+      state.sidebar.moveMenuFor = state.sidebar.moveMenuFor === id ? null : id;
+      state.sidebar.folderMenuFor = null;
+      state.sidebar.exportMenuFor = null;
+      renderSidebar();
+    } else if (act === 'move-to') {
+      const raw = actBtn.dataset.folderId;
+      const folderId = raw === '' ? null : Number(raw);
+      state.sidebar.moveMenuFor = null;
+      try { await invoke('move_chat', { id, folderId }); } catch (_) {}
+      await refreshChatList();
+    } else if (act === 'export') {
+      // §7 S7-6: a tiny submenu (Markdown/JSON/Plain text), same
+      // single-open-dropdown pattern as "move to…" above.
+      state.sidebar.exportMenuFor = state.sidebar.exportMenuFor === id ? null : id;
+      state.sidebar.moveMenuFor = null;
+      state.sidebar.folderMenuFor = null;
+      renderSidebar();
+    } else if (act === 'export-to') {
+      const titleEl = row.querySelector('.chatrow-title');
+      await exportChat(id, titleEl ? titleEl.textContent : 'chat', actBtn.dataset.format);
     }
     return;
   }
   await openChat(id);
 });
+// Outside-click close for the three sidebar dropdowns (move-to / export /
+// folder menu) — same pattern as the profile menu below.
+document.addEventListener('click', (e) => {
+  if (state.sidebar.moveMenuFor == null && state.sidebar.folderMenuFor == null && state.sidebar.exportMenuFor == null) return;
+  if (e.target.closest('.movemenu-wrap') || e.target.closest('.folder-menu-wrap')) return;
+  state.sidebar.moveMenuFor = null;
+  state.sidebar.folderMenuFor = null;
+  state.sidebar.exportMenuFor = null;
+  renderSidebar();
+});
+
+// §7 S7-6: export a chat to a file the user picks via the OS save sheet —
+// no network, the data is already the user's (§7.5). `format` is the
+// export-to button's own `data-format` ('markdown'|'json'|'txt'), passed
+// straight through to `export_chat_to_file` unchanged. `dialog.save`
+// returning `null` means the user cancelled the save sheet, same shape as
+// `dialog.open` in `startBuild` above.
+const EXPORT_EXT = { markdown: 'md', json: 'json', txt: 'txt' };
+const EXPORT_FILTER_NAME = { markdown: 'Markdown', json: 'JSON', txt: 'Plain text' };
+async function exportChat(id, title, format) {
+  state.sidebar.exportMenuFor = null;
+  renderSidebar();
+  const ext = EXPORT_EXT[format] || 'txt';
+  const safeTitle = (title || 'chat').replace(/[\\/:*?"<>|]/g, '_').trim() || 'chat';
+  let path;
+  try {
+    path = await window.__TAURI__.dialog.save({
+      defaultPath: `${safeTitle}.${ext}`,
+      filters: [{ name: EXPORT_FILTER_NAME[format] || 'File', extensions: [ext] }],
+    });
+  } catch (e) {
+    showToast(String(e));
+    return;
+  }
+  if (path == null) return; // cancelled
+  try {
+    await invoke('export_chat_to_file', { id, format, path });
+    showToast('Exported to ' + path);
+  } catch (e) {
+    showToast(String(e));
+  }
+}
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
@@ -1309,6 +1760,13 @@ $('signOutBtn').addEventListener('click', async () => {
   state.chat.packPaths = [];
   state.chat.chatId = null;
   $('chatList').innerHTML = '';
+  // §7 S7-2b: the sidebar's folder/archive/search UI is per-account too —
+  // drop it here so the next sign-in (possibly a different account) starts
+  // from a clean grouped view instead of replaying this session's search
+  // query or open menus over freshly-fetched data.
+  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null, expandedFolders: new Set() };
+  clearTimeout(chatSearchDebounce);
+  $('chatSearch').value = '';
   state.signedIn = false;
   state.nick = null;
   state.device = null;

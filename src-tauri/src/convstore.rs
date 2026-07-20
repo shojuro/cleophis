@@ -130,6 +130,22 @@
 //! already-existing `chats` table of the OLD shape, so without this an
 //! existing per-account DB would error on the next `INSERT`/`SELECT` that
 //! touches either column.
+//!
+//! ## Auto-title (§7 S7-5)
+//! `chats.title_auto` (`1` = the title may still be replaced by a
+//! model-generated one; `0` = the user renamed the chat, never overwrite
+//! it again) is the guard behind [`ConvStore::auto_title_chat`]: after the
+//! first complete exchange in a NEW chat, `src/app.js` asks the local
+//! model for a concise title and calls `auto_title_chat`, which only
+//! applies it while `title_auto = 1` — a plain `WHERE title_auto = 1` on
+//! the `UPDATE`, so a user rename (which flips the flag to `0` in
+//! [`ConvStore::rename_chat`]) always wins over a late/racing auto-title
+//! by construction, with no ordering logic needed on either side.
+//! `create_chat` never sets `title_auto` explicitly — the column's
+//! `DEFAULT 1` covers every new chat — and `auto_title_chat` itself never
+//! touches the flag either way (it only ever CONSUMES the `1` state, never
+//! sets or clears it). Migrated the same defensive way as `model_id`/
+//! `adapter_ids` above.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -156,7 +172,8 @@ CREATE TABLE IF NOT EXISTS chats (
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
   mounted_packs TEXT,
   model_id TEXT NOT NULL DEFAULT '',
-  adapter_ids TEXT NOT NULL DEFAULT '[]'
+  adapter_ids TEXT NOT NULL DEFAULT '[]',
+  title_auto INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
@@ -281,17 +298,23 @@ impl ConvStore {
     }
 
     /// Defensive migration for a per-account database created before
-    /// `chats.model_id`/`chats.adapter_ids` existed — see the module doc
-    /// comment's "Inference provenance" section. `CREATE TABLE IF NOT
+    /// `chats.model_id`/`chats.adapter_ids`/`chats.title_auto` existed —
+    /// see the module doc comment's "Inference provenance" section and
+    /// (for `title_auto`) the "auto-title" section. `CREATE TABLE IF NOT
     /// EXISTS` in `SCHEMA_SQL` is a no-op against an already-existing
     /// `chats` table regardless of its column shape, so this checks
-    /// `PRAGMA table_info(chats)` for each of the two columns and
-    /// `ALTER TABLE ... ADD COLUMN`s whichever is missing. Both defaults
-    /// are plain string literals (`''`/`'[]'`), which SQLite allows on a
+    /// `PRAGMA table_info(chats)` for each of the three columns and
+    /// `ALTER TABLE ... ADD COLUMN`s whichever is missing. Every default is
+    /// a plain constant literal (`''`/`'[]'`/`1`), which SQLite allows on a
     /// `NOT NULL ADD COLUMN` (it backfills every existing row with that
     /// literal) — only a non-constant default like `CURRENT_TIMESTAMP`
     /// would be rejected there. A brand-new database (via `SCHEMA_SQL`'s
-    /// `CREATE TABLE`) already has both columns, so this is a no-op for it.
+    /// `CREATE TABLE`) already has all three columns, so this is a no-op
+    /// for it. An existing chat backfilled to `title_auto = 1` is harmless
+    /// even though it's already past its first turn — auto-title only ever
+    /// fires on a brand-new chat's first exchange (see `src/app.js`'s
+    /// `isFirstExchange`), which such a chat has long since passed, so the
+    /// backfilled `1` is never actually acted on for it.
     fn migrate_chats_columns(conn: &Connection) -> Result<(), String> {
         let mut existing = std::collections::HashSet::new();
         {
@@ -315,6 +338,13 @@ impl ConvStore {
         if !existing.contains("adapter_ids") {
             conn.execute(
                 "ALTER TABLE chats ADD COLUMN adapter_ids TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !existing.contains("title_auto") {
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1",
                 [],
             )
             .map_err(|e| e.to_string())?;
@@ -480,13 +510,17 @@ impl ConvStore {
         Ok(ChatDetail { chat, messages })
     }
 
-    /// Bumps `updated_at` (spec §7.4) and updates the fts title row.
+    /// Bumps `updated_at` (spec §7.4), updates the fts title row, and sets
+    /// `title_auto = 0` — the user has taken control of the title, so
+    /// [`ConvStore::auto_title_chat`]'s `WHERE title_auto = 1` guard must
+    /// never overwrite it again (§7 S7-5: a user rename always wins over a
+    /// late auto-title, by construction).
     pub fn rename_chat(&self, user_id: &str, id: i64, title: &str) -> Result<(), String> {
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
         let now = now_iso();
         conn.execute(
-            "UPDATE chats SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE chats SET title = ?1, updated_at = ?2, title_auto = 0 WHERE id = ?3",
             params![title, now, id],
         )
         .map_err(|e| e.to_string())?;
@@ -496,6 +530,51 @@ impl ConvStore {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Applies a model-generated title, but ONLY if the chat hasn't been
+    /// user-renamed since creation (§7 S7-5 — see the module doc comment's
+    /// "auto-title" section). Trims `title` and caps it to 80 chars
+    /// defensively — the FE (`maybeAutoTitle` in `src/app.js`) already
+    /// sanitizes/caps to ~60 chars before calling this, so this is
+    /// defense-in-depth, not the primary guard. Returns `Ok(false)`
+    /// (nothing applied) for: an empty/whitespace-only `title`; an `id`
+    /// that doesn't match any row in `user_id`'s own database (a foreign
+    /// account's id simply isn't a row here — see the module doc comment's
+    /// "Per-account isolation" section, same reasoning as every other
+    /// method, no separate owner check needed); or a chat whose
+    /// `title_auto` is already 0 (the user renamed it — `rename_chat`
+    /// cleared the flag, and this method never sets it back). The `AND
+    /// title_auto = 1` in the `UPDATE` below IS that guard — a matching
+    /// row only updates if it's still in the auto-titled state, so a
+    /// user rename that raced ahead of this call always wins. Does NOT
+    /// touch `title_auto` itself (it stays 1) — unlike `rename_chat`,
+    /// this path never claims ownership of the title.
+    pub fn auto_title_chat(&self, user_id: &str, id: i64, title: &str) -> Result<bool, String> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        let capped: String = trimmed.chars().take(80).collect();
+
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+        let now = now_iso();
+        let changed = conn
+            .execute(
+                "UPDATE chats SET title = ?1, updated_at = ?2 WHERE id = ?3 AND title_auto = 1",
+                params![capped, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        conn.execute(
+            "UPDATE chat_fts SET title = ?1 WHERE rowid = ?2",
+            params![capped, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     /// Real delete: `messages` cascade via `ON DELETE CASCADE` (`PRAGMA
@@ -643,6 +722,32 @@ impl ConvStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
+
+    // ---- Export (§7.5) -----------------------------------------------
+
+    /// Formats `id`'s chat + its messages into a single string per
+    /// `format`, deterministically — same stored data, same bytes, every
+    /// call. Goes through [`ConvStore::get_chat`] (the same
+    /// `conn_for(user_id)` path every other method here uses), so this can
+    /// only ever export the CALLER's own account's chat — see the module
+    /// doc comment's "Per-account isolation" section; there is no way to
+    /// pass another account's `id` through this and get anything back,
+    /// exactly like `get_chat` itself (a mismatched `id` is `Err("no such
+    /// chat")`, a same-numbered `id` that happens to exist in the caller's
+    /// OWN database is that caller's own row, never the other account's).
+    pub fn export_chat(
+        &self,
+        user_id: &str,
+        id: i64,
+        format: ExportFormat,
+    ) -> Result<String, String> {
+        let detail = self.get_chat(user_id, id)?;
+        Ok(match format {
+            ExportFormat::Markdown => export_markdown(&detail),
+            ExportFormat::Json => export_json(&detail)?,
+            ExportFormat::Txt => export_txt(&detail),
+        })
+    }
 }
 
 /// Sanitizes a session user id into a per-account database filename
@@ -715,6 +820,146 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
     })
 }
 
+// ---- Export formatting (§7.5) -------------------------------------------
+//
+// Free functions, not `ConvStore` methods — they're pure `ChatDetail` ->
+// `String` transforms with no I/O and nothing account-scoping-relevant left
+// to do (that already happened in `export_chat`'s `get_chat` call), so
+// there's no reason for them to carry a `&self`/`user_id`.
+
+/// `msg.role` -> the label an export turn is prefixed with — `"You"`/
+/// `"Assistant"` for the two roles every chat has today, a title-cased
+/// fallback for any other role (there is no `"system"`/tool-role message
+/// yet — `tool_calls` is unused per the module doc comment — but deriving
+/// the label from the stored value rather than a hardcoded two-arm match
+/// means an export never silently drops a future role's turns).
+fn role_label(role: &str) -> String {
+    match role {
+        "user" => "You".to_string(),
+        "assistant" => "Assistant".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "Unknown".to_string(),
+            }
+        }
+    }
+}
+
+/// One footnote line for a single stored citation object — `[n] docTitle ·
+/// sectionPath · locator`, the SAME rendering `src/app.js`'s
+/// `renderCitations` uses on-screen (§3a A4), so a Markdown export's
+/// footnotes read exactly like the citations already shown in the chat UI.
+/// Reads defensively via `Value::get`/`as_str`/`as_u64` rather than
+/// deserializing into `kpack::CitationInfo` — `kpack` isn't a dependency of
+/// this module, and this is the FRONT END's already-camelCase `citations`
+/// JSON exactly as `append_message` stored it, not a fresh `Citation` from
+/// a pack build — and skips a non-object entry or one missing `n` (`None`)
+/// rather than failing the whole export over one malformed footnote.
+fn format_citation_footnote(citation: &Value) -> Option<String> {
+    let obj = citation.as_object()?;
+    let n = obj.get("n").and_then(Value::as_u64)?;
+    let doc_title = obj.get("docTitle").and_then(Value::as_str).unwrap_or("");
+    let section_path = obj.get("sectionPath").and_then(Value::as_str).unwrap_or("");
+    let locator = obj.get("locator").and_then(Value::as_str).unwrap_or("");
+    let mut line = format!("[{n}] {doc_title}");
+    if !section_path.is_empty() {
+        line.push_str(" · ");
+        line.push_str(section_path);
+    }
+    if !locator.is_empty() {
+        line.push_str(" · ");
+        line.push_str(locator);
+    }
+    Some(line)
+}
+
+/// Markdown export (§7.5 v1 default): title, created/updated dates, then
+/// each turn as a role-labeled line with a `## {date}` header inserted
+/// whenever a message's `created_at` date (the ISO string's date portion,
+/// before the `T`) differs from the previous message's — a chat spanning
+/// several days reads like a log, a same-day chat gets exactly one header.
+/// A turn's citation footnotes are emitted directly under that turn (each
+/// message's citations are already numbered `1..n` relative to THAT
+/// message, mirroring the on-screen disclosure), so a reader never has to
+/// jump to the end of the document for a turn's sources — and because this
+/// reads straight from the stored `citations` JSON (never a live pack
+/// query), the footnotes survive a pack being renamed/rebuilt/deleted after
+/// the fact (§7.5's "citations persisted as displayed" invariant).
+fn export_markdown(detail: &ChatDetail) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", detail.chat.title));
+    out.push_str(&format!(
+        "_Created {} · Updated {}_\n\n",
+        detail.chat.created_at, detail.chat.updated_at
+    ));
+
+    let mut last_date: Option<&str> = None;
+    for msg in &detail.messages {
+        let date = msg.created_at.split('T').next().unwrap_or(&msg.created_at);
+        if last_date != Some(date) {
+            out.push_str(&format!("## {date}\n\n"));
+            last_date = Some(date);
+        }
+        out.push_str(&format!(
+            "**{}:** {}\n\n",
+            role_label(&msg.role),
+            msg.content
+        ));
+
+        if let Some(citations) = msg.citations.as_ref().and_then(Value::as_array) {
+            let footnotes: Vec<String> = citations
+                .iter()
+                .filter_map(format_citation_footnote)
+                .collect();
+            if !footnotes.is_empty() {
+                out.push_str(&footnotes.join("\n"));
+                out.push_str("\n\n");
+            }
+        }
+    }
+    out
+}
+
+/// The versioned JSON export envelope (§7.5 v1) — `ChatInfo`/`MessageInfo`
+/// already carry every column this format needs to preserve (citations,
+/// tool_calls, timestamps, model_id/adapter_ids/mounted_packs) and already
+/// serialize camelCase, so this just wraps them; no separate export-only
+/// DTO to keep in sync with the real ones. `#[serde]` default field naming
+/// (not `rename_all = "camelCase"`) is deliberate here: `export_schema` is
+/// the literal key name the round-trip/import format specifies, not a
+/// camelCase field that needs renaming.
+#[derive(Serialize)]
+struct ExportEnvelope<'a> {
+    export_schema: u32,
+    chat: &'a ChatInfo,
+    messages: &'a [MessageInfo],
+}
+
+fn export_json(detail: &ChatDetail) -> Result<String, String> {
+    let envelope = ExportEnvelope {
+        export_schema: 1,
+        chat: &detail.chat,
+        messages: &detail.messages,
+    };
+    serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())
+}
+
+/// Plain-transcript export (§7.5 v1): title, then `You: …` / `Assistant: …`
+/// lines — demo-friendly, no citations markup, no date headers (Markdown
+/// already covers that "nice to have"; this format's whole point is being
+/// the minimal one).
+fn export_txt(detail: &ChatDetail) -> String {
+    let mut out = String::new();
+    out.push_str(&detail.chat.title);
+    out.push_str("\n\n");
+    for msg in &detail.messages {
+        out.push_str(&format!("{}: {}\n\n", role_label(&msg.role), msg.content));
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderInfo {
@@ -766,6 +1011,23 @@ pub struct MessageInfo {
 pub struct ChatDetail {
     pub chat: ChatInfo,
     pub messages: Vec<MessageInfo>,
+}
+
+/// Output format for [`ConvStore::export_chat`] (§7.5). `Markdown` is the
+/// v1 default (human-readable, citations rendered as footnotes exactly the
+/// way the chat UI already shows them — see `format_citation_footnote`);
+/// `Json` is the full-fidelity, versioned round-trip/import format (every
+/// column, including `tool_calls` and the chat's inference provenance);
+/// `Txt` is a minimal plain transcript with no citation markup, for a quick
+/// paste. Not `Serialize`/`Deserialize` — it never crosses IPC itself; the
+/// `export_chat_to_file` command below maps the front end's plain
+/// `"markdown" | "json" | "txt"` string to this before calling
+/// `export_chat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Markdown,
+    Json,
+    Txt,
 }
 
 // ==== Tauri commands =====================================================
@@ -895,6 +1157,21 @@ pub async fn rename_chat(id: i64, title: String, app: AppHandle) -> Result<(), S
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
+/// §7 S7-5: called by `src/app.js`'s `maybeAutoTitle` after the first
+/// complete exchange in a new chat, with a model-generated title. Returns
+/// `false` (not an error) when nothing was applied — see
+/// [`ConvStore::auto_title_chat`] for the full guard.
+#[tauri::command]
+pub async fn auto_title_chat(id: i64, title: String, app: AppHandle) -> Result<bool, String> {
+    let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ConvStore>()
+            .auto_title_chat(&user_id, id, &title)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
 #[tauri::command]
 pub async fn delete_chat(id: i64, app: AppHandle) -> Result<(), String> {
     let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
@@ -980,6 +1257,43 @@ pub async fn search_chats(query: String, app: AppHandle) -> Result<Vec<ChatInfo>
     };
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>().search_chats(&user_id, &query)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
+/// Formats + writes `id`'s chat to `path` (the front end's OS save-dialog
+/// choice — see `src/app.js`'s export flow) in the requested `format`.
+/// Resolves the AUTHORITATIVE signed-in user id exactly like every other
+/// command in this module (never a front-end-supplied one) — signed-out is
+/// a clean `Err("Sign in to export.")`, the store is never touched.
+/// `format` is a plain string over IPC (`"markdown" | "json" | "txt"`,
+/// matching `src/app.js`'s export menu) rather than `ExportFormat` itself —
+/// a `serde`-derived enum here would ALSO accept a malformed shape like
+/// `{"Markdown": null}` from a compromised/buggy renderer, where a `match`
+/// on a plain string is exactly as strict as this command needs and matches
+/// every other command's primitive-typed IPC parameters. One command that
+/// both formats AND writes, rather than a general write-to-path primitive
+/// — the only file this can ever write is `path` (the user's own OS save
+/// choice), and the only content is `export_chat`'s own deterministic
+/// output, so no broader write capability is exposed here.
+#[tauri::command]
+pub async fn export_chat_to_file(
+    id: i64,
+    format: String,
+    path: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    let user_id = current_user_id(&app).ok_or_else(|| "Sign in to export.".to_string())?;
+    let fmt = match format.as_str() {
+        "markdown" => ExportFormat::Markdown,
+        "json" => ExportFormat::Json,
+        "txt" => ExportFormat::Txt,
+        other => return Err(format!("Unknown export format: {other}")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let content = app.state::<ConvStore>().export_chat(&user_id, id, fmt)?;
+        std::fs::write(&path, content).map_err(|e| e.to_string())
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -1365,5 +1679,375 @@ mod tests {
         assert_eq!(account_dir_segment("a/b"), None);
         assert_eq!(account_dir_segment("a\\b"), None);
         assert_eq!(account_dir_segment("a:b"), None);
+    }
+
+    /// Markdown export: title, both turns' role labels + content, and the
+    /// citation footnote (docTitle + locator) for the message that carries
+    /// citations — the A4 `CitationInfo` shape, stored verbatim by
+    /// `append_message`.
+    #[test]
+    fn t11_export_chat_markdown_includes_title_turns_and_citation_footnote() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Export me", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "What is vitamin K?", None, None)
+            .unwrap();
+        let citations = json!([{
+            "n": 1, "packId": "p1", "chunkId": 3,
+            "docTitle": "Hematology 101", "sectionPath": "Ch. 4", "locator": "p.12"
+        }]);
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "It helps blood clot.",
+                Some(citations),
+                None,
+            )
+            .unwrap();
+
+        let md = store
+            .export_chat(USER, chat.id, ExportFormat::Markdown)
+            .unwrap();
+        assert!(md.contains("Export me"), "title must appear");
+        assert!(md.contains("**You:** What is vitamin K?"));
+        assert!(md.contains("**Assistant:** It helps blood clot."));
+        assert!(
+            md.contains("Hematology 101") && md.contains("p.12"),
+            "the citation footnote (docTitle/locator) must appear:\n{md}"
+        );
+    }
+
+    /// JSON export: `export_schema: 1`, both messages (with citations
+    /// intact) and the chat's `model_id` all round-trip.
+    #[test]
+    fn t12_export_chat_json_round_trips_schema_messages_citations_and_model_id() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "JSON export", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "hi", None, None)
+            .unwrap();
+        let citations = json!([{"n": 1, "docTitle": "Doc"}]);
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "hello",
+                Some(citations.clone()),
+                None,
+            )
+            .unwrap();
+
+        let raw = store.export_chat(USER, chat.id, ExportFormat::Json).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["export_schema"], 1);
+        assert_eq!(parsed["chat"]["modelId"], "hero-llama");
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"], "hi");
+        assert_eq!(messages[1]["content"], "hello");
+        assert_eq!(messages[1]["citations"], citations);
+    }
+
+    /// TXT export: a plain transcript (title + `You:`/`Assistant:` lines),
+    /// no citation markup even when the message carries citations.
+    #[test]
+    fn t13_export_chat_txt_is_plain_transcript_without_citation_markup() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Txt export", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "hi", None, None)
+            .unwrap();
+        let citations = json!([{"n": 1, "docTitle": "Doc", "locator": "p.1"}]);
+        store
+            .append_message(USER, chat.id, "assistant", "hello", Some(citations), None)
+            .unwrap();
+
+        let txt = store.export_chat(USER, chat.id, ExportFormat::Txt).unwrap();
+        assert!(txt.contains("Txt export"));
+        assert!(txt.contains("You: hi"));
+        assert!(txt.contains("Assistant: hello"));
+        assert!(!txt.contains("Doc"), "TXT must carry no citation markup");
+        assert!(!txt.contains("p.1"), "TXT must carry no citation markup");
+    }
+
+    /// Same chat -> identical bytes across two calls, for every format
+    /// (§7.5's determinism requirement).
+    #[test]
+    fn t14_export_chat_is_deterministic_across_calls() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Deterministic", None, None, "hero-llama", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "one", None, None)
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "assistant", "two", None, None)
+            .unwrap();
+
+        for format in [ExportFormat::Markdown, ExportFormat::Json, ExportFormat::Txt] {
+            let a = store.export_chat(USER, chat.id, format).unwrap();
+            let b = store.export_chat(USER, chat.id, format).unwrap();
+            assert_eq!(a, b, "{format:?} export must be byte-identical across calls");
+        }
+    }
+
+    /// Account-scoping (mirrors `t9`): B cannot export A's chat.
+    #[test]
+    fn t15_export_chat_is_account_scoped_b_cannot_export_as_chat() {
+        let store = ConvStore::new_in_memory();
+        let a_chat = store
+            .create_chat(
+                "acct-a",
+                "A's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store
+            .append_message(
+                "acct-a",
+                a_chat.id,
+                "user",
+                "a_secret_marker_only_a_should_see",
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .create_chat(
+                "acct-b",
+                "B's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        // B's own database very likely also has an id-1 chat (its own first
+        // chat) — see t9's doc comment on why that numeric coincidence is
+        // expected and harmless. Either B gets a hard Err, or (since it's
+        // B's own database) B's own export back — A's content must never
+        // appear either way.
+        match store.export_chat("acct-b", a_chat.id, ExportFormat::Markdown) {
+            Err(_) => {}
+            Ok(content) => {
+                assert!(
+                    !content.contains("a_secret_marker_only_a_should_see"),
+                    "B's export must never contain A's message content"
+                );
+                assert!(
+                    !content.contains("A's private chat"),
+                    "B's export must never contain A's chat title"
+                );
+            }
+        }
+    }
+
+    /// Reads `chats.title_auto` directly for a given chat. There's no
+    /// public getter for it — the FE never sees this column, only its
+    /// effect (see the module doc comment's "Auto-title" section) — so the
+    /// tests below that assert on it go straight at the per-account
+    /// connection, the same way `t8`/`t21` build a raw pre-migration
+    /// `chats` table.
+    fn title_auto_of(store: &ConvStore, user_id: &str, id: i64) -> i64 {
+        let conn = store.conn_for(user_id).unwrap();
+        let conn = conn.lock().unwrap();
+        conn.query_row(
+            "SELECT title_auto FROM chats WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// create_chat: a new chat's `title_auto` starts at 1 (eligible for
+    /// auto-titling) — via `SCHEMA_SQL`'s `DEFAULT 1`, not an explicit
+    /// INSERT column.
+    #[test]
+    fn t16_create_chat_starts_title_auto_1() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "New chat", None, None, "hero-llama", vec![])
+            .unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 1);
+    }
+
+    /// auto_title_chat on a fresh (never-renamed) chat applies the new
+    /// title, and `chat_fts` stays in sync — a search for a word in the
+    /// NEW title finds the chat.
+    #[test]
+    fn t17_auto_title_chat_applies_on_a_fresh_chat_and_syncs_fts() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(
+                USER,
+                "what is the difference betw",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "A Good Title")
+            .unwrap();
+        assert!(applied);
+
+        let updated = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(updated.title, "A Good Title");
+
+        let hits = store.search_chats(USER, "Good").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, chat.id);
+    }
+
+    /// A user rename always wins: `rename_chat` clears `title_auto` to 0,
+    /// so a later `auto_title_chat` call is a no-op — `Ok(false)`, the
+    /// user's title unchanged.
+    #[test]
+    fn t18_auto_title_chat_never_overwrites_a_user_rename() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(
+                USER,
+                "first line of the message",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store.rename_chat(USER, chat.id, "User Name").unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 0);
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "Model Title")
+            .unwrap();
+        assert!(!applied);
+
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "User Name");
+    }
+
+    /// An empty/whitespace-only title is a no-op — `Ok(false)`, title
+    /// unchanged (the FE should never send one; this is defense-in-depth).
+    #[test]
+    fn t19_auto_title_chat_rejects_empty_or_whitespace_title() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Original", None, None, "hero-llama", vec![])
+            .unwrap();
+
+        assert!(!store.auto_title_chat(USER, chat.id, "").unwrap());
+        assert!(!store.auto_title_chat(USER, chat.id, "   \n\t  ").unwrap());
+
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "Original");
+    }
+
+    /// Account-scoping (mirrors `t9`/`t15`): B cannot auto-title A's chat —
+    /// a foreign id simply matches no row in B's own database. Per
+    /// `t9`'s doc comment, `a_chat.id` is very likely ALSO B's own first
+    /// chat id (each account's ids start their own sequence at 1), so
+    /// `auto_title_chat("acct-b", a_chat.id, ..)` legitimately returning
+    /// `Ok(true)` is expected — that's B retitling B's OWN row at that
+    /// number, never A's. The actual security property, proven below
+    /// regardless of the return value: A's chat title must never change.
+    #[test]
+    fn t20_auto_title_chat_is_account_scoped_b_cannot_retitle_as_chat() {
+        let store = ConvStore::new_in_memory();
+        let a_chat = store
+            .create_chat(
+                "acct-a",
+                "A's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store
+            .create_chat(
+                "acct-b",
+                "B's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        let _ = store
+            .auto_title_chat("acct-b", a_chat.id, "Hijacked title")
+            .unwrap();
+
+        let a_after = store.get_chat("acct-a", a_chat.id).unwrap().chat;
+        assert_eq!(
+            a_after.title, "A's private chat",
+            "A's title must be unchanged no matter what B's call returned"
+        );
+    }
+
+    /// Defensive migration (mirrors `t8`): a `chats` table created with the
+    /// pre-S7-5 columns (i.e. `model_id`/`adapter_ids` already present, but
+    /// no `title_auto`) gains `title_auto` (default 1) via
+    /// `migrate_chats_columns`, and `auto_title_chat` then works on its
+    /// rows. Exercises the real open path (`ConvStore::new` + a real
+    /// directory), not just `migrate_chats_columns` in isolation.
+    #[test]
+    fn t21_migrates_an_existing_per_account_db_missing_title_auto() {
+        let dir = std::env::temp_dir().join(format!(
+            "cleophis-convstore-migrate-title-auto-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join(format!("{USER}.db"));
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE chats (
+                    id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
+                    title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+                    mounted_packs TEXT,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    adapter_ids TEXT NOT NULL DEFAULT '[]'
+                );",
+            )
+            .unwrap();
+        }
+
+        let store = ConvStore::new(dir.clone());
+        let chat = store
+            .create_chat(USER, "Migrated", None, None, "hero-llama", vec![])
+            .unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 1);
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "Post-migration title")
+            .unwrap();
+        assert!(applied);
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "Post-migration title");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

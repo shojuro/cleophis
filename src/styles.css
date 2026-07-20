@@ -151,19 +151,53 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 
 /* ---- chat sidebar (§7 S7-2: the conversation rail) ---- */
 #chatSidebar{width:260px;flex:none;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--line);overflow:hidden}
-#newChatBtn{margin:14px 14px 8px;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface2);
+.sidebar-toprow{display:flex;gap:8px;margin:14px 14px 8px}
+#newChatBtn{flex:1;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface2);
   color:var(--text);font-size:13.5px;font-weight:600;text-align:left}
 #newChatBtn:hover{border-color:var(--faint)}
+#newFolderBtn{flex:none;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:transparent;
+  color:var(--muted);font-size:13.5px;font-weight:600}
+#newFolderBtn:hover{color:var(--text);border-color:var(--faint)}
+.sidebar-search{margin:0 14px 10px}
+.sidebar-search svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--faint)}
+#chatSearch{width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);
+  border-radius:9px;padding:8px 10px 8px 30px;font-size:13px;outline:none}
+#chatSearch:focus{border-color:var(--teal)}
 #chatList{flex:1;overflow-y:auto;padding:4px 8px 12px;display:flex;flex-direction:column;gap:2px}
+#chatSidebarFooter{flex:none;padding:8px 14px;border-top:1px solid var(--line)}
+.sidebar-footlink{background:none;border:0;color:var(--muted);font-size:12.5px;padding:4px 2px}
+.sidebar-footlink:hover{color:var(--text);text-decoration:underline}
 .chatlist-empty{color:var(--muted);font-size:13px;padding:12px 8px}
 .chatrow{display:flex;align-items:center;gap:6px;padding:9px 10px;border-radius:9px;cursor:pointer;font-size:13.5px;border:1px solid transparent}
 .chatrow:hover{background:var(--surface2)}
 .chatrow.active{background:var(--surface2);border-color:var(--line)}
+.chatrow.nested{margin-left:12px;width:calc(100% - 12px)}
+.chatrow.is-archived .chatrow-title{color:var(--muted)}
 .chatrow-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .chatrow-actions{display:none;gap:2px;flex:none}
 .chatrow:hover .chatrow-actions,.chatrow.active .chatrow-actions{display:flex}
 .chatrow-act{background:none;border:0;color:var(--muted);font-size:12px;padding:3px 6px;border-radius:6px;line-height:1}
 .chatrow-act:hover{color:var(--text);background:var(--surface)}
+
+/* ---- folder sections + move/folder dropdowns (§7 S7-2b) ---- */
+.folder-header{display:flex;align-items:center;gap:4px;padding:10px 10px 4px;margin-top:6px;position:relative}
+.folder-header:first-child{margin-top:0}
+.folder-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:11.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--faint)}
+.folder-menu-wrap{position:relative;flex:none}
+.folder-empty{color:var(--faint);font-size:12px;padding:2px 10px 8px 22px}
+.folder-header.archived-section .folder-name{color:var(--amber)}
+.folder-header.collapsed,.folder-header.expanded{cursor:pointer}
+.folder-chevron{flex:none;width:12px;text-align:center;font-size:10px;color:var(--faint);line-height:1}
+.folder-count{flex:none;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.movemenu-wrap{position:relative}
+.movemenu{display:none;position:absolute;top:calc(100% + 4px);right:0;min-width:140px;z-index:20;
+  background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:6px;
+  box-shadow:0 10px 24px rgba(0,0,0,.4);max-height:220px;overflow-y:auto}
+.movemenu.show{display:block}
+.movemenu-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);
+  font-size:12.5px;padding:7px 9px;border-radius:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.movemenu-item:hover{background:var(--surface)}
 
 /* ---- chat ---- */
 .chatbar{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line);background:rgba(14,18,24,.9)}
@@ -194,9 +228,15 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .citetoggle:hover{color:var(--text)}
 .citelist{display:none;flex-direction:column;gap:4px}
 .citations.expanded .citelist{display:flex}
-.cite{font-size:12.5px;color:var(--muted)}
+.cite{font-size:12.5px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
+.cite-pack{font-size:11px;color:var(--faint)}
 .retrychip{align-self:flex-start;margin-left:24px;background:none;border:1px dashed var(--heavy);color:var(--heavy);
   border-radius:999px;padding:5px 14px;font-size:12.5px}
+/* §7 S7-4: context-window boundary — a system hint, not a message, so it
+   sits low-contrast between bubbles rather than reading as a bubble. */
+.ctx-divider{display:flex;align-items:center;justify-content:center;gap:10px;
+  margin:2px 24px;color:var(--faint);font-size:11.5px;letter-spacing:.01em}
+.ctx-divider::before,.ctx-divider::after{content:"";flex:1;max-width:140px;height:1px;background:var(--line)}
 .composer{display:flex;gap:10px;padding:16px 24px;border-top:1px solid var(--line);background:rgba(14,18,24,.9)}
 #chatInput{flex:1;background:var(--surface);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px 16px;font-size:14.5px;outline:none}
 #chatInput:focus{border-color:var(--teal)}
