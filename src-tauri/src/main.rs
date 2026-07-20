@@ -148,6 +148,7 @@ fn main() {
             convstore::list_chats,
             convstore::get_chat,
             convstore::rename_chat,
+            convstore::auto_title_chat,
             convstore::delete_chat,
             convstore::set_chat_pinned,
             convstore::set_chat_archived,

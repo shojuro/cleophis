@@ -130,6 +130,22 @@
 //! already-existing `chats` table of the OLD shape, so without this an
 //! existing per-account DB would error on the next `INSERT`/`SELECT` that
 //! touches either column.
+//!
+//! ## Auto-title (§7 S7-5)
+//! `chats.title_auto` (`1` = the title may still be replaced by a
+//! model-generated one; `0` = the user renamed the chat, never overwrite
+//! it again) is the guard behind [`ConvStore::auto_title_chat`]: after the
+//! first complete exchange in a NEW chat, `src/app.js` asks the local
+//! model for a concise title and calls `auto_title_chat`, which only
+//! applies it while `title_auto = 1` — a plain `WHERE title_auto = 1` on
+//! the `UPDATE`, so a user rename (which flips the flag to `0` in
+//! [`ConvStore::rename_chat`]) always wins over a late/racing auto-title
+//! by construction, with no ordering logic needed on either side.
+//! `create_chat` never sets `title_auto` explicitly — the column's
+//! `DEFAULT 1` covers every new chat — and `auto_title_chat` itself never
+//! touches the flag either way (it only ever CONSUMES the `1` state, never
+//! sets or clears it). Migrated the same defensive way as `model_id`/
+//! `adapter_ids` above.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -156,7 +172,8 @@ CREATE TABLE IF NOT EXISTS chats (
   pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
   mounted_packs TEXT,
   model_id TEXT NOT NULL DEFAULT '',
-  adapter_ids TEXT NOT NULL DEFAULT '[]'
+  adapter_ids TEXT NOT NULL DEFAULT '[]',
+  title_auto INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
@@ -281,17 +298,23 @@ impl ConvStore {
     }
 
     /// Defensive migration for a per-account database created before
-    /// `chats.model_id`/`chats.adapter_ids` existed — see the module doc
-    /// comment's "Inference provenance" section. `CREATE TABLE IF NOT
+    /// `chats.model_id`/`chats.adapter_ids`/`chats.title_auto` existed —
+    /// see the module doc comment's "Inference provenance" section and
+    /// (for `title_auto`) the "auto-title" section. `CREATE TABLE IF NOT
     /// EXISTS` in `SCHEMA_SQL` is a no-op against an already-existing
     /// `chats` table regardless of its column shape, so this checks
-    /// `PRAGMA table_info(chats)` for each of the two columns and
-    /// `ALTER TABLE ... ADD COLUMN`s whichever is missing. Both defaults
-    /// are plain string literals (`''`/`'[]'`), which SQLite allows on a
+    /// `PRAGMA table_info(chats)` for each of the three columns and
+    /// `ALTER TABLE ... ADD COLUMN`s whichever is missing. Every default is
+    /// a plain constant literal (`''`/`'[]'`/`1`), which SQLite allows on a
     /// `NOT NULL ADD COLUMN` (it backfills every existing row with that
     /// literal) — only a non-constant default like `CURRENT_TIMESTAMP`
     /// would be rejected there. A brand-new database (via `SCHEMA_SQL`'s
-    /// `CREATE TABLE`) already has both columns, so this is a no-op for it.
+    /// `CREATE TABLE`) already has all three columns, so this is a no-op
+    /// for it. An existing chat backfilled to `title_auto = 1` is harmless
+    /// even though it's already past its first turn — auto-title only ever
+    /// fires on a brand-new chat's first exchange (see `src/app.js`'s
+    /// `isFirstExchange`), which such a chat has long since passed, so the
+    /// backfilled `1` is never actually acted on for it.
     fn migrate_chats_columns(conn: &Connection) -> Result<(), String> {
         let mut existing = std::collections::HashSet::new();
         {
@@ -315,6 +338,13 @@ impl ConvStore {
         if !existing.contains("adapter_ids") {
             conn.execute(
                 "ALTER TABLE chats ADD COLUMN adapter_ids TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !existing.contains("title_auto") {
+            conn.execute(
+                "ALTER TABLE chats ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1",
                 [],
             )
             .map_err(|e| e.to_string())?;
@@ -480,13 +510,17 @@ impl ConvStore {
         Ok(ChatDetail { chat, messages })
     }
 
-    /// Bumps `updated_at` (spec §7.4) and updates the fts title row.
+    /// Bumps `updated_at` (spec §7.4), updates the fts title row, and sets
+    /// `title_auto = 0` — the user has taken control of the title, so
+    /// [`ConvStore::auto_title_chat`]'s `WHERE title_auto = 1` guard must
+    /// never overwrite it again (§7 S7-5: a user rename always wins over a
+    /// late auto-title, by construction).
     pub fn rename_chat(&self, user_id: &str, id: i64, title: &str) -> Result<(), String> {
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
         let now = now_iso();
         conn.execute(
-            "UPDATE chats SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE chats SET title = ?1, updated_at = ?2, title_auto = 0 WHERE id = ?3",
             params![title, now, id],
         )
         .map_err(|e| e.to_string())?;
@@ -496,6 +530,51 @@ impl ConvStore {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Applies a model-generated title, but ONLY if the chat hasn't been
+    /// user-renamed since creation (§7 S7-5 — see the module doc comment's
+    /// "auto-title" section). Trims `title` and caps it to 80 chars
+    /// defensively — the FE (`maybeAutoTitle` in `src/app.js`) already
+    /// sanitizes/caps to ~60 chars before calling this, so this is
+    /// defense-in-depth, not the primary guard. Returns `Ok(false)`
+    /// (nothing applied) for: an empty/whitespace-only `title`; an `id`
+    /// that doesn't match any row in `user_id`'s own database (a foreign
+    /// account's id simply isn't a row here — see the module doc comment's
+    /// "Per-account isolation" section, same reasoning as every other
+    /// method, no separate owner check needed); or a chat whose
+    /// `title_auto` is already 0 (the user renamed it — `rename_chat`
+    /// cleared the flag, and this method never sets it back). The `AND
+    /// title_auto = 1` in the `UPDATE` below IS that guard — a matching
+    /// row only updates if it's still in the auto-titled state, so a
+    /// user rename that raced ahead of this call always wins. Does NOT
+    /// touch `title_auto` itself (it stays 1) — unlike `rename_chat`,
+    /// this path never claims ownership of the title.
+    pub fn auto_title_chat(&self, user_id: &str, id: i64, title: &str) -> Result<bool, String> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        let capped: String = trimmed.chars().take(80).collect();
+
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+        let now = now_iso();
+        let changed = conn
+            .execute(
+                "UPDATE chats SET title = ?1, updated_at = ?2 WHERE id = ?3 AND title_auto = 1",
+                params![capped, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        conn.execute(
+            "UPDATE chat_fts SET title = ?1 WHERE rowid = ?2",
+            params![capped, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     /// Real delete: `messages` cascade via `ON DELETE CASCADE` (`PRAGMA
@@ -1073,6 +1152,21 @@ pub async fn rename_chat(id: i64, title: String, app: AppHandle) -> Result<(), S
     let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>().rename_chat(&user_id, id, &title)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
+/// §7 S7-5: called by `src/app.js`'s `maybeAutoTitle` after the first
+/// complete exchange in a new chat, with a model-generated title. Returns
+/// `false` (not an error) when nothing was applied — see
+/// [`ConvStore::auto_title_chat`] for the full guard.
+#[tauri::command]
+pub async fn auto_title_chat(id: i64, title: String, app: AppHandle) -> Result<bool, String> {
+    let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ConvStore>()
+            .auto_title_chat(&user_id, id, &title)
     })
     .await
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
@@ -1760,5 +1854,200 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Reads `chats.title_auto` directly for a given chat. There's no
+    /// public getter for it — the FE never sees this column, only its
+    /// effect (see the module doc comment's "Auto-title" section) — so the
+    /// tests below that assert on it go straight at the per-account
+    /// connection, the same way `t8`/`t21` build a raw pre-migration
+    /// `chats` table.
+    fn title_auto_of(store: &ConvStore, user_id: &str, id: i64) -> i64 {
+        let conn = store.conn_for(user_id).unwrap();
+        let conn = conn.lock().unwrap();
+        conn.query_row(
+            "SELECT title_auto FROM chats WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// create_chat: a new chat's `title_auto` starts at 1 (eligible for
+    /// auto-titling) — via `SCHEMA_SQL`'s `DEFAULT 1`, not an explicit
+    /// INSERT column.
+    #[test]
+    fn t16_create_chat_starts_title_auto_1() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "New chat", None, None, "hero-llama", vec![])
+            .unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 1);
+    }
+
+    /// auto_title_chat on a fresh (never-renamed) chat applies the new
+    /// title, and `chat_fts` stays in sync — a search for a word in the
+    /// NEW title finds the chat.
+    #[test]
+    fn t17_auto_title_chat_applies_on_a_fresh_chat_and_syncs_fts() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(
+                USER,
+                "what is the difference betw",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "A Good Title")
+            .unwrap();
+        assert!(applied);
+
+        let updated = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(updated.title, "A Good Title");
+
+        let hits = store.search_chats(USER, "Good").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, chat.id);
+    }
+
+    /// A user rename always wins: `rename_chat` clears `title_auto` to 0,
+    /// so a later `auto_title_chat` call is a no-op — `Ok(false)`, the
+    /// user's title unchanged.
+    #[test]
+    fn t18_auto_title_chat_never_overwrites_a_user_rename() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(
+                USER,
+                "first line of the message",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store.rename_chat(USER, chat.id, "User Name").unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 0);
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "Model Title")
+            .unwrap();
+        assert!(!applied);
+
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "User Name");
+    }
+
+    /// An empty/whitespace-only title is a no-op — `Ok(false)`, title
+    /// unchanged (the FE should never send one; this is defense-in-depth).
+    #[test]
+    fn t19_auto_title_chat_rejects_empty_or_whitespace_title() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Original", None, None, "hero-llama", vec![])
+            .unwrap();
+
+        assert!(!store.auto_title_chat(USER, chat.id, "").unwrap());
+        assert!(!store.auto_title_chat(USER, chat.id, "   \n\t  ").unwrap());
+
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "Original");
+    }
+
+    /// Account-scoping (mirrors `t9`/`t15`): B cannot auto-title A's chat —
+    /// a foreign id simply matches no row in B's own database. Per
+    /// `t9`'s doc comment, `a_chat.id` is very likely ALSO B's own first
+    /// chat id (each account's ids start their own sequence at 1), so
+    /// `auto_title_chat("acct-b", a_chat.id, ..)` legitimately returning
+    /// `Ok(true)` is expected — that's B retitling B's OWN row at that
+    /// number, never A's. The actual security property, proven below
+    /// regardless of the return value: A's chat title must never change.
+    #[test]
+    fn t20_auto_title_chat_is_account_scoped_b_cannot_retitle_as_chat() {
+        let store = ConvStore::new_in_memory();
+        let a_chat = store
+            .create_chat(
+                "acct-a",
+                "A's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+        store
+            .create_chat(
+                "acct-b",
+                "B's private chat",
+                None,
+                None,
+                "hero-llama",
+                vec![],
+            )
+            .unwrap();
+
+        let _ = store
+            .auto_title_chat("acct-b", a_chat.id, "Hijacked title")
+            .unwrap();
+
+        let a_after = store.get_chat("acct-a", a_chat.id).unwrap().chat;
+        assert_eq!(
+            a_after.title, "A's private chat",
+            "A's title must be unchanged no matter what B's call returned"
+        );
+    }
+
+    /// Defensive migration (mirrors `t8`): a `chats` table created with the
+    /// pre-S7-5 columns (i.e. `model_id`/`adapter_ids` already present, but
+    /// no `title_auto`) gains `title_auto` (default 1) via
+    /// `migrate_chats_columns`, and `auto_title_chat` then works on its
+    /// rows. Exercises the real open path (`ConvStore::new` + a real
+    /// directory), not just `migrate_chats_columns` in isolation.
+    #[test]
+    fn t21_migrates_an_existing_per_account_db_missing_title_auto() {
+        let dir = std::env::temp_dir().join(format!(
+            "cleophis-convstore-migrate-title-auto-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join(format!("{USER}.db"));
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE chats (
+                    id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
+                    title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+                    mounted_packs TEXT,
+                    model_id TEXT NOT NULL DEFAULT '',
+                    adapter_ids TEXT NOT NULL DEFAULT '[]'
+                );",
+            )
+            .unwrap();
+        }
+
+        let store = ConvStore::new(dir.clone());
+        let chat = store
+            .create_chat(USER, "Migrated", None, None, "hero-llama", vec![])
+            .unwrap();
+        assert_eq!(title_auto_of(&store, USER, chat.id), 1);
+
+        let applied = store
+            .auto_title_chat(USER, chat.id, "Post-migration title")
+            .unwrap();
+        assert!(applied);
+        let after = store.get_chat(USER, chat.id).unwrap().chat;
+        assert_eq!(after.title, "Post-migration title");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

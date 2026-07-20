@@ -945,6 +945,17 @@ async function sendCompletion(userText) {
   $('sendBtn').hidden = true; $('stopBtn').hidden = false;
   state.chat.aborter = new AbortController();
 
+  // §7 S7-5: detect the first exchange SYNCHRONOUSLY (before any await
+  // below) — state.chat.messages is this (the ACTIVE) chat's transcript,
+  // and the just-pushed user message is present with no assistant reply
+  // for this turn yet, so `.some(assistant)` is false ONLY on the very
+  // first exchange. `userText == null` (a retry chip replaying an
+  // already-pushed turn) is never treated as a first exchange. The
+  // captured `userText` (the source for the title call) travels with this
+  // turn via `finishStream`'s `autoTitle` param, same as `turnChatId`.
+  const isFirstExchange = userText != null && !state.chat.messages.some((msg) => msg.role === 'assistant');
+  const autoTitle = isFirstExchange ? { source: userText } : null;
+
   const m = state.chat.model;
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
   const bubble = appendBubble('assistant', '');
@@ -1057,6 +1068,10 @@ async function sendCompletion(userText) {
           pill.hidden = false;
           pill.textContent = 'No evidence in your packs';
         }
+        // §7 S7-5: this branch returns without calling finishStream, so a
+        // no-evidence first turn never triggers auto-titling — the
+        // first-line title stands. Acceptable v1: a refusal has nothing
+        // worth summarizing into a title anyway.
         return; // no model call — pulseCost() intentionally skipped, no inference ran
       }
       // grounded: swap this turn's system message for the assembled
@@ -1102,7 +1117,7 @@ async function sendCompletion(userText) {
         buf = buf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
+        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
         try {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
@@ -1113,9 +1128,9 @@ async function sendCompletion(userText) {
         } catch (_) { /* partial line — ignored */ }
       }
     }
-    finishStream(bubble, acc, groundedCitations, turnChatId);
+    finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -1140,7 +1155,10 @@ async function sendCompletion(userText) {
 // the sendCompletion comment). Synchronous top to bottom: the shared
 // composer state (streaming/Send/Stop/pulseCost) always restores
 // immediately; the DB write is fire-and-forget and never gates it.
-function finishStream(bubble, acc, citations, turnChatId) {
+// `autoTitle` (§7 S7-5) is `{ source: userText }` on a first exchange, or
+// null — also fire-and-forget, threaded through the same way as
+// `turnChatId` so a mid-stream chat switch still titles the RIGHT chat.
+function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
   // Only touch the live DOM/in-memory transcript if this turn's chat is
   // STILL the active one — the user may have switched chats mid-stream
@@ -1179,6 +1197,64 @@ function finishStream(bubble, acc, citations, turnChatId) {
       content: acc,
       citations: citations && citations.length ? citations : null,
     }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  }
+  // §7 S7-5: fire-and-forget the auto-title generation for this turn — do
+  // NOT await it (it must never gate the composer restore above, which
+  // already ran). turnChatId-scoped like the persist above, so a
+  // mid-stream chat switch still titles the right chat.
+  if (acc && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, acc);
+}
+
+// §7 S7-5: after the first complete exchange in a NEW chat, ask the local
+// model for a concise 3–6 word title and apply it — unless the user has
+// already renamed the chat (auto_title_chat's title_auto guard handles
+// that server-side; this function never has to know). Self-contained and
+// never throws into its caller (finishStream calls it fire-and-forget):
+// every failure mode here (engine not ready, timeout, bad response, IPC
+// error) just leaves the first-line title in place.
+async function maybeAutoTitle(chatId, userText, assistantText) {
+  if (!state.engine?.port || state.engine.status !== 'Ready') return;
+  try {
+    const aborter = new AbortController();
+    const timer = setTimeout(() => aborter.abort(), 10000);
+    let res;
+    try {
+      res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: aborter.signal,
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: 'You write very short chat titles. Reply with ONLY a 3–6 word title for the conversation. No quotes, no trailing punctuation, no preamble, no "Title:".' },
+            { role: 'user', content: `User: ${userText.slice(0, 500)}\nAssistant: ${assistantText.slice(0, 500)}\n\nTitle:` },
+          ],
+          stream: false,
+          max_tokens: 24,
+          temperature: 0.3,
+          cache_prompt: false,
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw) return;
+    // Sanitize: first line only, strip an echoed "Title:" prefix, strip
+    // surrounding quotes/backticks/asterisks, collapse whitespace, trim,
+    // strip trailing punctuation, cap length.
+    let title = raw.split('\n')[0];
+    title = title.replace(/^\s*title\s*:\s*/i, '');
+    title = title.replace(/^[\s"'`*]+|[\s"'`*]+$/g, '');
+    title = title.replace(/\s+/g, ' ').trim();
+    title = title.replace(/[.,:;]+$/, '').trim();
+    title = title.slice(0, 60);
+    if (!title) return; // keep the first-line title
+    const applied = await invoke('auto_title_chat', { id: chatId, title });
+    if (applied === true) refreshChatList(); // sidebar row + active-row highlight update
+  } catch (_) {
+    // Network/abort/parse failure — the first-line title stands, invisibly.
   }
 }
 
