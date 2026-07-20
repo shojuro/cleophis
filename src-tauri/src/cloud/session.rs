@@ -7,7 +7,6 @@ use crate::cloud::auth;
 use crate::cloud::error::CloudError;
 use crate::cloud::rest;
 use crate::cloud::store::{self, Entitlement};
-use crate::cloud::strength;
 use crate::cloud::verifier;
 use crate::hardware;
 
@@ -757,14 +756,18 @@ impl Cloud {
     /// session leaves any existing verifier untouched rather than trying to
     /// re-enroll.
     ///
-    /// `check_strength` is a DEFENSE-IN-DEPTH backstop, not the primary
-    /// gate — the FE/`check_password_strength` command (Task 3/6) already
-    /// blocks a weak password from ever reaching `sign_up`. This exists so
-    /// a weak password can NEVER become a locally-stored (offline,
-    /// unrate-limited) verifier even if that gate is bypassed or absent —
-    /// e.g. `sign_in` with an old password predating the gate's rollout is
-    /// simply never enrolled if it's weak, rather than being upgraded into
-    /// an offline attack surface.
+    /// Password strength is enforced where the password is CHOSEN — the FE
+    /// strength gate at sign-up (Task 3/7). Enrollment itself does NOT
+    /// re-gate: any password that just authenticated ONLINE is enrolled,
+    /// including an existing/old one predating the strength policy. Refusing
+    /// to enroll a weak password here would not make the account stronger
+    /// (there is no change-password flow) — it would only bar that account
+    /// from offline sign-in entirely, which is exactly what a user hit.
+    /// A weak password's verifier is no more exposed than the account's
+    /// already-weak online password or its plaintext local packs — both
+    /// need device + OS access — the tradeoff the spec's threat model
+    /// already accepts (Argon2id slows each guess; strong passwords are
+    /// nudged at sign-up, not retrofitted here).
     ///
     /// Degrades gracefully: every failure here is logged and swallowed,
     /// same contract as `write_cache_best_effort` — enrollment must NEVER
@@ -777,12 +780,6 @@ impl Cloud {
         password: &str,
         entitlements: &[Entitlement],
     ) {
-        let strength_result = strength::check_strength(password, &[email, nickname]);
-        if !strength_result.ok {
-            eprintln!("cloud: skipping offline-auth enrollment — password failed the strength gate");
-            return;
-        }
-
         let stored_verifier = match verifier::derive_verifier(password) {
             Ok(v) => v,
             Err(e) => {
@@ -2484,9 +2481,8 @@ mod tests {
 
     // OA4-1. sign_in's online-success path enrolls a verifier + auth-cache
     // entry: same 3-response mock shape as Remember1-3 (refresh -> profile
-    // -> entitlements), but the password used is strong enough to pass
-    // `check_strength`'s gate (the strength.rs `strong_passphrase_passes`
-    // fixture) — a weak one would be silently skipped by design (OA4-3).
+    // -> entitlements). Enrollment does not gate on password strength (that
+    // lives at sign-up) — any online-authenticated password is enrolled.
     #[test]
     fn sign_in_online_success_enrolls_verifier_and_auth_cache() {
         let _g = lock();
