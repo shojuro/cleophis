@@ -811,6 +811,37 @@ async function newChat() {
 }
 
 /* ---------------- chat ---------------- */
+
+// §7 S7-4: fit each request to n_ctx. Mirror the engine: server runs with
+// `-c 4096` (inference.rs) and each request reserves max_tokens for the
+// reply. We keep the most-recent messages that fit the remaining budget so
+// a long chat never overflows n_ctx (which would make llama.cpp
+// context-shift/truncate unpredictably — silent quality loss or errors).
+const N_CTX = 4096;         // must match inference.rs `-c`
+const REPLY_RESERVE = 512;  // must match the request's max_tokens
+const CTX_SAFETY = 128;     // headroom for tokenizer estimate error + framing
+// Deliberately conservative (~3.5 chars/token OVER-estimates tokens → we
+// under-fill and stay under n_ctx rather than risk overflow).
+function estTokens(s) { return Math.ceil((s ? s.length : 0) / 3.5) + 4; /* +4 ≈ role framing */ }
+
+// Returns the most-recent contiguous suffix of `messages` that fits the
+// budget left after the fixed preamble (system + greeting) and the reply
+// reserve, plus how many older messages were dropped. Always keeps at
+// least the final message (the current user turn) even if it alone is huge
+// (degenerate — the engine will truncate that one; extremely rare). Pure —
+// no state reads — so it's trivially reasoned-about and testable.
+function windowMessages(messages, systemContent, greetingContent) {
+  const budget = N_CTX - REPLY_RESERVE - CTX_SAFETY
+    - estTokens(systemContent) - estTokens(greetingContent);
+  let used = 0, startIdx = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = estTokens(messages[i].content);
+    if (i < messages.length - 1 && used + t > budget) break; // always keep the last
+    used += t; startIdx = i;
+  }
+  return { sent: messages.slice(startIdx), droppedCount: startIdx };
+}
+
 function enterChat(m) {
   // A pack attached in one chat shouldn't silently carry into another
   // model's chat (e.g. a medical pack leaking into an education chat).
@@ -856,6 +887,7 @@ function rebuildChatDom() {
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
   for (const msg of state.chat.messages) appendBubble(msg.role, msg.content, msg.citations);
+  updateContextDivider();
 }
 
 function appendBubble(role, text, citations) {
@@ -866,6 +898,37 @@ function appendBubble(role, text, citations) {
   if (citations && citations.length) renderCitations(el, citations);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return el;
+}
+
+// §7 S7-4: mark the boundary where older messages fall outside the
+// request window — they're still saved (transcript + DB), just not sent to
+// the model. Only meaningful for the ACTIVE chat's rendered transcript and
+// only at rest (never mid-stream, since bubbles are still being appended/
+// mutated then) — callers are rebuildChatDom (on chat open) and
+// finishStream (after a completed turn is pushed, for the still-active
+// chat). Idempotent: always removes any existing divider first so it's
+// safe to call repeatedly as the chat grows.
+function updateContextDivider() {
+  const box = $('chatMessages');
+  box.querySelector('.ctx-divider')?.remove();
+  const m = state.chat.model;
+  if (!m) return;
+  // View-time approximation: we can't know if the NEXT turn will be
+  // grounded (which would shrink the window further via a larger system
+  // prompt), so this uses the plain systemPrompt as an honest baseline,
+  // not a guarantee.
+  const { droppedCount } = windowMessages(state.chat.messages, m.systemPrompt, m.greeting);
+  if (droppedCount <= 0) return;
+  // index 0 of .msg is the greeting bubble; indices 1.. map 1:1 to
+  // state.chat.messages, so messageBubbles[droppedCount] is the first
+  // bubble still inside the window.
+  const messageBubbles = [...box.querySelectorAll('.msg')].slice(1);
+  const boundary = messageBubbles[droppedCount];
+  if (!boundary) return; // DOM/state out of sync for any reason — no-op, never throw
+  const divider = document.createElement('div');
+  divider.className = 'ctx-divider';
+  divider.textContent = '⌇ Older messages are saved but aren\'t in the model\'s memory';
+  boundary.before(divider);
 }
 
 // §3a A4: citations render via DOM textContent, never innerHTML — docTitle/
@@ -1087,15 +1150,24 @@ async function sendCompletion(userText) {
   }
 
   try {
+    // §7 S7-4: fit the request to n_ctx — send only the most-recent
+    // messages that fit the budget left after the fixed preamble (system +
+    // greeting) and the reply reserve. For a grounded turn the (large)
+    // groundedPrompt is part of `sys`, so its length correctly shrinks the
+    // history budget — sources + kept history still stay within n_ctx.
+    // Short chats are unaffected: windowMessages returns the whole list
+    // (droppedCount 0), so behavior is byte-identical to before.
+    const sys = groundedPrompt ?? m.systemPrompt;
+    const win = windowMessages(state.chat.messages, sys, m.greeting);
     const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: state.chat.aborter.signal,
       body: JSON.stringify({
         messages: [
-          { role: 'system', content: groundedPrompt ?? m.systemPrompt },
+          { role: 'system', content: sys },
           { role: 'assistant', content: m.greeting },
-          ...state.chat.messages,
+          ...win.sent,
         ],
         stream: true,
         max_tokens: 512,
@@ -1185,6 +1257,13 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   $('sendBtn').hidden = false; $('stopBtn').hidden = true;
   $('sendBtn').disabled = false;
   pulseCost();
+  // §7 S7-4: re-check the context-window divider now that the turn is
+  // pushed and streaming has ended for THIS chat. `isActive` (above) is
+  // exactly `turnChatId === state.chat.chatId`; `state.chat.streaming` was
+  // just set false on the line above, so this only ever runs at rest, for
+  // the chat actually on screen — never mid-stream, never on a chat the
+  // user has switched away from.
+  if (isActive && !state.chat.streaming) updateContextDivider();
   // §7 S7-2: persist the completed turn to the chat it actually belongs
   // to. `turnChatId` is only null here if the earlier create_chat in
   // sendCompletion failed — in that case this turn silently isn't saved

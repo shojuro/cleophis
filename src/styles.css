@@ -231,6 +231,11 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .cite{font-size:12.5px;color:var(--muted)}
 .retrychip{align-self:flex-start;margin-left:24px;background:none;border:1px dashed var(--heavy);color:var(--heavy);
   border-radius:999px;padding:5px 14px;font-size:12.5px}
+/* §7 S7-4: context-window boundary — a system hint, not a message, so it
+   sits low-contrast between bubbles rather than reading as a bubble. */
+.ctx-divider{display:flex;align-items:center;justify-content:center;gap:10px;
+  margin:2px 24px;color:var(--faint);font-size:11.5px;letter-spacing:.01em}
+.ctx-divider::before,.ctx-divider::after{content:"";flex:1;max-width:140px;height:1px;background:var(--line)}
 .composer{display:flex;gap:10px;padding:16px 24px;border-top:1px solid var(--line);background:rgba(14,18,24,.9)}
 #chatInput{flex:1;background:var(--surface);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px 16px;font-size:14.5px;outline:none}
 #chatInput:focus{border-color:var(--teal)}
