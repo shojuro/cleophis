@@ -13,7 +13,7 @@ const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
   mine: new Set(), lapsed: new Set(), chatBlocked: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
-  chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [] },
+  chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
   dl: { installed: false, partBytes: 0, active: false },
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
@@ -561,18 +561,119 @@ function simulateStubDownload(m, btn) {
   }, 220);
 }
 
+/* ---------------- conversation sidebar + persistence (§7 S7-2) ---------------- */
+// The sidebar lists CONVERSATIONS, never models (user-confirmed, permanent
+// — see the task brief): one local model runs at a time, so every chat
+// lives under it. A chat record is created lazily, on the first user
+// message (see sendCompletion) — refreshChatList/openChat/newChat below
+// are the sidebar's read/switch/create surface over that store.
+
+async function refreshChatList() {
+  const list = $('chatList');
+  let chats;
+  try {
+    chats = await invoke('list_chats');
+  } catch (_) {
+    return; // additive UI — leave whatever's already rendered on failure
+  }
+  if (!chats.length) {
+    list.innerHTML = `<div class="chatlist-empty">No conversations yet.</div>`;
+    return;
+  }
+  // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete
+  // are static labels, not interpolated user data.
+  list.innerHTML = chats.map((c) => `
+    <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}" data-id="${c.id}">
+      <span class="chatrow-title">${escapeHtml(c.title)}</span>
+      <span class="chatrow-actions">
+        <button class="chatrow-act" data-act="pin" data-pinned="${c.pinned ? '1' : '0'}" title="${c.pinned ? 'Unpin' : 'Pin'}">${c.pinned ? '★' : '☆'}</button>
+        <button class="chatrow-act" data-act="rename" title="Rename">✎</button>
+        <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
+      </span>
+    </div>`).join('');
+}
+
+// Clears the message DOM back to just the model's greeting, without
+// touching state.chat.chatId — callers (newChat, delete-active-chat,
+// enterChat on a model switch) each decide what chatId should be first.
+function resetChatDom() {
+  state.chat.messages = [];
+  rebuildChatDom();
+  updateGroundPill();
+}
+
+async function openChat(id) {
+  // Switching chats must not let an in-flight stream for the OLD chat keep
+  // running against the NEW one's DOM/state — abort it first (finishStream
+  // still persists whatever partial content it already has, to the chat it
+  // actually belongs to; see sendCompletion/finishStream's turnChatId).
+  state.chat.aborter?.abort();
+  let detail;
+  try {
+    detail = await invoke('get_chat', { id });
+  } catch (_) {
+    return; // failed open is a no-op — the current chat stays as-is
+  }
+  const { chat, messages } = detail;
+  state.chat.chatId = chat.id;
+  state.chat.packPaths = chat.mountedPacks || [];
+  // Re-hydrate into the same {role, content, citations?} shape sendMessage/
+  // finishStream push locally, so rebuildChatDom's replay logic (below)
+  // doesn't need to know whether a message came from the DB or this session.
+  state.chat.messages = messages.map((msg) => ({
+    role: msg.role,
+    content: msg.content,
+    citations: msg.citations && msg.citations.length ? msg.citations : undefined,
+  }));
+  rebuildChatDom();
+  updateGroundPill();
+  await refreshChatList(); // active-row highlight moves to this chat
+}
+
+// The "+ New chat" button: eagerly creates a fresh record (unlike the
+// lazy first-message create below) inheriting the current model + packs,
+// same as ChatGPT/Claude's "new chat" always producing a visible row.
+async function newChat() {
+  // Same reasoning as openChat: never leave a stream running against a
+  // chat that's about to stop being the active one.
+  state.chat.aborter?.abort();
+  const m = state.chat.model;
+  let chatId = null;
+  try {
+    const chat = await invoke('create_chat', {
+      title: 'New chat',
+      folderId: null,
+      mountedPacks: state.chat.packPaths,
+      modelId: m?.id ?? '',
+      adapterIds: [],
+    });
+    chatId = chat.id;
+  } catch (_) { /* persistence failed — still hand back a clean local chat */ }
+  state.chat.chatId = chatId;
+  resetChatDom();
+  await refreshChatList();
+}
+
 /* ---------------- chat ---------------- */
 function enterChat(m) {
   // A pack attached in one chat shouldn't silently carry into another
   // model's chat (e.g. a medical pack leaking into an education chat).
-  // Re-entering the SAME model's chat keeps the attachment, mirroring how
-  // state.chat.messages persists across exit/re-enter.
-  if (state.chat.model && state.chat.model.id !== m.id) state.chat.packPaths = [];
+  // Re-entering the SAME model's chat keeps the attachment AND the active
+  // persisted chat (chatId), mirroring how state.chat.messages already
+  // persists across exit/re-enter — only a genuine model switch resets to
+  // a clean, unsaved chat (chatId=null; the first message persists it
+  // lazily, same as a brand-new session — see sendCompletion).
+  if (state.chat.model && state.chat.model.id !== m.id) {
+    state.chat.packPaths = [];
+    state.chat.chatId = null;
+    state.chat.messages = [];
+  }
   state.chat.model = m;
   $('chatModelName').textContent = m.name;
   $('chatCover').src = m.coverUrl;
   rebuildChatDom();
   updateGroundPill();
+  refreshChatList();
   closeDrawer();
   const views = $('views');
   views.classList.add('in-chat');
@@ -614,17 +715,34 @@ function appendBubble(role, text, citations) {
 // §3a A4: citations render via DOM textContent, never innerHTML — docTitle/
 // sectionPath/locator come from user-attached pack content (untrusted),
 // so textContent avoids any markup-injection risk without needing escaping.
+// §7 S7-2: the list is collapsed by default behind a disclosure toggle —
+// grounded turns can carry many sources and they'd otherwise eat the chat.
+// Re-rendered the same way whether it's a live turn (sendCompletion/
+// finishStream) or a persisted one replayed by rebuildChatDom on openChat.
 function renderCitations(afterEl, citations) {
   const box = document.createElement('div');
   box.className = 'citations';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'citetoggle';
+  const label = (open) => `${open ? '⌃' : '⌄'} ${citations.length} source${citations.length === 1 ? '' : 's'}`;
+  toggle.textContent = label(false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = label(open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'citelist';
   for (const c of citations) {
     const row = document.createElement('div');
     row.className = 'cite';
     row.textContent = `[${c.n}] ${c.docTitle}` +
       (c.sectionPath ? ` · ${c.sectionPath}` : '') +
       (c.locator ? ` · ${c.locator}` : '');
-    box.appendChild(row);
+    list.appendChild(row);
   }
+  box.appendChild(list);
   afterEl.insertAdjacentElement('afterend', box);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return box;
@@ -653,18 +771,66 @@ function sendMessage() {
   input.value = '';
   state.chat.messages.push({ role: 'user', content: text });
   appendBubble('user', text);
-  sendCompletion();
+  sendCompletion(text);
 }
 
-async function sendCompletion() {
-  const m = state.chat.model;
-  document.querySelectorAll('.retrychip').forEach((el) => el.remove());
+// `userText` is only set when called from sendMessage — retry chips (below)
+// call sendCompletion() bare to replay an already-pushed/already-persisted
+// user turn, which must NOT be persisted a second time.
+async function sendCompletion(userText) {
+  // Streaming guard set SYNCHRONOUSLY, before any await below — otherwise a
+  // second rapid Send could slip past sendMessage's `state.chat.streaming`
+  // check (read synchronously there) and race a second sendCompletion call
+  // (and a second create_chat below). Same reasoning for the fresh
+  // AbortController: it needs to be in place before any await so a chat
+  // switch (openChat/newChat) can abort THIS turn even if the switch
+  // happens while create_chat is still in flight.
   state.chat.streaming = true;
   $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  state.chat.aborter = new AbortController();
+
+  const m = state.chat.model;
+  document.querySelectorAll('.retrychip').forEach((el) => el.remove());
   const bubble = appendBubble('assistant', '');
   bubble.classList.add('streaming');
   let acc = '';
-  state.chat.aborter = new AbortController();
+
+  // Persistence (§7 S7-2): lazily create the chat record on the very first
+  // user message. `turnChatId` is captured ONCE for this turn and threaded
+  // through (into finishStream/the noEvidence branch below) rather than
+  // re-read from state.chat.chatId later — switching chats (openChat/
+  // newChat/the sidebar row-click/deleting the active chat) aborts this
+  // stream AND can repoint state.chat.chatId at a different chat while
+  // create_chat is still in flight, so re-reading it after an await risks
+  // misfiling this turn into the wrong chat. Wrapped in try/catch so a save
+  // failure degrades silently — it never blocks or breaks the streaming
+  // path below.
+  let turnChatId = state.chat.chatId;
+  if (userText != null) {
+    if (turnChatId == null) {
+      try {
+        const chat = await invoke('create_chat', {
+          title: userText.split('\n')[0].slice(0, 40).trim() || 'New chat',
+          folderId: null,
+          mountedPacks: state.chat.packPaths,
+          modelId: m?.id ?? '',
+          adapterIds: [],
+        });
+        turnChatId = chat.id;
+        // Only adopt it as the app's ACTIVE chat if nothing else claimed
+        // that slot while create_chat was in flight — a chat switch sets
+        // state.chat.chatId synchronously before its own await, so if
+        // it's non-null here someone else already won the race.
+        if (state.chat.chatId == null) {
+          state.chat.chatId = turnChatId;
+          refreshChatList();
+        }
+      } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
+    }
+    if (turnChatId != null) {
+      invoke('append_message', { chatId: turnChatId, role: 'user', content: userText }).catch(() => {});
+    }
+  }
 
   // §3a A4: when packs are attached to this chat, ground the turn through
   // rag_query BEFORE touching the model. When no packs are attached this
@@ -682,7 +848,7 @@ async function sendCompletion() {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
-        if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
+        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
         // instead, same shape as the existing fetch-failure retry chip.
@@ -702,7 +868,7 @@ async function sendCompletion() {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
-      if (state.chat.aborter.signal.aborted) { finishStream(bubble, ''); return; }
+      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Short-circuit to a deterministic refusal rather than handing the
         // model rag.prompt's [[NO_EVIDENCE]] marker: without the
@@ -712,15 +878,29 @@ async function sendCompletion() {
         // lands, this branch can feed the marker to the model instead.
         const n = state.chat.packPaths.length;
         const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
+        // §7 S7-2: only touch the live DOM/in-memory transcript if this
+        // turn's chat is STILL the active one (mirrors finishStream below)
+        // — the user may have switched away while rag_query was in flight.
+        const isActive = turnChatId === state.chat.chatId;
         bubble.classList.remove('streaming');
-        bubble.textContent = refusal;
-        state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+        if (isActive) {
+          bubble.textContent = refusal;
+          state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+        }
+        // Persist to the chat this turn actually belongs to, fire-and-
+        // forget (never blocks the composer restore below).
+        if (turnChatId != null) {
+          invoke('append_message', { chatId: turnChatId, role: 'assistant', content: refusal })
+            .then(refreshChatList).catch(() => {});
+        }
         state.chat.streaming = false;
         $('sendBtn').hidden = false; $('stopBtn').hidden = true;
         $('sendBtn').disabled = false;
-        const pill = $('groundPill');
-        pill.hidden = false;
-        pill.textContent = 'No evidence in your packs';
+        if (isActive) {
+          const pill = $('groundPill');
+          pill.hidden = false;
+          pill.textContent = 'No evidence in your packs';
+        }
         return; // no model call — pulseCost() intentionally skipped, no inference ran
       }
       // grounded: swap this turn's system message for the assembled
@@ -766,7 +946,7 @@ async function sendCompletion() {
         buf = buf.slice(nl + 1);
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations); return; }
+        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
         try {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
@@ -777,9 +957,9 @@ async function sendCompletion() {
         } catch (_) { /* partial line — ignored */ }
       }
     }
-    finishStream(bubble, acc, groundedCitations);
+    finishStream(bubble, acc, groundedCitations, turnChatId);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -798,22 +978,52 @@ async function sendCompletion() {
   }
 }
 
-function finishStream(bubble, acc, citations) {
+// `turnChatId` is the chat THIS turn belongs to, captured once at
+// turn-start in sendCompletion (never re-read from state.chat.chatId,
+// which may have moved on to a different chat by the time this runs — see
+// the sendCompletion comment). Synchronous top to bottom: the shared
+// composer state (streaming/Send/Stop/pulseCost) always restores
+// immediately; the DB write is fire-and-forget and never gates it.
+function finishStream(bubble, acc, citations, turnChatId) {
   bubble.classList.remove('streaming');
-  if (acc) {
-    const msg = { role: 'assistant', content: acc };
-    // Stash citations on the pushed message (not just rendered here) so
-    // rebuildChatDom can replay them if the chat is exited and re-entered.
-    if (citations && citations.length) {
-      msg.citations = citations;
-      renderCitations(bubble, citations);
+  // Only touch the live DOM/in-memory transcript if this turn's chat is
+  // STILL the active one — the user may have switched chats mid-stream
+  // (which aborts this turn's fetch, via openChat/newChat, but whatever
+  // partial `acc` had already accumulated still gets here). A turn whose
+  // chat is no longer active must not repaint over whatever chat is on
+  // screen now; it still gets PERSISTED to its own chat below.
+  const isActive = turnChatId === state.chat.chatId;
+  if (isActive) {
+    if (acc) {
+      const msg = { role: 'assistant', content: acc };
+      // Stash citations on the pushed message (not just rendered here) so
+      // rebuildChatDom can replay them if the chat is exited and re-entered.
+      if (citations && citations.length) {
+        msg.citations = citations;
+        renderCitations(bubble, citations);
+      }
+      state.chat.messages.push(msg);
+    } else {
+      bubble.remove();
     }
-    state.chat.messages.push(msg);
-  } else bubble.remove();
+  }
   state.chat.streaming = false;
   $('sendBtn').hidden = false; $('stopBtn').hidden = true;
   $('sendBtn').disabled = false;
   pulseCost();
+  // §7 S7-2: persist the completed turn to the chat it actually belongs
+  // to. `turnChatId` is only null here if the earlier create_chat in
+  // sendCompletion failed — in that case this turn silently isn't saved
+  // either (same degrade-gracefully contract). Fire-and-forget: the
+  // composer state above must never wait on this DB write.
+  if (acc && turnChatId != null) {
+    invoke('append_message', {
+      chatId: turnChatId,
+      role: 'assistant',
+      content: acc,
+      citations: citations && citations.length ? citations : null,
+    }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  }
 }
 
 /* ---------------- signed-out nudge ---------------- */
@@ -934,11 +1144,16 @@ $('loginBtn').addEventListener('click', () => {
 document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); }));
 $('packsBtn').addEventListener('click', () => openPacksModal());
 $('attachPacksBtn').addEventListener('click', () => openAttachModal());
-$('attachDoneBtn').addEventListener('click', () => {
+$('attachDoneBtn').addEventListener('click', async () => {
   const checked = $('attachList').querySelectorAll('input[type=checkbox]:checked');
   state.chat.packPaths = [...checked].map((cb) => cb.dataset.path);
   hide($('attachModal'));
   updateGroundPill();
+  // §7 S7-2: persist the new attachment set so a reopened chat restores its
+  // grounding. If no chat exists yet, it's captured at create time instead.
+  if (state.chat.chatId != null) {
+    try { await invoke('set_chat_packs', { id: state.chat.chatId, mountedPacks: state.chat.packPaths }); } catch (_) {}
+  }
 });
 $('packBuildBtn').addEventListener('click', () => startBuild());
 $('packCancelBtn').addEventListener('click', async () => {
@@ -1014,6 +1229,44 @@ $('chatBack').addEventListener('click', () => exitChat());
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
+$('newChatBtn').addEventListener('click', () => newChat());
+$('chatList').addEventListener('click', async (e) => {
+  const actBtn = e.target.closest('[data-act]');
+  const row = e.target.closest('.chatrow');
+  if (!row) return;
+  const id = Number(row.dataset.id);
+  if (actBtn) {
+    e.stopPropagation();
+    const act = actBtn.dataset.act;
+    if (act === 'rename') {
+      const titleEl = row.querySelector('.chatrow-title');
+      const next = window.prompt('Rename chat', titleEl ? titleEl.textContent : '');
+      if (next != null && next.trim()) {
+        try { await invoke('rename_chat', { id, title: next.trim() }); } catch (_) {}
+        await refreshChatList();
+      }
+    } else if (act === 'delete') {
+      if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
+      try { await invoke('delete_chat', { id }); } catch (_) {}
+      // If the deleted chat was the active one, fall back to a clean,
+      // unsaved chat rather than leaving stale messages from a chat that
+      // no longer exists in the store — and abort any stream still running
+      // against it first (same reasoning as openChat/newChat).
+      if (state.chat.chatId === id) {
+        state.chat.aborter?.abort();
+        state.chat.chatId = null;
+        resetChatDom();
+      }
+      await refreshChatList();
+    } else if (act === 'pin') {
+      const pinned = actBtn.dataset.pinned === '1';
+      try { await invoke('set_chat_pinned', { id, pinned: !pinned }); } catch (_) {}
+      await refreshChatList();
+    }
+    return;
+  }
+  await openChat(id);
+});
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
@@ -1022,10 +1275,17 @@ $('signOutBtn').addEventListener('click', async () => {
   hide($('attachModal'));
   // Chat state is per-account: leave the chat view if it's open and drop
   // the transcript so the next sign-in can't replay this one's messages.
+  // The conversation STORE itself is not yet account-scoped (a documented
+  // v1 follow-up — see the task brief), but the sidebar must not keep
+  // showing this session's chats after sign-out: clear the rendered list
+  // here; refreshChatList repopulates it (for whichever account) on the
+  // next enterChat.
   exitChat();
   state.chat.messages = [];
   state.chat.model = null;
   state.chat.packPaths = [];
+  state.chat.chatId = null;
+  $('chatList').innerHTML = '';
   state.signedIn = false;
   state.nick = null;
   state.device = null;

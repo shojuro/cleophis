@@ -2,6 +2,7 @@
 
 mod catalog;
 mod cloud;
+mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
@@ -88,6 +89,22 @@ fn main() {
             )));
             app.manage(Arc::new(cloud::download::Downloads::new()));
 
+            // §7 S7-1 / §7-chatiso: the local conversation store
+            // (folders/chats/messages + fts5 search), managed directly
+            // like `kpack::EmbedderCache`/`kpack::Builds` below — not
+            // wrapped in an outer `Arc`, since its commands re-fetch
+            // `app.state::<convstore::ConvStore>()` inside their own
+            // `spawn_blocking` closures (see `convstore.rs`'s module doc
+            // comment). `ConvStore::new` takes the conversations DIRECTORY,
+            // not a single DB file — §7-chatiso (SECURITY) made the store
+            // per-account (one SQLite database per signed-in account,
+            // opened on demand as `<dir>/<sanitized_user_id>.db`) after a
+            // cross-account privacy leak: the old single shared
+            // `conversations.db` showed every account's chats to whoever
+            // was currently signed in. `new` never opens a database itself
+            // (no `?` needed — see `convstore.rs`), so this can't fail.
+            app.manage(convstore::ConvStore::new(cloud_dir.join("conversations")));
+
             // §3a A1: the shared, lazily-loaded embedder (rag_query and
             // build_personal_pack both resolve it through this instead of
             // reloading the 118 MB GGUF per call) and the single-slot
@@ -122,7 +139,22 @@ fn main() {
             cloud::commands::open_billing_portal,
             cloud::download::download_model,
             cloud::download::cancel_download,
-            cloud::download::download_status
+            cloud::download::download_status,
+            convstore::create_folder,
+            convstore::list_folders,
+            convstore::rename_folder,
+            convstore::delete_folder,
+            convstore::create_chat,
+            convstore::list_chats,
+            convstore::get_chat,
+            convstore::rename_chat,
+            convstore::delete_chat,
+            convstore::set_chat_pinned,
+            convstore::set_chat_archived,
+            convstore::move_chat,
+            convstore::set_chat_packs,
+            convstore::append_message,
+            convstore::search_chats
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

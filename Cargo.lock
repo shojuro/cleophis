@@ -528,11 +528,13 @@ dependencies = [
 name = "cleophis"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "keyring",
  "kpack-core",
  "kpack-embed",
  "kpack-pdf",
  "nvml-wrapper",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
