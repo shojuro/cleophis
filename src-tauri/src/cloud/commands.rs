@@ -11,10 +11,21 @@ use tauri::State;
 use crate::cloud::error::CloudError;
 use crate::cloud::session::{Cloud, CheckoutOutcome, PortalOutcome, SessionInfo};
 use crate::cloud::store::Entitlement;
+use crate::cloud::strength::{self, StrengthResult};
 
 /// Only reachable if the blocking task itself panics or the runtime is
 /// shutting down — never a `CloudError`, which is mapped separately.
 const JOIN_ERROR_MESSAGE: &str = "Something went wrong on this device. Please try again.";
+
+/// Pure/synchronous (no `Cloud` state, no network) — lets the FE render a
+/// live strength meter as the user types. `check_strength` (strength.rs)
+/// is the same function Task 4's enrollment flow calls as the authoritative
+/// gate before deriving a verifier, so the meter and the gate never
+/// disagree.
+#[tauri::command]
+pub fn check_password_strength(password: String, email: String, nickname: String) -> StrengthResult {
+    strength::check_strength(&password, &[&email, &nickname])
+}
 
 #[tauri::command]
 pub async fn sign_up(

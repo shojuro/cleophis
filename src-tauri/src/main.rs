@@ -129,6 +129,7 @@ fn main() {
             kpack::rag_query,
             kpack::list_packs,
             kpack::delete_pack,
+            cloud::commands::check_password_strength,
             cloud::commands::sign_up,
             cloud::commands::sign_in,
             cloud::commands::sign_out,

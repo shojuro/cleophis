@@ -56,6 +56,11 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # Offline-auth: NFC normalization so a password typed with a precomposed
 # vs. combining-accent form still verifies (verifier::normalize_password).
 unicode-normalization = "0.1"
+# Offline-auth: zxcvbn password-strength estimator (cloud/strength.rs). Gates
+# enrollment (Task 4) so a weak password can't get an offline verifier
+# derived from it — offline sign-in has no server-side rate limiting to fall
+# back on, so the verifier itself has to resist brute force.
+zxcvbn = "3"
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"
