@@ -343,7 +343,7 @@ impl Cloud {
                 grace_expired: store::grace_expired(entry.last_online_auth, now()),
             })
         } else {
-            entry.failed_attempts += 1;
+            entry.failed_attempts = entry.failed_attempts.saturating_add(1);
             entry.last_failed_at = now();
             if let Err(e) = store::write_auth_cache(&dir, &entry) {
                 eprintln!("cloud: failed to persist offline-auth throttle: {e}");
@@ -407,7 +407,14 @@ impl Cloud {
             return Err(CloudError::Internal("invalid source".into()));
         }
 
-        let has_session = self.session.lock().unwrap().is_some();
+        let (has_session, offline_owner) = {
+            let guard = self.session.lock().unwrap();
+            match guard.as_ref() {
+                Some(s) if s.offline => (true, Some(s.user_id.clone())),
+                Some(_) => (true, None),
+                None => (false, None),
+            }
+        };
 
         if !has_session {
             // Never signed in on this device at all -> nothing to queue
@@ -417,12 +424,14 @@ impl Cloud {
             if cache.user_id.is_empty() {
                 return Err(CloudError::SessionExpired);
             }
-            return self.queue_grant(model_id, source);
+            return self.queue_grant(model_id, source, None);
         }
 
         match self.ensure_fresh() {
             Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                self.queue_grant(model_id, source)
+                // `offline_owner` — see `queue_grant`'s doc for the
+                // cross-account isolation this enforces.
+                self.queue_grant(model_id, source, offline_owner.as_deref())
             }
             Err(e) => Err(e),
             Ok((access, user_id)) => self.grant_with_access(&access, &user_id, model_id, source),
@@ -430,12 +439,33 @@ impl Cloud {
     }
 
     pub fn entitlements(&self) -> Result<Vec<Entitlement>, CloudError> {
-        let (has_session, ephemeral) = {
+        let (has_session, ephemeral, offline_user_id) = {
             let guard = self.session.lock().unwrap();
-            (guard.is_some(), guard.as_ref().map(|s| s.ephemeral).unwrap_or(false))
+            match guard.as_ref() {
+                Some(s) if s.offline => (true, s.ephemeral, Some(s.user_id.clone())),
+                Some(s) => (true, s.ephemeral, None),
+                None => (false, false, None),
+            }
         };
         if !has_session {
             return Ok(store::read_cache(&self.cache_path).entitlements);
+        }
+        // OA5b review fix: an offline session's identity can diverge from
+        // the global CloudCache's owner — a shared device may have a
+        // DIFFERENT account (A) remembered online in `cloud-cache.json`
+        // while THIS session is B, offline-signed-in. Returning A's cache
+        // entitlements to B would be a cross-account info leak — return
+        // B's OWN entitlements from B's per-account auth-cache snapshot
+        // instead (empty if B has never synced entitlements online on this
+        // device). Never reaches `ensure_fresh`/the network below: an
+        // offline session's `ensure_fresh` always returns `Offline`
+        // immediately anyway (see `Session::offline`'s doc).
+        if let Some(user_id) = offline_user_id {
+            let dir = store::auth_cache_dir(self.app_data_dir());
+            let entitlements = store::read_auth_cache(&dir, &user_id)
+                .map(|entry| entry.entitlements)
+                .unwrap_or_default();
+            return Ok(entitlements);
         }
 
         match self.ensure_fresh() {
@@ -869,19 +899,24 @@ impl Cloud {
         model_id: &str,
         source: &str,
     ) -> Result<(), CloudError> {
+        // Reached only after `ensure_fresh`/`refresh_via_gate` produced a
+        // real token, which never happens for an offline session (see
+        // `Session::offline`'s guard) — so every `queue_grant` below is a
+        // non-offline caller, `expected_owner: None`, unchanged from before
+        // the OA5b review fix.
         match rest::insert_entitlement(access, user_id, model_id, source) {
             Ok(()) => self.record_grant(model_id, source),
-            Err(CloudError::Offline) => self.queue_grant(model_id, source),
+            Err(CloudError::Offline) => self.queue_grant(model_id, source, None),
             Err(CloudError::SessionExpired) => match self.refresh_via_gate() {
                 Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                    self.queue_grant(model_id, source)
+                    self.queue_grant(model_id, source, None)
                 }
                 Err(e) => Err(e),
                 Ok((access2, user_id2)) => {
                     match rest::insert_entitlement(&access2, &user_id2, model_id, source) {
                         Ok(()) => self.record_grant(model_id, source),
                         Err(CloudError::Offline) | Err(CloudError::SessionExpired) => {
-                            self.queue_grant(model_id, source)
+                            self.queue_grant(model_id, source, None)
                         }
                         Err(e) => Err(e), // Api errors etc.: return, do not queue.
                     }
@@ -904,11 +939,32 @@ impl Cloud {
     /// check, a `queue_grant` that loses the race with the purge's cache
     /// delete would recreate the cache file from scratch with an anonymous
     /// (unowned) pending row instead of just failing.
-    fn queue_grant(&self, model_id: &str, source: &str) -> Result<(), CloudError> {
+    ///
+    /// `expected_owner`: OA5b review fix — `Some(user_id)` when the caller
+    /// is an offline session (`Session::offline`'s `user_id`), `None`
+    /// otherwise (a non-offline session, or `grant`'s no-in-memory-session
+    /// caller). An offline session's identity can diverge from the global
+    /// CloudCache's owner (a shared device: A remembered online, B
+    /// offline-signed-in) — without this check, B's grant would silently
+    /// queue under `cache.user_id` = A and flush as A's entitlement on A's
+    /// next online sync: a cross-account write. Checked under the SAME
+    /// fresh `cache_lock` read as the empty-owner check above, so it can't
+    /// be bypassed by a race either.
+    fn queue_grant(
+        &self,
+        model_id: &str,
+        source: &str,
+        expected_owner: Option<&str>,
+    ) -> Result<(), CloudError> {
         let _guard = self.cache_lock.lock().unwrap();
         let mut cache = store::read_cache(&self.cache_path);
         if cache.user_id.is_empty() {
             return Err(CloudError::SessionExpired);
+        }
+        if let Some(expected) = expected_owner {
+            if cache.user_id != expected {
+                return Err(CloudError::Offline);
+            }
         }
         let owner = cache.user_id.clone();
         let created_at = now();
@@ -1776,7 +1832,7 @@ mod tests {
         // CloudCache::default() -> user_id == "".
         let cloud = Cloud::new(cache_path.clone());
 
-        let result = cloud.queue_grant("llama-8b", "trial");
+        let result = cloud.queue_grant("llama-8b", "trial", None);
         assert!(matches!(result, Err(CloudError::SessionExpired)));
         assert!(!cache_path.exists(), "expected nothing to be written");
     }
@@ -2930,6 +2986,154 @@ mod tests {
             cache_path.exists(),
             "expected the cache file to survive an offline sign_out"
         );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // ---- OA5b review fix: offline cross-account isolation into the
+    // CloudCache/grant/entitlement layer ----
+    //
+    // Task 5's offline identity is allowed to diverge from the single-
+    // account global CloudCache's owner on a shared device (A remembered
+    // online in cloud-cache.json, B offline-signed-in). Auth isolation
+    // itself was already correct (the session IS B), but entitlements()
+    // and grant()/queue_grant() were still reading/writing through the
+    // GLOBAL cache keyed by whoever `cache.user_id` happened to be — a
+    // cross-account info leak and a cross-account write. The tests below
+    // are the fix's proof.
+
+    // OA5b-fix-1. entitlements() must never leak the global CloudCache's
+    // owner's (A's) list to a DIFFERENT offline-signed-in account (B) — it
+    // must return B's OWN entitlements from B's auth-cache snapshot
+    // instead.
+    #[test]
+    fn offline_entitlements_scoped_to_own_account() {
+        let _g = lock();
+        let user_a = "user-oa5bfix-1a";
+        let user_b = "user-oa5bfix-1b";
+        let email_b = "oa5bfix-1b@example.com";
+        let password_b = "hollow-canyon-basalt-64";
+        let dir = oa5_auth_cache_dir();
+        oa5_clean_slate(user_a, &dir);
+        oa5_clean_slate(user_b, &dir);
+        let _cleanup_a = OfflineAccountCleanup { user_id: user_a, dir: dir.clone() };
+        let _cleanup_b = OfflineAccountCleanup { user_id: user_b, dir: dir.clone() };
+
+        // A is the global CloudCache's owner, with an entitlement B must
+        // never see.
+        let cache_path = temp_cache_path("t-oa5bfix-1-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = user_a.into();
+        cache.entitlements.push(store::Entitlement {
+            model_id: "a-only-model".into(),
+            source: "purchase".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            expires_at: None,
+        });
+        store::write_cache(&cache_path, &cache).expect("seed global cache");
+
+        // B is a DIFFERENT, offline-signed-in account with its own
+        // auth-cache snapshot and its own (different) entitlement.
+        seed_offline_account(
+            user_b,
+            email_b,
+            "NickB",
+            password_b,
+            vec![store::Entitlement {
+                model_id: "b-only-model".into(),
+                source: "trial".into(),
+                created_at: "2026-01-02T00:00:00Z".into(),
+                expires_at: None,
+            }],
+            0,
+            0,
+        );
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline(user_b.into()));
+        }
+
+        let result = cloud.entitlements().expect("expected Ok");
+        assert!(
+            result.iter().any(|e| e.model_id == "b-only-model"),
+            "expected B's own entitlement, got {result:?}"
+        );
+        assert!(
+            !result.iter().any(|e| e.model_id == "a-only-model"),
+            "expected A's entitlement NOT to leak to B, got {result:?}"
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA5b-fix-2. grant() must refuse to queue a pending grant when the
+    // offline session's identity (B) differs from the global CloudCache's
+    // owner (A) — otherwise B's grant would silently land in A's
+    // pending-grants queue and flush as A's entitlement on A's next online
+    // sync (a cross-account write).
+    #[test]
+    fn offline_divergent_grant_refused() {
+        let _g = lock();
+        let user_a = "user-oa5bfix-2a";
+        let user_b = "user-oa5bfix-2b";
+
+        let cache_path = temp_cache_path("t-oa5bfix-2-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = user_a.into();
+        store::write_cache(&cache_path, &cache).expect("seed global cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline(user_b.into()));
+        }
+
+        let result = cloud.grant("llama-8b", "trial");
+        assert!(
+            result.is_err(),
+            "expected the divergent-owner grant to be refused, got {result:?}"
+        );
+
+        let rewritten = store::read_cache(&cache_path);
+        assert!(
+            rewritten.pending_grants.is_empty(),
+            "expected nothing to be queued for A on B's behalf, got {:?}",
+            rewritten.pending_grants
+        );
+
+        let _ = std::fs::remove_file(&cache_path);
+    }
+
+    // OA5b-fix-3. Same-account offline grant is unaffected by the fix
+    // above — an offline session whose user_id MATCHES the global
+    // CloudCache's owner still queues exactly as before (mirrors
+    // grant_offline_cached_queues_and_synthesizes, but with an explicit
+    // offline session in memory rather than no session at all).
+    #[test]
+    fn offline_same_account_grant_still_queues() {
+        let _g = lock();
+        let user_id = "user-oa5bfix-3";
+
+        let cache_path = temp_cache_path("t-oa5bfix-3-cache.json");
+        let mut cache = CloudCache::default();
+        cache.user_id = user_id.into();
+        store::write_cache(&cache_path, &cache).expect("seed global cache");
+
+        let cloud = Cloud::new(cache_path.clone());
+        {
+            let mut guard = cloud.session.lock().unwrap();
+            *guard = Some(Session::offline(user_id.into()));
+        }
+
+        let result = cloud.grant("llama-8b", "trial");
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+
+        let rewritten = store::read_cache(&cache_path);
+        assert_eq!(rewritten.pending_grants.len(), 1);
+        assert_eq!(rewritten.pending_grants[0].model_id, "llama-8b");
+        assert_eq!(rewritten.pending_grants[0].user_id, user_id);
 
         let _ = std::fs::remove_file(&cache_path);
     }
