@@ -1,11 +1,12 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 
 use crate::cloud::config;
 use crate::cloud::error::CloudError;
+use crate::cloud::verifier::StoredVerifier;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +44,26 @@ pub struct CloudCache {
     pub last_online_auth: i64,
 }
 
+/// One snapshot per account, keyed by `user_id`, under `auth-cache/`. Unlike
+/// `CloudCache` (which tracks the single currently-signed-in account), these
+/// persist per-account so a signed-out user can be recognized (and their
+/// offline sign-in throttled) by `find_user_by_email` without another
+/// online round trip. `failed_attempts`/`last_failed_at` are the offline
+/// sign-in throttle counters (Task 5) — they live here, not in the keyring
+/// verifier entry, since they change on every attempt and the verifier
+/// itself should stay untouched.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthCacheEntry {
+    pub user_id: String,
+    pub email: String,
+    pub nickname: String,
+    pub entitlements: Vec<Entitlement>,
+    pub last_online_auth: i64,
+    pub failed_attempts: u32,
+    pub last_failed_at: i64,
+}
+
 pub const KEYRING_SERVICE: &str = "com.cleophis.desktop";
 pub const KEYRING_USER: &str = "supabase-refresh-token";
 
@@ -66,6 +87,40 @@ pub fn load_refresh_token() -> Option<String> {
 /// Best-effort: errors swallowed. Never logs the token itself.
 pub fn delete_refresh_token() {
     if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        let _ = entry.delete_credential();
+    }
+}
+
+fn verifier_keyring_key(user_id: &str) -> String {
+    format!("verifier:{user_id}")
+}
+
+/// One keyring entry per account, so removing one account's offline-sign-in
+/// verifier (Task 6) never touches another's.
+pub fn save_verifier(user_id: &str, v: &StoredVerifier) -> Result<(), CloudError> {
+    let entry = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)).map_err(|e| {
+        eprintln!("keyring: failed to create verifier entry: {e}");
+        CloudError::Internal("keyring unavailable".into())
+    })?;
+    let json = serde_json::to_string(v)
+        .map_err(|e| CloudError::Internal(format!("failed to serialize verifier: {e}")))?;
+    entry.set_password(&json).map_err(|e| {
+        eprintln!("keyring: failed to save verifier: {e}");
+        CloudError::Internal("keyring save failed".into())
+    })
+}
+
+/// None on any error (missing entry, locked keyring, unsupported backend,
+/// or corrupt JSON).
+pub fn load_verifier(user_id: &str) -> Option<StoredVerifier> {
+    let entry = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)).ok()?;
+    let json = entry.get_password().ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// Best-effort: errors swallowed. Never logs the verifier itself.
+pub fn delete_verifier(user_id: &str) {
+    if let Ok(entry) = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)) {
         let _ = entry.delete_credential();
     }
 }
@@ -145,6 +200,76 @@ pub fn queue_pending(
 pub fn grace_expired(last_online_auth: i64, now: i64) -> bool {
     let grace_seconds = config::OFFLINE_GRACE_DAYS * 86_400;
     now - last_online_auth > grace_seconds
+}
+
+/// `<app_data>/auth-cache` — one JSON file per account lives here, named
+/// `<user_id>.json`.
+pub fn auth_cache_dir(app_data: &Path) -> PathBuf {
+    app_data.join("auth-cache")
+}
+
+fn auth_cache_path(dir: &Path, user_id: &str) -> PathBuf {
+    dir.join(format!("{user_id}.json"))
+}
+
+/// Missing or corrupt file → `None` (never a default entry — unlike
+/// `CloudCache`, there's no sensible default for a specific account that
+/// doesn't have a cache entry yet).
+pub fn read_auth_cache(dir: &Path, user_id: &str) -> Option<AuthCacheEntry> {
+    let contents = std::fs::read_to_string(auth_cache_path(dir, user_id)).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+/// Creates `dir` as needed; writes via temp file + rename (same pattern as
+/// `write_cache`) so a reader never observes a partially-written entry.
+pub fn write_auth_cache(dir: &Path, entry: &AuthCacheEntry) -> Result<(), CloudError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CloudError::Internal(format!("failed to create auth-cache dir: {e}")))?;
+    let path = auth_cache_path(dir, &entry.user_id);
+    let json = serde_json::to_string_pretty(entry)
+        .map_err(|e| CloudError::Internal(format!("failed to serialize auth-cache entry: {e}")))?;
+
+    let tmp_path = temp_write_path(&path);
+    {
+        let mut file = std::fs::File::create(&tmp_path)
+            .map_err(|e| CloudError::Internal(format!("failed to write auth-cache entry: {e}")))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| CloudError::Internal(format!("failed to write auth-cache entry: {e}")))?;
+    }
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| CloudError::Internal(format!("failed to finalize auth-cache entry: {e}")))?;
+    Ok(())
+}
+
+/// Scans `dir`'s `*.json` entries for one whose email matches (trim +
+/// lowercase compare), returning the first match. Used to recognize a
+/// signed-out user by the email they type, before they've proven they know
+/// the password.
+pub fn find_user_by_email(dir: &Path, email: &str) -> Option<AuthCacheEntry> {
+    let target = normalize_email(email);
+    let read_dir = std::fs::read_dir(dir).ok()?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(cached) = serde_json::from_str::<AuthCacheEntry>(&contents) else {
+            continue;
+        };
+        if normalize_email(&cached.email) == target {
+            return Some(cached);
+        }
+    }
+    None
+}
+
+/// Trim + lowercase, so `find_user_by_email` matches regardless of
+/// surrounding whitespace or case the user typed.
+pub fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
 }
 
 #[cfg(test)]
@@ -318,5 +443,65 @@ mod tests {
 
         delete_refresh_token();
         assert_eq!(load_refresh_token(), None);
+    }
+
+    // 14. per-account verifier keyring round-trip: save -> load -> delete ->
+    // load is None. Same real-OS-credential-store lock as `keyring_round_trip`
+    // above (not this module's local `lock()`) — the credential store is
+    // shared global state across every keyring test in the `cloud` module.
+    struct VerifierKeyringCleanup<'a>(&'a str);
+    impl Drop for VerifierKeyringCleanup<'_> {
+        fn drop(&mut self) {
+            delete_verifier(self.0);
+        }
+    }
+
+    #[test]
+    fn verifier_keyring_roundtrip() {
+        let _g = crate::cloud::test_support::lock();
+        let uid = "verifier-test-uid-t2";
+        let _cleanup = VerifierKeyringCleanup(uid);
+        delete_verifier(uid); // ensure a clean slate before we start
+
+        let v = crate::cloud::verifier::derive_verifier("plan-test-pw-abcdef").unwrap();
+        save_verifier(uid, &v).unwrap();
+        assert!(crate::cloud::verifier::verify(
+            "plan-test-pw-abcdef",
+            &load_verifier(uid).unwrap()
+        ));
+
+        delete_verifier(uid);
+        assert!(load_verifier(uid).is_none());
+    }
+
+    // 15. auth-cache round-trip + case/space-insensitive email lookup.
+    #[test]
+    fn auth_cache_roundtrip_and_email_lookup() {
+        let _g = lock();
+        let dir = temp_path("auth-cache-t2");
+        let entry = AuthCacheEntry {
+            user_id: "uid-A".into(),
+            email: "Alice@Example.com".into(),
+            nickname: "Alice".into(),
+            entitlements: vec![],
+            last_online_auth: 1000,
+            failed_attempts: 0,
+            last_failed_at: 0,
+        };
+        write_auth_cache(&dir, &entry).unwrap();
+        assert_eq!(
+            read_auth_cache(&dir, "uid-A").unwrap().email,
+            "Alice@Example.com"
+        );
+        // case/space-insensitive email lookup:
+        assert_eq!(
+            find_user_by_email(&dir, "  alice@example.com ")
+                .unwrap()
+                .user_id,
+            "uid-A"
+        );
+        assert!(find_user_by_email(&dir, "bob@example.com").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
