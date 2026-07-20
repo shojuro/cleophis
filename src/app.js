@@ -17,6 +17,10 @@ const state = {
   dl: { installed: false, partBytes: 0, active: false },
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
+  // §7 S7-2b: sidebar organization — folders/chats cache backing the
+  // grouped render, plus the search view and the two single-open dropdowns
+  // (a chat's "Move to…" list, a folder's Rename/Delete menu).
+  sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -578,28 +582,153 @@ function simulateStubDownload(m, btn) {
 // are the sidebar's read/switch/create surface over that store.
 
 async function refreshChatList() {
-  const list = $('chatList');
-  let chats;
+  let chats, folders;
   try {
-    chats = await invoke('list_chats');
+    [chats, folders] = await Promise.all([invoke('list_chats'), invoke('list_folders')]);
   } catch (_) {
     return; // additive UI — leave whatever's already rendered on failure
   }
+  state.sidebar.chats = chats;
+  state.sidebar.folders = folders;
+  // Keep an active search live through any mutation (move/archive/rename/
+  // delete performed on a result row) — otherwise the result list would go
+  // stale relative to state.sidebar.chats and the row's shown pinned/
+  // archived/folder state could drift from what just happened.
+  if (state.sidebar.searchResults != null && state.sidebar.query.trim()) {
+    try { state.sidebar.searchResults = await invoke('search_chats', { query: state.sidebar.query }); } catch (_) {}
+  }
+  renderSidebar();
+}
+
+// title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete/
+// archive/move are static labels, not interpolated user data. `opts.nested`
+// indents a row under a folder header.
+function chatRowHtml(c, opts) {
+  const nested = opts && opts.nested;
+  const moveOpen = state.sidebar.moveMenuFor === c.id;
+  return `
+    <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}${nested ? ' nested' : ''}${c.archived ? ' is-archived' : ''}" data-id="${c.id}">
+      <span class="chatrow-title">${escapeHtml(c.title)}</span>
+      <span class="chatrow-actions">
+        <button class="chatrow-act" data-act="pin" data-pinned="${c.pinned ? '1' : '0'}" title="${c.pinned ? 'Unpin' : 'Pin'}">${c.pinned ? '★' : '☆'}</button>
+        <button class="chatrow-act" data-act="archive" data-archived="${c.archived ? '1' : '0'}" title="${c.archived ? 'Unarchive' : 'Archive'}">${c.archived ? '⤒' : '⤓'}</button>
+        <button class="chatrow-act" data-act="rename" title="Rename">✎</button>
+        <span class="movemenu-wrap">
+          <button class="chatrow-act" data-act="move" title="Move to…">⇄</button>
+          <div class="movemenu ${moveOpen ? 'show' : ''}">
+            <button class="movemenu-item" data-act="move-to" data-folder-id="">Unfiled</button>
+            ${state.sidebar.folders.map((f) => `<button class="movemenu-item" data-act="move-to" data-folder-id="${f.id}">${escapeHtml(f.name)}</button>`).join('')}
+          </div>
+        </span>
+        <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
+      </span>
+    </div>`;
+}
+
+// name is user-renameable (untrusted) — escapeHtml it.
+function folderHeaderHtml(f) {
+  const menuOpen = state.sidebar.folderMenuFor === f.id;
+  return `
+    <div class="folder-header" data-folder-id="${f.id}">
+      <span class="folder-name">${escapeHtml(f.name)}</span>
+      <span class="folder-menu-wrap">
+        <button class="chatrow-act" data-folder-act="toggle" title="Folder options">⋯</button>
+        <div class="movemenu ${menuOpen ? 'show' : ''}">
+          <button class="movemenu-item" data-folder-act="rename">Rename</button>
+          <button class="movemenu-item" data-folder-act="delete">Delete</button>
+        </div>
+      </span>
+    </div>`;
+}
+
+// The grouped view: each folder (sortOrder, then id) as a header + its
+// chats, then an "Unfiled" section for folderId==null — only when at least
+// one folder exists, so a fresh account with no folders renders exactly as
+// plain S7-2 did (no redundant "Unfiled" label over the whole list). A live
+// search instead renders state.sidebar.searchResults flat, ignoring both
+// grouping and the archived filter (ChatGPT/Claude-style: search finds
+// across everything). Archived chats are hidden from the grouped view
+// unless "Show archived" is toggled on, in their own trailing section.
+function renderSidebar() {
+  const list = $('chatList');
+  const footBtn = $('showArchivedBtn');
+  if (footBtn) footBtn.textContent = state.sidebar.showArchived ? 'Hide archived' : 'Show archived';
+
+  if (state.sidebar.searchResults != null) {
+    const results = state.sidebar.searchResults;
+    list.innerHTML = results.length
+      ? results.map((c) => chatRowHtml(c)).join('')
+      : `<div class="chatlist-empty">No matches.</div>`;
+    return;
+  }
+
+  const chats = state.sidebar.chats;
   if (!chats.length) {
     list.innerHTML = `<div class="chatlist-empty">No conversations yet.</div>`;
     return;
   }
-  // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete
-  // are static labels, not interpolated user data.
-  list.innerHTML = chats.map((c) => `
-    <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}" data-id="${c.id}">
-      <span class="chatrow-title">${escapeHtml(c.title)}</span>
-      <span class="chatrow-actions">
-        <button class="chatrow-act" data-act="pin" data-pinned="${c.pinned ? '1' : '0'}" title="${c.pinned ? 'Unpin' : 'Pin'}">${c.pinned ? '★' : '☆'}</button>
-        <button class="chatrow-act" data-act="rename" title="Rename">✎</button>
-        <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
-      </span>
-    </div>`).join('');
+  const active = chats.filter((c) => !c.archived);
+  const archived = chats.filter((c) => c.archived);
+  const folders = [...state.sidebar.folders].sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+
+  let html = '';
+  if (folders.length) {
+    for (const f of folders) {
+      const inFolder = active.filter((c) => c.folderId === f.id);
+      html += folderHeaderHtml(f);
+      html += inFolder.length
+        ? inFolder.map((c) => chatRowHtml(c, { nested: true })).join('')
+        : `<div class="folder-empty">No chats</div>`;
+    }
+    const unfiled = active.filter((c) => c.folderId == null);
+    html += `<div class="folder-header unfiled"><span class="folder-name">Unfiled</span></div>`;
+    html += unfiled.length
+      ? unfiled.map((c) => chatRowHtml(c, { nested: true })).join('')
+      : `<div class="folder-empty">No chats</div>`;
+  } else if (active.length) {
+    html += active.map((c) => chatRowHtml(c)).join('');
+  } else {
+    html += `<div class="chatlist-empty">All conversations are archived — Show archived below.</div>`;
+  }
+
+  if (state.sidebar.showArchived) {
+    html += `<div class="folder-header archived-section"><span class="folder-name">Archived</span></div>`;
+    html += archived.length
+      ? archived.map((c) => chatRowHtml(c)).join('')
+      : `<div class="folder-empty">No archived chats</div>`;
+  }
+
+  list.innerHTML = html;
+}
+
+// Debounced (~150ms) query -> search_chats, guarded against an empty/
+// whitespace query (never calls search_chats with one — matches the
+// grouped view instead) and against out-of-order resolution: if the query
+// has moved on by the time this resolves, its result is discarded.
+let chatSearchDebounce = null;
+function onChatSearchInput(q) {
+  state.sidebar.query = q;
+  clearTimeout(chatSearchDebounce);
+  if (!q.trim()) {
+    state.sidebar.searchResults = null;
+    renderSidebar();
+    return;
+  }
+  chatSearchDebounce = setTimeout(() => runChatSearch(q), 150);
+}
+async function runChatSearch(q) {
+  let results;
+  try { results = await invoke('search_chats', { query: q }); } catch (_) { return; }
+  if (state.sidebar.query !== q) return; // stale — a newer query has since landed
+  state.sidebar.searchResults = results;
+  renderSidebar();
+}
+function clearChatSearch() {
+  $('chatSearch').value = '';
+  state.sidebar.query = '';
+  state.sidebar.searchResults = null;
+  clearTimeout(chatSearchDebounce);
+  renderSidebar();
 }
 
 // Clears the message DOM back to just the model's greeting, without
@@ -1151,7 +1280,12 @@ $('grid').addEventListener('click', (e) => {
 $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu(); }
+  if (e.key === 'Escape') {
+    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); closeProfileMenu();
+    if (state.sidebar.moveMenuFor != null || state.sidebar.folderMenuFor != null) {
+      state.sidebar.moveMenuFor = null; state.sidebar.folderMenuFor = null; renderSidebar();
+    }
+  }
 });
 $('loginBtn').addEventListener('click', () => show($('loginModal')));
 $('profileBtn').addEventListener('click', (e) => {
@@ -1253,7 +1387,49 @@ $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 $('newChatBtn').addEventListener('click', () => newChat());
+$('newFolderBtn').addEventListener('click', async () => {
+  const name = window.prompt('New folder name');
+  if (name == null || !name.trim()) return;
+  try { await invoke('create_folder', { name: name.trim() }); } catch (_) {}
+  await refreshChatList();
+});
+$('chatSearch').addEventListener('input', (e) => onChatSearchInput(e.target.value));
+$('chatSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape') clearChatSearch(); });
+$('showArchivedBtn').addEventListener('click', () => {
+  state.sidebar.showArchived = !state.sidebar.showArchived;
+  renderSidebar();
+});
 $('chatList').addEventListener('click', async (e) => {
+  // Folder header clicks (⋯ -> Rename/Delete) are handled separately —
+  // a .folder-header is not a .chatrow, so it falls outside the row
+  // handling below.
+  const folderActBtn = e.target.closest('[data-folder-act]');
+  if (folderActBtn) {
+    e.stopPropagation();
+    const header = e.target.closest('.folder-header');
+    const fid = Number(header.dataset.folderId);
+    const act = folderActBtn.dataset.folderAct;
+    if (act === 'toggle') {
+      state.sidebar.folderMenuFor = state.sidebar.folderMenuFor === fid ? null : fid;
+      state.sidebar.moveMenuFor = null;
+      renderSidebar();
+    } else if (act === 'rename') {
+      state.sidebar.folderMenuFor = null;
+      const nameEl = header.querySelector('.folder-name');
+      const next = window.prompt('Rename folder', nameEl ? nameEl.textContent : '');
+      if (next != null && next.trim()) {
+        try { await invoke('rename_folder', { id: fid, name: next.trim() }); } catch (_) {}
+      }
+      await refreshChatList();
+    } else if (act === 'delete') {
+      state.sidebar.folderMenuFor = null;
+      if (!window.confirm('Delete this folder? Its chats move to Unfiled.')) { renderSidebar(); return; }
+      try { await invoke('delete_folder', { id: fid }); } catch (_) {}
+      await refreshChatList();
+    }
+    return;
+  }
+
   const actBtn = e.target.closest('[data-act]');
   const row = e.target.closest('.chatrow');
   if (!row) return;
@@ -1285,10 +1461,34 @@ $('chatList').addEventListener('click', async (e) => {
       const pinned = actBtn.dataset.pinned === '1';
       try { await invoke('set_chat_pinned', { id, pinned: !pinned }); } catch (_) {}
       await refreshChatList();
+    } else if (act === 'archive') {
+      const archived = actBtn.dataset.archived === '1';
+      state.sidebar.moveMenuFor = null;
+      try { await invoke('set_chat_archived', { id, archived: !archived }); } catch (_) {}
+      await refreshChatList();
+    } else if (act === 'move') {
+      state.sidebar.moveMenuFor = state.sidebar.moveMenuFor === id ? null : id;
+      state.sidebar.folderMenuFor = null;
+      renderSidebar();
+    } else if (act === 'move-to') {
+      const raw = actBtn.dataset.folderId;
+      const folderId = raw === '' ? null : Number(raw);
+      state.sidebar.moveMenuFor = null;
+      try { await invoke('move_chat', { id, folderId }); } catch (_) {}
+      await refreshChatList();
     }
     return;
   }
   await openChat(id);
+});
+// Outside-click close for the two sidebar dropdowns (move-to / folder
+// menu) — same pattern as the profile menu below.
+document.addEventListener('click', (e) => {
+  if (state.sidebar.moveMenuFor == null && state.sidebar.folderMenuFor == null) return;
+  if (e.target.closest('.movemenu-wrap') || e.target.closest('.folder-menu-wrap')) return;
+  state.sidebar.moveMenuFor = null;
+  state.sidebar.folderMenuFor = null;
+  renderSidebar();
 });
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
@@ -1309,6 +1509,13 @@ $('signOutBtn').addEventListener('click', async () => {
   state.chat.packPaths = [];
   state.chat.chatId = null;
   $('chatList').innerHTML = '';
+  // §7 S7-2b: the sidebar's folder/archive/search UI is per-account too —
+  // drop it here so the next sign-in (possibly a different account) starts
+  // from a clean grouped view instead of replaying this session's search
+  // query or open menus over freshly-fetched data.
+  state.sidebar = { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null };
+  clearTimeout(chatSearchDebounce);
+  $('chatSearch').value = '';
   state.signedIn = false;
   state.nick = null;
   state.device = null;
