@@ -46,6 +46,16 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 # (`convstore::now_iso`). `clock` is the only feature needed — this reads
 # the system clock, nothing more.
 chrono = { version = "0.4", features = ["clock"] }
+# Offline-auth: Argon2id password verifier (cloud/verifier.rs). PHC-string
+# API only — no extra features needed beyond the default `password-hash`.
+argon2 = "0.5"
+# argon2's `password-hash` re-export doesn't turn on rand_core's
+# `getrandom` feature by default, so `OsRng` isn't reachable through it —
+# pull rand_core in directly with that feature for `SaltString::generate`.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Offline-auth: NFC normalization so a password typed with a precomposed
+# vs. combining-accent form still verifies (verifier::normalize_password).
+unicode-normalization = "0.1"
 
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"
