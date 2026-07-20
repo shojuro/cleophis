@@ -820,6 +820,12 @@ async function newChat() {
 const N_CTX = 4096;         // must match inference.rs `-c`
 const REPLY_RESERVE = 512;  // must match the request's max_tokens
 const CTX_SAFETY = 128;     // headroom for tokenizer estimate error + framing
+// Appended to the system prompt on UNGROUNDED turns (no packs attached this
+// turn). Without grounding the base model will otherwise parrot/fabricate
+// "source titles" from earlier grounded turns still in the transcript — the
+// grounded path is hardened symmetrically in retrieve.rs. Interim mitigation;
+// the contract-trained LoRA adapter is the real fix for grounding-honesty.
+const UNGROUNDED_NO_SOURCES_NOTE = ' No documents are attached to this conversation, so you have no sources to cite. Do not list, cite, or invent source titles; if asked about your sources, say none are attached.';
 // Deliberately conservative (~3.5 chars/token OVER-estimates tokens → we
 // under-fill and stay under n_ctx rather than risk overflow).
 function estTokens(s) { return Math.ceil((s ? s.length : 0) / 3.5) + 4; /* +4 ≈ role framing */ }
@@ -1157,7 +1163,7 @@ async function sendCompletion(userText) {
     // history budget — sources + kept history still stay within n_ctx.
     // Short chats are unaffected: windowMessages returns the whole list
     // (droppedCount 0), so behavior is byte-identical to before.
-    const sys = groundedPrompt ?? m.systemPrompt;
+    const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
     const win = windowMessages(state.chat.messages, sys, m.greeting);
     const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
       method: 'POST',
