@@ -122,7 +122,35 @@ pub async fn remove_account_from_device(
     app: AppHandle,
     cloud: State<'_, Arc<Cloud>>,
 ) -> Result<(), String> {
+    remove_account_impl(user_id, wipe_local_data, app, cloud.inner().clone()).await
+}
+
+/// "Remove account from this device" for the CURRENTLY signed-in account —
+/// the profile-menu affordance (Task 7). The user id is resolved from the
+/// authoritative session (`current_user_id`), never taken from the front
+/// end, so a renderer can only ever remove the account it is signed into.
+#[tauri::command]
+pub async fn remove_current_account_from_device(
+    wipe_local_data: bool,
+    app: AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+) -> Result<(), String> {
     let cloud = cloud.inner().clone();
+    let user_id = cloud
+        .current_user_id()
+        .ok_or_else(|| "You're not signed in.".to_string())?;
+    remove_account_impl(user_id, wipe_local_data, app, cloud).await
+}
+
+/// Shared body for the two remove-account commands (Task 6): remove the
+/// auth footprint first (which gates on the account being known + signs it
+/// out if active), then, only on success, optionally wipe its local data.
+async fn remove_account_impl(
+    user_id: String,
+    wipe_local_data: bool,
+    app: AppHandle,
+    cloud: Arc<Cloud>,
+) -> Result<(), String> {
     let auth_user_id = user_id.clone();
     tauri::async_runtime::spawn_blocking(move || cloud.remove_account_auth(&auth_user_id))
         .await

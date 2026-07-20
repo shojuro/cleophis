@@ -63,6 +63,18 @@ nav.top button.active{color:var(--teal)}
 .profilemenu-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);
   font-size:14px;padding:9px 10px;border-radius:8px}
 .profilemenu-item:hover{background:var(--surface2)}
+.profilemenu-item.danger{color:var(--heavy)}
+.profilemenu-item.danger:hover{background:rgba(226,104,95,.12)}
+/* offline-auth: sign-up password-strength meter */
+.pwmeter{margin:-4px 0 12px;padding:0 2px}
+.pwmeter-bar{display:flex;gap:4px}
+.pwmeter-bar span{flex:1;height:4px;border-radius:2px;background:var(--surface2);transition:background .15s ease}
+.pwmeter-bar span.on.s0,.pwmeter-bar span.on.s1{background:var(--heavy)}
+.pwmeter-bar span.on.s2{background:var(--amber)}
+.pwmeter-bar span.on.s3,.pwmeter-bar span.on.s4{background:var(--teal)}
+.pwmeter-tip{margin-top:6px;font-size:12px;color:var(--muted)}
+.btn.danger{background:transparent;border-color:var(--heavy);color:var(--heavy)}
+.btn.danger:hover{background:rgba(226,104,95,.12);border-color:var(--heavy)}
 
 /* ---- hero strip ---- */
 .hero{max-width:1240px;margin:0 auto;padding:34px 24px 8px}
