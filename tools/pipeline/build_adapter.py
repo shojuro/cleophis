@@ -64,11 +64,14 @@ Inputs:
                        work/out)
     --work-dir         scratch root for the downloaded PEFT dir    (default:
                        work/)
-    --dry-run          resolve the PEFT dir and print the exact
-                       convert_lora_to_gguf.py command that would run,
-                       without invoking it and without writing any output
-                       (orchestration smoke test — see Task A3's
-                       pre-handoff verification note)
+    --dry-run          still fully resolves the PEFT source — including a
+                       REAL B2 fetch when --local-peft-dir isn't given;
+                       --dry-run does NOT stub that out — and prints the
+                       exact convert_lora_to_gguf.py command that would
+                       run; only the conversion itself (and the
+                       hash/manifest steps after it) is skipped, so no
+                       output is written (orchestration smoke test — see
+                       Task A3's pre-handoff verification note)
     tools/pipeline/.env: B2_ENDPOINT, B2_KEY_ID, B2_APP_KEY (required
                     unless --local-peft-dir is given)
 
@@ -85,20 +88,37 @@ Hashes: sha256 of the final adapter GGUF is computed by this script itself
 via a streaming read (never trusted from elsewhere, never loads the whole
 file into memory) and is what ends up in manifest.json.
 
-Idempotent: the B2 download is a per-file, size-check skip (small files,
-so a simple size comparison is sufficient — no per-file sha tracked) that
-never deletes or overwrites a file already complete on disk. The GGUF
-conversion follows the exact same provenance-sidecar pattern
+Idempotent: the B2 download is a per-file skip check that compares size
+AND, when the object's ETag is a plain (single-part-upload) MD5 — B2/S3
+multipart-upload ETags are a `"<hex>-<parts>"` composite, not the object's
+MD5, and can't be verified without replicating their multipart hash
+algorithm — the local file's own MD5 against that ETag; a multipart ETag
+(or a size mismatch, or no local file yet) always (re)downloads rather
+than trusting size alone. Cheap for a PEFT dir's handful of small files.
+Nothing already on disk is ever deleted or overwritten in place (each file
+lands via `.partial` temp-then-rename).
+
+The GGUF conversion follows the exact same provenance-sidecar pattern
 build_base.py's convert/quantize stages use: convert writes to a
 `.partial` sibling and renames atomically on success, and a re-run only
 treats an existing output as complete if its `<output>.provenance.json`
-sidecar matches THIS invocation's (source, base_revision). A same-path
-output built from a different PEFT source or against a different base
-revision is provenance-untrustworthy for the signed catalog (A4 trusts the
-manifest this script writes), so a mismatch is a hard refusal
-(StaleArtifactError), never a silent rebuild or silent reuse — the
-operator has to explicitly clear the stale output + its sidecar (and any
-downstream manifest) before re-running.
+sidecar matches THIS invocation's (source, base_revision,
+peft_content_sha256). That third key is deliberate: `source` alone (an S3
+prefix, or a local path) is NOT content-addressed the way A2's pinned git
+`revision` is — a mutable bucket prefix can be silently overwritten by a
+retrain, and a same-path/same-revision re-run would otherwise match a
+stale sidecar and skip, serving the OLD adapter bytes into A4's catalog.
+`peft_content_sha256` (see `peft_content_sha256_of_dir()`) is a
+deterministic hash of every file under the resolved PEFT dir, so an
+in-place retrain at the same `source` changes the key and is caught. A
+same-path output whose sidecar doesn't match on any of the three fields is
+provenance-untrustworthy for the signed catalog (A4 trusts the manifest
+this script writes), so a mismatch is a hard refusal (StaleArtifactError),
+never a silent rebuild or silent reuse — the operator has to explicitly
+clear the stale output + its sidecar (and any downstream manifest) before
+re-running. `peft_content_sha256` is also carried into the output
+manifest itself, so A4 gets this provenance for free without re-deriving
+it.
 
 PEFT source manifest carry-forward: the bucket PEFT dir's own manifest
 format is not fixed by this script. If a `manifest.json` (or, failing
@@ -154,8 +174,10 @@ PEFT_NON_MANIFEST_FILENAMES = {"adapter_config.json"}
 
 class StaleArtifactError(RuntimeError):
     """An on-disk output exists but its provenance sidecar doesn't match the
-    requested (source, base_revision) — refuse rather than silently
-    rebuild/reuse it. Mirrors build_base.py's StaleArtifactError."""
+    requested (source, base_revision, peft_content_sha256) — refuse rather
+    than silently rebuild/reuse it. Mirrors build_base.py's
+    StaleArtifactError, plus the content-hash key `source` alone can't
+    provide (see the module docstring's "Idempotent" section for why)."""
 
 
 def provenance_path(artifact_path: Path) -> Path:
@@ -175,24 +197,36 @@ def read_provenance(artifact_path: Path) -> dict | None:
         return None
 
 
-def write_provenance_atomic(artifact_path: Path, source: str, base_revision: str) -> None:
+def write_provenance_atomic(artifact_path: Path, source: str, base_revision: str, peft_content_sha256: str) -> None:
     path = provenance_path(artifact_path)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"source": source, "base_revision": base_revision}, indent=2) + "\n")
+    tmp.write_text(
+        json.dumps(
+            {"source": source, "base_revision": base_revision, "peft_content_sha256": peft_content_sha256},
+            indent=2,
+        )
+        + "\n"
+    )
     tmp.replace(path)  # atomic rename on POSIX, same filesystem
 
 
-def check_provenance_or_refuse(artifact_path: Path, source: str, base_revision: str) -> bool:
+def check_provenance_or_refuse(artifact_path: Path, source: str, base_revision: str, peft_content_sha256: str) -> bool:
     """True if `artifact_path` already exists AND its provenance sidecar
-    matches (source, base_revision) — conversion can be skipped. False if
-    the path doesn't exist yet (conversion should run normally). Raises
-    StaleArtifactError if the path exists but the sidecar is
-    missing/mismatched, rather than silently rebuilding or silently
-    trusting a possibly-wrong artifact.
+    matches (source, base_revision, peft_content_sha256) — conversion can
+    be skipped. False if the path doesn't exist yet (conversion should run
+    normally). Raises StaleArtifactError if the path exists but the
+    sidecar is missing/mismatched, rather than silently rebuilding or
+    silently trusting a possibly-wrong artifact.
+
+    peft_content_sha256 is the key that actually pins this to PEFT BYTES:
+    `source` (an S3 prefix or local path) is mutable — an in-place retrain
+    at the same bucket path, followed by a default-args re-run, would
+    otherwise match on (source, base_revision) alone and silently keep
+    serving the OLD converted adapter into A4's catalog.
     """
     if not (artifact_path.is_file() and artifact_path.stat().st_size > 0):
         return False
-    expected = {"source": source, "base_revision": base_revision}
+    expected = {"source": source, "base_revision": base_revision, "peft_content_sha256": peft_content_sha256}
     actual = read_provenance(artifact_path)
     if actual == expected:
         return True
@@ -203,7 +237,7 @@ def check_provenance_or_refuse(artifact_path: Path, source: str, base_revision: 
         f"potentially mismatched artifact. Remove {artifact_path.name} and "
         f"{provenance_path(artifact_path).name} (and any downstream "
         f"manifest.json built from it) if you intend to rebuild for this "
-        f"source/base_revision."
+        f"source/base_revision/PEFT content."
     )
 
 
@@ -266,7 +300,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the exact convert_lora_to_gguf.py command that would run, without executing it or writing any output",
+        help="still fully resolves the PEFT source (a REAL B2 fetch happens if --local-peft-dir isn't given) but only "
+        "prints the convert_lora_to_gguf.py command instead of running it, and writes no output",
     )
     return parser.parse_args(argv)
 
@@ -302,6 +337,34 @@ def load_b2_credentials(env_file: Path) -> tuple[str, str, str] | None:
     return endpoint, key_id, app_key
 
 
+def md5_file(path: Path) -> str:
+    """Streaming MD5 of a local file — used ONLY to compare against a
+    B2/S3 object's plain-upload ETag in the download skip-check below.
+    This is not a security use: B2/S3's own ETag mechanics are what pin
+    this to MD5, not a choice made here. `usedforsecurity=False` avoids a
+    spurious failure on Python builds that enforce FIPS-mode hash
+    restrictions for anything not explicitly marked non-security.
+    """
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(HASH_CHUNK_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_plain_md5_etag(etag: str) -> bool:
+    """True if `etag` (already stripped of surrounding quotes) looks like a
+    plain single-part-upload MD5 hex digest, as opposed to a multipart-
+    upload composite ETag (`"<hex>-<num_parts>"`). A composite ETag is NOT
+    the MD5 of the object's bytes and can't be verified without
+    replicating B2/S3's multipart hashing algorithm, so callers should
+    treat a non-plain-MD5 ETag as "can't verify, must (re)download"."""
+    return bool(etag) and "-" not in etag and len(etag) == 32
+
+
 def download_peft_dir_from_s3(
     bucket: str,
     prefix: str,
@@ -315,8 +378,14 @@ def download_peft_dir_from_s3(
     preserving the relative key layout.
 
     Resumable in the simple sense the brief calls for (small PEFT files):
-    a file already on disk with a size matching the remote object's size is
-    skipped rather than re-downloaded; nothing already on disk is ever
+    a file already on disk is skipped only if its size matches the remote
+    object's size AND (when the object's ETag is a plain single-part-
+    upload MD5 — see `is_plain_md5_etag`) the local file's own MD5 also
+    matches that ETag. A multipart-upload ETag (or a size mismatch, or no
+    local file yet) always (re)downloads rather than trusting size alone —
+    cheap for a PEFT dir's handful of small files, and it closes the gap
+    where an in-place file overwrite at the same key/size would otherwise
+    silently pass a size-only check. Nothing already on disk is ever
     deleted or overwritten in place (each file lands via a `.partial`
     temp-then-rename so a killed download never masquerades as complete).
     Kept as lineage — this function has no delete path at all.
@@ -366,9 +435,19 @@ def download_peft_dir_from_s3(
         local_path = dest_dir / rel
         local_path.parent.mkdir(parents=True, exist_ok=True)
         remote_size = obj["Size"]
+        etag = obj.get("ETag", "").strip('"')
         if local_path.is_file() and local_path.stat().st_size == remote_size:
-            print(f"[s3] {rel} already present ({remote_size} bytes), skipping", flush=True)
-            continue
+            if is_plain_md5_etag(etag):
+                if md5_file(local_path) == etag:
+                    print(f"[s3] {rel} already present, size+MD5-verified ({remote_size} bytes), skipping", flush=True)
+                    continue
+                print(f"[s3] {rel} present locally but its MD5 doesn't match the remote ETag — redownloading", flush=True)
+            else:
+                print(
+                    f"[s3] {rel} present locally with matching size but a non-plain-MD5 ETag "
+                    "(multipart upload) — can't verify content from ETag alone, redownloading",
+                    flush=True,
+                )
 
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
@@ -445,17 +524,21 @@ def convert_lora(
     outtype: str,
     source: str,
     base_revision: str,
+    peft_content_sha256: str,
     dry_run: bool = False,
 ) -> Path:
     """Run convert_lora_to_gguf.py to produce the adapter GGUF.
 
     Same provenance-checked skip-if-done / write-to-.partial-then-rename
-    idempotency pattern as build_base.py's convert_to_f16/quantize. When
-    dry_run is True, the provenance short-circuit is skipped (a dry run
-    always builds and prints the command) and the function returns before
-    invoking the subprocess or touching the output path at all.
+    idempotency pattern as build_base.py's convert_to_f16/quantize, keyed
+    on (source, base_revision, peft_content_sha256) — see
+    `check_provenance_or_refuse`'s docstring for why the content hash is
+    load-bearing, not just belt-and-suspenders. When dry_run is True, the
+    provenance short-circuit is skipped (a dry run always builds and
+    prints the command) and the function returns before invoking the
+    subprocess or touching the output path at all.
     """
-    if not dry_run and check_provenance_or_refuse(out_gguf, source, base_revision):
+    if not dry_run and check_provenance_or_refuse(out_gguf, source, base_revision, peft_content_sha256):
         print(f"[convert] {out_gguf} already exists with matching provenance, skipping", flush=True)
         return out_gguf
 
@@ -479,7 +562,7 @@ def convert_lora(
     tmp.unlink(missing_ok=True)
     subprocess.run(cmd, check=True)
     tmp.rename(out_gguf)
-    write_provenance_atomic(out_gguf, source, base_revision)
+    write_provenance_atomic(out_gguf, source, base_revision, peft_content_sha256)
     return out_gguf
 
 
@@ -495,6 +578,39 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def peft_content_sha256_of_dir(peft_dir: Path) -> str:
+    """Deterministic content hash of an entire PEFT dir: every file under
+    it, sorted by relative POSIX path for determinism, each paired with
+    its own streaming sha256, folded into one aggregate sha256.
+
+    This is what actually pins provenance to PEFT BYTES. Unlike A2's
+    `--revision` (an immutable pinned git commit), A3's `--peft-prefix` is
+    a MUTABLE B2 key — an in-place retrain published to the same prefix,
+    followed by a default-args re-run, would match a provenance sidecar
+    keyed only on (source, base_revision) and silently keep serving the
+    OLD converted adapter into A4's catalog. Hashing the resolved dir's
+    actual bytes (not just its location) closes that gap: any changed
+    byte in any file changes this hash, so a stale sidecar is caught by
+    `check_provenance_or_refuse` instead of silently matching.
+
+    `.partial`/`.tmp` residue (shouldn't exist after a successful
+    download, but defensively excluded) is skipped so an interrupted
+    prior download can't perturb the hash of files that already are
+    complete.
+    """
+    digest = hashlib.sha256()
+    paths = sorted(
+        p for p in peft_dir.rglob("*") if p.is_file() and p.suffix not in (".partial", ".tmp")
+    )
+    for path in paths:
+        rel = path.relative_to(peft_dir).as_posix()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def write_manifest_atomic(manifest_path: Path, manifest: dict) -> None:
     tmp = manifest_path.with_name(manifest_path.name + ".tmp")
     tmp.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -505,6 +621,7 @@ def build_manifest(
     *,
     basename: str,
     source: str,
+    peft_content_sha256: str,
     base_model: str,
     base_revision: str,
     sha256: str,
@@ -515,6 +632,12 @@ def build_manifest(
     return {
         "name": basename,
         "source": source,
+        # Content hash of the PEFT source dir this adapter was converted
+        # from — NOT the same as `sha256` (that's the converted GGUF's own
+        # hash). Carried forward from the provenance sidecar so A4 gets it
+        # for free; see check_provenance_or_refuse's docstring for why
+        # `source` alone (a mutable B2 prefix) can't provide this guarantee.
+        "peft_content_sha256": peft_content_sha256,
         "base_model": base_model,
         "base_revision": base_revision,
         "kind": "adapter",
@@ -571,6 +694,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Content-address the resolved PEFT dir's actual bytes — `source` alone
+    # (an S3 prefix or local path) is mutable and can't detect an in-place
+    # retrain published to the same location; see peft_content_sha256_of_dir's
+    # docstring.
+    peft_content_sha256 = peft_content_sha256_of_dir(peft_dir)
+    print(f"[hash] peft_content_sha256({peft_dir}) = {peft_content_sha256}", flush=True)
+
     # --- Resolve the base model dir --------------------------------------
     base_dir = args.base_dir if args.base_dir is not None else args.work_dir / "hf-snapshot" / args.base_repo.replace("/", "__")
     if not (base_dir / "config.json").is_file():
@@ -591,7 +721,16 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = target_dir / "manifest.json"
 
     try:
-        convert_lora(peft_dir, base_dir, final_gguf, args.outtype, source, args.base_revision, dry_run=args.dry_run)
+        convert_lora(
+            peft_dir,
+            base_dir,
+            final_gguf,
+            args.outtype,
+            source,
+            args.base_revision,
+            peft_content_sha256,
+            dry_run=args.dry_run,
+        )
     except (subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"error: conversion failed: {exc}", file=sys.stderr)
         return 1
@@ -608,6 +747,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = build_manifest(
         basename=basename,
         source=source,
+        peft_content_sha256=peft_content_sha256,
         base_model=args.model_name,
         base_revision=args.base_revision,
         sha256=digest,
