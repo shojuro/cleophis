@@ -128,8 +128,6 @@ pub enum HeroEntitlement {
 /// Why a switch was refused — mapped to user-facing copy at the command layer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwitchDenied {
-    /// No active hero entitlement — renew to switch.
-    NoEntitlement,
     /// The one change for this billing period is already spent; unlocks at
     /// renewal (the current period's `expires_at`).
     AlreadySwitchedThisPeriod { available_at: Option<String> },
@@ -140,7 +138,15 @@ pub enum SwitchDenied {
 /// The switch-limit state machine (pure). Free until the user has `committed`
 /// (chatted) on the active model; after that, one change per billing period
 /// (period key = the entitlement `expires_at`), or one per 30 days for a
-/// perpetual grant. No active entitlement always refuses.
+/// perpetual grant.
+///
+/// It does NOT hard-block on a missing entitlement. When no billing PERIOD can
+/// be resolved — an offline sync gap, a perpetual/library grant, a transient
+/// lookup miss, or a shared-device account that never synced — we allow the
+/// change: the limit exists to curb *repetitive flipping*, not to gate access
+/// (that's the Get/checkout flow's job), and a wrongly-disabled selector is a
+/// worse failure than an occasional extra switch. Only a resolved-and-already-
+/// used period, or an in-progress perpetual cooldown, blocks.
 pub fn switch_allowed(
     committed: bool,
     ent: &HeroEntitlement,
@@ -148,15 +154,11 @@ pub fn switch_allowed(
     switched_at: Option<i64>,
     now: i64,
 ) -> Result<(), SwitchDenied> {
-    if let HeroEntitlement::None = ent {
-        return Err(SwitchDenied::NoEntitlement);
-    }
     if !committed {
         // Setup / pre-first-chat: changing the tier is free.
         return Ok(());
     }
     match ent {
-        HeroEntitlement::None => unreachable!("handled above"),
         HeroEntitlement::Period(expires_at) => {
             if recorded_period_key == Some(expires_at.as_str()) {
                 Err(SwitchDenied::AlreadySwitchedThisPeriod {
@@ -172,6 +174,8 @@ pub fn switch_allowed(
             }),
             _ => Ok(()),
         },
+        // No resolvable period → don't gray out the selector; allow the change.
+        HeroEntitlement::None => Ok(()),
     }
 }
 
@@ -286,7 +290,11 @@ fn variant_on_disk(app: &AppHandle, variant: &crate::catalog::ResolvedHero) -> b
 /// (`Cloud::entitlements` returns the cache when offline), for the switch
 /// limit. See [`resolve_hero_entitlement`].
 fn current_entitlement(cloud: &Cloud) -> HeroEntitlement {
-    let ents = cloud.entitlements().unwrap_or_default();
+    // A transient online lookup failure must NOT read as "no entitlement" (it
+    // would wrongly show the limit) — fall back to the locally-cached list.
+    let ents = cloud
+        .entitlements()
+        .unwrap_or_else(|_| cloud.cached_entitlements());
     resolve_hero_entitlement(&ents, Utc::now())
 }
 
@@ -329,12 +337,22 @@ fn period_key_of(ent: &HeroEntitlement) -> Option<String> {
     }
 }
 
+/// The tier currently on disk / running: the stored `active_tier`, or — before
+/// the first install has recorded one — the effective tier (a fresh auto
+/// install runs the detected tier). Prevents a "pick the tier I'm already on"
+/// click from counting as a real change (which would burn the period's switch
+/// and needlessly reload the same model).
+fn current_active_tier(sel: &TierSelection, detected: &str) -> String {
+    if sel.active_tier.is_empty() {
+        effective_tier_from(sel, detected)
+    } else {
+        sel.active_tier.clone()
+    }
+}
+
 /// Map a [`SwitchDenied`] to user-facing copy for the FE.
 fn denial_message(d: &SwitchDenied) -> String {
     match d {
-        SwitchDenied::NoEntitlement => {
-            "Renew your subscription to change your model.".to_string()
-        }
         SwitchDenied::AlreadySwitchedThisPeriod { available_at } => match available_at {
             Some(when) => format!(
                 "You can change your model once per billing period — next change after {when}."
@@ -418,7 +436,6 @@ pub async fn get_tier_selection(
                     SwitchDenied::CooldownActive { available_at } => {
                         DateTime::from_timestamp(*available_at, 0).map(|d| d.to_rfc3339())
                     }
-                    SwitchDenied::NoEntitlement => None,
                 };
                 (false, next)
             }
@@ -461,9 +478,9 @@ pub async fn begin_tier_switch(
         let variant = hero_variant_for(&app, &target)?;
         let base_model = variant.base_model.clone().unwrap_or_default();
 
-        // A mode relabel that doesn't change the installed model: no download,
-        // no restart, no limit consumed.
-        if !sel.active_tier.is_empty() && target == sel.active_tier {
+        // A mode relabel that doesn't change the installed model (e.g. explicit
+        // "mid" ↔ "auto" on a mid box): no download, no restart, no limit.
+        if target == current_active_tier(&sel, &detected) {
             return Ok(SwitchPlan {
                 target_tier: target,
                 base_model,
@@ -472,17 +489,12 @@ pub async fn begin_tier_switch(
             });
         }
 
-        // A real change → enforce the switch limit (unless still uncommitted).
+        // A real change → enforce the switch limit (a no-op before the first
+        // chat; see `switch_allowed`).
         let now = Utc::now().timestamp();
         let ent = current_entitlement(&cloud);
-        if sel.committed {
-            if let Err(d) = switch_allowed(true, &ent, sel.period_key.as_deref(), sel.switched_at, now) {
-                return Err(denial_message(&d));
-            }
-        } else if let HeroEntitlement::None = ent {
-            // Even the free setup change needs an active entitlement to
-            // download the new bytes.
-            return Err(denial_message(&SwitchDenied::NoEntitlement));
+        if let Err(d) = switch_allowed(sel.committed, &ent, sel.period_key.as_deref(), sel.switched_at, now) {
+            return Err(denial_message(&d));
         }
 
         let needs_download = !variant_on_disk(&app, &variant);
@@ -517,7 +529,7 @@ pub async fn complete_tier_switch(
         let sel = read_app_selection(&app);
         let detected = crate::hardware::detect().tier;
         let target = mode_effective_tier(&mode, &sel, &detected);
-        let changed = sel.active_tier != target;
+        let changed = target != current_active_tier(&sel, &detected);
 
         let ent = current_entitlement(&cloud);
         let now = Utc::now().timestamp();
@@ -546,23 +558,29 @@ pub async fn complete_tier_switch(
         let path = selection_path(&app).ok_or_else(|| "no app-data dir".to_string())?;
 
         if changed {
-            // The new pair must be fully on disk before we relaunch onto it.
-            if crate::inference::resolve_launch(&app).is_none() {
-                // Persist the mode intent but do not restart onto a missing
-                // model — the FE routes back through the download flow.
+            // The TARGET pair (not the currently-resolved one) must be fully on
+            // disk before we relaunch onto it — checked directly, since
+            // `resolve_launch` would still resolve the OLD tier until the new
+            // selection is written.
+            let variant = hero_variant_for(&app, &target)?;
+            if !variant_on_disk(&app, &variant) {
+                // Don't persist / restart / sweep onto a missing model — the FE
+                // routes back through the download flow.
                 return Err("The selected model isn't fully downloaded yet.".to_string());
             }
             // Persist BEFORE restart so `resolve_launch` inside the engine
             // thread resolves the new tier.
             write_selection(&path, &new_sel)?;
             crate::inference::restart(app.clone(), engine);
-            // Sweep only AFTER the relaunch is under way — keep just the new
-            // active pair, deleting the previous tier's files and any orphans.
-            let variant = hero_variant_for(&app, &target)?;
-            if let Some(dir) = models_dir(&app) {
-                let removed = sweep_models(&dir, &keep_basenames(&variant));
-                if !removed.is_empty() {
-                    eprintln!("tier switch: swept {} stale model file(s)", removed.len());
+            // Sweep only once the new tier actually resolves on disk (defensive:
+            // never strip the previous model if the relaunch had nothing to
+            // load) — keep just the new active pair.
+            if crate::inference::resolve_launch(&app).is_some() {
+                if let Some(dir) = models_dir(&app) {
+                    let removed = sweep_models(&dir, &keep_basenames(&variant));
+                    if !removed.is_empty() {
+                        eprintln!("tier switch: swept {} stale model file(s)", removed.len());
+                    }
                 }
             }
         } else {
@@ -673,15 +691,11 @@ mod tests {
     }
 
     #[test]
-    fn no_entitlement_always_refuses() {
-        assert_eq!(
-            switch_allowed(false, &HeroEntitlement::None, None, None, 0),
-            Err(SwitchDenied::NoEntitlement)
-        );
-        assert_eq!(
-            switch_allowed(true, &HeroEntitlement::None, None, None, 0),
-            Err(SwitchDenied::NoEntitlement)
-        );
+    fn no_resolvable_period_is_lenient_not_blocked() {
+        // A missing/unresolvable entitlement must NOT gray out the selector —
+        // the limit curbs repetitive flipping, it is not access control.
+        assert_eq!(switch_allowed(false, &HeroEntitlement::None, None, None, 0), Ok(()));
+        assert_eq!(switch_allowed(true, &HeroEntitlement::None, None, None, 0), Ok(()));
     }
 
     #[test]

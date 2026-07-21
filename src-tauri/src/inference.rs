@@ -34,9 +34,16 @@ pub struct Engine {
     pub gpu_offload: AtomicBool,
     /// True while a `start` watchdog thread is alive. A tier switch waits on
     /// this (via [`restart`]) so the old thread fully exits before a new one
-    /// spawns — otherwise the two would fight over `child`/VRAM. Set by the
-    /// thread's own drop-guard, so it flips false on every exit path.
+    /// spawns — otherwise the two would fight over `child`/VRAM. Set
+    /// SYNCHRONOUSLY in `start` (before the thread is spawned, so the wait can
+    /// never miss an about-to-run thread) and cleared by the thread's own
+    /// drop-guard on every exit path.
     pub thread_alive: AtomicBool,
+    /// Set once the app is tearing down (window Destroyed → [`shutdown`]). A
+    /// [`restart`] in flight checks this after stopping the old thread and
+    /// bails out instead of relaunching, so a tier switch racing app-close
+    /// can't spawn a llama-server the teardown already finished reaping.
+    pub closing: AtomicBool,
     /// Session cache for the load-time integrity check in
     /// `verify_model_once`: once a model path's sha256 has been checked
     /// against the catalog's pinned hash, it's recorded here so watchdog
@@ -60,6 +67,7 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
             thread_alive: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
             verified_model: Mutex::new(None),
             verified_adapter: Mutex::new(None),
         }
@@ -390,6 +398,7 @@ fn kill_child(engine: &Engine) {
 }
 
 pub fn shutdown(engine: &Engine) {
+    engine.closing.store(true, Ordering::Relaxed);
     engine.shutting_down.store(true, Ordering::Relaxed);
     kill_child(engine);
 }
@@ -440,10 +449,12 @@ fn sweep_stray_servers() {}
 
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
+    // Mark the watchdog thread alive SYNCHRONOUSLY, before the spawn — so a
+    // concurrent [`restart`] waiting on this flag can never observe `false` for
+    // an about-to-run thread and race a second one into existence. The thread's
+    // drop-guard clears it on every exit path.
+    engine.thread_alive.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
-        // Mark this watchdog thread alive for [`restart`]'s wait, and clear it
-        // on EVERY exit path (break/return/panic) via the drop-guard.
-        engine.thread_alive.store(true, Ordering::Relaxed);
         struct AliveGuard(Arc<Engine>);
         impl Drop for AliveGuard {
             fn drop(&mut self) {
@@ -592,10 +603,25 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
 /// pair re-verifies. Blocking (waits up to ~8s) — call it off the async
 /// runtime (`spawn_blocking`).
 pub fn restart(app: AppHandle, engine: Arc<Engine>) {
-    shutdown(&engine); // shutting_down = true + kill the current child
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while engine.thread_alive.load(Ordering::Relaxed) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+    // Stop the running engine WITHOUT setting `closing` (that flag is reserved
+    // for real app teardown): flag shutdown so the old watchdog thread breaks
+    // at its next checkpoint, and kill its child now.
+    engine.shutting_down.store(true, Ordering::Relaxed);
+    kill_child(&engine);
+    // Wait for the old thread to actually exit before spawning a new one — else
+    // the two would both write `engine.child`, orphaning a llama-server that
+    // holds VRAM. `shutting_down` + the killed child guarantee the thread hits
+    // a checkpoint and exits within ~1s, so this poll is bounded in practice;
+    // we intentionally do NOT cap it (a cap could expire mid-model-load and let
+    // us spawn a second thread — the exact race we're preventing).
+    while engine.thread_alive.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // If the app began tearing down while we were stopping the old thread, do
+    // NOT relaunch — the teardown's kill_child has already run and would not
+    // reap a freshly spawned server.
+    if engine.closing.load(Ordering::Relaxed) {
+        return;
     }
     engine.shutting_down.store(false, Ordering::Relaxed);
     *engine.verified_model.lock().unwrap() = None;

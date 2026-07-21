@@ -30,6 +30,10 @@ const state = {
   // Wrapper tier-selection state from get_tier_selection: { mode, activeTier,
   // effectiveTier, committed, switchAvailable, nextChangeAt }.
   tierSel: null,
+  // Re-entrancy guard for an in-flight tier switch (rapid clicks must not
+  // overlap complete_tier_switch → engine restart), and a once-per-session
+  // latch so the first chat fires a single mark_tier_committed round-trip.
+  tierSwitching: false, tierCommitted: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -207,7 +211,7 @@ function tierSelectorHtml(m) {
   if (!ts.switchAvailable) {
     note = ts.nextChangeAt
       ? `One change per billing period — next change after ${escapeHtml(new Date(ts.nextChangeAt).toLocaleDateString())}.`
-      : 'Renew your subscription to change your model.';
+      : 'You can change your model once per billing period.';
   }
   return `<div class="tiersel">
     <div class="tiersel-h">Pick your engine size</div>
@@ -224,9 +228,12 @@ function openDrawer(id) {
   const installed = state.mine.has(m.id);
   const lapsed = m.real && state.lapsed.has(m.id);
   const chatBlocked = m.real && state.chatBlocked.has(m.id);
-  const gb = (m.fileBytes / 2 ** 30).toFixed(2);
+  // For the hero, show the EFFECTIVE tier's size (a low/high device isn't
+  // downloading the 4B), not the flat/mid fileBytes.
+  const heroBytes = (m.real && tierVariant(effectiveTier())) ? tierVariant(effectiveTier()).fileBytes : m.fileBytes;
+  const gb = (heroBytes / 2 ** 30).toFixed(2);
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-  const gib = (m.fileBytes / 2 ** 30).toFixed(2);
+  const gib = (heroBytes / 2 ** 30).toFixed(2);
   const waitingLabel = 'Waiting for payment… (click to cancel)';
   const btnLabel = m.real
     ? (!installed
@@ -397,17 +404,23 @@ async function downloadHeroPair(baseModel, btn) {
   if (prog) prog.style.display = 'block';
   if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
   state.dl.active = true;
-  const cat = await invoke('fetch_dist_catalog');
-  const arts = (cat && cat.artifacts) || [];
-  const base = arts.find((a) => a.kind === 'base' && a.base_model === baseModel);
-  const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === baseModel);
-  if (!base || !adapter) {
-    throw new Error("This model isn't available to download yet — please update the app or try again later.");
+  try {
+    const cat = await invoke('fetch_dist_catalog');
+    const arts = (cat && cat.artifacts) || [];
+    const base = arts.find((a) => a.kind === 'base' && a.base_model === baseModel);
+    const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === baseModel);
+    if (!base || !adapter) {
+      throw new Error("This model isn't available to download yet — please update the app or try again later.");
+    }
+    await downloadArtifact(base);
+    await downloadArtifact(adapter);
+  } finally {
+    // Always clear the in-flight flag + progress bar, even on a missing-artifact
+    // throw or a download rejection — otherwise the button sticks on "Downloading…".
+    state.dl.active = false;
+    state.artDl = null;
+    if (prog) prog.style.display = 'none';
   }
-  await downloadArtifact(base);
-  await downloadArtifact(adapter);
-  state.dl.active = false;
-  if (prog) prog.style.display = 'none';
 }
 
 // B4: the hero installs through the SIGNED DISTRIBUTION CATALOG. Only when
@@ -441,21 +454,23 @@ async function heroDownload(m, btn) {
 // on it and sweeps the old pair off disk. A `noOp` (mode relabel, same model)
 // just persists. Denials + errors surface on the drawer's errMsg line.
 async function selectTier(m, mode) {
+  if (state.tierSwitching) return; // re-entrancy guard: no overlapping switches
+  state.tierSwitching = true;
   const el = $('errMsg');
   const btn = $('dlBtn');
   const showErr = (msg, muted) => {
     if (el) { el.style.display = 'block'; el.style.color = muted ? 'var(--muted)' : ''; el.textContent = msg; }
   };
   if (el) { el.style.display = 'none'; el.textContent = ''; }
-  let plan;
   try {
-    plan = await invoke('begin_tier_switch', { mode });
-  } catch (err) {
-    // A denial (limit / no entitlement) — informational, not a hard error.
-    showErr(String(err && err.message ? err.message : err), true);
-    return;
-  }
-  try {
+    let plan;
+    try {
+      plan = await invoke('begin_tier_switch', { mode });
+    } catch (err) {
+      // A denial (the once-per-period limit) — informational, not a hard error.
+      showErr(String(err && err.message ? err.message : err), true);
+      return;
+    }
     if (plan.needsDownload) {
       await downloadHeroPair(plan.baseModel, btn);
     }
@@ -469,6 +484,8 @@ async function selectTier(m, mode) {
     showErr(String(err && err.message ? err.message : err));
     try { state.tierSel = await invoke('get_tier_selection'); } catch (_) {}
     if (state.drawerId === m.id) openDrawer(m.id);
+  } finally {
+    state.tierSwitching = false;
   }
 }
 
@@ -1260,12 +1277,17 @@ async function sendCompletion(userText) {
   state.chat.aborter = new AbortController();
 
   // Wrapper tier-selection: the first chat commits the current engine size —
-  // after this, tier changes are limited to once per billing period. Idempotent
-  // in Rust (a no-op once already committed), so firing it every send is fine;
-  // refresh the cached selector state so the drawer reflects the new limit.
-  invoke('mark_tier_committed')
-    .then(() => invoke('get_tier_selection').then((ts) => { state.tierSel = ts; }))
-    .catch(() => {});
+  // after this, tier changes are limited to once per billing period. Fire the
+  // (idempotent) Rust latch ONCE per session, then refresh the cached selector
+  // state so the drawer reflects the new limit; reset the guard on failure so a
+  // later send retries.
+  if (!state.tierCommitted) {
+    state.tierCommitted = true;
+    invoke('mark_tier_committed')
+      .then(() => invoke('get_tier_selection'))
+      .then((ts) => { state.tierSel = ts; })
+      .catch(() => { state.tierCommitted = false; });
+  }
 
   // §7 S7-5: detect the first exchange SYNCHRONOUSLY (before any await
   // below) — state.chat.messages is this (the ACTIVE) chat's transcript,
