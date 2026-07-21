@@ -131,11 +131,31 @@ mismatched pairing. The same reasoning holds regardless of which of the
 two objects is written first; step (c)'s catalog-then-sig order is simply
 what's specified for this pipeline.
 
+Partial-swap recovery: if the catalog.json PUT above succeeds but the
+following catalog.json.sig PUT then fails (network blip, retries
+exhausted), `swap_catalog` prints an explicit `PARTIAL SWAP` operator
+message and re-raises rather than silently leaving the bucket in that
+state unremarked. Per the paragraph above this is NOT a client-visible
+corruption — every client fails closed on the mismatched pairing — but it
+does mean the live catalog.json's own signature no longer verifies until
+fixed. Recovery is simply re-running `publish.py`: the artifact-publish
+phase is a no-op resume (everything's already there with matching
+metadata), and `swap_catalog` re-fetches whatever is live right now (the
+new, still-unsigned-looking catalog.json), archives IT under its own
+`catalog_version` exactly like any other supersession, and rewrites both
+catalog.json and catalog.json.sig consistently. No manual bucket surgery
+is ever required.
+
 Retries: every S3 operation (HEAD/GET/PUT/upload) gets the house 3-attempt
 bounded retry (mirrors build_adapter.py's B2 download loop) — except a
 definitive "object does not exist" response, which is not a failure and
 is never retried. Credentials are never logged; every log line names only
-the bucket/key (or a shlex-quoted local path) being acted on.
+the bucket/key (or a shlex-quoted local path) being acted on, and every
+per-attempt failure log goes through `_sanitize_s3_exception` rather than
+the raw exception str/repr — some botocore ClientErrors (auth-related
+codes especially) echo the access key id into their own Message text, so
+only the error Code (and HTTP status, if present) is ever logged for a
+ClientError, and only the exception's type name for anything else.
 
 Testability: all S3 I/O is behind the small `head`/`get_bytes`/
 `upload_file`/`put_bytes` interface `S3Client` implements. Every actual
@@ -147,7 +167,10 @@ rolled, in-memory, boto3-free stand-in) with zero network. See
 artifact, skip-on-matching-metadata (idempotent resume), archive-before-
 replace call ORDER, an archive failure aborting the catalog swap before
 the live catalog is touched, first-publish skipping the archive step
-cleanly, and local-hash-mismatch refusal.
+cleanly, local-hash-mismatch refusal, the partial-swap PARTIAL SWAP
+operator message actually firing (stdout is captured for this one
+assertion), and `_sanitize_s3_exception` never leaking a ClientError's
+raw Message text.
 
 `--dry-run` end-to-end (no creds, no network — see the module CLI help):
     ./.venv/bin/python3 publish.py --dry-run
@@ -162,7 +185,9 @@ Live publish, once B2 creds exist (post-handoff):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import shlex
 import sys
@@ -526,7 +551,24 @@ def swap_catalog(client, dest_bucket: str, archive_bucket: str, new_catalog_byte
     # Only reached once archiving succeeded (or wasn't needed).
     client.put_bytes(dest_bucket, CATALOG_KEY, new_catalog_bytes, content_type=CATALOG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
     print(f"[publish] wrote s3://{dest_bucket}/{CATALOG_KEY}", flush=True)
-    client.put_bytes(dest_bucket, SIG_KEY, new_sig_bytes, content_type=SIG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
+    try:
+        client.put_bytes(dest_bucket, SIG_KEY, new_sig_bytes, content_type=SIG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
+    except Exception:
+        # catalog.json landed but .sig didn't -- see the module docstring's
+        # "Partial-swap recovery" section for why this is a safe, self-healing
+        # window rather than a corruption: no client trusts it, and simply
+        # re-running this script repairs it.
+        print(
+            f"[publish] PARTIAL SWAP: s3://{dest_bucket}/{CATALOG_KEY} was written but "
+            f"s3://{dest_bucket}/{SIG_KEY} was NOT. The live catalog is now in an inconsistent, "
+            "unverifiable window: any client fetching it right now will fail signature verification "
+            "against the still-OLD .sig and fail closed, refusing to trust it -- no client-visible "
+            "corruption results. RECOVERY: just re-run publish.py. It will re-fetch this now-live "
+            "(sig-mismatched) catalog, archive it under its own catalog_version like any other "
+            "supersession, and rewrite both catalog.json and catalog.json.sig consistently.",
+            flush=True,
+        )
+        raise
     print(f"[publish] wrote s3://{dest_bucket}/{SIG_KEY}", flush=True)
 
     return "archived-then-replaced" if archived else "first-publish"
@@ -540,6 +582,29 @@ def swap_catalog(client, dest_bucket: str, archive_bucket: str, new_catalog_byte
 
 _NOT_FOUND = object()  # internal sentinel distinguishing "confirmed absent" from a transient failure.
 NOT_FOUND_CODES = {"404", "NoSuchKey", "NotFound"}
+
+
+def _sanitize_s3_exception(exc: BaseException) -> str:
+    """A safe-to-log summary of an S3 operation failure — deliberately
+    NEVER the raw `str(exc)`/`repr(exc)`. Some botocore `ClientError`s
+    (auth-related codes especially — InvalidAccessKeyId,
+    SignatureDoesNotMatch, and B2-specific equivalents) echo the access
+    key id or other request details verbatim into their `Error.Message`
+    text; other exception types (URL/connection errors) could embed
+    similarly sensitive request details in their message too. So: for a
+    `ClientError`, only its `Error.Code` and (if present) HTTP status are
+    surfaced — the `Message` field is never included. For anything else,
+    only the exception's TYPE NAME is surfaced, never its string form."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        code = error.get("Code", "unknown") if isinstance(error, dict) else "unknown"
+        metadata = response.get("ResponseMetadata")
+        status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+        if status is not None:
+            return f"{type(exc).__name__}(Code={code!r}, HTTPStatusCode={status!r})"
+        return f"{type(exc).__name__}(Code={code!r})"
+    return type(exc).__name__
 
 
 class S3Client:
@@ -575,7 +640,7 @@ class S3Client:
                 return fn()
             except Exception as exc:  # noqa: BLE001 - deliberately broad: retry any transient S3 failure
                 last_exc = exc
-                print(f"[s3] {description} attempt {attempt}/{self.max_attempts} failed: {exc!r}", flush=True)
+                print(f"[s3] {description} attempt {attempt}/{self.max_attempts} failed: {_sanitize_s3_exception(exc)}", flush=True)
                 if attempt < self.max_attempts:
                     delay = 5 * attempt
                     print(f"[s3] retrying in {delay}s...", flush=True)
@@ -639,6 +704,21 @@ class S3Client:
             self._client.put_object(**kwargs)
 
         self._retry(f"PUT s3://{bucket}/{key}", op)
+
+
+def create_s3_client(endpoint: str, key_id: str, app_key: str) -> S3Client:
+    """Constructs an S3Client, converting ANY construction failure into a
+    clean PublishError instead of letting a raw traceback surface.
+    boto3/botocore validate the endpoint URL eagerly — a malformed
+    --bucket-unrelated `B2_ENDPOINT` value raises `ValueError: Invalid
+    endpoint: ...` right here, before any network call — and other
+    construction-time failures are possible too, so this catches broadly
+    on purpose. Only the (non-secret) `endpoint` is ever included in the
+    resulting message — never `key_id`/`app_key`."""
+    try:
+        return S3Client(endpoint, key_id, app_key)
+    except Exception as exc:  # noqa: BLE001 - boto3/botocore may raise almost anything for a malformed endpoint/config
+        raise PublishError(f"could not create an S3 client for endpoint {endpoint!r}: {exc}") from exc
 
 
 class _FakeS3Client:
@@ -846,6 +926,46 @@ def self_test() -> bool:
         all(not (c[1] == DEFAULT_BUCKET and c[0] in ("upload_file", "put_bytes")) for c in client_fail.calls),
     )
 
+    # --- swap_catalog: catalog.json PUT succeeds but .sig PUT fails -> the
+    # PARTIAL SWAP operator message actually fires, and the failure still
+    # propagates (this is the fix-round addition: capture stdout for one
+    # call so the message text itself is asserted, not just the exception).
+    client_partial = _FakeS3Client(fail_puts={(DEFAULT_BUCKET, SIG_KEY)})
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        partial_raised = raises(
+            Exception, lambda: swap_catalog(client_partial, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
+        )
+    partial_output = captured.getvalue()
+    check("swap_catalog: a .sig-PUT failure after a successful catalog.json PUT still raises", partial_raised)
+    check(
+        "swap_catalog: a .sig-PUT failure prints an explicit PARTIAL SWAP message naming the recovery (re-run publish.py)",
+        "PARTIAL SWAP" in partial_output and "re-run" in partial_output.lower(),
+    )
+    check(
+        "swap_catalog: after a partial swap, the live catalog.json already holds the NEW bytes (not rolled back)",
+        client_partial.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog,
+    )
+
+    # --- _sanitize_s3_exception: never leaks a ClientError's raw Message
+    # text (which, for auth-related codes, can echo the access key id) --
+    # only Code/HTTPStatusCode are ever surfaced.
+    class _FakeClientError(Exception):
+        def __init__(self, code: str, message: str, status: int):
+            super().__init__(message)
+            self.response = {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": status}}
+
+    secret_marker = "SECRET-KEY-ID-0F00BA12"
+    fake_auth_error = _FakeClientError("InvalidAccessKeyId", f"The AWS Access Key Id {secret_marker} does not exist", 403)
+    sanitized = _sanitize_s3_exception(fake_auth_error)
+    check("_sanitize_s3_exception: never includes the raw Message text", secret_marker not in sanitized)
+    check("_sanitize_s3_exception: still surfaces the Code", "InvalidAccessKeyId" in sanitized)
+    check("_sanitize_s3_exception: still surfaces the HTTP status", "403" in sanitized)
+    check(
+        "_sanitize_s3_exception: a non-ClientError exception is reduced to just its type name",
+        _sanitize_s3_exception(ValueError(f"connect to https://user:{secret_marker}@example.com failed")) == "ValueError",
+    )
+
     return ok
 
 
@@ -965,9 +1085,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     endpoint, key_id, app_key = creds
-    client = S3Client(endpoint, key_id, app_key)
 
     try:
+        client = create_s3_client(endpoint, key_id, app_key)
         for artifact, local_path in plan:
             result = publish_artifact(client, args.bucket, artifact, local_path)
             print(f"[publish] {result}: s3://{args.bucket}/{artifact['path']}", flush=True)
