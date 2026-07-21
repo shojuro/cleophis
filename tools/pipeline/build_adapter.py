@@ -163,6 +163,9 @@ DEFAULT_BASE_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 DEFAULT_MODEL_NAME = "Qwen3-4B"
 DEFAULT_ADAPTER_NAME = "behavioral-v1"
 DEFAULT_CONTRACT_VERSION = "prompt-contract-v0"
+# Adapter inherits its base model's license. Default matches the Qwen tiers
+# (Apache-2.0); pass --license "Llama 3.2 Community License" for Llama tiers.
+DEFAULT_LICENSE = "Apache-2.0"
 DEFAULT_OUTTYPE = "f16"
 DEFAULT_OUT_DIR = PIPELINE_ROOT / "work" / "out"
 DEFAULT_WORK_DIR = PIPELINE_ROOT / "work"
@@ -294,6 +297,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="manifest contract_version (default: the PEFT source manifest's contract_version if present, else "
         f"{DEFAULT_CONTRACT_VERSION!r})",
+    )
+    parser.add_argument(
+        "--license",
+        default=DEFAULT_LICENSE,
+        help=f"manifest license field — the adapter inherits its base model's license (default: {DEFAULT_LICENSE!r}; "
+        'pass "Llama 3.2 Community License" for Llama tiers)',
     )
     parser.add_argument(
         "--outtype",
@@ -648,6 +657,7 @@ def build_manifest(
     sha256: str,
     size: int,
     contract_version: str,
+    license: str,
     source_manifest: dict | None,
 ) -> dict:
     return {
@@ -664,6 +674,11 @@ def build_manifest(
         "kind": "adapter",
         "sha256": sha256,
         "size": size,
+        # A LoRA adapter is a derivative of its base — it inherits the base
+        # model's license (Qwen tiers Apache-2.0; Llama tiers the Llama
+        # Community License). build_catalog reads this manifest field, so no
+        # per-kind --license-override is needed when tiers have mixed licenses.
+        "license": license,
         "contract_version": contract_version,
         "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_manifest": source_manifest,
@@ -776,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
         sha256=digest,
         size=size,
         contract_version=contract_version,
+        license=args.license,
         source_manifest=source_manifest,
     )
     write_manifest_atomic(manifest_path, manifest)

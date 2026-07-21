@@ -145,12 +145,25 @@ DEFAULT_OUT = PIPELINE_ROOT / "work" / "catalog" / "catalog.json"
 # build_base.py/build_adapter.py) so this script stays a standalone,
 # env-dumb unit, matching the house pattern build_adapter.py already set
 # for its own duplicated DEFAULT_BASE_REVISION constant.
-EXPECTED_BASE_MODEL = "Qwen3-4B"
-EXPECTED_BASENAME_BY_KIND = {
-    "base": "Qwen3-4B-Instruct-Q4_K_M.gguf",
-    "adapter": "behavioral-v1-Qwen3-4B.gguf",
-}
+# The tier base_models this catalog format knows — the three trained tiers.
+# base_model is the CLEAN tier name (never the unsloth-bnb-4bit training-repo
+# name); the app's per-tier resolution keys off exactly these strings.
+KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B"})
+VALID_KINDS = ("base", "adapter")
 CATALOG_ARTIFACT_VERSION = "v1"
+
+
+def expected_basename(kind: str, base_model: str, quant: str | None) -> str | None:
+    """Artifact basename DERIVED from base_model — matching build_base.py's
+    ``{model_name}-Instruct-{quant}.gguf`` and build_adapter.py's
+    ``behavioral-v1-{base_model}.gguf``. A derivation, not a per-tier table,
+    so adding a tier needs no edit here — only the KNOWN_BASE_MODELS allowlist.
+    Returns None for an unknown kind, or a base with no quant to derive from."""
+    if kind == "base":
+        return f"{base_model}-Instruct-{quant}.gguf" if quant else None
+    if kind == "adapter":
+        return f"behavioral-v1-{base_model}.gguf"
+    return None
 
 REQUIRED_MANIFEST_FIELDS = ("kind", "base_model", "sha256", "size", "name")
 
@@ -236,9 +249,9 @@ def parse_license_overrides(raw_list: list[str]) -> dict[str, str]:
         kind, _, value = item.partition("=")
         kind = kind.strip()
         value = value.strip()
-        if kind not in EXPECTED_BASENAME_BY_KIND:
+        if kind not in VALID_KINDS:
             raise CatalogAssemblyError(
-                f'--license-override kind {kind!r} must be one of {sorted(EXPECTED_BASENAME_BY_KIND)}'
+                f'--license-override kind {kind!r} must be one of {sorted(VALID_KINDS)}'
             )
         if not value:
             raise CatalogAssemblyError(f"--license-override {item!r} has an empty value")
@@ -283,23 +296,25 @@ def resolve_license(manifest: dict, overrides: dict[str, str], manifest_path: Pa
     )
 
 
-def artifact_path_for(kind: str, base_model: str, name: str, manifest_path: Path) -> str:
-    expected_name = EXPECTED_BASENAME_BY_KIND.get(kind)
+def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, manifest_path: Path) -> str:
+    expected_name = expected_basename(kind, base_model, quant)
     if expected_name is None:
-        raise CatalogAssemblyError(
-            f'{manifest_path}: kind={kind!r} — this v0 script only knows the path layout for '
-            f"{sorted(EXPECTED_BASENAME_BY_KIND)}; add a path rule here before cataloging a new kind"
+        detail = (
+            'a base manifest needs a "quant" field to derive its basename'
+            if kind == "base"
+            else f"this script only knows the path layout for {sorted(VALID_KINDS)}"
         )
+        raise CatalogAssemblyError(f"{manifest_path}: kind={kind!r} — {detail}")
     if name != expected_name:
         raise CatalogAssemblyError(
             f'{manifest_path}: name={name!r}, expected exactly {expected_name!r} for kind={kind!r} '
-            "(binding cross-track basename — see tools/pipeline/README.md)"
+            f"base_model={base_model!r} (binding cross-track basename — see tools/pipeline/README.md)"
         )
     if kind == "base":
         return f"models/{base_model}/v1/{name}"
     if kind == "adapter":
         return f"adapters/behavioral/v1/{base_model}/{name}"
-    raise AssertionError(f"unreachable: kind {kind!r} passed the EXPECTED_BASENAME_BY_KIND check above")
+    raise AssertionError(f"unreachable: kind {kind!r} passed the expected_basename check above")
 
 
 def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[str, str]) -> dict:
@@ -316,10 +331,10 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
         )
 
     base_model = manifest["base_model"]
-    if base_model != EXPECTED_BASE_MODEL:
+    if base_model not in KNOWN_BASE_MODELS:
         raise CatalogAssemblyError(
-            f"{manifest_path}: base_model={base_model!r}, expected exactly {EXPECTED_BASE_MODEL!r} "
-            "(binding cross-track value — see tools/pipeline/README.md)"
+            f"{manifest_path}: base_model={base_model!r} is not one of the known tiers "
+            f"{sorted(KNOWN_BASE_MODELS)} (binding cross-track value — see tools/pipeline/README.md)"
         )
 
     name = manifest["name"]
@@ -335,7 +350,7 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
         raise CatalogAssemblyError(f"{manifest_path}: size={size!r} is not a positive integer")
 
     license_id = resolve_license(manifest, overrides, manifest_path)
-    path = artifact_path_for(kind, base_model, name, manifest_path)
+    path = artifact_path_for(kind, base_model, name, manifest.get("quant"), manifest_path)
 
     return {
         "path": path,

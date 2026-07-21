@@ -64,8 +64,8 @@ Sequence (mirrors the app exactly — see the module docstring above):
        [0, 1_000_000); `artifacts` is non-empty; every artifact carries
        all 7 wire-contract fields (path, sha256, size, kind, base_model,
        version, license — see README.md's "Binding cross-track values"
-       table) with `kind` in {base, adapter} and `base_model` ==
-       "Qwen3-4B" exactly.
+       table) with `kind` in {base, adapter} and `base_model` one of
+       the known tiers (Qwen3-4B, Llama-3.2-1B, Qwen3-8B).
     5. For EACH artifact: GET <base-url>/<path> — refusing (RedirectError)
        rather than following any 3xx response, exactly like the app's own
        `download.rs::streaming_agent()`, which pins `.redirects(0)`
@@ -158,7 +158,7 @@ RETRY_BACKOFF_BASE = 5  # seconds; attempt N waits N * this many seconds (mirror
 MAX_SANE_CATALOG_VERSION = 1_000_000  # matches build_catalog.py/publish.py's own hostile-version bound.
 REQUIRED_ARTIFACT_FIELDS = ("path", "sha256", "size", "kind", "base_model", "version", "license")
 VALID_KINDS = {"base", "adapter"}
-EXPECTED_BASE_MODEL = "Qwen3-4B"
+KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B"})
 
 # HTTP redirect statuses urllib's HTTPRedirectHandler intercepts (301/302/
 # 303/307 -- see its http_error_30x aliases) plus 308 for completeness
@@ -445,8 +445,8 @@ def validate_catalog_schema(parsed: object) -> dict:
             raise SchemaError(f"catalog.json artifacts[{index}] has kind={kind!r}, expected one of {sorted(VALID_KINDS)}")
 
         base_model = artifact["base_model"]
-        if base_model != EXPECTED_BASE_MODEL:
-            raise SchemaError(f"catalog.json artifacts[{index}] has base_model={base_model!r}, expected {EXPECTED_BASE_MODEL!r}")
+        if base_model not in KNOWN_BASE_MODELS:
+            raise SchemaError(f"catalog.json artifacts[{index}] has base_model={base_model!r}, not one of the known tiers {sorted(KNOWN_BASE_MODELS)}")
 
         sha256 = artifact["sha256"]
         if not (isinstance(sha256, str) and len(sha256) == 64 and all(c in "0123456789abcdefABCDEF" for c in sha256)):
@@ -791,8 +791,8 @@ def self_test() -> bool:
         expect_substrings=("FAIL:", "missing field", "license"),
     )
 
-    # (g2) schema violation: wrong base_model.
-    wrong_model_bytes, wrong_model_sig = sign(make_catalog(base_model_override="Qwen3-8B"))
+    # (g2) schema violation: an UNKNOWN base_model (not one of the 3 tiers).
+    wrong_model_bytes, wrong_model_sig = sign(make_catalog(base_model_override="Not-A-Real-Tier"))
     routes_g2 = {
         "/catalog.json": wrong_model_bytes,
         "/catalog.json.sig": wrong_model_sig,
@@ -803,7 +803,7 @@ def self_test() -> bool:
         "(g2) schema violation: wrong base_model",
         routes_g2,
         expect_ok=False,
-        expect_substrings=("FAIL:", "base_model", "Qwen3-8B"),
+        expect_substrings=("FAIL:", "base_model", "Not-A-Real-Tier"),
     )
 
     # (h) artifact URL 302-redirects -> RedirectError FAIL, never followed.
