@@ -15,6 +15,11 @@ const state = {
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
   dl: { installed: false, partBytes: 0, active: false },
+  // B4: while a hero dist-catalog download is awaiting a SPECIFIC artifact's
+  // terminal event, this holds { path, resolve, reject } so onDownloadProgress
+  // routes that artifact's done/failed/cancelled to the sequencing promise
+  // (base then adapter) instead of the legacy single-file hero handling.
+  artDl: null,
   pay: { modelId: null, timer: null, deadline: 0, btnId: null },
   drawerId: null,
   // §7 S7-2b: sidebar organization — folders/chats cache backing the
@@ -35,6 +40,29 @@ function escapeHtml(s) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ));
 }
+
+// B4: the Qwen3 hero opens each turn with an EMPTY reasoning block
+// (`<think></think>`) before its visible answer. Strip exactly ONE such
+// block — optionally whitespace-wrapped — and ONLY at the very start of the
+// turn. The pattern is anchored at `^` and requires the block to be empty
+// (only whitespace between the tags), so it:
+//   • never touches a NON-empty <think>…</think> (real reasoning is left in
+//     place — it just won't occur for this always-on behavioral adapter),
+//   • never strips anything mid-answer (a `</think>` appearing after real
+//     text is not at `^`, so it can't match), and
+//   • leaves a turn that doesn't start with the pattern 100% untouched.
+// `String.replace` with this anchored regex removes at most one occurrence,
+// and re-running it on a longer `acc` is idempotent (the same leading prefix
+// is removed each time), so it is safe to call on every partial render as
+// well as on the final persisted text.
+function stripLeadingThink(text) {
+  return String(text).replace(/^\s*<think>\s*<\/think>\s*/, '');
+}
+
+// B4: the signed dist catalog labels the hero's base + adapter artifacts with
+// this `base_model`; heroDownload selects the kind:'base'/'adapter' records
+// carrying it. Kept as a single constant so the FE selection can't drift.
+const HERO_BASE_MODEL = 'Qwen3-4B';
 
 /* ---------------- boot ---------------- */
 async function boot() {
@@ -279,18 +307,76 @@ function startCheckoutFlow(m, btn) {
   })().finally(() => { checkoutOpening = false; });
 }
 
-function heroDownload(m, btn) {
-  const prog = $('prog'), bar = prog.firstElementChild;
+// B4: the hero now installs through the SIGNED DISTRIBUTION CATALOG, not the
+// legacy minted `download_model` path. Fetch the verified dist catalog, pick
+// the base + adapter artifacts for HERO_BASE_MODEL, then download them ONE AT
+// A TIME (single-slot Downloads registry) via download_artifact. Only when
+// BOTH files have landed is the hero considered installed and the engine
+// loaded — a base-only state is never treated as installed (fail-closed,
+// mirroring inference::resolve_launch + download_status). The
+// entitlement/purchase gating that led here (runGetFlow / beginPaymentPoll /
+// alreadyOwned) is unchanged — only the transport is new.
+async function heroDownload(m, btn) {
+  const prog = $('prog');
   prog.style.display = 'block';
   btn.disabled = true;
   btn.textContent = 'Downloading…';
   state.dl.active = true;
-  invoke('download_model', { modelId: m.id }).catch((err) => {
+  const el = $('errMsg');
+  const fail = (msg) => {
     state.dl.active = false;
+    state.artDl = null;
     prog.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Retry download';
-    const el = $('errMsg'); el.style.display = 'block'; el.style.color = ''; el.textContent = String(err);
+    if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = msg; }
+  };
+  try {
+    const cat = await invoke('fetch_dist_catalog');
+    const arts = (cat && cat.artifacts) || [];
+    const base = arts.find((a) => a.kind === 'base' && a.base_model === HERO_BASE_MODEL);
+    const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === HERO_BASE_MODEL);
+    if (!base || !adapter) {
+      fail("This model isn't available to download yet — please update the app or try again later.");
+      return;
+    }
+    // Sequential: base first, then adapter. download_artifact emits the SAME
+    // download-progress events download_model did, so the bar/line UI in
+    // onDownloadProgress keeps working; each artifact's terminal event is
+    // consumed by downloadArtifact via the state.artDl coordinator.
+    await downloadArtifact(base);
+    await downloadArtifact(adapter);
+    // Both files present → installed. finishInstalled loads the engine
+    // (which now launches base + adapter via --lora) and enters the chat.
+    state.dl = { installed: true, partBytes: 0, active: false };
+    prog.style.display = 'none';
+    await finishInstalled(m, btn);
+  } catch (err) {
+    fail(String(err && err.message ? err.message : err));
+  }
+}
+
+// B4: downloads ONE dist-catalog artifact and resolves only when that
+// artifact's terminal `download-progress` event arrives (routed here by
+// onDownloadProgress via state.artDl). `download_artifact` returns
+// immediately (the work is on a Rust worker thread), so a resolved invoke is
+// NOT completion — the promise settles on the done/failed/cancelled event, or
+// on a synchronous invoke rejection (bad path / a download already running).
+// An "Already installed." rejection means this artifact's file is already on
+// disk (e.g. resuming after the base landed but the adapter failed) — treat
+// it as success so the sequence proceeds to the next artifact.
+function downloadArtifact(artifact) {
+  return new Promise((resolve, reject) => {
+    state.artDl = { path: artifact.path, resolve, reject };
+    invoke('download_artifact', { artifact }).catch((err) => {
+      // Only the synchronous validation rejections land here; a real download
+      // failure arrives as a `failed` event handled in onDownloadProgress.
+      if (!state.artDl || state.artDl.path !== artifact.path) return;
+      state.artDl = null;
+      const msg = String(err && err.message ? err.message : err);
+      if (/already installed/i.test(msg)) resolve();
+      else reject(new Error(msg));
+    });
   });
 }
 
@@ -362,6 +448,31 @@ function fmtGiB(n) { return (n / 2 ** 30).toFixed(2); }
 
 async function onDownloadProgress(e) {
   const p = e.payload;
+  // B4: dist-catalog (two-artifact hero) sequence. download_artifact tags its
+  // events with the artifact PATH as modelId (not a catalog id), so route the
+  // one we're awaiting to the sequencing promise and keep the bar/line moving;
+  // never fall through to the legacy single-file hero handling below.
+  if (state.artDl && p.modelId === state.artDl.path) {
+    const artBar = $('prog') ? $('prog').firstElementChild : null;
+    const artLine = $('dlLine');
+    if (p.phase === 'downloading' && p.totalBytes > 0) {
+      state.dl.active = true;
+      if (artBar) artBar.style.width = `${Math.floor((p.bytesDownloaded / p.totalBytes) * 100)}%`;
+      if (artLine) {
+        artLine.style.display = 'block';
+        artLine.textContent = `${fmtGiB(p.bytesDownloaded)} / ${fmtGiB(p.totalBytes)} GiB · ${(p.bytesPerSec / 1e6).toFixed(1)} MB/s`;
+      }
+    } else if (p.phase === 'verifying') {
+      if (artLine) { artLine.style.display = 'block'; artLine.textContent = 'Verifying download…'; }
+      if (artBar) artBar.style.width = '100%';
+    } else if (p.phase === 'done') {
+      const co = state.artDl; state.artDl = null; co.resolve();
+    } else if (p.phase === 'failed' || p.phase === 'cancelled') {
+      const co = state.artDl; state.artDl = null;
+      co.reject(new Error(p.error || (p.phase === 'cancelled' ? 'Download cancelled.' : 'Download failed.')));
+    }
+    return;
+  }
   const hero = state.catalog.find((x) => x.id === p.modelId);
   const bar = $('prog') ? $('prog').firstElementChild : null;
   const line = $('dlLine');
@@ -801,7 +912,9 @@ async function newChat() {
       folderId: null,
       mountedPacks: state.chat.packPaths,
       modelId: m?.id ?? '',
-      adapterIds: [],
+      // B4 provenance: stamp the hero's always-on behavioral adapter id when
+      // the model declares one (empty otherwise — the historical value).
+      adapterIds: m?.adapterId ? [m.adapterId] : [],
     });
     chatId = chat.id;
   } catch (_) { /* persistence failed — still hand back a clean local chat */ }
@@ -1066,7 +1179,9 @@ async function sendCompletion(userText) {
           folderId: null,
           mountedPacks: state.chat.packPaths,
           modelId: m?.id ?? '',
-          adapterIds: [],
+          // B4 provenance: the hero's always-on behavioral adapter id (empty
+          // for models that declare none — the historical value).
+          adapterIds: m?.adapterId ? [m.adapterId] : [],
         });
         turnChatId = chat.id;
         // Only adopt it as the app's ACTIVE chat if nothing else claimed
@@ -1216,7 +1331,10 @@ async function sendCompletion(userText) {
           const delta = JSON.parse(data).choices?.[0]?.delta?.content;
           if (delta) {
             acc += delta;
-            bubble.textContent = acc;
+            // Show the leading-`<think></think>`-stripped view every render
+            // (idempotent — see stripLeadingThink); `acc` keeps the raw text
+            // so the strip decision is always re-made against the full prefix.
+            bubble.textContent = stripLeadingThink(acc);
             $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
           }
         } catch (_) { /* partial line — ignored */ }
@@ -1261,9 +1379,14 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   // chat is no longer active must not repaint over whatever chat is on
   // screen now; it still gets PERSISTED to its own chat below.
   const isActive = turnChatId === state.chat.chatId;
+  // B4: the persisted + in-memory content is the leading-`<think></think>`-
+  // stripped view, matching what was shown in the bubble during streaming.
+  // A turn that was ONLY an empty think block strips to '' and is treated
+  // exactly like an empty turn (bubble removed, nothing persisted).
+  const shown = stripLeadingThink(acc);
   if (isActive) {
-    if (acc) {
-      const msg = { role: 'assistant', content: acc };
+    if (shown) {
+      const msg = { role: 'assistant', content: shown };
       // Stash citations on the pushed message (not just rendered here) so
       // rebuildChatDom can replay them if the chat is exited and re-entered.
       if (citations && citations.length) {
@@ -1291,11 +1414,11 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   // sendCompletion failed — in that case this turn silently isn't saved
   // either (same degrade-gracefully contract). Fire-and-forget: the
   // composer state above must never wait on this DB write.
-  if (acc && turnChatId != null) {
+  if (shown && turnChatId != null) {
     invoke('append_message', {
       chatId: turnChatId,
       role: 'assistant',
-      content: acc,
+      content: shown,
       citations: citations && citations.length ? citations : null,
     }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
   }
@@ -1303,7 +1426,7 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
   // NOT await it (it must never gate the composer restore above, which
   // already ran). turnChatId-scoped like the persist above, so a
   // mid-stream chat switch still titles the right chat.
-  if (acc && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, acc);
+  if (shown && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, shown);
 }
 
 // §7 S7-5: after the first complete exchange in a NEW chat, ask the local

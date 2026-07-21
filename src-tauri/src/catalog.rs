@@ -15,6 +15,19 @@ pub struct CatalogEntry {
     pub model_file: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// The LoRA adapter loaded alongside the base via llama.cpp `--lora`
+    /// (never merged). When set, the hero is treated as not-installed until
+    /// this file is present too — see `inference::resolve_launch`.
+    #[serde(default)]
+    pub adapter_file: Option<String>,
+    /// Load-time integrity hash for `adapter_file`, checked exactly like
+    /// `sha256` is for the base (see `inference::verify_adapter_once`).
+    #[serde(default)]
+    pub adapter_sha256: Option<String>,
+    /// Stamped onto new chats' `adapter_ids` as provenance when this hero
+    /// declares an always-on adapter.
+    #[serde(default)]
+    pub adapter_id: Option<String>,
     #[serde(default)]
     pub version: Option<u32>,
     #[serde(default)]
@@ -93,6 +106,15 @@ mod tests {
             h.sha256.as_deref().map(|s| s.len() == 64).unwrap_or(false),
             "hero must carry a 64-hex sha256"
         );
-        assert_eq!(h.version, Some(1));
+        // B4: the hero repoints to Qwen3-4B base + its always-on behavioral
+        // adapter. The entry now DECLARES an adapter (file + 64-hex hash +
+        // id) and bumps to version 2.
+        assert_eq!(h.adapter_id.as_deref(), Some("behavioral-v1-qwen3-4b"));
+        assert!(h.adapter_file.is_some(), "hero must declare an adapter file");
+        assert!(
+            h.adapter_sha256.as_deref().map(|s| s.len() == 64).unwrap_or(false),
+            "hero must carry a 64-hex adapter sha256"
+        );
+        assert_eq!(h.version, Some(2));
     }
 }

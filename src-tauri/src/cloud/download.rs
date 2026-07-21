@@ -1236,7 +1236,17 @@ pub async fn download_status(
     let final_path = app_data.join(&model_file);
     let part_path = part_path_for(&final_path);
 
-    let installed = final_path.exists();
+    // B4: when the hero declares an always-on adapter, "installed" requires
+    // BOTH the base and the adapter on disk — a base-only state must never
+    // read as installed (the drawer would otherwise offer "Open chat" for a
+    // hero the engine will refuse to launch base-only). Mirrors
+    // `inference::resolve_launch`'s fail-closed contract.
+    let base_installed = final_path.exists();
+    let adapter_installed = match hero.adapter_file.as_deref() {
+        Some(adapter_file) => app_data.join(adapter_file).exists(),
+        None => true,
+    };
+    let installed = base_installed && adapter_installed;
     let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
 
     let guard = downloads.active.lock().unwrap();

@@ -39,6 +39,11 @@ pub struct Engine {
     /// the first successful verification per process pays the hashing
     /// cost.
     verified_model: Mutex<Option<PathBuf>>,
+    /// The adapter counterpart of `verified_model` (B4): the LoRA adapter is
+    /// hashed against the catalog's `adapter_sha256` at load time with the
+    /// same first-time-only session caching, so a watchdog respawn of the
+    /// same base+adapter pair doesn't re-hash either file.
+    verified_adapter: Mutex<Option<PathBuf>>,
 }
 
 impl Engine {
@@ -50,6 +55,7 @@ impl Engine {
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
             verified_model: Mutex::new(None),
+            verified_adapter: Mutex::new(None),
         }
     }
 
@@ -92,20 +98,67 @@ pub fn resources_root(app: &AppHandle) -> PathBuf {
         .join("resources")
 }
 
+/// The resolved on-disk paths a launch needs: the base model, plus the LoRA
+/// adapter iff the hero declares one. `lora` is `None` when the hero declares
+/// no adapter at all — NOT when a declared adapter is merely missing (that
+/// case makes the whole resolution fail; see [`resolve_launch`]).
+pub struct LaunchPaths {
+    pub model: PathBuf,
+    pub lora: Option<PathBuf>,
+}
+
 /// Resolve the hero model on disk: downloaded copy first (app data),
-/// bundled copy second (dev / fat installs). None = thin install, not yet downloaded.
+/// bundled copy second (dev / fat installs). None = thin install, not yet
+/// downloaded.
+///
+/// Since B4, "on disk" means *launchable*: if the hero declares an adapter
+/// (`adapter_file`) that is not present, this returns `None` exactly as if
+/// the base were missing — the hero must never launch base-only when an
+/// adapter is declared. Callers that only need "is the hero launchable?"
+/// (main.rs setup, `start`) keep working unchanged; callers that need both
+/// paths for the launch use [`resolve_launch`].
 pub fn model_path(app: &AppHandle) -> Option<PathBuf> {
+    resolve_launch(app).map(|l| l.model)
+}
+
+/// Resolves the full launch path set for the hero: the base model and, when
+/// the hero declares one, the adapter. Fails closed (`None`) if the base is
+/// missing OR if a declared adapter is missing — the same "not installed"
+/// signal `model_path` has always returned, so a declared-but-undownloaded
+/// adapter routes through the identical NoModel banner + download flow.
+pub fn resolve_launch(app: &AppHandle) -> Option<LaunchPaths> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json"))
-        .map_err(|e| eprintln!("model_path: catalog read: {e}"))
+        .map_err(|e| eprintln!("resolve_launch: catalog read: {e}"))
         .ok()?;
     let entries = crate::catalog::parse_catalog(&raw)
-        .map_err(|e| eprintln!("model_path: catalog parse: {e}"))
+        .map_err(|e| eprintln!("resolve_launch: catalog parse: {e}"))
         .ok()?;
     let hero = crate::catalog::hero(&entries)?;
     let model_file = hero.model_file.as_ref()?;
     let app_data = app.path().app_data_dir().ok();
-    resolve_model(app_data, root, model_file)
+    resolve_launch_paths(app_data, root, model_file, hero.adapter_file.as_deref())
+}
+
+/// Pure resolution logic behind [`resolve_launch`]: resolves the base
+/// `model_file` (app-data copy wins, else bundled, else `None`), then — iff
+/// an `adapter_file` is declared — resolves it the SAME way. A declared
+/// adapter that resolves to nothing collapses the whole result to `None` (`?`
+/// on the inner `resolve_model`), which is what enforces "never launch
+/// base-only when an adapter is declared". No `AppHandle`, so it is directly
+/// unit-testable.
+fn resolve_launch_paths(
+    app_data: Option<PathBuf>,
+    resources: PathBuf,
+    model_file: &str,
+    adapter_file: Option<&str>,
+) -> Option<LaunchPaths> {
+    let model = resolve_model(app_data.clone(), resources.clone(), model_file)?;
+    let lora = match adapter_file {
+        Some(adapter_file) => Some(resolve_model(app_data, resources, adapter_file)?),
+        None => None,
+    };
+    Some(LaunchPaths { model, lora })
 }
 
 /// Pure resolution logic behind `model_path`: app-data copy wins if present,
@@ -158,33 +211,73 @@ fn model_sha256(path: &Path) -> std::io::Result<String> {
 /// path already gates real models, so this only affects dev/fixture
 /// catalogs missing integrity data.
 fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(), String> {
+    // Cache-first, exactly as before the B4 refactor: a watchdog respawn of an
+    // already-verified path returns without even reading the catalog.
     if engine.verified_model.lock().unwrap().as_deref() == Some(model) {
         return Ok(());
     }
+    let expected = hero_hash(app, |h| h.sha256.as_deref())?;
+    verify_hash_once(&engine.verified_model, model, expected.as_deref(), "model")
+}
 
+/// The adapter counterpart of [`verify_model_once`] (B4): re-hashes the LoRA
+/// adapter against the catalog's `adapter_sha256` before it is passed to
+/// llama-server via `--lora`, with the same session cache
+/// (`engine.verified_adapter`). Same fail-closed semantics: a pinned hash
+/// that doesn't match is a hard error; a catalog that pins none skips the
+/// check. Only ever called when [`resolve_launch`] produced a `lora` path,
+/// which itself only happens when the hero declares an `adapter_file`.
+fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
+    if engine.verified_adapter.lock().unwrap().as_deref() == Some(adapter) {
+        return Ok(());
+    }
+    let expected = hero_hash(app, |h| h.adapter_sha256.as_deref())?;
+    verify_hash_once(&engine.verified_adapter, adapter, expected.as_deref(), "adapter")
+}
+
+/// Reads the hero entry and projects one of its pinned hashes out of it —
+/// the shared catalog read behind `verify_model_once`/`verify_adapter_once`.
+/// Returns the (owned) hash string, or `None` when the catalog pins none.
+fn hero_hash(
+    app: &AppHandle,
+    pick: impl Fn(&crate::catalog::CatalogEntry) -> Option<&str>,
+) -> Result<Option<String>, String> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = crate::catalog::parse_catalog(&raw)?;
     let hero = crate::catalog::hero(&entries)
         .ok_or_else(|| "catalog missing integrity data".to_string())?;
+    Ok(pick(hero).map(|s| s.to_string()))
+}
 
-    let Some(expected) = hero.sha256.as_deref() else {
-        eprintln!(
-            "verify_model_once: catalog pins no sha256 for the hero model — skipping integrity check"
-        );
+/// The shared load-time integrity check (B4 factored this out of
+/// `verify_model_once` so the adapter path reuses it byte-for-byte): if
+/// `cache` already records `path` this process, short-circuit; if `expected`
+/// is `None` the catalog pins nothing, so there's nothing to check; otherwise
+/// re-hash `path` and compare case-insensitively, recording success in
+/// `cache`. `what` ("model" / "adapter") only shapes the log + error text.
+fn verify_hash_once(
+    cache: &Mutex<Option<PathBuf>>,
+    path: &Path,
+    expected: Option<&str>,
+    what: &str,
+) -> Result<(), String> {
+    if cache.lock().unwrap().as_deref() == Some(path) {
+        return Ok(());
+    }
+
+    let Some(expected) = expected else {
+        eprintln!("verify_hash_once: catalog pins no sha256 for the {what} — skipping integrity check");
         return Ok(());
     };
 
-    let actual = model_sha256(model).map_err(|e| e.to_string())?;
+    let actual = model_sha256(path).map_err(|e| e.to_string())?;
     if !actual.eq_ignore_ascii_case(expected) {
-        eprintln!(
-            "verify_model_once: integrity check failed for {}",
-            model.display()
-        );
-        return Err("model integrity check failed".to_string());
+        eprintln!("verify_hash_once: integrity check failed for {} ({what})", path.display());
+        return Err(format!("{what} integrity check failed"));
     }
 
-    *engine.verified_model.lock().unwrap() = Some(model.to_path_buf());
+    *cache.lock().unwrap() = Some(path.to_path_buf());
     Ok(())
 }
 
@@ -198,9 +291,35 @@ fn pid_file_path() -> PathBuf {
     std::env::temp_dir().join("cleophis-llama.pid")
 }
 
+/// Builds the exact llama-server argument vector (B4's testable unit). With
+/// `lora: None` it is byte-identical to the args this app has always passed;
+/// with `lora: Some(path)` it appends `--lora <path>` so the base and adapter
+/// are loaded SEPARATELY (never merged). Pure — no `AppHandle`, no process —
+/// so both branches are covered directly by the unit tests below.
+fn build_server_args(model: &Path, port: u16, ngl: u32, lora: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "-m".to_string(),
+        model.to_string_lossy().into_owned(),
+        "--host".to_string(),
+        "127.0.0.1".to_string(),
+        "--port".to_string(),
+        port.to_string(),
+        "-ngl".to_string(),
+        ngl.to_string(),
+        "-c".to_string(),
+        "4096".to_string(),
+        "--no-webui".to_string(),
+    ];
+    if let Some(lora) = lora {
+        args.push("--lora".to_string());
+        args.push(lora.to_string_lossy().into_owned());
+    }
+    args
+}
+
 fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
     let root = resources_root(app);
-    let model = model_path(app)
+    let launch = resolve_launch(app)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "model not on disk"))?;
     let exe = root.join("llama").join("llama-server.exe");
 
@@ -210,22 +329,11 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
         .append(true)
         .open(&log_path)?;
 
+    let args = build_server_args(&launch.model, port, ngl, launch.lora.as_deref());
     let mut cmd = Command::new(exe);
-    cmd.args([
-        "-m",
-        model.to_str().unwrap(),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        &port.to_string(),
-        "-ngl",
-        &ngl.to_string(),
-        "-c",
-        "4096",
-        "--no-webui",
-    ])
-    .stdout(Stdio::from(log.try_clone()?))
-    .stderr(Stdio::from(log));
+    cmd.args(&args)
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
 
     #[cfg(windows)]
     {
@@ -326,9 +434,18 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
             if engine.shutting_down.load(Ordering::Relaxed) {
                 break;
             }
-            if let Some(model) = model_path(&app) {
-                if let Err(e) = verify_model_once(&engine, &app, &model) {
-                    eprintln!("start: verify_model_once failed: {e}");
+            if let Some(launch) = resolve_launch(&app) {
+                // Verify the base, then (when declared) the adapter — both are
+                // fed to llama.cpp, so both get the same load-time integrity
+                // gate before a single byte is parsed.
+                let integrity = verify_model_once(&engine, &app, &launch.model).and_then(|()| {
+                    match &launch.lora {
+                        Some(lora) => verify_adapter_once(&engine, &app, lora),
+                        None => Ok(()),
+                    }
+                });
+                if let Err(e) = integrity {
+                    eprintln!("start: integrity check failed: {e}");
                     engine.set_status(EngineStatus::Failed);
                     let _ = app.emit(
                         "engine-failed",
@@ -501,6 +618,119 @@ mod tests {
 
         let got = resolve_model(Some(app_data), resources, "models/hero.gguf");
         assert_eq!(got, None);
+    }
+
+    // ---- B4 Step 1: the launch-arg builder (the testable unit) ----
+
+    #[test]
+    fn build_server_args_without_lora_is_the_historical_arg_vec() {
+        let model = PathBuf::from("/models/base.gguf");
+        let got = build_server_args(&model, 8080, 99, None);
+        assert_eq!(
+            got,
+            vec![
+                "-m", "/models/base.gguf",
+                "--host", "127.0.0.1",
+                "--port", "8080",
+                "-ngl", "99",
+                "-c", "4096",
+                "--no-webui",
+            ]
+        );
+        // The historical arg vec carries NO `--lora` when no adapter is given.
+        assert!(!got.iter().any(|a| a == "--lora"));
+    }
+
+    #[test]
+    fn build_server_args_with_lora_appends_lora_flag_and_path() {
+        let model = PathBuf::from("/models/base.gguf");
+        let lora = PathBuf::from("/models/adapter.gguf");
+        let got = build_server_args(&model, 8080, 0, Some(&lora));
+        assert_eq!(
+            got,
+            vec![
+                "-m", "/models/base.gguf",
+                "--host", "127.0.0.1",
+                "--port", "8080",
+                "-ngl", "0",
+                "-c", "4096",
+                "--no-webui",
+                "--lora", "/models/adapter.gguf",
+            ]
+        );
+        // The only difference vs. the no-lora branch is the trailing pair —
+        // every leading arg is identical, byte for byte.
+        let base = build_server_args(&model, 8080, 0, None);
+        assert_eq!(&got[..base.len()], base.as_slice());
+        assert_eq!(&got[base.len()..], &["--lora".to_string(), "/models/adapter.gguf".to_string()]);
+    }
+
+    // ---- B4 Step 1: adapter-aware launch resolution ----
+
+    #[test]
+    fn resolve_launch_paths_both_present_when_adapter_declared() {
+        let app_data = unique_dir("launch-both-ad");
+        let resources = unique_dir("launch-both-res");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        std::fs::write(app_data.join("models/base.gguf"), b"base").unwrap();
+        std::fs::write(app_data.join("models/adapter.gguf"), b"adapter").unwrap();
+
+        let got = resolve_launch_paths(
+            Some(app_data.clone()),
+            resources,
+            "models/base.gguf",
+            Some("models/adapter.gguf"),
+        )
+        .expect("both files present -> Some");
+        assert_eq!(got.model, app_data.join("models/base.gguf"));
+        assert_eq!(got.lora, Some(app_data.join("models/adapter.gguf")));
+    }
+
+    #[test]
+    fn resolve_launch_paths_declared_adapter_missing_is_none() {
+        // The contract: a hero that DECLARES an adapter but whose adapter file
+        // is absent resolves to None (treated as not-installed) even though
+        // the base is present — never launch base-only.
+        let app_data = unique_dir("launch-noadapter-ad");
+        let resources = unique_dir("launch-noadapter-res");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        std::fs::write(app_data.join("models/base.gguf"), b"base").unwrap();
+        // adapter.gguf deliberately NOT written.
+
+        let got = resolve_launch_paths(
+            Some(app_data),
+            resources,
+            "models/base.gguf",
+            Some("models/adapter.gguf"),
+        );
+        assert!(got.is_none(), "declared-but-missing adapter must resolve to None");
+    }
+
+    #[test]
+    fn resolve_launch_paths_no_adapter_declared_returns_base_only() {
+        let app_data = unique_dir("launch-plain-ad");
+        let resources = unique_dir("launch-plain-res");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        std::fs::write(app_data.join("models/base.gguf"), b"base").unwrap();
+
+        let got = resolve_launch_paths(Some(app_data.clone()), resources, "models/base.gguf", None)
+            .expect("base present, no adapter declared -> Some");
+        assert_eq!(got.model, app_data.join("models/base.gguf"));
+        assert_eq!(got.lora, None);
+    }
+
+    #[test]
+    fn resolve_launch_paths_missing_base_is_none_regardless_of_adapter() {
+        let app_data = unique_dir("launch-nobase-ad");
+        let resources = unique_dir("launch-nobase-res");
+        // Neither file written.
+        let got = resolve_launch_paths(
+            Some(app_data),
+            resources,
+            "models/base.gguf",
+            Some("models/adapter.gguf"),
+        );
+        assert!(got.is_none(), "missing base must resolve to None");
     }
 
     #[test]
