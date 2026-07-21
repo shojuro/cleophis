@@ -135,9 +135,15 @@ pub fn resolve_launch(app: &AppHandle) -> Option<LaunchPaths> {
         .map_err(|e| eprintln!("resolve_launch: catalog parse: {e}"))
         .ok()?;
     let hero = crate::catalog::hero(&entries)?;
-    let model_file = hero.model_file.as_ref()?;
+    // Tier-selection: resolve the base+adapter for the EFFECTIVE device tier
+    // (override, else `hardware::detect`), not the flat 4B fields. `hero_hash`
+    // keys off the same `effective_tier`, so the file resolved here and the
+    // hash checked at load always come from the same variant.
+    let tier = crate::tier_select::effective_tier(app);
+    let variant = crate::catalog::hero_variant(hero, &tier);
+    let model_file = variant.model_file.clone()?;
     let app_data = app.path().app_data_dir().ok();
-    resolve_launch_paths(app_data, root, model_file, hero.adapter_file.as_deref())
+    resolve_launch_paths(app_data, root, &model_file, variant.adapter_file.as_deref())
 }
 
 /// Pure resolution logic behind [`resolve_launch`]: resolves the base
@@ -216,7 +222,7 @@ fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(
     if engine.verified_model.lock().unwrap().as_deref() == Some(model) {
         return Ok(());
     }
-    let expected = hero_hash(app, |h| h.sha256.as_deref())?;
+    let expected = hero_hash(app, |v| v.sha256.clone())?;
     verify_hash_once(&engine.verified_model, model, expected.as_deref(), "model")
 }
 
@@ -231,7 +237,7 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
     if engine.verified_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
     }
-    let expected = hero_hash(app, |h| h.adapter_sha256.as_deref())?;
+    let expected = hero_hash(app, |v| v.adapter_sha256.clone())?;
     verify_hash_once(&engine.verified_adapter, adapter, expected.as_deref(), "adapter")
 }
 
@@ -240,14 +246,18 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
 /// Returns the (owned) hash string, or `None` when the catalog pins none.
 fn hero_hash(
     app: &AppHandle,
-    pick: impl Fn(&crate::catalog::CatalogEntry) -> Option<&str>,
+    pick: impl Fn(&crate::catalog::ResolvedHero) -> Option<String>,
 ) -> Result<Option<String>, String> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = crate::catalog::parse_catalog(&raw)?;
     let hero = crate::catalog::hero(&entries)
         .ok_or_else(|| "catalog missing integrity data".to_string())?;
-    Ok(pick(hero).map(|s| s.to_string()))
+    // Same effective tier `resolve_launch` used, so the pinned hash matches
+    // the file that was resolved onto disk.
+    let tier = crate::tier_select::effective_tier(app);
+    let variant = crate::catalog::hero_variant(hero, &tier);
+    Ok(pick(&variant))
 }
 
 /// The shared load-time integrity check (B4 factored this out of

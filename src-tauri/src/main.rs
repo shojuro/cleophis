@@ -7,6 +7,7 @@ mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
+mod tier_select;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
