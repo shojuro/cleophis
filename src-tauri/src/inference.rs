@@ -600,8 +600,10 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
 /// so the engine must reload the new base+adapter. Blocks until the old
 /// watchdog thread has fully exited (so the two never overlap on `child`/VRAM)
 /// before spawning the fresh one; clears the per-path verify caches so the new
-/// pair re-verifies. Blocking (waits up to ~8s) — call it off the async
-/// runtime (`spawn_blocking`).
+/// pair re-verifies. The exit wait is unbounded by design — `shutting_down` +
+/// the killed child guarantee the old thread returns within ~1s, and a cap
+/// could expire mid-load and spawn a second thread (the race this prevents).
+/// Blocking — call it off the async runtime (`spawn_blocking`).
 pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     // Stop the running engine WITHOUT setting `closing` (that flag is reserved
     // for real app teardown): flag shutdown so the old watchdog thread breaks

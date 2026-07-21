@@ -594,15 +594,27 @@ pub async fn complete_tier_switch(
 }
 
 /// Latch `committed` on the user's first chat with the active model — after
-/// this, tier changes are limited to once per billing period. Idempotent.
+/// this, tier changes are limited to once per billing period. Also seeds
+/// `active_tier` to the installed (effective) tier the first time, so a later
+/// hardware re-tier can't make `current_active_tier` follow the drifted
+/// detection and misread a genuine change as a no-op. Idempotent.
 #[tauri::command]
 pub async fn mark_tier_committed(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut sel = read_app_selection(&app);
-        if sel.committed {
+        let mut dirty = false;
+        if sel.active_tier.is_empty() {
+            let detected = crate::hardware::detect().tier;
+            sel.active_tier = effective_tier_from(&sel, &detected);
+            dirty = true;
+        }
+        if !sel.committed {
+            sel.committed = true;
+            dirty = true;
+        }
+        if !dirty {
             return Ok(());
         }
-        sel.committed = true;
         let path = selection_path(&app).ok_or_else(|| "no app-data dir".to_string())?;
         write_selection(&path, &sel)
     })
