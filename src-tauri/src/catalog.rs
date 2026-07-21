@@ -51,6 +51,105 @@ pub struct CatalogEntry {
     pub tps: Option<String>,
     #[serde(default)]
     pub eval: Option<String>,
+    /// Per-device-tier base+adapter variants (wrapper tier-selection). When
+    /// present, the launch/verify/download paths resolve the base + adapter
+    /// through [`hero_variant`] keyed off the effective device tier, instead
+    /// of the flat `model_file`/`sha256`/… fields above. The flat fields stay
+    /// mirrored to the `mid` variant for back-compat with any reader that
+    /// hasn't moved to `hero_variant` yet. Absent on non-hero entries.
+    #[serde(default)]
+    pub tiers: Option<Tiers>,
+}
+
+/// One device tier's fully-pinned base+adapter identity — everything a launch
+/// or an integrity check needs, self-contained so the app knows all three
+/// tiers offline without a network fetch. Hashes here are cross-checked
+/// against the signed dist catalog at download time (that catalog stays the
+/// download + hash authority; this is the launch-time mirror).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TierVariant {
+    /// Dist-catalog `base_model` label (e.g. `"Qwen3-4B"`) — the key the FE
+    /// picks the `base`/`adapter` artifacts by out of `fetch_dist_catalog`.
+    pub base_model: String,
+    pub size_params: String,
+    pub model_file: String,
+    pub sha256: String,
+    pub adapter_file: String,
+    pub adapter_sha256: String,
+    pub adapter_id: String,
+    pub file_bytes: u64,
+}
+
+/// The three device tiers the wrapper selects between: `low` → 1B, `mid` →
+/// 4B, `high` → 8B (matching `hardware::tier_for`'s `"low"/"mid"/"high"`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Tiers {
+    pub low: TierVariant,
+    pub mid: TierVariant,
+    pub high: TierVariant,
+}
+
+impl Tiers {
+    /// The variant for a `hardware::detect().tier` string. `mid` is the
+    /// default for any unrecognized tier (defensive — `detect()` only ever
+    /// returns one of the three).
+    pub fn get(&self, tier: &str) -> &TierVariant {
+        match tier {
+            "low" => &self.low,
+            "high" => &self.high,
+            _ => &self.mid,
+        }
+    }
+}
+
+/// The hero's resolved base+adapter identity for a given device `tier`,
+/// unifying the two sources: when the entry carries a `tiers` block the
+/// requested tier's [`TierVariant`] is projected out (all fields `Some`);
+/// otherwise it falls back to the entry's flat fields (pre-tiers fixtures /
+/// non-hero entries), so callers behave exactly as before tier-selection
+/// existed. Every field is `Option` because the flat-field fallback may pin
+/// none of them.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResolvedHero {
+    pub base_model: Option<String>,
+    pub size_params: Option<String>,
+    pub model_file: Option<String>,
+    pub sha256: Option<String>,
+    pub adapter_file: Option<String>,
+    pub adapter_sha256: Option<String>,
+    pub adapter_id: Option<String>,
+    pub file_bytes: Option<u64>,
+}
+
+/// Resolve `entry`'s base+adapter identity for device `tier`. Uses the
+/// `tiers` block when present (keyed by tier, `mid`-default), else the flat
+/// fields — see [`ResolvedHero`].
+pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
+    if let Some(tiers) = &entry.tiers {
+        let v = tiers.get(tier);
+        ResolvedHero {
+            base_model: Some(v.base_model.clone()),
+            size_params: Some(v.size_params.clone()),
+            model_file: Some(v.model_file.clone()),
+            sha256: Some(v.sha256.clone()),
+            adapter_file: Some(v.adapter_file.clone()),
+            adapter_sha256: Some(v.adapter_sha256.clone()),
+            adapter_id: Some(v.adapter_id.clone()),
+            file_bytes: Some(v.file_bytes),
+        }
+    } else {
+        ResolvedHero {
+            base_model: None,
+            size_params: Some(entry.size_params.clone()),
+            model_file: entry.model_file.clone(),
+            sha256: entry.sha256.clone(),
+            adapter_file: entry.adapter_file.clone(),
+            adapter_sha256: entry.adapter_sha256.clone(),
+            adapter_id: entry.adapter_id.clone(),
+            file_bytes: Some(entry.file_bytes),
+        }
+    }
 }
 
 pub fn parse_catalog(json: &str) -> Result<Vec<CatalogEntry>, String> {
@@ -116,5 +215,52 @@ mod tests {
             "hero must carry a 64-hex adapter sha256"
         );
         assert_eq!(h.version, Some(2));
+    }
+
+    #[test]
+    fn hero_carries_all_three_tier_variants_with_pinned_hashes() {
+        let raw = include_str!("../resources/catalog.json");
+        let v = parse_catalog(raw).unwrap();
+        let h = hero(&v).expect("catalog must contain the hero model");
+        let tiers = h.tiers.as_ref().expect("hero must declare a tiers block");
+        for (tier, expect_base) in [
+            (&tiers.low, "Llama-3.2-1B"),
+            (&tiers.mid, "Qwen3-4B"),
+            (&tiers.high, "Qwen3-8B"),
+        ] {
+            assert_eq!(tier.base_model, expect_base);
+            assert_eq!(tier.sha256.len(), 64, "{expect_base} base sha256 must be 64-hex");
+            assert_eq!(tier.adapter_sha256.len(), 64, "{expect_base} adapter sha256 must be 64-hex");
+            assert!(tier.model_file.ends_with(".gguf"));
+            assert!(tier.adapter_file.ends_with(".gguf"));
+            assert!(tier.file_bytes > 0);
+        }
+        // The flat fields stay mirrored to the mid variant for back-compat.
+        assert_eq!(h.model_file.as_deref(), Some(tiers.mid.model_file.as_str()));
+        assert_eq!(h.sha256.as_deref(), Some(tiers.mid.sha256.as_str()));
+        assert_eq!(h.adapter_sha256.as_deref(), Some(tiers.mid.adapter_sha256.as_str()));
+    }
+
+    #[test]
+    fn hero_variant_selects_per_tier_and_defaults_mid() {
+        let raw = include_str!("../resources/catalog.json");
+        let v = parse_catalog(raw).unwrap();
+        let h = hero(&v).unwrap();
+        assert_eq!(hero_variant(h, "low").base_model.as_deref(), Some("Llama-3.2-1B"));
+        assert_eq!(hero_variant(h, "mid").base_model.as_deref(), Some("Qwen3-4B"));
+        assert_eq!(hero_variant(h, "high").base_model.as_deref(), Some("Qwen3-8B"));
+        // Unknown tier defends to mid.
+        assert_eq!(hero_variant(h, "banana").base_model.as_deref(), Some("Qwen3-4B"));
+    }
+
+    #[test]
+    fn hero_variant_falls_back_to_flat_fields_without_tiers() {
+        // A pre-tiers entry (no `tiers` block) still resolves via flat fields.
+        let v = parse_catalog(SAMPLE).unwrap();
+        let entry = &v[0];
+        assert!(entry.tiers.is_none());
+        let resolved = hero_variant(entry, "mid");
+        assert_eq!(resolved.model_file.as_deref(), Some("models/a.gguf"));
+        assert_eq!(resolved.base_model, None); // flat entries pin no base_model
     }
 }

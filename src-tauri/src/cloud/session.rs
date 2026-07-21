@@ -588,6 +588,14 @@ impl Cloud {
         }
     }
 
+    /// The locally-cached entitlements for the global `CloudCache` owner, with
+    /// NO network round-trip. `tier_select::current_entitlement` uses this as a
+    /// fallback when the online `entitlements()` lookup fails transiently, so a
+    /// flaky network never reads as "no access" for the switch limit.
+    pub fn cached_entitlements(&self) -> Vec<Entitlement> {
+        store::read_cache(&self.cache_path).entitlements
+    }
+
     /// Create a Stripe Checkout session for a model. Refreshes the session
     /// token if needed; one forced refresh+retry on `SessionExpired`
     /// (mirrors `download_authorization`'s retry shape). A 409 from the

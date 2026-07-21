@@ -7,6 +7,7 @@ mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
+mod tier_select;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -135,6 +136,10 @@ fn main() {
             engine_info,
             load_model,
             catalog_dist::fetch_dist_catalog,
+            tier_select::get_tier_selection,
+            tier_select::begin_tier_switch,
+            tier_select::complete_tier_switch,
+            tier_select::mark_tier_committed,
             kpack::mount_pack,
             kpack::build_personal_pack,
             kpack::cancel_build,

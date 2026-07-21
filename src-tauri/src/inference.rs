@@ -32,6 +32,18 @@ pub struct Engine {
     pub child: Mutex<Option<Child>>,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
+    /// True while a `start` watchdog thread is alive. A tier switch waits on
+    /// this (via [`restart`]) so the old thread fully exits before a new one
+    /// spawns — otherwise the two would fight over `child`/VRAM. Set
+    /// SYNCHRONOUSLY in `start` (before the thread is spawned, so the wait can
+    /// never miss an about-to-run thread) and cleared by the thread's own
+    /// drop-guard on every exit path.
+    pub thread_alive: AtomicBool,
+    /// Set once the app is tearing down (window Destroyed → [`shutdown`]). A
+    /// [`restart`] in flight checks this after stopping the old thread and
+    /// bails out instead of relaunching, so a tier switch racing app-close
+    /// can't spawn a llama-server the teardown already finished reaping.
+    pub closing: AtomicBool,
     /// Session cache for the load-time integrity check in
     /// `verify_model_once`: once a model path's sha256 has been checked
     /// against the catalog's pinned hash, it's recorded here so watchdog
@@ -54,6 +66,8 @@ impl Engine {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
+            thread_alive: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
             verified_model: Mutex::new(None),
             verified_adapter: Mutex::new(None),
         }
@@ -135,9 +149,15 @@ pub fn resolve_launch(app: &AppHandle) -> Option<LaunchPaths> {
         .map_err(|e| eprintln!("resolve_launch: catalog parse: {e}"))
         .ok()?;
     let hero = crate::catalog::hero(&entries)?;
-    let model_file = hero.model_file.as_ref()?;
+    // Tier-selection: resolve the base+adapter for the EFFECTIVE device tier
+    // (override, else `hardware::detect`), not the flat 4B fields. `hero_hash`
+    // keys off the same `effective_tier`, so the file resolved here and the
+    // hash checked at load always come from the same variant.
+    let tier = crate::tier_select::effective_tier(app);
+    let variant = crate::catalog::hero_variant(hero, &tier);
+    let model_file = variant.model_file.clone()?;
     let app_data = app.path().app_data_dir().ok();
-    resolve_launch_paths(app_data, root, model_file, hero.adapter_file.as_deref())
+    resolve_launch_paths(app_data, root, &model_file, variant.adapter_file.as_deref())
 }
 
 /// Pure resolution logic behind [`resolve_launch`]: resolves the base
@@ -216,7 +236,7 @@ fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(
     if engine.verified_model.lock().unwrap().as_deref() == Some(model) {
         return Ok(());
     }
-    let expected = hero_hash(app, |h| h.sha256.as_deref())?;
+    let expected = hero_hash(app, |v| v.sha256.clone())?;
     verify_hash_once(&engine.verified_model, model, expected.as_deref(), "model")
 }
 
@@ -231,7 +251,7 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
     if engine.verified_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
     }
-    let expected = hero_hash(app, |h| h.adapter_sha256.as_deref())?;
+    let expected = hero_hash(app, |v| v.adapter_sha256.clone())?;
     verify_hash_once(&engine.verified_adapter, adapter, expected.as_deref(), "adapter")
 }
 
@@ -240,14 +260,18 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
 /// Returns the (owned) hash string, or `None` when the catalog pins none.
 fn hero_hash(
     app: &AppHandle,
-    pick: impl Fn(&crate::catalog::CatalogEntry) -> Option<&str>,
+    pick: impl Fn(&crate::catalog::ResolvedHero) -> Option<String>,
 ) -> Result<Option<String>, String> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = crate::catalog::parse_catalog(&raw)?;
     let hero = crate::catalog::hero(&entries)
         .ok_or_else(|| "catalog missing integrity data".to_string())?;
-    Ok(pick(hero).map(|s| s.to_string()))
+    // Same effective tier `resolve_launch` used, so the pinned hash matches
+    // the file that was resolved onto disk.
+    let tier = crate::tier_select::effective_tier(app);
+    let variant = crate::catalog::hero_variant(hero, &tier);
+    Ok(pick(&variant))
 }
 
 /// The shared load-time integrity check (B4 factored this out of
@@ -374,6 +398,7 @@ fn kill_child(engine: &Engine) {
 }
 
 pub fn shutdown(engine: &Engine) {
+    engine.closing.store(true, Ordering::Relaxed);
     engine.shutting_down.store(true, Ordering::Relaxed);
     kill_child(engine);
 }
@@ -424,7 +449,20 @@ fn sweep_stray_servers() {}
 
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
+    // Mark the watchdog thread alive SYNCHRONOUSLY, before the spawn — so a
+    // concurrent [`restart`] waiting on this flag can never observe `false` for
+    // an about-to-run thread and race a second one into existence. The thread's
+    // drop-guard clears it on every exit path.
+    engine.thread_alive.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
+        struct AliveGuard(Arc<Engine>);
+        impl Drop for AliveGuard {
+            fn drop(&mut self) {
+                self.0.thread_alive.store(false, Ordering::Relaxed);
+            }
+        }
+        let _alive = AliveGuard(engine.clone());
+
         engine.set_status(EngineStatus::Starting);
         sweep_stray_servers();
         let force_cpu = std::env::var("CLEOPHIS_FORCE_CPU").is_ok();
@@ -555,6 +593,43 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
     } else {
         eprintln!("start_if_no_model: ignored, engine was not in NoModel state");
     }
+}
+
+/// Stop the running engine and relaunch it on whatever [`resolve_launch`] now
+/// resolves — the tier-switch primitive. The selection/catalog have changed,
+/// so the engine must reload the new base+adapter. Blocks until the old
+/// watchdog thread has fully exited (so the two never overlap on `child`/VRAM)
+/// before spawning the fresh one; clears the per-path verify caches so the new
+/// pair re-verifies. The exit wait is unbounded by design — `shutting_down` +
+/// the killed child guarantee the old thread returns within ~1s, and a cap
+/// could expire mid-load and spawn a second thread (the race this prevents).
+/// Blocking — call it off the async runtime (`spawn_blocking`).
+pub fn restart(app: AppHandle, engine: Arc<Engine>) {
+    // Stop the running engine WITHOUT setting `closing` (that flag is reserved
+    // for real app teardown): flag shutdown so the old watchdog thread breaks
+    // at its next checkpoint, and kill its child now.
+    engine.shutting_down.store(true, Ordering::Relaxed);
+    kill_child(&engine);
+    // Wait for the old thread to actually exit before spawning a new one — else
+    // the two would both write `engine.child`, orphaning a llama-server that
+    // holds VRAM. `shutting_down` + the killed child guarantee the thread hits
+    // a checkpoint and exits within ~1s, so this poll is bounded in practice;
+    // we intentionally do NOT cap it (a cap could expire mid-model-load and let
+    // us spawn a second thread — the exact race we're preventing).
+    while engine.thread_alive.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // If the app began tearing down while we were stopping the old thread, do
+    // NOT relaunch — the teardown's kill_child has already run and would not
+    // reap a freshly spawned server.
+    if engine.closing.load(Ordering::Relaxed) {
+        return;
+    }
+    engine.shutting_down.store(false, Ordering::Relaxed);
+    *engine.verified_model.lock().unwrap() = None;
+    *engine.verified_adapter.lock().unwrap() = None;
+    engine.set_status(EngineStatus::Starting);
+    start(app, engine);
 }
 
 #[cfg(test)]
