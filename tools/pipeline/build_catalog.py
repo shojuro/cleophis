@@ -456,6 +456,19 @@ def self_test() -> bool:
     check("that normal version + 1 (6) is still in-bounds", not refuses(6))
     check("0 (the very first catalog_version) is in-bounds", not refuses(0))
 
+    # `main()`'s manual `--catalog-version` branch runs the fetched value
+    # through this same `check_version_in_bounds` — a fat-fingered huge
+    # manual value (e.g. today's date typed where a small integer was
+    # meant) must be refused just as hard as a poisoned fetched one, or
+    # it becomes a permanent fleet-wide downgrade-guard lockout the
+    # instant it's signed and published.
+    check(
+        "manual --catalog-version 20260721 (a fat-fingered date-shaped value) is refused",
+        refuses(20260721),
+    )
+    check("manual --catalog-version 999_999 (one below the ceiling) is allowed", not refuses(999_999))
+    check("manual --catalog-version 1 (a normal first-publish value) is allowed", not refuses(1))
+
     return ok
 
 
@@ -480,8 +493,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.catalog_version is not None:
-        if args.catalog_version < 0:
-            print("error: --catalog-version must be >= 0", file=sys.stderr)
+        try:
+            check_version_in_bounds(args.catalog_version)
+        except CatalogAssemblyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return 1
         catalog_version = args.catalog_version
     else:

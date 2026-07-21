@@ -402,7 +402,9 @@ impl Pack {
 
         if manifest.pack_tier == PackTier::Curated {
             let key = ctx.curator_key.ok_or_else(|| {
-                Error::Schema("this build can't verify curated packs yet".to_string())
+                Error::Schema(
+                    "no curator key was supplied to verify this curated pack".to_string(),
+                )
             })?;
             // Reuses `sign::verify_file` (Fix 1) rather than re-reading the
             // pack/sig bytes here itself, so there is exactly one crypto
@@ -922,8 +924,8 @@ mod tests {
         );
     }
 
-    // 20. Curated pack but ctx.curator_key = None -> refuses ("can't
-    // verify curated packs yet").
+    // 20. Curated pack but ctx.curator_key = None -> refuses ("no curator
+    // key was supplied to verify this curated pack").
     #[test]
     fn t20_mount_curated_pack_no_curator_key_refuses() {
         let dir = unique_dir("t20");
@@ -945,7 +947,8 @@ mod tests {
         let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
         assert!(
-            err.to_string().contains("can't verify curated packs yet"),
+            err.to_string()
+                .contains("no curator key was supplied to verify this curated pack"),
             "error was: {err}"
         );
     }

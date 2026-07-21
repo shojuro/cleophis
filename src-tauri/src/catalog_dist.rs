@@ -209,6 +209,22 @@ fn get_capped(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Process-wide single-flight guard over [`fetch_and_verify_catalog`]'s
+/// read-check-write section (below). Without it, two concurrent fetches
+/// (e.g. a manual retry racing a background refresh) could both
+/// `read_highest_version` before either `write_highest_version`, both pass
+/// `check_not_downgrade` against the same stale `highest_seen`, and then
+/// race to write — not a security hole (both catalogs were independently
+/// signature-verified), but a lost-update on the persisted highest-version
+/// state. Plain `Mutex<()>`, held only across that section — never across
+/// the network fetch above it, so concurrent fetches still overlap on the
+/// slow part. Poisoned-lock handling mirrors `download.rs`/`kpack.rs`'s
+/// production locks: `.unwrap()`, not a recovery path — a poisoned lock
+/// here means a prior holder panicked mid-write, and propagating that
+/// panic is preferable to silently proceeding over a possibly-torn state
+/// file.
+static FETCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The testable core of catalog fetch (Task B2): GET `<base_url>/catalog.json`
 /// + `<base_url>/catalog.json.sig`, [`parse_and_verify`] against `key`,
 /// apply [`check_not_downgrade`] against the highest version persisted at
@@ -234,6 +250,11 @@ pub fn fetch_and_verify_catalog(
         .map_err(|e| format!("failed to fetch catalog.json.sig: {e}"))?;
 
     let catalog = parse_and_verify(&catalog_bytes, &sig_bytes, key)?;
+
+    // See `FETCH_LOCK`'s doc comment: single-flight the check+write section
+    // so two concurrent fetches can't both observe the same `highest_seen`
+    // and race to write it.
+    let _guard = FETCH_LOCK.lock().unwrap();
 
     let highest_seen = read_highest_version(state_path);
     check_not_downgrade(catalog.catalog_version, highest_seen)?;
@@ -318,7 +339,7 @@ mod tests {
         let mut sig = sk.sign(CATALOG_JSON).to_bytes();
         sig[0] ^= 0x01; // flip a byte -> signature no longer matches
         let err = parse_and_verify(CATALOG_JSON, &sig, &sk.verifying_key()).unwrap_err();
-        assert!(!err.is_empty());
+        assert!(err.contains("signature"), "error was: {err}");
     }
 
     #[test]
@@ -505,7 +526,7 @@ mod tests {
         // must fail.
         let err = fetch_and_verify_catalog(&base_url, &wrong_key.verifying_key(), &state_path)
             .expect_err("a signature that doesn't match the trusted key must be refused");
-        assert!(!err.is_empty());
+        assert!(err.contains("signature"), "error was: {err}");
         assert_eq!(read_highest_version(&state_path), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -514,20 +535,27 @@ mod tests {
     // 4. The production command path's key resolution: Task B5 pinned
     // `CURATOR_PUBLIC_KEY`, so `resolve_curator_key()` must now resolve
     // successfully and return exactly the pinned production key — not
-    // silently substitute a different one. This test is deliberately
-    // agnostic to what the pinned bytes actually are: it re-derives the
-    // expected key from `kpack_core::sign::curator_verifying_key()` itself
-    // rather than hardcoding a literal, so it stays correct across any
-    // future, deliberate key rotation. `resolve_curator_key`'s `None`
-    // branch (fail closed, never "trust anyway") is exercised structurally
-    // by inspection — `curator_verifying_key().ok_or_else(...)` — since a
-    // real build can no longer put the production constant back to `None`
-    // without editing `sign.rs` directly.
+    // silently substitute a different one. Deliberately asserted against
+    // the literal expected bytes (not re-derived from
+    // `kpack_core::sign::curator_verifying_key()`, which would make this
+    // tautological — one is defined via the other, so it could never
+    // catch a wrong key): a real, deliberate key rotation must consciously
+    // edit BOTH `sign.rs`'s `CURATOR_PUBLIC_KEY` and this literal, or this
+    // test fails. `resolve_curator_key`'s `None` branch (fail closed,
+    // never "trust anyway") is exercised structurally by inspection —
+    // `curator_verifying_key().ok_or_else(...)` — since a real build can
+    // no longer put the production constant back to `None` without
+    // editing `sign.rs` directly.
     #[test]
     fn resolve_curator_key_resolves_the_pinned_production_key() {
-        let expected = kpack_core::sign::curator_verifying_key()
-            .expect("Task B5 pinned CURATOR_PUBLIC_KEY; production key must resolve");
-        let resolved = resolve_curator_key().expect("pinned production key must resolve to Ok");
-        assert_eq!(resolved.to_bytes(), expected.to_bytes());
+        let key = resolve_curator_key().expect("pinned production key must resolve to Ok");
+        assert_eq!(
+            key.to_bytes(),
+            [
+                0x15, 0x8c, 0xb9, 0x9e, 0x97, 0x56, 0xe2, 0xe4, 0xd0, 0x1d, 0x88, 0xb7, 0xec,
+                0xfe, 0xb9, 0x9a, 0x76, 0x54, 0x78, 0x21, 0xff, 0xe9, 0xf9, 0xf1, 0x98, 0x53,
+                0x16, 0xc5, 0x45, 0x1c, 0xd0, 0xc0,
+            ]
+        );
     }
 }
