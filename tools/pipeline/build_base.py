@@ -31,6 +31,7 @@ Inputs:
 
 Outputs (under --out-dir, gitignored `work/` by default):
     <out-dir>/<model-name>/<quant>/<model-name>-Instruct-<quant>.gguf
+    <out-dir>/<model-name>/<quant>/<...>.gguf.provenance.json
     <out-dir>/<model-name>/<quant>/manifest.json
 
 The intermediate f16 GGUF is kept (not deleted) under
@@ -45,7 +46,17 @@ Idempotent: every stage checks for its own completed output before doing
 any work, so re-running after an interruption resumes rather than
 redoing finished stages. Convert/quantize write to a `.partial` sibling
 path and atomically rename on success, so a half-written output from a
-killed run is never mistaken for a finished one.
+killed run is never mistaken for a finished one. That "already done"
+check is NOT just file-existence: convert/quantize each write a
+`<output>.provenance.json` sidecar (`{"repo": ..., "revision": ...}`)
+alongside their output on success, and a re-run only treats an existing
+output as complete if its sidecar matches the requested `--repo`/
+`--revision` for *this* invocation. A same-path output built from a
+different revision is provenance-untrustworthy for the signed catalog
+(A4 trusts the manifest this script writes), so a mismatch is a hard
+refusal, not a silent rebuild or a silent reuse — the operator has to
+explicitly clear the stale `<output>` + its sidecar (and any downstream
+manifest) before re-running.
 """
 
 from __future__ import annotations
@@ -54,6 +65,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -87,6 +99,60 @@ VENV_PYTHON = PIPELINE_ROOT / ".venv" / "bin" / "python3"
 ENV_FILE = PIPELINE_ROOT / ".env"
 
 HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB — stream the hash, never slurp the file.
+
+
+class StaleArtifactError(RuntimeError):
+    """An on-disk output exists but its provenance sidecar doesn't match the
+    requested repo+revision — refuse rather than silently rebuild/reuse it."""
+
+
+def provenance_path(artifact_path: Path) -> Path:
+    return artifact_path.with_name(artifact_path.name + ".provenance.json")
+
+
+def read_provenance(artifact_path: Path) -> dict | None:
+    """Read an artifact's provenance sidecar; None if absent or unparseable
+    (an unparseable sidecar is treated the same as a missing one — both fail
+    the equality check in `check_provenance_or_refuse` and refuse)."""
+    path = provenance_path(artifact_path)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_provenance_atomic(artifact_path: Path, repo: str, revision: str) -> None:
+    path = provenance_path(artifact_path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"repo": repo, "revision": revision}, indent=2) + "\n")
+    tmp.replace(path)  # atomic rename on POSIX, same filesystem
+
+
+def check_provenance_or_refuse(artifact_path: Path, repo: str, revision: str) -> bool:
+    """True if `artifact_path` already exists AND its provenance sidecar
+    matches (repo, revision) — the stage that produced it can be skipped.
+    False if the path doesn't exist yet (the stage should run normally).
+    Raises StaleArtifactError if the path exists but the sidecar is
+    missing/mismatched, rather than silently rebuilding or silently trusting
+    a possibly-wrong artifact.
+    """
+    if not (artifact_path.is_file() and artifact_path.stat().st_size > 0):
+        return False
+    expected = {"repo": repo, "revision": revision}
+    actual = read_provenance(artifact_path)
+    if actual == expected:
+        return True
+    raise StaleArtifactError(
+        f"{artifact_path} already exists but its provenance sidecar "
+        f"({provenance_path(artifact_path).name}) is {actual!r}, not the "
+        f"requested {expected!r}. Refusing to silently reuse or overwrite a "
+        f"potentially mismatched artifact. Remove {artifact_path.name} and "
+        f"{provenance_path(artifact_path).name} (and any downstream "
+        f"manifest.json built from it) if you intend to rebuild for this "
+        f"repo/revision."
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -165,7 +231,13 @@ def download_snapshot(
                 repo_id=repo,
                 revision=revision,
                 local_dir=dest,
-                token=token,
+                # huggingface_hub treats token=None as "go ahead and resolve
+                # an ambient credential" (HF_TOKEN env var, cached `hf auth
+                # login`, ...) — that would silently violate the env-dumb
+                # guarantee that this script's only credential input is
+                # tools/pipeline/.env. token=False forces true anonymous
+                # access when .env didn't supply one.
+                token=token if token else False,
                 # Only the files convert_hf_to_gguf.py actually needs;
                 # harmless if a repo has none of these (Qwen/Qwen3-4B ships
                 # safetensors only).
@@ -183,19 +255,22 @@ def download_snapshot(
     raise RuntimeError(f"snapshot_download failed after {max_attempts} attempts") from last_exc
 
 
-def convert_to_f16(snapshot_dir: Path, work_dir: Path, model_name: str) -> Path:
+def convert_to_f16(snapshot_dir: Path, work_dir: Path, model_name: str, repo: str, revision: str) -> Path:
     """Run convert_hf_to_gguf.py to produce the intermediate f16 GGUF.
 
     Skips the (slow) conversion entirely if the final f16 file already
-    exists from a prior run; otherwise converts to a `.partial` path and
-    renames atomically on success so an interrupted run never leaves a
-    half-written file at the final path.
+    exists from a prior run AND its provenance sidecar matches (repo,
+    revision); otherwise converts to a `.partial` path and renames
+    atomically on success so an interrupted run never leaves a half-written
+    file at the final path, then stamps the sidecar. Raises
+    StaleArtifactError (via check_provenance_or_refuse) if a same-path file
+    exists but was built from a different repo/revision.
     """
     f16_dir = work_dir / "f16"
     f16_dir.mkdir(parents=True, exist_ok=True)
     final = f16_dir / f"{model_name}-f16.gguf"
-    if final.is_file() and final.stat().st_size > 0:
-        print(f"[convert] {final} already exists, skipping", flush=True)
+    if check_provenance_or_refuse(final, repo, revision):
+        print(f"[convert] {final} already exists with matching provenance, skipping", flush=True)
         return final
 
     tmp = final.with_name(final.name + ".partial")
@@ -209,29 +284,31 @@ def convert_to_f16(snapshot_dir: Path, work_dir: Path, model_name: str) -> Path:
         "--outfile",
         str(tmp),
     ]
-    print(f"[convert] running: {' '.join(cmd)}", flush=True)
+    print(f"[convert] running: {shlex.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True)
     tmp.rename(final)
+    write_provenance_atomic(final, repo, revision)
     return final
 
 
-def quantize(f16_path: Path, out_gguf: Path, quant: str) -> Path:
+def quantize(f16_path: Path, out_gguf: Path, quant: str, repo: str, revision: str) -> Path:
     """Run llama-quantize to produce the final quantized GGUF.
 
-    Same skip-if-done / write-to-.partial-then-rename idempotency pattern
-    as convert_to_f16.
+    Same provenance-checked skip-if-done / write-to-.partial-then-rename
+    idempotency pattern as convert_to_f16.
     """
-    if out_gguf.is_file() and out_gguf.stat().st_size > 0:
-        print(f"[quantize] {out_gguf} already exists, skipping", flush=True)
+    if check_provenance_or_refuse(out_gguf, repo, revision):
+        print(f"[quantize] {out_gguf} already exists with matching provenance, skipping", flush=True)
         return out_gguf
 
     out_gguf.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_gguf.with_name(out_gguf.name + ".partial")
     tmp.unlink(missing_ok=True)
     cmd = [str(QUANTIZE_BIN), str(f16_path), str(tmp), quant]
-    print(f"[quantize] running: {' '.join(cmd)}", flush=True)
+    print(f"[quantize] running: {shlex.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True)
     tmp.rename(out_gguf)
+    write_provenance_atomic(out_gguf, repo, revision)
     return out_gguf
 
 
@@ -300,8 +377,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         snapshot_dir = download_snapshot(args.repo, args.revision, args.work_dir, token)
-        f16_path = convert_to_f16(snapshot_dir, args.work_dir, args.model_name)
-        quantize(f16_path, final_gguf, args.quant)
+        f16_path = convert_to_f16(snapshot_dir, args.work_dir, args.model_name, args.repo, args.revision)
+        quantize(f16_path, final_gguf, args.quant, args.repo, args.revision)
     except (subprocess.CalledProcessError, RuntimeError) as exc:
         print(f"error: step failed: {exc}", file=sys.stderr)
         return 1
