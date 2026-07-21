@@ -26,8 +26,15 @@
 //! are unit-tested below; the `#[tauri::command]` wrappers live in A2.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
+
+use crate::cloud::session::Cloud;
+use crate::cloud::store::Entitlement;
+use crate::inference::Engine;
 
 /// The hero catalog id every tier variant belongs to — the entitlement the
 /// switch limit is keyed off, and the only `real` entry `catalog::hero`
@@ -210,25 +217,390 @@ pub fn sweep_models(models_dir: &Path, keep: &[String]) -> Vec<String> {
 
 /// `app_data/tier_selection.json`, or `None` if the app-data dir can't be
 /// resolved.
-pub fn selection_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    use tauri::Manager;
+pub fn selection_path(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
         .ok()
         .map(|d| d.join("tier_selection.json"))
 }
 
+/// The `models/` directory downloads land in, or `None` if the app-data dir
+/// can't be resolved.
+fn models_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("models"))
+}
+
 /// The persisted selection for this install (default `auto` when absent).
-pub fn read_app_selection(app: &tauri::AppHandle) -> TierSelection {
+pub fn read_app_selection(app: &AppHandle) -> TierSelection {
     selection_path(app).map(|p| read_selection(&p)).unwrap_or_default()
 }
 
 /// The effective device tier for this install: override if set, else
 /// `hardware::detect().tier`. This is the single tier the launch, verify, and
 /// download paths all key off, so they agree.
-pub fn effective_tier(app: &tauri::AppHandle) -> String {
+pub fn effective_tier(app: &AppHandle) -> String {
     let sel = read_app_selection(app);
     effective_tier_from(&sel, &crate::hardware::detect().tier)
+}
+
+/// The hero's [`crate::catalog::ResolvedHero`] for `tier`, read from the
+/// bundled catalog. Shared by the switch commands to learn the target tier's
+/// filenames + `base_model`.
+fn hero_variant_for(app: &AppHandle, tier: &str) -> Result<crate::catalog::ResolvedHero, String> {
+    let root = crate::inference::resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
+    let entries = crate::catalog::parse_catalog(&raw)?;
+    let hero = crate::catalog::hero(&entries).ok_or_else(|| "catalog has no hero".to_string())?;
+    Ok(crate::catalog::hero_variant(hero, tier))
+}
+
+/// The basename of a `models/<file>.gguf` catalog path.
+fn basename(path: &str) -> Option<String> {
+    Path::new(path).file_name().and_then(|n| n.to_str()).map(str::to_string)
+}
+
+/// The base + adapter basenames of a resolved tier variant — the "keep set"
+/// for [`sweep_models`].
+fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
+    let mut keep = Vec::new();
+    if let Some(m) = variant.model_file.as_deref().and_then(basename) {
+        keep.push(m);
+    }
+    if let Some(a) = variant.adapter_file.as_deref().and_then(basename) {
+        keep.push(a);
+    }
+    keep
+}
+
+/// Does the tier variant's base + adapter both already exist under `models/`?
+fn variant_on_disk(app: &AppHandle, variant: &crate::catalog::ResolvedHero) -> bool {
+    let Some(dir) = models_dir(app) else {
+        return false;
+    };
+    keep_basenames(variant)
+        .iter()
+        .all(|name| dir.join(name).exists())
+}
+
+/// The active hero entitlement, resolved from the LOCALLY-CACHED entitlements
+/// (`Cloud::entitlements` returns the cache when offline), for the switch
+/// limit. See [`resolve_hero_entitlement`].
+fn current_entitlement(cloud: &Cloud) -> HeroEntitlement {
+    let ents = cloud.entitlements().unwrap_or_default();
+    resolve_hero_entitlement(&ents, Utc::now())
+}
+
+/// Classify the hero product's current access for the switch limit: a live
+/// billing period (`expires_at` in the future) wins, else a perpetual grant
+/// (no `expires_at`), else none. Only `model_id == HERO_MODEL_ID`
+/// entitlements are considered; expired periods are ignored.
+pub fn resolve_hero_entitlement(entitlements: &[Entitlement], now: DateTime<Utc>) -> HeroEntitlement {
+    let mut best_period: Option<(DateTime<Utc>, String)> = None;
+    let mut has_perpetual = false;
+    for e in entitlements {
+        if e.model_id != HERO_MODEL_ID {
+            continue;
+        }
+        match e.expires_at.as_deref() {
+            None => has_perpetual = true,
+            Some(s) => {
+                if let Ok(parsed) = DateTime::parse_from_rfc3339(s) {
+                    let exp = parsed.with_timezone(&Utc);
+                    if exp > now && best_period.as_ref().map_or(true, |(b, _)| exp > *b) {
+                        best_period = Some((exp, s.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((_, key)) = best_period {
+        HeroEntitlement::Period(key)
+    } else if has_perpetual {
+        HeroEntitlement::Perpetual
+    } else {
+        HeroEntitlement::None
+    }
+}
+
+fn period_key_of(ent: &HeroEntitlement) -> Option<String> {
+    match ent {
+        HeroEntitlement::Period(k) => Some(k.clone()),
+        _ => None,
+    }
+}
+
+/// Map a [`SwitchDenied`] to user-facing copy for the FE.
+fn denial_message(d: &SwitchDenied) -> String {
+    match d {
+        SwitchDenied::NoEntitlement => {
+            "Renew your subscription to change your model.".to_string()
+        }
+        SwitchDenied::AlreadySwitchedThisPeriod { available_at } => match available_at {
+            Some(when) => format!(
+                "You can change your model once per billing period — next change after {when}."
+            ),
+            None => "You can change your model once per billing period.".to_string(),
+        },
+        SwitchDenied::CooldownActive { available_at } => {
+            let when = DateTime::from_timestamp(*available_at, 0)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default();
+            format!("You can change your model again after {when}.")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands.
+// ---------------------------------------------------------------------------
+
+/// What the FE renders the tier selector from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TierSelectionInfo {
+    pub mode: String,
+    pub active_tier: String,
+    pub effective_tier: String,
+    pub committed: bool,
+    /// Whether a tier change is allowed right now (false → the per-period /
+    /// cooldown limit is in effect, or there's no active entitlement).
+    pub switch_available: bool,
+    /// When `switch_available` is false, when the next change unlocks (the
+    /// billing-period renewal, or the cooldown end) — for the FE hint.
+    pub next_change_at: Option<String>,
+}
+
+/// The plan `begin_tier_switch` hands back once the switch is permitted.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchPlan {
+    pub target_tier: String,
+    pub base_model: String,
+    /// True → the FE must download the target tier's base+adapter before
+    /// calling `complete_tier_switch`. False → the pair is already on disk
+    /// (or the tier didn't change); go straight to `complete_tier_switch`.
+    pub needs_download: bool,
+    /// True → the effective model does not actually change (a mode relabel,
+    /// e.g. explicit `mid` → `auto` on a mid machine): no download, no
+    /// engine restart, no limit consumed.
+    pub no_op: bool,
+}
+
+fn valid_mode(mode: &str) -> bool {
+    matches!(mode, "auto" | "low" | "mid" | "high")
+}
+
+/// The tier-selector state for the FE (current mode, effective tier, and
+/// whether a change is allowed right now).
+#[tauri::command]
+pub async fn get_tier_selection(
+    app: AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+) -> Result<TierSelectionInfo, String> {
+    let cloud = cloud.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let sel = read_app_selection(&app);
+        let detected = crate::hardware::detect().tier;
+        let effective = effective_tier_from(&sel, &detected);
+        let ent = current_entitlement(&cloud);
+        let now = Utc::now().timestamp();
+        let (switch_available, next_change_at) = match switch_allowed(
+            sel.committed,
+            &ent,
+            sel.period_key.as_deref(),
+            sel.switched_at,
+            now,
+        ) {
+            Ok(()) => (true, None),
+            Err(d) => {
+                let next = match &d {
+                    SwitchDenied::AlreadySwitchedThisPeriod { available_at } => available_at.clone(),
+                    SwitchDenied::CooldownActive { available_at } => {
+                        DateTime::from_timestamp(*available_at, 0).map(|d| d.to_rfc3339())
+                    }
+                    SwitchDenied::NoEntitlement => None,
+                };
+                (false, next)
+            }
+        };
+        let active_tier = if sel.active_tier.is_empty() {
+            effective.clone()
+        } else {
+            sel.active_tier.clone()
+        };
+        TierSelectionInfo {
+            mode: sel.mode,
+            active_tier,
+            effective_tier: effective,
+            committed: sel.committed,
+            switch_available,
+            next_change_at,
+        }
+    })
+    .await
+    .map_err(|_| "Something went wrong on this device. Please try again.".to_string())
+}
+
+/// Validate a tier change and return the plan. Enforces the switch limit
+/// (offline, against cached entitlements). `Err` carries a user-facing denial
+/// message; `Ok` tells the FE whether it must download first.
+#[tauri::command]
+pub async fn begin_tier_switch(
+    app: AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+    mode: String,
+) -> Result<SwitchPlan, String> {
+    if !valid_mode(&mode) {
+        return Err("Unknown model tier.".to_string());
+    }
+    let cloud = cloud.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let sel = read_app_selection(&app);
+        let detected = crate::hardware::detect().tier;
+        let target = mode_effective_tier(&mode, &sel, &detected);
+        let variant = hero_variant_for(&app, &target)?;
+        let base_model = variant.base_model.clone().unwrap_or_default();
+
+        // A mode relabel that doesn't change the installed model: no download,
+        // no restart, no limit consumed.
+        if !sel.active_tier.is_empty() && target == sel.active_tier {
+            return Ok(SwitchPlan {
+                target_tier: target,
+                base_model,
+                needs_download: false,
+                no_op: true,
+            });
+        }
+
+        // A real change → enforce the switch limit (unless still uncommitted).
+        let now = Utc::now().timestamp();
+        let ent = current_entitlement(&cloud);
+        if sel.committed {
+            if let Err(d) = switch_allowed(true, &ent, sel.period_key.as_deref(), sel.switched_at, now) {
+                return Err(denial_message(&d));
+            }
+        } else if let HeroEntitlement::None = ent {
+            // Even the free setup change needs an active entitlement to
+            // download the new bytes.
+            return Err(denial_message(&SwitchDenied::NoEntitlement));
+        }
+
+        let needs_download = !variant_on_disk(&app, &variant);
+        Ok(SwitchPlan {
+            target_tier: target,
+            base_model,
+            needs_download,
+            no_op: false,
+        })
+    })
+    .await
+    .map_err(|_| "Something went wrong on this device. Please try again.".to_string())?
+}
+
+/// Persist the new selection and (when the model actually changes) relaunch
+/// the engine on it, then sweep every other model file off disk. Called after
+/// `begin_tier_switch` (and any needed downloads). Re-checks the switch limit
+/// so it can't be bypassed by calling it directly.
+#[tauri::command]
+pub async fn complete_tier_switch(
+    app: AppHandle,
+    cloud: State<'_, Arc<Cloud>>,
+    engine: State<'_, Arc<Engine>>,
+    mode: String,
+) -> Result<(), String> {
+    if !valid_mode(&mode) {
+        return Err("Unknown model tier.".to_string());
+    }
+    let cloud = cloud.inner().clone();
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let sel = read_app_selection(&app);
+        let detected = crate::hardware::detect().tier;
+        let target = mode_effective_tier(&mode, &sel, &detected);
+        let changed = sel.active_tier != target;
+
+        let ent = current_entitlement(&cloud);
+        let now = Utc::now().timestamp();
+
+        // Re-enforce the limit for a committed, real change (authoritative —
+        // the FE's `begin_tier_switch` check is advisory).
+        let consumed = changed && sel.committed;
+        if consumed {
+            if let Err(d) = switch_allowed(true, &ent, sel.period_key.as_deref(), sel.switched_at, now) {
+                return Err(denial_message(&d));
+            }
+        }
+
+        let new_sel = TierSelection {
+            mode: mode.clone(),
+            active_tier: target.clone(),
+            committed: sel.committed, // one-way latch; only mark_tier_committed sets it
+            period_key: if consumed {
+                period_key_of(&ent)
+            } else {
+                sel.period_key.clone()
+            },
+            switched_at: if consumed { Some(now) } else { sel.switched_at },
+        };
+
+        let path = selection_path(&app).ok_or_else(|| "no app-data dir".to_string())?;
+
+        if changed {
+            // The new pair must be fully on disk before we relaunch onto it.
+            if crate::inference::resolve_launch(&app).is_none() {
+                // Persist the mode intent but do not restart onto a missing
+                // model — the FE routes back through the download flow.
+                return Err("The selected model isn't fully downloaded yet.".to_string());
+            }
+            // Persist BEFORE restart so `resolve_launch` inside the engine
+            // thread resolves the new tier.
+            write_selection(&path, &new_sel)?;
+            crate::inference::restart(app.clone(), engine);
+            // Sweep only AFTER the relaunch is under way — keep just the new
+            // active pair, deleting the previous tier's files and any orphans.
+            let variant = hero_variant_for(&app, &target)?;
+            if let Some(dir) = models_dir(&app) {
+                let removed = sweep_models(&dir, &keep_basenames(&variant));
+                if !removed.is_empty() {
+                    eprintln!("tier switch: swept {} stale model file(s)", removed.len());
+                }
+            }
+        } else {
+            // Mode relabel only — persist, no engine work.
+            write_selection(&path, &new_sel)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Something went wrong on this device. Please try again.".to_string())?
+}
+
+/// Latch `committed` on the user's first chat with the active model — after
+/// this, tier changes are limited to once per billing period. Idempotent.
+#[tauri::command]
+pub async fn mark_tier_committed(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut sel = read_app_selection(&app);
+        if sel.committed {
+            return Ok(());
+        }
+        sel.committed = true;
+        let path = selection_path(&app).ok_or_else(|| "no app-data dir".to_string())?;
+        write_selection(&path, &sel)
+    })
+    .await
+    .map_err(|_| "Something went wrong on this device. Please try again.".to_string())?
+}
+
+/// The effective tier under a candidate `mode`, reusing the rest of `sel`
+/// (only `mode` changes). Pulled out so the switch commands compute the target
+/// the same way [`effective_tier_from`] does for the live selection.
+fn mode_effective_tier(mode: &str, sel: &TierSelection, detected: &str) -> String {
+    let candidate = TierSelection {
+        mode: mode.to_string(),
+        ..sel.clone()
+    };
+    effective_tier_from(&candidate, detected)
 }
 
 #[cfg(test)]
@@ -389,5 +761,71 @@ mod tests {
         let dir = std::env::temp_dir().join("cleophis-sweep-nope-xyz/models");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(sweep_models(&dir, &[]).is_empty());
+    }
+
+    // --- resolve_hero_entitlement -------------------------------------------
+
+    fn ent(model: &str, expires: Option<&str>) -> Entitlement {
+        Entitlement {
+            model_id: model.to_string(),
+            source: "purchase".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: expires.map(str::to_string),
+        }
+    }
+
+    fn now_at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn entitlement_period_when_active_purchase() {
+        let ents = vec![ent(HERO_MODEL_ID, Some("2026-08-21T00:00:00Z"))];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            HeroEntitlement::Period("2026-08-21T00:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn entitlement_none_when_expired() {
+        let ents = vec![ent(HERO_MODEL_ID, Some("2026-07-01T00:00:00Z"))];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            HeroEntitlement::None
+        );
+    }
+
+    #[test]
+    fn entitlement_perpetual_when_no_expiry() {
+        let ents = vec![ent(HERO_MODEL_ID, None)];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            HeroEntitlement::Perpetual
+        );
+    }
+
+    #[test]
+    fn entitlement_prefers_latest_live_period_over_perpetual_and_other_models() {
+        let ents = vec![
+            ent("other-model", Some("2027-01-01T00:00:00Z")), // not hero → ignored
+            ent(HERO_MODEL_ID, None),                         // perpetual grant
+            ent(HERO_MODEL_ID, Some("2026-08-21T00:00:00Z")), // live period
+            ent(HERO_MODEL_ID, Some("2026-09-21T00:00:00Z")), // later live period wins
+            ent(HERO_MODEL_ID, Some("2026-06-01T00:00:00Z")), // expired → ignored
+        ];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            HeroEntitlement::Period("2026-09-21T00:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn entitlement_none_for_other_model_only() {
+        let ents = vec![ent("other", Some("2027-01-01T00:00:00Z"))];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            HeroEntitlement::None
+        );
     }
 }

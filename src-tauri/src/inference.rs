@@ -32,6 +32,11 @@ pub struct Engine {
     pub child: Mutex<Option<Child>>,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
+    /// True while a `start` watchdog thread is alive. A tier switch waits on
+    /// this (via [`restart`]) so the old thread fully exits before a new one
+    /// spawns — otherwise the two would fight over `child`/VRAM. Set by the
+    /// thread's own drop-guard, so it flips false on every exit path.
+    pub thread_alive: AtomicBool,
     /// Session cache for the load-time integrity check in
     /// `verify_model_once`: once a model path's sha256 has been checked
     /// against the catalog's pinned hash, it's recorded here so watchdog
@@ -54,6 +59,7 @@ impl Engine {
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
+            thread_alive: AtomicBool::new(false),
             verified_model: Mutex::new(None),
             verified_adapter: Mutex::new(None),
         }
@@ -435,6 +441,17 @@ fn sweep_stray_servers() {}
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || {
+        // Mark this watchdog thread alive for [`restart`]'s wait, and clear it
+        // on EVERY exit path (break/return/panic) via the drop-guard.
+        engine.thread_alive.store(true, Ordering::Relaxed);
+        struct AliveGuard(Arc<Engine>);
+        impl Drop for AliveGuard {
+            fn drop(&mut self) {
+                self.0.thread_alive.store(false, Ordering::Relaxed);
+            }
+        }
+        let _alive = AliveGuard(engine.clone());
+
         engine.set_status(EngineStatus::Starting);
         sweep_stray_servers();
         let force_cpu = std::env::var("CLEOPHIS_FORCE_CPU").is_ok();
@@ -565,6 +582,26 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
     } else {
         eprintln!("start_if_no_model: ignored, engine was not in NoModel state");
     }
+}
+
+/// Stop the running engine and relaunch it on whatever [`resolve_launch`] now
+/// resolves — the tier-switch primitive. The selection/catalog have changed,
+/// so the engine must reload the new base+adapter. Blocks until the old
+/// watchdog thread has fully exited (so the two never overlap on `child`/VRAM)
+/// before spawning the fresh one; clears the per-path verify caches so the new
+/// pair re-verifies. Blocking (waits up to ~8s) — call it off the async
+/// runtime (`spawn_blocking`).
+pub fn restart(app: AppHandle, engine: Arc<Engine>) {
+    shutdown(&engine); // shutting_down = true + kill the current child
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while engine.thread_alive.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    engine.shutting_down.store(false, Ordering::Relaxed);
+    *engine.verified_model.lock().unwrap() = None;
+    *engine.verified_adapter.lock().unwrap() = None;
+    engine.set_status(EngineStatus::Starting);
+    start(app, engine);
 }
 
 #[cfg(test)]
