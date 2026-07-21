@@ -66,14 +66,26 @@ Sequence (mirrors the app exactly — see the module docstring above):
        version, license — see README.md's "Binding cross-track values"
        table) with `kind` in {base, adapter} and `base_model` ==
        "Qwen3-4B" exactly.
-    5. For EACH artifact: GET <base-url>/<path>, streaming the response
-       body through sha256 in 1 MiB chunks while counting bytes — never
-       written to disk, never buffered whole in memory, regardless of
-       artifact size (these are multi-GB GGUF files) — then compare the
-       resulting sha256 (case-insensitive) and byte count against the
-       catalog's recorded values for that artifact. Size is compared
-       before sha256 (fails fast, and is what lets a truncated-artifact
-       self-test scenario report distinctly from a tampered-byte one).
+    5. For EACH artifact: GET <base-url>/<path> — refusing (RedirectError)
+       rather than following any 3xx response, exactly like the app's own
+       `download.rs::streaming_agent()`, which pins `.redirects(0)`
+       because a public/signed artifact URL never legitimately redirects
+       — streaming the response body through sha256 in 1 MiB chunks while
+       counting bytes — never written to disk, never buffered whole in
+       memory, regardless of artifact size (these are multi-GB GGUF
+       files) — then compare the resulting sha256 (case-insensitive) and
+       byte count against the catalog's recorded values for that
+       artifact. Size is compared before sha256 (fails fast, and is what
+       lets a truncated-artifact self-test scenario report distinctly
+       from a tampered-byte one). The catalog.json/.sig fetches in steps
+       1-2 deliberately do NOT refuse redirects — they keep urllib's
+       default redirect-following behavior, matching the app's own
+       catalog fetch (`catalog_dist.rs::get_capped`), which pins no
+       redirect policy either. Refusing artifact redirects specifically
+       (not catalog redirects) is what makes this script a faithful
+       fidelity gate: a redirecting bucket/CDN in front of an artifact
+       must make this script FAIL the same way the shipped app would,
+       never print OK while the app itself refuses the download.
 
 Retry policy: every GET (catalog, sig, and each artifact) gets a bounded
 30-second per-operation timeout (covers both connect and each individual
@@ -82,11 +94,15 @@ for transient failures: a 5xx HTTP status or a network-level
 (`urllib.error.URLError`, e.g. connection refused/DNS failure/timeout)
 error. A 4xx (including 404) is never retried — mirrors publish.py's
 `S3Client`/`_retry`'s "never retry a definitive not-found" stance, just
-generalized to "any definitive 4xx". Signature/hash/size/schema
-verification failures are computed AFTER a fetch already succeeded, so
-they are structurally never inside the retry loop at all — a bad hash can
-never be retried into passing; retrying more GETs of already-correctly-
-received bytes wouldn't change the comparison's outcome anyway.
+generalized to "any definitive 4xx". A 3xx on an artifact URL (see step 5
+above) is likewise never retried — RedirectError is deliberately not a
+FetchError subclass, so it structurally never enters the retry loop at
+all, same reasoning as a 4xx: retrying would just observe the same
+redirect again. Signature/hash/size/schema verification failures are
+computed AFTER a fetch already succeeded, so they too are structurally
+never inside the retry loop — a bad hash can never be retried into
+passing; retrying more GETs of already-correctly-received bytes wouldn't
+change the comparison's outcome anyway.
 
 Documented invocations:
 
@@ -144,6 +160,13 @@ REQUIRED_ARTIFACT_FIELDS = ("path", "sha256", "size", "kind", "base_model", "ver
 VALID_KINDS = {"base", "adapter"}
 EXPECTED_BASE_MODEL = "Qwen3-4B"
 
+# HTTP redirect statuses urllib's HTTPRedirectHandler intercepts (301/302/
+# 303/307 -- see its http_error_30x aliases) plus 308 for completeness
+# (not handled by this stdlib's HTTPRedirectHandler at all, so it always
+# surfaces as a plain HTTPError regardless of any redirect policy — still
+# worth classifying as a redirect here rather than a generic FetchError).
+REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+
 T = TypeVar("T")
 
 
@@ -179,6 +202,32 @@ class FetchError(VerifyFailure):
 class ResponseTooLarge(VerifyFailure):
     def __init__(self, url: str, max_bytes: int):
         super().__init__(f"response from {url} exceeded the {max_bytes}-byte sanity cap")
+
+
+class RedirectError(VerifyFailure):
+    """An ARTIFACT URL responded with a 3xx redirect. The app's own
+    artifact download agent (`download.rs::streaming_agent`) pins
+    `.redirects(0)` — a public/signed artifact URL never legitimately
+    redirects, so the app treats any 3xx there as a hard failure rather
+    than transparently following it. This script must fail the exact same
+    way: a redirecting bucket/CDN must never make this gate print OK while
+    the shipped app refuses the download — that's precisely the "gate
+    passes, app fails" outcome this script exists to catch. Deliberately
+    NOT a subclass of FetchError, so it can never be picked up by
+    `_fetch_with_retry`'s retry loop — a redirect is exactly as definitive
+    an answer as a 4xx, never worth retrying. catalog.json/.sig fetches
+    never raise this (they keep urllib's default, redirect-following
+    behavior — see fetch_capped — matching the app's own un-pinned
+    catalog_dist.rs::get_capped)."""
+
+    def __init__(self, url: str, status: int, location: str | None):
+        self.url = url
+        self.status = status
+        self.location = location
+        message = f"artifact URL redirected (HTTP {status}) — the app refuses redirects: {url}"
+        if location:
+            message += f" -> {location}"
+        super().__init__(message)
 
 
 class SigLengthError(VerifyFailure):
@@ -217,13 +266,43 @@ class SizeMismatch(VerifyFailure):
 # ---------------------------------------------------------------------
 
 
-def _urlopen(url: str, timeout: int = REQUEST_TIMEOUT):
-    """GETs `url`, converting every failure mode into a `FetchError`
-    (never a raw urllib exception escaping this function)."""
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Installed ONLY on `_ARTIFACT_OPENER` (see below), used ONLY by
+    fetch_and_hash_streaming's artifact GETs — never by fetch_capped's
+    catalog/.sig GETs. Overriding `redirect_request` to always return None
+    tells the (otherwise unmodified) inherited `http_error_30x` methods
+    "don't follow this" — per CPython's urllib.request source, when
+    `redirect_request` returns None those methods return None too, which
+    makes `OpenerDirector.error()` fall through to the default handler and
+    raise a plain `HTTPError` with `.code` set to the 3xx status and
+    `.headers` carrying `Location`. That HTTPError is then translated into
+    a RedirectError by `_urlopen` below, exactly like a 4xx/5xx would be
+    translated into a FetchError. This mirrors `download.rs::
+    streaming_agent()`'s `.redirects(0)` exactly, at the Python layer."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802 - stdlib-mandated signature
+        return None
+
+
+_ARTIFACT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _urlopen(url: str, timeout: int = REQUEST_TIMEOUT, *, opener: urllib.request.OpenerDirector | None = None):
+    """GETs `url`, converting every failure mode into a `FetchError` (or,
+    for a 3xx encountered through `opener=_ARTIFACT_OPENER`, a
+    `RedirectError`) — never a raw urllib exception escaping this
+    function. `opener=None` (the default, used by fetch_capped for
+    catalog.json/.sig) is plain `urllib.request.urlopen`, which follows
+    redirects per urllib's normal default — matching the app's own
+    catalog fetch, which pins no redirect policy either."""
     request = urllib.request.Request(url, method="GET")
+    open_fn = opener.open if opener is not None else urllib.request.urlopen
     try:
-        return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - public HTTP(S) fetch is the whole point
+        return open_fn(request, timeout=timeout)  # noqa: S310 - public HTTP(S) fetch is the whole point
     except urllib.error.HTTPError as exc:
+        if exc.code in REDIRECT_STATUS_CODES:
+            location = exc.headers.get("Location") if exc.headers is not None else None
+            raise RedirectError(url, exc.code, location) from exc
         raise FetchError(url, status=exc.code) from exc
     except urllib.error.URLError as exc:
         raise FetchError(url, reason=str(exc.reason)) from exc
@@ -297,10 +376,18 @@ def fetch_and_hash_streaming(url: str, expected_size: int, *, max_attempts: int 
     which is deliberately non-resuming for the same reason: simple beats
     resume-complexity for what amounts to a bounded number of files in one
     verification run.
+
+    Uses `_ARTIFACT_OPENER` (redirects refused, never followed) — mirrors
+    `download.rs::streaming_agent()`'s `.redirects(0)`: a public/signed
+    artifact URL never legitimately redirects, and the shipped app hard-
+    fails on any 3xx there, so this script must too (see RedirectError).
+    This is deliberately NOT applied to fetch_capped's catalog.json/.sig
+    GETs, which keep urllib's default redirect-following behavior to match
+    the app's own un-pinned catalog fetch.
     """
 
     def one_attempt() -> tuple[str, int]:
-        response = _urlopen(url)
+        response = _urlopen(url, opener=_ARTIFACT_OPENER)
         digest = hashlib.sha256()
         total = 0
         try:
@@ -444,14 +531,25 @@ def is_valid_pubkey_hex(value: str) -> bool:
 
 class _StubHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Serves fixed bytes from a per-instance `routes` dict; anything not
-    in `routes` 404s. Class attribute `routes` is overridden per server via
-    a dynamically-built subclass in _start_stub_server — never mutated
+    in `routes` 404s. A path in `redirects` is served as a 302 with that
+    `Location` instead (checked before `routes` — used by self_test()'s
+    artifact-redirect scenario; the redirect target is never actually
+    fetched by a correct client, so it doesn't need to resolve to anything
+    real). Class attributes `routes`/`redirects` are overridden per server
+    via a dynamically-built subclass in _start_stub_server — never mutated
     in place, so concurrent scenarios (sequential in this script, but kept
     safe regardless) never share state."""
 
     routes: dict[str, bytes] = {}
+    redirects: dict[str, str] = {}
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib-mandated method name
+        if self.path in self.redirects:
+            self.send_response(302)
+            self.send_header("Location", self.redirects[self.path])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         body = self.routes.get(self.path)
         if body is None:
             self.send_response(404)
@@ -468,8 +566,10 @@ class _StubHTTPHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def _start_stub_server(routes: dict[str, bytes]) -> tuple[str, http.server.ThreadingHTTPServer, threading.Thread]:
-    handler_cls = type("_BoundStubHandler", (_StubHTTPHandler,), {"routes": dict(routes)})
+def _start_stub_server(
+    routes: dict[str, bytes], redirects: dict[str, str] | None = None
+) -> tuple[str, http.server.ThreadingHTTPServer, threading.Thread]:
+    handler_cls = type("_BoundStubHandler", (_StubHTTPHandler,), {"routes": dict(routes), "redirects": dict(redirects or {})})
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -528,6 +628,11 @@ def self_test() -> bool:
       (g) two schema violations, each independently signed+served:
           (g1) an artifact missing a required field ("license").
           (g2) an artifact with the wrong base_model.
+      (h) an artifact's URL 302-redirects -> redirect FAIL naming the
+          status and that the app refuses redirects (see RedirectError) —
+          this is the exact "gate passes, app fails" failure mode this
+          script exists to catch, since download.rs::streaming_agent()
+          pins .redirects(0) and hard-fails on any 3xx there.
 
     Returns True iff every check across every scenario passes.
     """
@@ -592,8 +697,15 @@ def self_test() -> bool:
         "/" + adapter_path: adapter_artifact,
     }
 
-    def run_scenario(label: str, routes: dict[str, bytes], *, expect_ok: bool, expect_substrings: tuple[str, ...]) -> None:
-        base_url, server, thread = _start_stub_server(routes)
+    def run_scenario(
+        label: str,
+        routes: dict[str, bytes],
+        *,
+        expect_ok: bool,
+        expect_substrings: tuple[str, ...],
+        redirects: dict[str, str] | None = None,
+    ) -> None:
+        base_url, server, thread = _start_stub_server(routes, redirects)
         try:
             proc, elapsed = _run_cli(base_url, pubkey_hex)
         finally:
@@ -692,6 +804,18 @@ def self_test() -> bool:
         routes_g2,
         expect_ok=False,
         expect_substrings=("FAIL:", "base_model", "Qwen3-8B"),
+    )
+
+    # (h) artifact URL 302-redirects -> RedirectError FAIL, never followed.
+    # The redirect target is a syntactically valid but unfetched path (see
+    # _StubHTTPHandler's docstring) -- a correct client must never GET it.
+    routes_h = {k: v for k, v in good_routes.items() if k != "/" + base_path}
+    run_scenario(
+        "(h) artifact redirect",
+        routes_h,
+        expect_ok=False,
+        expect_substrings=("FAIL:", "artifact URL redirected", "HTTP 302", "the app refuses redirects"),
+        redirects={"/" + base_path: "/" + adapter_path},
     )
 
     return ok
