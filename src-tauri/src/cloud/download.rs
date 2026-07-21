@@ -561,6 +561,38 @@ fn artifact_dest_filename(artifact_path: &str) -> Result<String, String> {
     Ok(last.to_string())
 }
 
+/// B4: the single-slot `Downloads` registry's `Active.model_id` holds either
+/// a catalog id (`download_model`) or a bucket-relative dist-catalog artifact
+/// path (`download_artifact`). The FE only ever asks `download_status` about
+/// the HERO's catalog id, so an in-flight artifact download must count as
+/// active for that id too: an artifact matches when its final `/`-component
+/// (exactly what `download_artifact` writes to `<app_data>/models/` — see
+/// `artifact_dest_filename`) equals the final component of the hero's
+/// declared `modelFile` or `adapterFile`. The plain string comparison first
+/// keeps the pre-B4 `download_model` contract (catalog id registered, catalog
+/// id queried) working unchanged.
+fn active_matches_status_request(
+    active_model_id: &str,
+    requested_model_id: &str,
+    hero_id: &str,
+    model_file: &str,
+    adapter_file: Option<&str>,
+) -> bool {
+    if active_model_id == requested_model_id {
+        return true;
+    }
+    if requested_model_id != hero_id {
+        return false;
+    }
+    let final_component = |p: &str| p.rsplit('/').next().unwrap_or("").to_string();
+    let active_name = final_component(active_model_id);
+    if active_name.is_empty() {
+        return false;
+    }
+    active_name == final_component(model_file)
+        || adapter_file.is_some_and(|f| active_name == final_component(f))
+}
+
 /// Preflight disk-space check: the longest mount-point-prefix match against
 /// `final_path`'s parent must have at least `expected_bytes -
 /// existing_part_len + 200 MiB` free. If no disk can be matched (unusual
@@ -1247,11 +1279,38 @@ pub async fn download_status(
         None => true,
     };
     let installed = base_installed && adapter_installed;
-    let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+    // B4: "so far" bytes may live in EITHER pending `.part` — the base's, or
+    // (once the base has been renamed to its final path and the adapter is
+    // mid-flight) the adapter's. Sum them — at most one is normally nonzero —
+    // so a resume label never reads 0 GiB while an adapter `.part` sits on
+    // disk.
+    let adapter_part_bytes = hero
+        .adapter_file
+        .as_deref()
+        .map(|f| {
+            std::fs::metadata(part_path_for(&app_data.join(f)))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0) + adapter_part_bytes;
 
     let guard = downloads.active.lock().unwrap();
     let (active, bytes_downloaded, total_bytes) = match guard.as_ref() {
-        Some(a) if a.model_id == model_id => (true, a.bytes.load(Ordering::Relaxed), a.total),
+        // B4: `Active.model_id` may be a dist-catalog artifact PATH (see
+        // `active_matches_status_request`) — a plain equality match here would
+        // make an in-flight hero download invisible to a rebooted webview
+        // asking about the hero's catalog id.
+        Some(a) if active_matches_status_request(
+            &a.model_id,
+            &model_id,
+            &hero.id,
+            &model_file,
+            hero.adapter_file.as_deref(),
+        ) =>
+        {
+            (true, a.bytes.load(Ordering::Relaxed), a.total)
+        }
         _ => (false, 0, 0),
     };
 
@@ -2130,5 +2189,81 @@ mod tests {
     #[test]
     fn artifact_dest_filename_rejects_embedded_backslash() {
         assert!(artifact_dest_filename("base/evil\\thing").is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // `active_matches_status_request` (Task B4)
+    // ---------------------------------------------------------------
+
+    const HERO_ID: &str = "socratic-tutor";
+    const MODEL_FILE: &str = "models/Qwen3-4B-Instruct-Q4_K_M.gguf";
+    const ADAPTER_FILE: &str = "models/behavioral-v1-Qwen3-4B.gguf";
+
+    #[test]
+    fn active_match_legacy_catalog_id_still_matches_exactly() {
+        assert!(active_matches_status_request(
+            HERO_ID,
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+        ));
+    }
+
+    #[test]
+    fn active_match_base_artifact_path_counts_for_hero_id() {
+        assert!(active_matches_status_request(
+            "models/Qwen3-4B/v1/Qwen3-4B-Instruct-Q4_K_M.gguf",
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+        ));
+    }
+
+    #[test]
+    fn active_match_adapter_artifact_path_counts_for_hero_id() {
+        assert!(active_matches_status_request(
+            "adapters/Qwen3-4B/behavioral/v1/behavioral-v1-Qwen3-4B.gguf",
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+        ));
+    }
+
+    #[test]
+    fn active_match_adapter_path_without_declared_adapter_does_not_match() {
+        assert!(!active_matches_status_request(
+            "adapters/Qwen3-4B/behavioral/v1/behavioral-v1-Qwen3-4B.gguf",
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            None,
+        ));
+    }
+
+    #[test]
+    fn active_match_unrelated_artifact_basename_does_not_match() {
+        assert!(!active_matches_status_request(
+            "models/Other/v1/Other-Model-Q4.gguf",
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+        ));
+    }
+
+    #[test]
+    fn active_match_non_hero_request_never_matches_by_basename() {
+        // The basename join is a hero-only rule: asking about some OTHER
+        // catalog id must not report the hero's artifact download as its own.
+        assert!(!active_matches_status_request(
+            "models/Qwen3-4B/v1/Qwen3-4B-Instruct-Q4_K_M.gguf",
+            "some-other-model",
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+        ));
     }
 }

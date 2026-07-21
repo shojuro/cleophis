@@ -1465,10 +1465,14 @@ async function maybeAutoTitle(chatId, userText, assistantText) {
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content;
     if (!raw) return;
-    // Sanitize: first line only, strip an echoed "Title:" prefix, strip
-    // surrounding quotes/backticks/asterisks, collapse whitespace, trim,
-    // strip trailing punctuation, cap length.
-    let title = raw.split('\n')[0];
+    // Sanitize: strip the hero adapter's leading empty <think></think>
+    // (B4 — this hits the same --lora-loaded engine as every streamed turn,
+    // and the strip must run BEFORE the first-line split: Qwen3 may emit the
+    // tags on their own lines, which would otherwise make the whole title
+    // "<think>"), then first line only, strip an echoed "Title:" prefix,
+    // strip surrounding quotes/backticks/asterisks, collapse whitespace,
+    // trim, strip trailing punctuation, cap length.
+    let title = stripLeadingThink(raw).split('\n')[0];
     title = title.replace(/^\s*title\s*:\s*/i, '');
     title = title.replace(/^[\s"'`*]+|[\s"'`*]+$/g, '');
     title = title.replace(/\s+/g, ' ').trim();

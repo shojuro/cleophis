@@ -37,7 +37,10 @@ Inputs:
     --verify-pubkey   optional pre-flight: verify catalog.json.sig against
                       catalog.json under this 64-hex-char ed25519 public
                       key BEFORE publishing anything (imports `verify_bytes`
-                      from sign_catalog.py — no new crypto path)   (default:
+                      from sign_catalog.py — no new crypto path); also
+                      guards the archive step — a live pair that is not
+                      this build's partial-swap remnant must verify under
+                      it before being archived                     (default:
                       none — skipped)
     --dry-run         resolve + verify everything from LOCAL STATE ONLY and
                       print the full publish plan; loads no credentials,
@@ -147,13 +150,24 @@ message and re-raises rather than silently leaving the bucket in that
 state unremarked. Per the paragraph above this is NOT a client-visible
 corruption — every client fails closed on the mismatched pairing — but it
 does mean the live catalog.json's own signature no longer verifies until
-fixed. Recovery is simply re-running `publish.py`: the artifact-publish
-phase is a no-op resume (everything's already there with matching
-metadata), and `swap_catalog` re-fetches whatever is live right now (the
-new, still-unsigned-looking catalog.json), archives IT under its own
-`catalog_version` exactly like any other supersession, and rewrites both
-catalog.json and catalog.json.sig consistently. No manual bucket surgery
-is ever required.
+fixed. Recovery is re-running `publish.py` with the SAME built
+catalog.json/catalog.json.sig (both are read from disk, so an immediate
+re-run publishes byte-identical content): the artifact-publish phase is a
+no-op resume (everything's already there with matching metadata), and
+`swap_catalog` recognizes the live catalog.json as this same build's
+remnant (an exact byte comparison against the catalog being published,
+with the live .sig absent — an interrupted FIRST publish — or still the
+superseded one), SKIPS archiving that mismatched pair (archive paths are
+immutable; archiving a catalog under a .sig that doesn't cover it would
+poison `archive/catalogs/v<new>/` and hard-block the NEXT publish — and
+the superseded pair, if any, was already archived by the interrupted run
+before it touched the live catalog), and rewrites both catalog.json and
+catalog.json.sig consistently. No manual bucket surgery is required for
+that re-run-same-build flow. What does NOT self-heal: rebuilding to
+DIFFERENT catalog bytes before re-running — the live remnant is then not
+recognizably this build's, so `swap_catalog` refuses (always, for the
+interrupted-first-publish shape; under --verify-pubkey, for the
+mismatched-pair shape too) rather than guess.
 
 Retries: every S3 operation (HEAD/GET/PUT/upload) gets the house 3-attempt
 bounded retry (mirrors build_adapter.py's B2 download loop) — except a
@@ -187,7 +201,12 @@ catalog is touched, first-publish skipping the archive step (and never
 touching the archive client at all) cleanly, local-hash-mismatch refusal,
 the partial-swap PARTIAL SWAP
 operator message actually firing (stdout is captured for this one
-assertion), and `_sanitize_s3_exception` never leaking a ClientError's
+assertion), both partial-swap RECOVERY re-run shapes self-healing without
+ever archiving the mismatched pair (and an orphan catalog.json that is
+NOT this build's remnant still refusing), the --verify-pubkey archive
+guard (a verifying live pair archives as before; a non-verifying,
+non-remnant pair is refused before any archive write), and
+`_sanitize_s3_exception` never leaking a ClientError's
 raw Message text.
 
 `--dry-run` end-to-end (no creds, no network — see the module CLI help):
@@ -524,7 +543,7 @@ def _put_immutable(client, bucket: str, key: str, data: bytes, content_type: str
     )
 
 
-def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: str, new_catalog_bytes: bytes, new_sig_bytes: bytes) -> str:
+def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: str, new_catalog_bytes: bytes, new_sig_bytes: bytes, verify_pubkey: str | None = None) -> str:
     """Archive-then-replace, fail-closed. If a live catalog.json currently
     exists at `dest_bucket`, it (and its .sig) are archived to
     `archive_bucket` at `archive/catalogs/v<old_catalog_version>/` FIRST;
@@ -537,6 +556,23 @@ def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: 
     module docstring's "Ordering" section for why the two live PUTs below
     not being atomic with each other is still safe.
 
+    Partial-swap self-heal: if the live catalog.json is byte-identical to
+    `new_catalog_bytes` but the live .sig is not `new_sig_bytes` (absent, on
+    a first publish, or still the superseded one), the live state is this
+    same build's PARTIAL SWAP remnant — see the module docstring's
+    "Partial-swap recovery" section. That mismatched pair is NOT archived
+    (archive paths are immutable; archiving it would poison
+    `archive/catalogs/v<new>/` and hard-block the NEXT publish's archive
+    step — and the superseded pair, if any, was already archived by the
+    interrupted run before it touched the live catalog). Both live objects
+    are simply rewritten consistently.
+
+    `verify_pubkey` (optional, wired from --verify-pubkey): when given, a
+    live pair that is NOT this build's remnant must verify under it before
+    being archived — a non-verifying pair (e.g. a partial swap followed by
+    a REBUILD to different bytes) raises instead of being immutably
+    archived as corruption.
+
     Two-client credential routing (see the module docstring's credentials
     paragraph): `dest_client` (the primary, cleophis-dist-scoped pair) does
     every `dest_bucket` op — the live-catalog GET here and both live-catalog
@@ -547,24 +583,57 @@ def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: 
     or immutability semantics themselves changes — only which client each
     op is issued through.
 
-    Returns "archived-then-replaced" or "first-publish".
+    Returns "archived-then-replaced", "first-publish", or
+    "partial-swap-recovered".
     """
     current_catalog = dest_client.get_bytes(dest_bucket, CATALOG_KEY, MAX_CATALOG_BYTES)
     current_sig = dest_client.get_bytes(dest_bucket, SIG_KEY, SIG_READ_CAP)
 
-    if current_catalog is None and current_sig is None:
-        archived = False
+    # This build's own partial-swap remnant (see the docstring above). The
+    # comparison is exact — catalog.json and catalog.json.sig are read from
+    # disk in main(), so a recovery re-run publishes byte-identical content
+    # and no cryptography is needed to recognize the remnant.
+    partial_swap_remnant = (
+        current_catalog is not None
+        and current_catalog == new_catalog_bytes
+        and current_sig != new_sig_bytes
+    )
+
+    if partial_swap_remnant:
+        result = "partial-swap-recovered"
+        print(
+            f"[archive] live s3://{dest_bucket}/{CATALOG_KEY} already holds the exact catalog being published but "
+            f"its {SIG_KEY} does not match — partial-swap remnant of this same build; skipping archive of the "
+            "mismatched pair (the superseded pair, if any, was already archived by the interrupted run) and "
+            "rewriting both consistently",
+            flush=True,
+        )
+    elif current_catalog is None and current_sig is None:
+        result = "first-publish"
         print(f"[archive] no current catalog.json at s3://{dest_bucket}/{CATALOG_KEY} — first-ever publish, skipping archive", flush=True)
     elif current_catalog is None or current_sig is None:
         raise RemoteStateError(
             f"s3://{dest_bucket} has exactly one of {CATALOG_KEY}/{SIG_KEY} present, not both — inconsistent "
-            "remote state, refusing to archive or replace. Investigate manually before retrying."
+            "remote state, refusing to archive or replace. (An interrupted FIRST publish of the exact "
+            "catalog.json being published now would have self-healed here — this live catalog.json is NOT the "
+            "one being published, so it can't be recovered automatically.) Investigate manually before retrying."
         )
     else:
+        result = "archived-then-replaced"
         if len(current_sig) != SIG_BYTES_LEN:
             raise RemoteStateError(
                 f"current live s3://{dest_bucket}/{SIG_KEY} is {len(current_sig)} bytes, expected exactly "
                 f"{SIG_BYTES_LEN} — refusing to archive/replace"
+            )
+        if verify_pubkey is not None and not verify_bytes(verify_pubkey, current_catalog, current_sig):
+            raise RemoteStateError(
+                f"current live s3://{dest_bucket}/{CATALOG_KEY} + {SIG_KEY} do NOT verify as a pair under the "
+                "--verify-pubkey key, and the live catalog.json is not the one being published (so this is not "
+                "a self-healable partial-swap remnant of this build) — refusing to archive a mismatched pair: "
+                "archive paths are immutable, and a poisoned archive/catalogs/v<n>/ entry would hard-block the "
+                "next publish. If a previous publish of a DIFFERENT build was interrupted mid-swap, re-run "
+                "publish.py with THAT build's catalog.json/catalog.json.sig to self-heal first, or investigate "
+                "manually."
             )
         try:
             old_catalog_obj = json.loads(current_catalog)
@@ -594,7 +663,6 @@ def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: 
         print(f"[archive] {result_catalog}: s3://{archive_bucket}/{archive_prefix}{CATALOG_KEY}", flush=True)
         result_sig = _put_immutable(archive_client, archive_bucket, archive_prefix + SIG_KEY, current_sig, SIG_CONTENT_TYPE)
         print(f"[archive] {result_sig}: s3://{archive_bucket}/{archive_prefix}{SIG_KEY}", flush=True)
-        archived = True
 
     # Only reached once archiving succeeded (or wasn't needed).
     dest_client.put_bytes(dest_bucket, CATALOG_KEY, new_catalog_bytes, content_type=CATALOG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
@@ -611,15 +679,16 @@ def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: 
             f"s3://{dest_bucket}/{SIG_KEY} was NOT. The live catalog is now in an inconsistent, "
             "unverifiable window: any client fetching it right now will fail signature verification "
             "against the still-OLD .sig and fail closed, refusing to trust it -- no client-visible "
-            "corruption results. RECOVERY: just re-run publish.py. It will re-fetch this now-live "
-            "(sig-mismatched) catalog, archive it under its own catalog_version like any other "
-            "supersession, and rewrite both catalog.json and catalog.json.sig consistently.",
+            "corruption results. RECOVERY: re-run publish.py with this SAME built catalog.json/"
+            "catalog.json.sig (both are read from disk, so an immediate re-run publishes byte-identical "
+            "content). swap_catalog will recognize the live catalog as this same build's partial-swap "
+            "remnant, skip archiving the mismatched pair, and rewrite both consistently.",
             flush=True,
         )
         raise
     print(f"[publish] wrote s3://{dest_bucket}/{SIG_KEY}", flush=True)
 
-    return "archived-then-replaced" if archived else "first-publish"
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -1043,6 +1112,127 @@ def self_test() -> bool:
         archive_partial.calls == [],
     )
 
+    # --- swap_catalog: partial-swap RECOVERY re-runs — the "just re-run
+    # publish.py" promise in the PARTIAL SWAP message, made true for BOTH
+    # shapes a partial swap can leave behind. A recovery re-run publishes
+    # byte-identical catalog.json/.sig (both are read from disk), so
+    # swap_catalog recognizes its own remnant by byte-comparing the live
+    # catalog.json against the one being published, skips archiving the
+    # mismatched pair (archive paths are immutable — archiving it would
+    # poison archive/catalogs/v<new>/ and hard-block the NEXT publish's
+    # archive step), and just rewrites both consistently. ---
+
+    # (1) First-publish shape: the interrupted run wrote catalog.json but
+    # never its .sig. Without the remnant carve-out this re-run would hit
+    # the "exactly one of" refusal below and require manual bucket surgery.
+    dest_recover_first = _FakeS3Client()
+    dest_recover_first._seed(DEFAULT_BUCKET, CATALOG_KEY, new_catalog)
+    archive_recover_first = _FakeS3Client()
+    result_recover_first = swap_catalog(
+        dest_recover_first, archive_recover_first, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig
+    )
+    check(
+        "swap_catalog: a first-publish partial-swap re-run self-heals (returns 'partial-swap-recovered')",
+        result_recover_first == "partial-swap-recovered",
+    )
+    check(
+        "swap_catalog: the first-publish recovery re-run leaves a consistent live catalog.json + .sig",
+        dest_recover_first.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
+        and dest_recover_first.store.get((DEFAULT_BUCKET, SIG_KEY), {}).get("data") == new_sig,
+    )
+    check(
+        "swap_catalog: the first-publish recovery re-run never touches the ARCHIVE client (routing check)",
+        archive_recover_first.calls == [],
+    )
+
+    # (2) Non-first shape: the interrupted run left (NEW catalog.json, OLD
+    # .sig) live — the OLD pair was already archived before the live PUTs
+    # began, so there is nothing left to archive. Without the carve-out this
+    # re-run would immutably archive the MISMATCHED pair at
+    # archive/catalogs/v<new>/, corrupting that archive entry and making the
+    # NEXT publish's archive step raise ImmutabilityViolation.
+    dest_recover = _FakeS3Client()
+    dest_recover._seed(DEFAULT_BUCKET, CATALOG_KEY, new_catalog)
+    dest_recover._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
+    archive_recover = _FakeS3Client()
+    result_recover = swap_catalog(dest_recover, archive_recover, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
+    check(
+        "swap_catalog: a non-first partial-swap re-run self-heals (returns 'partial-swap-recovered')",
+        result_recover == "partial-swap-recovered",
+    )
+    check(
+        "swap_catalog: the non-first recovery re-run leaves a consistent live catalog.json + .sig",
+        dest_recover.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
+        and dest_recover.store[(DEFAULT_BUCKET, SIG_KEY)]["data"] == new_sig,
+    )
+    check(
+        "swap_catalog: the mismatched (new catalog, old sig) pair is NEVER archived by a recovery re-run",
+        archive_recover.calls == [],
+    )
+
+    # (3) The fail-closed contract is otherwise unchanged: an orphan live
+    # catalog.json that is NOT the catalog being published still refuses.
+    dest_orphan = _FakeS3Client()
+    dest_orphan._seed(DEFAULT_BUCKET, CATALOG_KEY, json.dumps({"catalog_version": 9, "artifacts": []}).encode())
+    archive_orphan = _FakeS3Client()
+    check(
+        "swap_catalog: an orphan live catalog.json that is NOT this build's remnant still raises RemoteStateError",
+        raises(
+            RemoteStateError,
+            lambda: swap_catalog(dest_orphan, archive_orphan, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig),
+        ),
+    )
+
+    # (4) verify_pubkey guard: with the (optional) key, a live pair that
+    # VERIFIES archives + replaces exactly as before, and a live pair that
+    # does NOT verify (and isn't this build's remnant — e.g. a partial swap
+    # followed by a REBUILD to different bytes) is refused BEFORE any archive
+    # write, instead of poisoning an immutable archive path. Test-only lazy
+    # imports: cryptography is already a hard dependency via the module-top
+    # `from sign_catalog import verify_bytes`; this just keeps it out of the
+    # module's own import surface.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    from sign_catalog import sign_bytes
+
+    seed_hex = "11" * 32
+    curator_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed_hex))
+    pubkey_hex = curator_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+    signed_old_catalog = json.dumps({"catalog_version": 3, "artifacts": []}).encode()
+    signed_old_sig = sign_bytes(seed_hex, signed_old_catalog)
+
+    dest_verified = _FakeS3Client()
+    dest_verified._seed(DEFAULT_BUCKET, CATALOG_KEY, signed_old_catalog)
+    dest_verified._seed(DEFAULT_BUCKET, SIG_KEY, signed_old_sig)
+    archive_verified = _FakeS3Client()
+    result_verified = swap_catalog(
+        dest_verified, archive_verified, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig, verify_pubkey=pubkey_hex
+    )
+    check(
+        "swap_catalog: with verify_pubkey, a VERIFYING live pair archives + replaces exactly as before",
+        result_verified == "archived-then-replaced"
+        and archive_verified.store.get((DEFAULT_ARCHIVE_BUCKET, "archive/catalogs/v3/" + CATALOG_KEY), {}).get("data")
+        == signed_old_catalog,
+    )
+
+    dest_unverified = _FakeS3Client()
+    dest_unverified._seed(DEFAULT_BUCKET, CATALOG_KEY, old_catalog)
+    dest_unverified._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
+    archive_unverified = _FakeS3Client()
+    check(
+        "swap_catalog: with verify_pubkey, a NON-verifying live pair that isn't this build's remnant raises RemoteStateError",
+        raises(
+            RemoteStateError,
+            lambda: swap_catalog(
+                dest_unverified, archive_unverified, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig, verify_pubkey=pubkey_hex
+            ),
+        ),
+    )
+    check(
+        "swap_catalog: the non-verifying refusal happens BEFORE any archive write and never touches the live catalog",
+        archive_unverified.calls == [] and dest_unverified.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == old_catalog,
+    )
+
     # --- _sanitize_s3_exception: never leaks a ClientError's raw Message
     # text (which, for auth-related codes, can echo the access key id) --
     # only Code/HTTPStatusCode are ever surfaced.
@@ -1105,7 +1295,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="HEX",
         help="optional pre-flight: verify catalog.json.sig against catalog.json under this 64-hex-char ed25519 "
-        "public key before publishing anything",
+        "public key before publishing anything; also refuses to archive a live catalog pair that neither "
+        "verifies under it nor is this build's own partial-swap remnant",
     )
     parser.add_argument(
         "--dry-run",
@@ -1197,7 +1388,9 @@ def main(argv: list[str] | None = None) -> int:
             result = publish_artifact(dest_client, args.bucket, artifact, local_path)
             print(f"[publish] {result}: s3://{args.bucket}/{artifact['path']}", flush=True)
 
-        swap_result = swap_catalog(dest_client, archive_client, args.bucket, args.archive_bucket, catalog_bytes, sig_bytes)
+        swap_result = swap_catalog(
+            dest_client, archive_client, args.bucket, args.archive_bucket, catalog_bytes, sig_bytes, verify_pubkey=args.verify_pubkey
+        )
         print(f"[publish] catalog swap: {swap_result}", flush=True)
     except PublishError as exc:
         print(f"error: {exc}", file=sys.stderr)
