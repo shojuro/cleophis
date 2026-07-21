@@ -9,8 +9,12 @@ atomically-written `manifest.json`.
 
 Env-dumb (see ../README.md "The env-dumb contract"): this script's only
 inputs are its CLI flags below, `tools/pipeline/.env` (read ONLY for
-`B2_ENDPOINT`/`B2_KEY_ID`/`B2_APP_KEY`, and only when `--local-peft-dir`
-isn't given), and the pinned toolchain `setup_tools.sh` (Task A1) already
+`B2_ENDPOINT` plus a B2 app-key pair — preferring the cleophis-models-
+scoped `B2_MODELS_KEY_ID`/`B2_MODELS_APP_KEY`, falling back to the primary
+`B2_KEY_ID`/`B2_APP_KEY` pair when the models pair is absent/empty (B2 app
+keys are bucket-scoped; this preserves a single all-buckets-key setup) —
+and only when `--local-peft-dir` isn't given), and the pinned toolchain
+`setup_tools.sh` (Task A1) already
 set up at `tools/pipeline/.venv/` and `tools/pipeline/llama.cpp/`. It never
 reads the calling shell's exported environment and never assumes a working
 directory other than its own `tools/pipeline/` root (all paths below are
@@ -72,8 +76,10 @@ Inputs:
                        hash/manifest steps after it) is skipped, so no
                        output is written (orchestration smoke test — see
                        Task A3's pre-handoff verification note)
-    tools/pipeline/.env: B2_ENDPOINT, B2_KEY_ID, B2_APP_KEY (required
-                    unless --local-peft-dir is given)
+    tools/pipeline/.env: B2_ENDPOINT plus a B2 app-key pair (required
+                    unless --local-peft-dir is given) — B2_MODELS_KEY_ID/
+                    B2_MODELS_APP_KEY preferred, falling back to
+                    B2_KEY_ID/B2_APP_KEY when the models pair is absent
 
 Outputs (under --out-dir, gitignored `work/` by default):
     <out-dir>/<model-name>/adapter/<adapter-name>-<model-name>.gguf
@@ -325,13 +331,28 @@ def load_env_file(env_file: Path) -> dict[str, str]:
 
 
 def load_b2_credentials(env_file: Path) -> tuple[str, str, str] | None:
-    """Read B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY from .env; None if any are
-    missing/unset (the caller decides whether that's fatal — it isn't when
-    --local-peft-dir makes the B2 fetch unnecessary)."""
+    """Read B2_ENDPOINT plus a B2 app-key pair from .env; None if the
+    endpoint or a full pair aren't available (the caller decides whether
+    that's fatal — it isn't when --local-peft-dir makes the B2 fetch
+    unnecessary).
+
+    Two-key contract: B2 app keys are bucket-scoped, and this script needs
+    read access to the PRIVATE `cleophis-models` bucket specifically (it
+    downloads the PEFT source from there). It prefers the
+    `B2_MODELS_KEY_ID`/`B2_MODELS_APP_KEY` pair (scoped to cleophis-models)
+    and falls back to the primary `B2_KEY_ID`/`B2_APP_KEY` pair when the
+    models pair is absent or only partially set — preserving a single
+    all-buckets-key setup for operators who haven't split their keys.
+    """
     values = load_env_file(env_file)
     endpoint = values.get("B2_ENDPOINT") or None
-    key_id = values.get("B2_KEY_ID") or None
-    app_key = values.get("B2_APP_KEY") or None
+    models_key_id = values.get("B2_MODELS_KEY_ID") or None
+    models_app_key = values.get("B2_MODELS_APP_KEY") or None
+    if models_key_id and models_app_key:
+        key_id, app_key = models_key_id, models_app_key
+    else:
+        key_id = values.get("B2_KEY_ID") or None
+        app_key = values.get("B2_APP_KEY") or None
     if not (endpoint and key_id and app_key):
         return None
     return endpoint, key_id, app_key
@@ -667,9 +688,11 @@ def main(argv: list[str] | None = None) -> int:
         creds = load_b2_credentials(ENV_FILE)
         if creds is None:
             print(
-                "error: B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY are not all set in "
-                f"{ENV_FILE} — either fill in .env (see .env.example) or pass "
-                "--local-peft-dir to convert from an already-local PEFT dir",
+                "error: no usable B2 credentials in "
+                f"{ENV_FILE} — need B2_ENDPOINT plus a full key pair: either "
+                "B2_MODELS_KEY_ID/B2_MODELS_APP_KEY (preferred, cleophis-models-scoped) "
+                "or B2_KEY_ID/B2_APP_KEY (fallback). Either fill in .env (see .env.example) "
+                "or pass --local-peft-dir to convert from an already-local PEFT dir",
                 file=sys.stderr,
             )
             return 1

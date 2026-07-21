@@ -109,6 +109,35 @@ OUTSIDE this repo, and only the `sign_catalog.py` step (A4) ever reads the
 file at that path. The private key material itself never goes in `.env`
 and is never committed.
 
+### B2 credentials: two scoped key pairs
+
+B2 application keys are **bucket-scoped**, so this pipeline uses two
+separate key pairs rather than one all-buckets key (though the
+all-buckets shape still works — see the fallback rule below):
+
+- **`B2_KEY_ID`/`B2_APP_KEY`** — the PRIMARY pair, scoped to the public
+  `cleophis-dist` bucket (read+write). Used by `publish.py` (A5) for every
+  destination-bucket op: artifact HEAD/uploads and the live
+  `catalog.json`/`catalog.json.sig` GET/PUT. Always required for a live
+  publish.
+- **`B2_MODELS_KEY_ID`/`B2_MODELS_APP_KEY`** — the MODELS pair, scoped to
+  the private `cleophis-models` bucket (read+write). Used by
+  `build_adapter.py` (A3) to pull the PEFT source, and by `publish.py`
+  (A5) for the archive-copy puts in `swap_catalog` (the superseded
+  catalog archived to `cleophis-models` before the new one goes live).
+- **Fallback:** if `B2_MODELS_KEY_ID`/`B2_MODELS_APP_KEY` are absent or
+  empty, both of the models-pair roles above fall back to the PRIMARY
+  pair instead — this keeps a single all-buckets-key setup working for
+  operators who haven't split their keys.
+- **`B2_ENDPOINT`** is shared by both pairs: B2's S3-compatible endpoint
+  is per-account/region, not per-bucket — it's the app keys that are
+  bucket-scoped, not the endpoint.
+
+Neither pair, nor `B2_ENDPOINT`, is ever logged or printed by any script
+in this directory — see each script's own module docstring
+(`build_adapter.py`, `publish.py`) for exactly which credential each
+operation uses.
+
 ## Binding cross-track values
 
 These values are fixed by the spec and by Track B's already-shipped Rust
@@ -168,10 +197,11 @@ section as load-bearing, not a suggestion:
   (used for the S3-compatible upload API) is a *different* value from this
   public read URL — don't conflate them.
 - **No B2/S3 credentials ever ship in the app.** They live only in this
-  directory's gitignored `.env`, read by the upload/publish/verify steps.
-  Public `GET` + sha256 + catalog signature is the app's entire trust
-  model for these artifacts (`mint_download_url`/`DownloadAuth` is retired
-  for catalog artifacts specifically — base + adapter — per the spec).
+  directory's gitignored `.env` (see "B2 credentials: two scoped key
+  pairs" above), read by the upload/publish/verify steps. Public `GET` +
+  sha256 + catalog signature is the app's entire trust model for these
+  artifacts (`mint_download_url`/`DownloadAuth` is retired for catalog
+  artifacts specifically — base + adapter — per the spec).
 
 ## Directory layout
 

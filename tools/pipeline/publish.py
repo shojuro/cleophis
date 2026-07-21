@@ -10,10 +10,16 @@ is currently live to the private `cleophis-models` bucket first.
 
 Env-dumb (see README.md "The env-dumb contract"): this script's only
 inputs are its CLI flags below and, ONLY when actually publishing (not
---dry-run, not --self-test), `tools/pipeline/.env`'s `B2_ENDPOINT`/
-`B2_KEY_ID`/`B2_APP_KEY`. It never reads the calling shell's exported
-environment and never assumes a working directory other than its own
-`tools/pipeline/` root.
+--dry-run, not --self-test), `tools/pipeline/.env`'s `B2_ENDPOINT` plus
+TWO B2 app-key pairs (B2 app keys are bucket-scoped, so one pair can't
+cover both buckets): the primary `B2_KEY_ID`/`B2_APP_KEY` pair (scoped to
+the destination `cleophis-dist` bucket — used for every artifact
+HEAD/upload and every live-catalog GET/PUT) and, for the archive-copy
+puts in `swap_catalog` only, `B2_MODELS_KEY_ID`/`B2_MODELS_APP_KEY`
+(scoped to `cleophis-models`), falling back to the primary pair when the
+models pair is absent/empty (preserves a single all-buckets-key setup).
+It never reads the calling shell's exported environment and never assumes
+a working directory other than its own `tools/pipeline/` root.
 
 Inputs:
     --catalog        path to the signed catalog.json to publish; its
@@ -40,7 +46,10 @@ Inputs:
                       exit; touches no --catalog file, no credentials, no
                       network
     tools/pipeline/.env: B2_ENDPOINT, B2_KEY_ID, B2_APP_KEY (required
-                    unless --dry-run/--self-test)
+                    unless --dry-run/--self-test) plus, optionally,
+                    B2_MODELS_KEY_ID/B2_MODELS_APP_KEY (used only for the
+                    archive-bucket copy puts; falls back to B2_KEY_ID/
+                    B2_APP_KEY when absent/empty)
 
 Outputs: none on disk — this script only writes to the two B2 buckets
 above. Nothing under `work/` is read except the artifacts/catalog named
@@ -162,12 +171,21 @@ Testability: all S3 I/O is behind the small `head`/`get_bytes`/
 decision — `publish_artifact`, `_put_immutable`, `swap_catalog` — is
 written against that interface, not against boto3 directly, so
 `--self-test` can exercise all of it against `_FakeS3Client` (a hand-
-rolled, in-memory, boto3-free stand-in) with zero network. See
-`self_test()`'s cases: immutability refusal on a mismatched existing
-artifact, skip-on-matching-metadata (idempotent resume), archive-before-
-replace call ORDER, an archive failure aborting the catalog swap before
-the live catalog is touched, first-publish skipping the archive step
-cleanly, local-hash-mismatch refusal, the partial-swap PARTIAL SWAP
+rolled, in-memory, boto3-free stand-in) with zero network. `swap_catalog`
+takes two separate client params (`dest_client`, `archive_client` — see
+its own docstring), so `self_test()` exercises it with two distinct
+`_FakeS3Client` instances and asserts CREDENTIAL ROUTING as its own
+checks: the archive-copy puts land only in the archive client's store,
+the live-catalog GET/PUTs land only in the dest client's store, and (via
+an optional `shared_calls` list both fake clients can be given) the
+archive-before-replace call ORDER assertion still holds across the two
+separate clients. See `self_test()`'s cases: immutability refusal on a
+mismatched existing artifact, skip-on-matching-metadata (idempotent
+resume), archive/dest credential routing, archive-before-replace call
+ORDER, an archive failure aborting the catalog swap before the live
+catalog is touched, first-publish skipping the archive step (and never
+touching the archive client at all) cleanly, local-hash-mismatch refusal,
+the partial-swap PARTIAL SWAP
 operator message actually firing (stdout is captured for this one
 assertion), and `_sanitize_s3_exception` never leaking a ClientError's
 raw Message text.
@@ -287,8 +305,11 @@ def load_env_file(env_file: Path) -> dict[str, str]:
 
 
 def load_b2_credentials(env_file: Path) -> tuple[str, str, str] | None:
-    """Read B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY from .env; None if any are
-    missing/unset."""
+    """Read B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY — the PRIMARY, cleophis-dist-
+    scoped pair — from .env; None if any are missing/unset. This pair is
+    always required for a live publish: it's used for every destination-
+    bucket op (artifact HEAD/uploads, live-catalog GET/PUT) and is also the
+    fallback for the archive-bucket pair below when that one is absent."""
     values = load_env_file(env_file)
     endpoint = values.get("B2_ENDPOINT") or None
     key_id = values.get("B2_KEY_ID") or None
@@ -296,6 +317,23 @@ def load_b2_credentials(env_file: Path) -> tuple[str, str, str] | None:
     if not (endpoint and key_id and app_key):
         return None
     return endpoint, key_id, app_key
+
+
+def load_b2_models_credentials(env_file: Path) -> tuple[str, str] | None:
+    """Read B2_MODELS_KEY_ID/B2_MODELS_APP_KEY — the cleophis-models-scoped
+    key pair used ONLY for the archive-copy puts in `swap_catalog` — from
+    .env; None if either is missing/empty. B2_ENDPOINT is shared with the
+    primary pair (B2's S3-compatible endpoint is per-account/region, not
+    per-bucket; it's the app keys that are bucket-scoped) so it isn't read
+    again here. Callers fall back to the primary `load_b2_credentials` pair
+    when this returns None — see the module docstring's credentials
+    paragraph."""
+    values = load_env_file(env_file)
+    key_id = values.get("B2_MODELS_KEY_ID") or None
+    app_key = values.get("B2_MODELS_APP_KEY") or None
+    if not (key_id and app_key):
+        return None
+    return key_id, app_key
 
 
 # ---------------------------------------------------------------------
@@ -486,7 +524,7 @@ def _put_immutable(client, bucket: str, key: str, data: bytes, content_type: str
     )
 
 
-def swap_catalog(client, dest_bucket: str, archive_bucket: str, new_catalog_bytes: bytes, new_sig_bytes: bytes) -> str:
+def swap_catalog(dest_client, archive_client, dest_bucket: str, archive_bucket: str, new_catalog_bytes: bytes, new_sig_bytes: bytes) -> str:
     """Archive-then-replace, fail-closed. If a live catalog.json currently
     exists at `dest_bucket`, it (and its .sig) are archived to
     `archive_bucket` at `archive/catalogs/v<old_catalog_version>/` FIRST;
@@ -499,10 +537,20 @@ def swap_catalog(client, dest_bucket: str, archive_bucket: str, new_catalog_byte
     module docstring's "Ordering" section for why the two live PUTs below
     not being atomic with each other is still safe.
 
+    Two-client credential routing (see the module docstring's credentials
+    paragraph): `dest_client` (the primary, cleophis-dist-scoped pair) does
+    every `dest_bucket` op — the live-catalog GET here and both live-catalog
+    PUTs at the end. `archive_client` (the cleophis-models-scoped pair,
+    falling back to the same client as `dest_client` when that pair is
+    absent) does ONLY the archive-copy puts to `archive_bucket` via
+    `_put_immutable` below. Nothing about the archive-then-replace ordering
+    or immutability semantics themselves changes — only which client each
+    op is issued through.
+
     Returns "archived-then-replaced" or "first-publish".
     """
-    current_catalog = client.get_bytes(dest_bucket, CATALOG_KEY, MAX_CATALOG_BYTES)
-    current_sig = client.get_bytes(dest_bucket, SIG_KEY, SIG_READ_CAP)
+    current_catalog = dest_client.get_bytes(dest_bucket, CATALOG_KEY, MAX_CATALOG_BYTES)
+    current_sig = dest_client.get_bytes(dest_bucket, SIG_KEY, SIG_READ_CAP)
 
     if current_catalog is None and current_sig is None:
         archived = False
@@ -542,17 +590,17 @@ def swap_catalog(client, dest_bucket: str, archive_bucket: str, new_catalog_byte
 
         archive_prefix = f"archive/catalogs/v{old_version}/"
         print(f"[archive] archiving current catalog_version={old_version} to s3://{archive_bucket}/{archive_prefix}", flush=True)
-        result_catalog = _put_immutable(client, archive_bucket, archive_prefix + CATALOG_KEY, current_catalog, CATALOG_CONTENT_TYPE)
+        result_catalog = _put_immutable(archive_client, archive_bucket, archive_prefix + CATALOG_KEY, current_catalog, CATALOG_CONTENT_TYPE)
         print(f"[archive] {result_catalog}: s3://{archive_bucket}/{archive_prefix}{CATALOG_KEY}", flush=True)
-        result_sig = _put_immutable(client, archive_bucket, archive_prefix + SIG_KEY, current_sig, SIG_CONTENT_TYPE)
+        result_sig = _put_immutable(archive_client, archive_bucket, archive_prefix + SIG_KEY, current_sig, SIG_CONTENT_TYPE)
         print(f"[archive] {result_sig}: s3://{archive_bucket}/{archive_prefix}{SIG_KEY}", flush=True)
         archived = True
 
     # Only reached once archiving succeeded (or wasn't needed).
-    client.put_bytes(dest_bucket, CATALOG_KEY, new_catalog_bytes, content_type=CATALOG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
+    dest_client.put_bytes(dest_bucket, CATALOG_KEY, new_catalog_bytes, content_type=CATALOG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
     print(f"[publish] wrote s3://{dest_bucket}/{CATALOG_KEY}", flush=True)
     try:
-        client.put_bytes(dest_bucket, SIG_KEY, new_sig_bytes, content_type=SIG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
+        dest_client.put_bytes(dest_bucket, SIG_KEY, new_sig_bytes, content_type=SIG_CONTENT_TYPE, cache_control=CATALOG_CACHE_CONTROL, metadata=None)
     except Exception:
         # catalog.json landed but .sig didn't -- see the module docstring's
         # "Partial-swap recovery" section for why this is a safe, self-healing
@@ -730,24 +778,42 @@ class _FakeS3Client:
     archive-bucket write happens before the dest-bucket catalog writes).
     `fail_puts` simulates a specific (bucket, key) PUT/upload always
     failing, for the archive-failure-aborts-the-swap test.
+
+    Since `swap_catalog` now takes two separate client params (dest +
+    archive — see its docstring), --self-test constructs two separate
+    `_FakeS3Client` instances for those tests: each instance's own `store`
+    is a genuinely separate dict, so an op issued through the wrong client
+    lands in the wrong instance's store entirely — a real routing bug, not
+    just a routing-bug simulation. `shared_calls`, if given, is an
+    external list every call ALSO appends its (op, bucket, key) tuple to
+    (in addition to this instance's own `self.calls`), letting a test
+    still assert call ORDER *across* the two separate client instances
+    (bucket alone already tells archive-bucket writes from dest-bucket
+    writes apart in that shared log).
     """
 
-    def __init__(self, fail_puts: set[tuple[str, str]] | None = None):
+    def __init__(self, fail_puts: set[tuple[str, str]] | None = None, shared_calls: list[tuple[str, str, str]] | None = None):
         self.store: dict[tuple[str, str], dict] = {}
         self.calls: list[tuple[str, str, str]] = []
+        self._shared_calls = shared_calls
         self._fail_puts = fail_puts or set()
+
+    def _record(self, op: str, bucket: str, key: str) -> None:
+        self.calls.append((op, bucket, key))
+        if self._shared_calls is not None:
+            self._shared_calls.append((op, bucket, key))
 
     def _seed(self, bucket: str, key: str, data: bytes, sha256_hex: str | None = None) -> None:
         """Test setup helper — not part of the S3Client interface itself."""
         self.store[(bucket, key)] = {"data": data, "metadata": {"sha256": sha256_hex} if sha256_hex else {}}
 
     def head(self, bucket: str, key: str) -> dict | None:
-        self.calls.append(("head", bucket, key))
+        self._record("head", bucket, key)
         obj = self.store.get((bucket, key))
         return dict(obj["metadata"]) if obj is not None else None
 
     def get_bytes(self, bucket: str, key: str, max_bytes: int) -> bytes | None:
-        self.calls.append(("get", bucket, key))
+        self._record("get", bucket, key)
         obj = self.store.get((bucket, key))
         if obj is None:
             return None
@@ -756,13 +822,13 @@ class _FakeS3Client:
         return obj["data"]
 
     def upload_file(self, bucket: str, key: str, local_path: Path, *, content_type: str, cache_control: str, metadata: dict[str, str]) -> None:
-        self.calls.append(("upload_file", bucket, key))
+        self._record("upload_file", bucket, key)
         if (bucket, key) in self._fail_puts:
             raise RuntimeError(f"simulated upload failure for s3://{bucket}/{key}")
         self.store[(bucket, key)] = {"data": Path(local_path).read_bytes(), "metadata": dict(metadata)}
 
     def put_bytes(self, bucket: str, key: str, data: bytes, *, content_type: str, cache_control: str, metadata: dict[str, str] | None) -> None:
-        self.calls.append(("put_bytes", bucket, key))
+        self._record("put_bytes", bucket, key)
         if (bucket, key) in self._fail_puts:
             raise RuntimeError(f"simulated PUT failure for s3://{bucket}/{key}")
         self.store[(bucket, key)] = {"data": data, "metadata": dict(metadata) if metadata else {}}
@@ -807,6 +873,9 @@ def self_test() -> bool:
         local.write_bytes(b"x" * 10)
 
         # --- publish_artifact: immutability refusal on mismatched existing artifact ---
+        # publish_artifact only ever takes ONE client (main() always passes the DEST
+        # client — see the routing checks in the swap_catalog section below for the
+        # actual dest-vs-archive split), so these tests exercise it standalone.
         client_mismatch = _FakeS3Client()
         client_mismatch._seed(DEFAULT_BUCKET, artifact["path"], b"old-bytes", sha256_hex="b" * 64)
         check(
@@ -866,75 +935,98 @@ def self_test() -> bool:
     new_catalog = json.dumps({"catalog_version": 1, "artifacts": []}).encode()
     new_sig = b"n" * 64
 
-    # --- swap_catalog: first-publish skips archive ---
-    client_first = _FakeS3Client()
-    result_first = swap_catalog(client_first, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
+    # --- swap_catalog: first-publish skips archive (two clients: dest + archive) ---
+    dest_first = _FakeS3Client()
+    archive_first = _FakeS3Client()
+    result_first = swap_catalog(dest_first, archive_first, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
     check("swap_catalog: first-ever publish returns 'first-publish'", result_first == "first-publish")
     check(
-        "swap_catalog: first-ever publish never touches the archive bucket",
-        all(c[1] != DEFAULT_ARCHIVE_BUCKET for c in client_first.calls),
+        "swap_catalog: first-ever publish never calls the ARCHIVE client at all (routing check)",
+        archive_first.calls == [],
     )
     check(
-        "swap_catalog: first-ever publish writes the new catalog.json + .sig",
-        client_first.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
-        and client_first.store[(DEFAULT_BUCKET, SIG_KEY)]["data"] == new_sig,
+        "swap_catalog: first-ever publish writes the new catalog.json + .sig via the DEST client",
+        dest_first.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
+        and dest_first.store[(DEFAULT_BUCKET, SIG_KEY)]["data"] == new_sig,
     )
 
-    # --- swap_catalog: archive-before-replace ordering (assert call order) ---
+    # --- swap_catalog: archive-before-replace ordering + per-role credential
+    # routing. Two SEPARATE _FakeS3Client instances stand in for the dest
+    # (primary, cleophis-dist-scoped) and archive (cleophis-models-scoped)
+    # clients — each has its own `store`, so an op issued through the wrong
+    # client would land in the wrong instance's store entirely, not just
+    # look wrong. `shared_calls` lets the call-ORDER assertion still work
+    # across the two separate instances. ---
     old_catalog = json.dumps({"catalog_version": 7, "artifacts": []}).encode()
     old_sig = b"o" * 64
-    client_swap = _FakeS3Client()
-    client_swap._seed(DEFAULT_BUCKET, CATALOG_KEY, old_catalog)
-    client_swap._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
-    result_swap = swap_catalog(client_swap, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
+    shared_calls: list[tuple[str, str, str]] = []
+    dest_swap = _FakeS3Client(shared_calls=shared_calls)
+    archive_swap = _FakeS3Client(shared_calls=shared_calls)
+    dest_swap._seed(DEFAULT_BUCKET, CATALOG_KEY, old_catalog)
+    dest_swap._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
+    result_swap = swap_catalog(dest_swap, archive_swap, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
     archive_prefix = "archive/catalogs/v7/"
     check("swap_catalog: existing live catalog returns 'archived-then-replaced'", result_swap == "archived-then-replaced")
     check(
-        "swap_catalog: old catalog.json archived at archive/catalogs/v<old_version>/",
-        client_swap.store.get((DEFAULT_ARCHIVE_BUCKET, archive_prefix + CATALOG_KEY), {}).get("data") == old_catalog,
+        "swap_catalog: old catalog.json archived at archive/catalogs/v<old_version>/ via the ARCHIVE client (routing check)",
+        archive_swap.store.get((DEFAULT_ARCHIVE_BUCKET, archive_prefix + CATALOG_KEY), {}).get("data") == old_catalog,
     )
     check(
-        "swap_catalog: old catalog.json.sig archived alongside it",
-        client_swap.store.get((DEFAULT_ARCHIVE_BUCKET, archive_prefix + SIG_KEY), {}).get("data") == old_sig,
+        "swap_catalog: old catalog.json.sig archived alongside it via the ARCHIVE client (routing check)",
+        archive_swap.store.get((DEFAULT_ARCHIVE_BUCKET, archive_prefix + SIG_KEY), {}).get("data") == old_sig,
     )
     check(
-        "swap_catalog: new catalog.json/.sig replace the live ones",
-        client_swap.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
-        and client_swap.store[(DEFAULT_BUCKET, SIG_KEY)]["data"] == new_sig,
+        "swap_catalog: the archive-bucket writes never land in the DEST client's store (routing check)",
+        (DEFAULT_ARCHIVE_BUCKET, archive_prefix + CATALOG_KEY) not in dest_swap.store
+        and (DEFAULT_ARCHIVE_BUCKET, archive_prefix + SIG_KEY) not in dest_swap.store,
     )
-    archive_write_indices = [i for i, c in enumerate(client_swap.calls) if c[1] == DEFAULT_ARCHIVE_BUCKET and c[0] in ("upload_file", "put_bytes")]
-    dest_write_indices = [i for i, c in enumerate(client_swap.calls) if c[1] == DEFAULT_BUCKET and c[0] in ("upload_file", "put_bytes")]
     check(
-        "swap_catalog: EVERY archive-bucket write happens before EVERY dest-bucket catalog write (call-order assertion)",
+        "swap_catalog: new catalog.json/.sig replace the live ones via the DEST client (routing check)",
+        dest_swap.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog
+        and dest_swap.store[(DEFAULT_BUCKET, SIG_KEY)]["data"] == new_sig,
+    )
+    check(
+        "swap_catalog: the live dest-bucket catalog writes never land in the ARCHIVE client's store (routing check)",
+        (DEFAULT_BUCKET, CATALOG_KEY) not in archive_swap.store and (DEFAULT_BUCKET, SIG_KEY) not in archive_swap.store,
+    )
+    archive_write_indices = [i for i, c in enumerate(shared_calls) if c[1] == DEFAULT_ARCHIVE_BUCKET and c[0] in ("upload_file", "put_bytes")]
+    dest_write_indices = [i for i, c in enumerate(shared_calls) if c[1] == DEFAULT_BUCKET and c[0] in ("upload_file", "put_bytes")]
+    check(
+        "swap_catalog: EVERY archive-bucket write happens before EVERY dest-bucket catalog write "
+        "(call-order assertion, held across the two separate dest/archive clients)",
         bool(archive_write_indices) and bool(dest_write_indices) and max(archive_write_indices) < min(dest_write_indices),
     )
 
-    # --- swap_catalog: archive-failure aborts the catalog swap ---
-    client_fail = _FakeS3Client(fail_puts={(DEFAULT_ARCHIVE_BUCKET, archive_prefix + CATALOG_KEY)})
-    client_fail._seed(DEFAULT_BUCKET, CATALOG_KEY, old_catalog)
-    client_fail._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
+    # --- swap_catalog: archive-failure (on the ARCHIVE client) aborts the catalog swap on the DEST client ---
+    dest_fail = _FakeS3Client()
+    archive_fail = _FakeS3Client(fail_puts={(DEFAULT_ARCHIVE_BUCKET, archive_prefix + CATALOG_KEY)})
+    dest_fail._seed(DEFAULT_BUCKET, CATALOG_KEY, old_catalog)
+    dest_fail._seed(DEFAULT_BUCKET, SIG_KEY, old_sig)
     check(
-        "swap_catalog: an archive-write failure raises rather than being swallowed",
-        raises(Exception, lambda: swap_catalog(client_fail, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)),
+        "swap_catalog: an archive-CLIENT write failure raises rather than being swallowed",
+        raises(Exception, lambda: swap_catalog(dest_fail, archive_fail, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)),
     )
     check(
-        "swap_catalog: after an archive failure, the LIVE catalog.json is still the OLD bytes (never touched)",
-        client_fail.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == old_catalog,
+        "swap_catalog: after an archive-client failure, the LIVE catalog.json (on the DEST client) is still the OLD bytes (never touched)",
+        dest_fail.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == old_catalog,
     )
     check(
-        "swap_catalog: after an archive failure, no dest-bucket PUT/upload was ever attempted",
-        all(not (c[1] == DEFAULT_BUCKET and c[0] in ("upload_file", "put_bytes")) for c in client_fail.calls),
+        "swap_catalog: after an archive-client failure, no DEST-client PUT/upload was ever attempted",
+        all(not (c[1] == DEFAULT_BUCKET and c[0] in ("upload_file", "put_bytes")) for c in dest_fail.calls),
     )
 
-    # --- swap_catalog: catalog.json PUT succeeds but .sig PUT fails -> the
-    # PARTIAL SWAP operator message actually fires, and the failure still
-    # propagates (this is the fix-round addition: capture stdout for one
-    # call so the message text itself is asserted, not just the exception).
-    client_partial = _FakeS3Client(fail_puts={(DEFAULT_BUCKET, SIG_KEY)})
+    # --- swap_catalog: catalog.json PUT succeeds but .sig PUT fails (both on
+    # the DEST client) -> the PARTIAL SWAP operator message actually fires,
+    # and the failure still propagates (capture stdout for one call so the
+    # message text itself is asserted, not just the exception). The archive
+    # client is a first-publish here (no live catalog seeded), so it should
+    # never be touched at all. ---
+    dest_partial = _FakeS3Client(fail_puts={(DEFAULT_BUCKET, SIG_KEY)})
+    archive_partial = _FakeS3Client()
     captured = io.StringIO()
     with contextlib.redirect_stdout(captured):
         partial_raised = raises(
-            Exception, lambda: swap_catalog(client_partial, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
+            Exception, lambda: swap_catalog(dest_partial, archive_partial, DEFAULT_BUCKET, DEFAULT_ARCHIVE_BUCKET, new_catalog, new_sig)
         )
     partial_output = captured.getvalue()
     check("swap_catalog: a .sig-PUT failure after a successful catalog.json PUT still raises", partial_raised)
@@ -943,8 +1035,12 @@ def self_test() -> bool:
         "PARTIAL SWAP" in partial_output and "re-run" in partial_output.lower(),
     )
     check(
-        "swap_catalog: after a partial swap, the live catalog.json already holds the NEW bytes (not rolled back)",
-        client_partial.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog,
+        "swap_catalog: after a partial swap, the live catalog.json (on the DEST client) already holds the NEW bytes (not rolled back)",
+        dest_partial.store[(DEFAULT_BUCKET, CATALOG_KEY)]["data"] == new_catalog,
+    )
+    check(
+        "swap_catalog: a first-publish-shaped partial-swap scenario never touches the ARCHIVE client (routing check)",
+        archive_partial.calls == [],
     )
 
     # --- _sanitize_s3_exception: never leaks a ClientError's raw Message
@@ -1079,20 +1175,29 @@ def main(argv: list[str] | None = None) -> int:
     creds = load_b2_credentials(ENV_FILE)
     if creds is None:
         print(
-            f"error: B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY are not all set in {ENV_FILE} — see .env.example "
-            "(or pass --dry-run to preview the plan without credentials)",
+            f"error: B2_ENDPOINT/B2_KEY_ID/B2_APP_KEY are not all set in {ENV_FILE} — these are the "
+            "primary (cleophis-dist-scoped) B2 credentials and are always required for a live publish; "
+            "see .env.example (or pass --dry-run to preview the plan without credentials)",
             file=sys.stderr,
         )
         return 1
     endpoint, key_id, app_key = creds
 
+    # Archive-copy puts (in swap_catalog) go through a SEPARATE cleophis-models-
+    # scoped key pair when one is configured — B2 app keys are bucket-scoped, so
+    # the primary pair above can't necessarily write to cleophis-models. Falls
+    # back to the exact same client as the dest bucket when the models pair is
+    # absent/empty (see load_b2_models_credentials's docstring).
+    models_creds = load_b2_models_credentials(ENV_FILE)
+
     try:
-        client = create_s3_client(endpoint, key_id, app_key)
+        dest_client = create_s3_client(endpoint, key_id, app_key)
+        archive_client = dest_client if models_creds is None else create_s3_client(endpoint, *models_creds)
         for artifact, local_path in plan:
-            result = publish_artifact(client, args.bucket, artifact, local_path)
+            result = publish_artifact(dest_client, args.bucket, artifact, local_path)
             print(f"[publish] {result}: s3://{args.bucket}/{artifact['path']}", flush=True)
 
-        swap_result = swap_catalog(client, args.bucket, args.archive_bucket, catalog_bytes, sig_bytes)
+        swap_result = swap_catalog(dest_client, archive_client, args.bucket, args.archive_bucket, catalog_bytes, sig_bytes)
         print(f"[publish] catalog swap: {swap_result}", flush=True)
     except PublishError as exc:
         print(f"error: {exc}", file=sys.stderr)
