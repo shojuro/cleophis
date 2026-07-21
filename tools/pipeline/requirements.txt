@@ -1,0 +1,21 @@
+# Cleophis distribution pipeline's OWN dependencies — installed into
+# tools/pipeline/.venv by setup_tools.sh.
+#
+# The llama.cpp convert scripts (convert_hf_to_gguf.py,
+# convert_lora_to_gguf.py) have their own, much heavier dependency set
+# (torch CPU, transformers, sentencepiece, ...). Those install separately
+# from llama.cpp's own requirements/requirements-convert_lora_to_gguf.txt
+# (see setup_tools.sh) — deliberately not vendored here, so this file stays
+# a short, stable list of what OUR scripts import directly.
+
+# Pull base model / adapter source snapshots from Hugging Face (A2, A3).
+huggingface_hub
+
+# Backblaze B2's native API is S3-compatible; boto3 talks to it via
+# B2_ENDPOINT (A5 upload/archive, A6 self-check).
+boto3
+
+# ed25519 catalog signing (A4 sign_catalog.py / generate_curator_key.py) —
+# same primitive family as the app's kpack_core::sign (ed25519-dalek), via
+# the `cryptography` package's ed25519 support on the Python side.
+cryptography

@@ -15,3 +15,16 @@ src-tauri/resources/pdfium/*.dll
 models-lab/
 tools/covers/out/
 *.log
+
+# Model-distribution pipeline (tools/pipeline/, task A1+): its own gitignored
+# .env (see .env.* above — this is belt-and-suspenders since that pattern
+# already matches it), the Python venv, the pinned llama.cpp checkout +
+# prebuilt llama-quantize (all fetched by setup_tools.sh, never committed),
+# and its large-scratch working directory.
+tools/pipeline/.env
+tools/pipeline/.venv/
+tools/pipeline/llama.cpp/
+tools/pipeline/work/
+# .env.* above would also match .env.example; explicitly un-ignore it so the
+# committed template stays trackable.
+!tools/pipeline/.env.example
