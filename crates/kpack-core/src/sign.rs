@@ -22,17 +22,21 @@
 //! deliberate, not incidental.
 //!
 //! ## The `CURATOR_PUBLIC_KEY` release guardrail
-//! `CURATOR_PUBLIC_KEY` is `None` until the real company signing key is
-//! pinned at the §2.6 sign-and-publish milestone. Until then, EVERY curated
-//! pack refuses to mount (fail-closed — see `manifest::Pack::mount`'s
-//! curated-tier branch) — the honest v1 state, since no signing
-//! infrastructure exists yet and therefore no curated pack could have been
-//! legitimately signed. There is deliberately NO test key anywhere at crate
-//! scope: the fixed-seed keypairs this module's tests use are constructed
-//! *inside* `#[cfg(test)] mod tests`, so a release binary is
-//! compile-time incapable of linking one in. Only a deliberate, reviewed
-//! edit to `CURATOR_PUBLIC_KEY` itself — at §2.6 — can ever make a curated
-//! pack verify.
+//! `CURATOR_PUBLIC_KEY` was `None` (fail-closed — every curated pack refused
+//! to mount) from the kpack milestone until the adapter/distribution
+//! milestone (2026-07-21, Task B5), when the production curator keypair was
+//! generated and its public half was pinned here. The private key lives
+//! outside this repo, held by the curator, and never touches a build
+//! machine; only the public key — safe to ship, same class as
+//! `cloud/config.rs`'s publishable key — is compiled in. No curated packs
+//! shipped before this point, so pinning the key changes no existing pack's
+//! behavior; it only stops future curated packs from being fail-closed by
+//! default. There is deliberately NO test key anywhere at crate scope: the
+//! fixed-seed keypairs this module's tests use are constructed *inside*
+//! `#[cfg(test)] mod tests`, so a release binary is compile-time incapable
+//! of linking one in — the production constant above is the only crate-scope
+//! key, and only a deliberate, reviewed edit to it can ever change which key
+//! a curated pack must verify against.
 //!
 //! ## Two entry points: bytes vs. file, pre-open vs. in-mount
 //! [`verify_detached`] takes already-in-memory bytes and is the shared
@@ -53,19 +57,24 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-/// The pinned production curator public key. `None` until the §2.6
-/// sign-and-publish milestone mints the real company signing key and this
-/// constant is deliberately replaced with it — see the module doc comment
-/// for why `None` is the correct, fail-closed v1 state, and for the
-/// guardrail this const's test-scope-only companion key enforces.
-pub const CURATOR_PUBLIC_KEY: Option<[u8; 32]> = None;
+/// The pinned production curator public key (Task B5, 2026-07-21). This is
+/// the public half of the production curator keypair; the private half
+/// lives outside this repo with the curator — see the module doc comment
+/// for the trust model and for the guardrail this const's test-scope-only
+/// companion keys enforce.
+pub const CURATOR_PUBLIC_KEY: Option<[u8; 32]> = Some([
+    0x15, 0x8c, 0xb9, 0x9e, 0x97, 0x56, 0xe2, 0xe4, 0xd0, 0x1d, 0x88, 0xb7, 0xec, 0xfe, 0xb9, 0x9a,
+    0x76, 0x54, 0x78, 0x21, 0xff, 0xe9, 0xf9, 0xf1, 0x98, 0x53, 0x16, 0xc5, 0x45, 0x1c, 0xd0, 0xc0,
+]);
 
-/// Decodes [`CURATOR_PUBLIC_KEY`] into a [`VerifyingKey`], or `None` if it
-/// isn't pinned yet (always `None` in this build — see the module doc
-/// comment). Panics only if a future, deliberately-pinned
-/// `CURATOR_PUBLIC_KEY` is malformed (not a valid ed25519 public key) —
-/// impossible today since the constant is `None`, and a compile-time
-/// invariant (caught immediately in CI/tests) once it isn't.
+/// Decodes [`CURATOR_PUBLIC_KEY`] into a [`VerifyingKey`] — `Some` in every
+/// production build since Task B5 pinned the constant above (see the module
+/// doc comment). Still returns `Option` because the type is shared with
+/// test/dev contexts where a caller might choose not to pin one. Panics
+/// only if `CURATOR_PUBLIC_KEY` is malformed (not a valid ed25519 public
+/// key) — a compile-time invariant of this literal, caught immediately by
+/// `tests::t9_production_curator_key_is_pinned` below, not a runtime
+/// possibility in a build that compiles.
 pub fn curator_verifying_key() -> Option<VerifyingKey> {
     CURATOR_PUBLIC_KEY.map(|bytes| {
         VerifyingKey::from_bytes(&bytes).expect(
@@ -258,13 +267,18 @@ mod tests {
         ));
     }
 
-    // 9. Release guardrail: CURATOR_PUBLIC_KEY is None in this build — no
-    // test key ever sits at crate scope; a real key only ever replaces it
-    // deliberately at §2.6.
+    // 9. Release guardrail: the production curator key is pinned (Task B5)
+    // and decodes to a valid ed25519 point. `curator_verifying_key()`
+    // deliberately re-decodes the constant rather than trusting it blindly —
+    // this test is what proves, at test time, that `CURATOR_PUBLIC_KEY` is a
+    // valid `VerifyingKey` (i.e. `curator_verifying_key()`'s internal
+    // `.expect(...)` cannot panic), and that decoding round-trips back to
+    // the exact pinned bytes.
     #[test]
-    fn t9_curator_public_key_is_none_in_this_build() {
-        assert_eq!(CURATOR_PUBLIC_KEY, None);
-        assert!(curator_verifying_key().is_none());
+    fn t9_production_curator_key_is_pinned() {
+        assert!(CURATOR_PUBLIC_KEY.is_some());
+        let key = curator_verifying_key().expect("production curator key must be pinned");
+        assert_eq!(key.to_bytes(), CURATOR_PUBLIC_KEY.unwrap());
     }
 
     // ---- verify_file: the pre-open, bytes-on-disk gate (Fix 1/Fix 2). ----

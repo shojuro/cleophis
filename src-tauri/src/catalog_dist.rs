@@ -21,9 +21,9 @@
 //! caller-supplied path, then (only if the version grew) persist the new
 //! highest via [`write_highest_version`] — and `#[tauri::command]
 //! fetch_dist_catalog` is the thin production wrapper that resolves the
-//! compiled-in [`ARTIFACT_BASE_URL`], the pinned curator key (failing
-//! closed — see [`resolve_curator_key`] — since this build has none pinned
-//! yet), and the app-data state path.
+//! compiled-in [`ARTIFACT_BASE_URL`], the pinned curator key (Task B5
+//! pinned it; [`resolve_curator_key`] still fails closed if a build were
+//! ever compiled with it unset), and the app-data state path.
 
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
@@ -243,9 +243,11 @@ pub fn fetch_and_verify_catalog(
 }
 
 /// Resolves the pinned production curator key, or a clear, fail-closed
-/// error if none is pinned yet. `curator_verifying_key()` returns `None`
-/// until the §2.6 sign-and-publish milestone pins the real company key (see
-/// `kpack_core::sign`'s module doc comment) — until then this command must
+/// error if none is pinned. `curator_verifying_key()` has returned `Some`
+/// in every production build since Task B5 pinned the real curator key (see
+/// `kpack_core::sign`'s module doc comment); this function's `None` branch
+/// is now a belt-and-suspenders guard rather than the expected v1 path —
+/// if `CURATOR_PUBLIC_KEY` were ever reverted to `None`, this command must
 /// refuse rather than silently skip verification, so `None` is a hard
 /// `Err` here, never a "trust anyway" fallback. Factored out of
 /// `fetch_dist_catalog` so this fail-closed behavior is directly unit
@@ -506,13 +508,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // 4. The production command path's key resolution must fail closed:
-    // `curator_verifying_key()` is `None` in this build (no production key
-    // pinned yet), so this must be a hard `Err`, never a silent
-    // "trust anyway" skip.
+    // 4. The production command path's key resolution: Task B5 pinned
+    // `CURATOR_PUBLIC_KEY`, so `resolve_curator_key()` must now resolve
+    // successfully and return exactly the pinned production key — not
+    // silently substitute a different one. This test is deliberately
+    // agnostic to what the pinned bytes actually are: it re-derives the
+    // expected key from `kpack_core::sign::curator_verifying_key()` itself
+    // rather than hardcoding a literal, so it stays correct across any
+    // future, deliberate key rotation. `resolve_curator_key`'s `None`
+    // branch (fail closed, never "trust anyway") is exercised structurally
+    // by inspection — `curator_verifying_key().ok_or_else(...)` — since a
+    // real build can no longer put the production constant back to `None`
+    // without editing `sign.rs` directly.
     #[test]
-    fn resolve_curator_key_fails_closed_when_unpinned() {
-        let err = resolve_curator_key().unwrap_err();
-        assert!(err.contains("no curator key pinned"), "error was: {err}");
+    fn resolve_curator_key_resolves_the_pinned_production_key() {
+        let expected = kpack_core::sign::curator_verifying_key()
+            .expect("Task B5 pinned CURATOR_PUBLIC_KEY; production key must resolve");
+        let resolved = resolve_curator_key().expect("pinned production key must resolve to Ok");
+        assert_eq!(resolved.to_bytes(), expected.to_bytes());
     }
 }
