@@ -551,6 +551,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "chrono",
+ "ed25519-dalek",
  "keyring",
  "kpack-core",
  "kpack-embed",

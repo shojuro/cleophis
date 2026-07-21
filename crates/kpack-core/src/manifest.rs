@@ -251,11 +251,12 @@ fn require_pack_tier(pack: &Pack, key: &str) -> Result<PackTier, Error> {
 ///
 /// `curator_key` is the pinned curator public key (K3), injected here
 /// exactly like `available_embedder_sha256` above — the wrapper passes
-/// `sign::curator_verifying_key()` in production (currently always `None`;
-/// see that function's doc comment), and this crate's own tests pass a
-/// fixed-seed test key. This is deliberate: the key is never read from the
-/// pack itself (see the `sign` module doc comment for why a pack-supplied
-/// key would be trivially forgeable).
+/// `sign::curator_verifying_key()` in production (`Some` since Task B5
+/// pinned the production key; see that function's doc comment), and this
+/// crate's own tests pass a fixed-seed test key (or `None`, to exercise the
+/// unpinned-key refusal path). This is deliberate: the key is never read
+/// from the pack itself (see the `sign` module doc comment for why a
+/// pack-supplied key would be trivially forgeable).
 pub struct LoadContext<'a> {
     pub available_embedder_sha256: &'a [String],
     pub curator_key: Option<VerifyingKey>,
@@ -357,10 +358,12 @@ impl Pack {
     /// Runs AFTER `check_load`'s four metadata checks pass, because it
     /// needs the file `path` (`check_load` only ever sees the already-open
     /// `pack` and its parsed `manifest`):
-    /// 1. `Curated` packs: refuse if `ctx.curator_key` is `None` (this
-    ///    build can't verify curated packs yet — see `sign`'s module doc
-    ///    comment for why that's the correct v1 state, fail-closed).
-    ///    Otherwise, call `sign::verify_file(path, <path>.sig, key)` — which
+    /// 1. `Curated` packs: refuse if `ctx.curator_key` is `None` (no
+    ///    curator key available to verify against — fail-closed; in
+    ///    production this only happens if a caller fails to pass
+    ///    `sign::curator_verifying_key()`, which has returned `Some` since
+    ///    Task B5 pinned the production key). Otherwise, call
+    ///    `sign::verify_file(path, <path>.sig, key)` — which
     ///    itself reads the detached signature (capped, refusing if missing
     ///    or malformed) and the pack file's raw bytes, then delegates to
     ///    `sign::verify_detached`; refuse on any error it returns.
@@ -383,11 +386,14 @@ impl Pack {
     /// CDN-sourced curated packs it doesn't have to be: the wrapper can and
     /// should call `sign::verify_file` — a pure bytes-on-disk gate that
     /// touches no SQLite at all — on a downloaded pack's raw bytes BEFORE
-    /// ever handing it to `Pack::mount`. This residual is latent today
-    /// (`sign::CURATOR_PUBLIC_KEY == None`, so no curated pack mounts at
-    /// all — see `sign`'s module doc comment) but MUST be wired at K9/§2.6,
-    /// before a real curator key is pinned and curated packs start actually
-    /// mounting.
+    /// ever handing it to `Pack::mount`. Task B5 (2026-07-21) pinned the
+    /// production curator key (`sign::CURATOR_PUBLIC_KEY` is now `Some`),
+    /// so this residual is no longer latent in principle — but no CDN
+    /// curated-pack download path exists in this codebase yet (no
+    /// `verify_file`-before-`Pack::mount` wiring, no curated catalog
+    /// entries), so there is still nothing to exploit today. Wiring
+    /// `verify_file` ahead of `Pack::mount` in the wrapper is a prerequisite
+    /// for K9 to ever serve a real CDN-sourced curated pack.
     pub fn mount<P: AsRef<Path>>(path: P, ctx: &LoadContext) -> Result<(Pack, Manifest), Error> {
         let path = path.as_ref();
         let pack = Pack::open(path)?;
@@ -396,7 +402,9 @@ impl Pack {
 
         if manifest.pack_tier == PackTier::Curated {
             let key = ctx.curator_key.ok_or_else(|| {
-                Error::Schema("this build can't verify curated packs yet".to_string())
+                Error::Schema(
+                    "no curator key was supplied to verify this curated pack".to_string(),
+                )
             })?;
             // Reuses `sign::verify_file` (Fix 1) rather than re-reading the
             // pack/sig bytes here itself, so there is exactly one crypto
@@ -916,8 +924,8 @@ mod tests {
         );
     }
 
-    // 20. Curated pack but ctx.curator_key = None -> refuses ("can't
-    // verify curated packs yet").
+    // 20. Curated pack but ctx.curator_key = None -> refuses ("no curator
+    // key was supplied to verify this curated pack").
     #[test]
     fn t20_mount_curated_pack_no_curator_key_refuses() {
         let dir = unique_dir("t20");
@@ -939,7 +947,8 @@ mod tests {
         let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
         assert!(
-            err.to_string().contains("can't verify curated packs yet"),
+            err.to_string()
+                .contains("no curator key was supplied to verify this curated pack"),
             "error was: {err}"
         );
     }

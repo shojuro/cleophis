@@ -20,15 +20,20 @@ one (now). Source of truth for the code this describes: `crates/kpack-core/src/s
 5. The private key **never ships** and never touches a build machine — it lives
    only in the signing environment.
 
-## Current state (v1) — verify path only, no key pinned
+## Current state — production key pinned (Task B5), signing pipeline still pending
 
-`CURATOR_PUBLIC_KEY` is `None` in this build. That is deliberate and fail-closed:
-until a real key is pinned (at the §2.6 sign-and-publish milestone), **no curated
-pack verifies, so none mounts** — which is correct, because there is no signing
-infrastructure yet and no curated packs exist. The verify code path is complete
-and adversarially tested (wrong key, truncated/oversized sig, tampered-bytes,
-missing sig, malleability via `verify_strict`); only the key + the server-side
-signing remain for §2.6.
+`CURATOR_PUBLIC_KEY` was `None` (fail-closed: no curated pack could verify, so
+none mounted) from the kpack milestone until Task B5 (2026-07-21), which
+generated the production curator keypair and pinned its public half in
+`crates/kpack-core/src/sign.rs`. The private key lives outside this repo with
+the curator and never touched a build machine. No curated packs shipped
+before B5, so pinning the key changed no existing pack's behavior — it only
+means a correctly-signed curated pack can now verify. The verify code path is
+complete and adversarially tested (wrong key, truncated/oversized sig,
+tampered-bytes, missing sig, malleability via `verify_strict`); the
+server-side signing pipeline (below) and the CDN pre-open wiring (see
+"Verifying in the app" below) are still outstanding — no curated packs exist
+yet and none can be served from a CDN until that wiring lands.
 
 **Release guardrail (enforced by construction):** the test keypair used by the
 verify tests is generated only inside `#[cfg(test)]` — it is compile-time
@@ -36,7 +41,7 @@ impossible to link into a release binary. A test key that verified in release
 would be a repo-resident universal pack-forgery key. Never move a test key to
 crate scope; the only crate-scope key is the pinned production `CURATOR_PUBLIC_KEY`.
 
-## When §2.6 lands: generating and pinning the curator key
+## Generating and pinning the curator key (done — Task B5, 2026-07-21)
 
 1. **Generate the keypair offline.** On an air-gapped or HSM-backed machine,
    generate an ed25519 keypair. The **private key never leaves** that
@@ -45,12 +50,17 @@ crate scope; the only crate-scope key is the pinned production `CURATOR_PUBLIC_K
 2. **Pin the public key.** Replace `CURATOR_PUBLIC_KEY = None` in
    `crates/kpack-core/src/sign.rs` with `Some([32 pinned bytes])`. This is
    public by design and ships in the app (same class as
-   `cloud/config.rs`'s publishable key). Landing it is an app release.
+   `cloud/config.rs`'s publishable key). Landing it is an app release. — done
+   in Task B5.
 3. **Wire the app to inject it.** `src-tauri` passes
    `sign::curator_verifying_key()` into `Pack::mount`'s `LoadContext.curator_key`
-   for CDN-sourced packs.
+   for CDN-sourced packs. — this call site already existed pre-B5 and now
+   resolves to `Some` automatically; it does NOT by itself add the pre-open
+   `verify_file` gate for a CDN download path (see "Verifying in the app"
+   below), because no such CDN kpack download path exists in this codebase
+   yet.
 
-## Signing a pack (§2.6, future, in the signing environment)
+## Signing a pack (future, in the signing environment)
 
 1. Build the finished `.kpack` (server pipeline, §2).
 2. Sign its exact bytes with the curator private key → write the 64-byte
@@ -65,9 +75,12 @@ runs the bundled SQLite + `sqlite-vec` C code on the pack's bytes. For a
 **CDN-sourced curated pack**, the wrapper MUST call `sign::verify_file(pack_path,
 sig_path, &curator_key)` — a bytes-only gate that touches no SQLite — **before**
 `Pack::open`/`Pack::mount`, so forged/untrusted bytes never reach the C parsers.
-`Pack::mount`'s in-mount signature check is defense-in-depth on top of that. This
-pre-open gate is the required wiring when a real key is pinned; until then it is
-latent (no key → nothing mounts).
+`Pack::mount`'s in-mount signature check is defense-in-depth on top of that.
+Task B5 pinned the real key, so this pre-open gate is now **required, live
+wiring** for any CDN kpack-download path, not a latent future concern — but as
+of B5 that wiring (and the CDN download path itself) does not exist yet in
+this codebase, so there is currently nothing exercising it either way. This
+MUST land before any curated pack is served from a CDN.
 
 ## Key rotation
 

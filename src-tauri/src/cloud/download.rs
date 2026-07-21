@@ -1,12 +1,18 @@
-//! Resumable, verified download manager for the hero model file.
+//! Resumable, verified download manager for the hero model file, plus
+//! (Task B3) public, tokenless downloads of signed-catalog artifacts.
 //!
-//! `run_download` is the testable core: a pure function (aside from the
-//! network/filesystem it necessarily touches) driven entirely by closures
-//! and atomics, with NO `AppHandle`/Tauri dependency — that's what lets the
-//! 10-case test suite below drive it directly against the ranged mock
-//! server in `test_support`. The three `#[tauri::command]`s at the bottom
-//! are a thin orchestration layer: catalog lookup, the single-slot
-//! `Downloads` registry, and wiring `run_download`'s closures to
+//! `run_download_core` is the shared testable core: a pure function (aside
+//! from the network/filesystem it necessarily touches) driven entirely by
+//! closures and atomics, with NO `AppHandle`/Tauri dependency — that's what
+//! lets the test suite below drive it directly against the ranged mock
+//! server in `test_support`. `run_download` (the original hero-model money
+//! path, UNCHANGED behavior) and `run_public_download` (Task B3) are both
+//! thin [`DownloadSource`]-selecting wrappers around it — see that type's
+//! doc comment for how the two auth stories (a re-mintable B2 token vs. no
+//! credential at all) stay separated without duplicating the GET/resume/
+//! sha256/rename logic. The four `#[tauri::command]`s at the bottom are a
+//! thin orchestration layer: catalog lookup, the single-slot `Downloads`
+//! registry, and wiring the core's closures to
 //! `app.emit`/`cloud.download_authorization`.
 //!
 //! Locking discipline: the worker thread spawned by `download_model` holds
@@ -18,12 +24,15 @@
 //! ONLY in the request's `Authorization` header (raw value, no `Bearer `
 //! prefix — B2's native download-auth convention) and is never logged, put
 //! in an error message, or included in a `DownloadProgress` event.
+//! `download_artifact`'s public path (Task B3) never has an `Authorization`
+//! value to begin with — see [`DownloadSource::Public`].
 //!
 //! Testability knob: the streaming agent's read timeout (the stall guard)
 //! defaults to 30s but is overridable via the `CLEOPHIS_DOWNLOAD_READ_TIMEOUT_MS`
 //! env var so tests can shrink it to exercise `RangedBehavior::StallForever`
 //! without waiting out a real 30s timeout. Not part of the public function
-//! surface — keeping `run_download`'s signature clean per the task brief.
+//! surface — keeping `run_download`/`run_public_download`'s signatures
+//! clean per the task brief.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -101,20 +110,173 @@ pub struct DownloadStatus {
     pub total_bytes: u64,
 }
 
-/// The testable core. `auth_provider` is called once at start and again on
-/// every re-mint (a retryable failure, per worker step 5). Deliberately
-/// takes no `model_id`: it doesn't need one — the destination path,
-/// expected size, and expected hash fully describe the download, and
-/// `auth_provider` already has `model_id` baked in as a closure (the
-/// `download_model` command's `move || cloud.download_authorization(&model_id)`).
-/// Consequently the `DownloadProgress` values this function builds carry
-/// `model_id: String::new()` — the Tauri command wrapper's `emit` closure
-/// patches the real `model_id` in before forwarding to `app.emit`, since
-/// only it (not this model-agnostic core) knows it. Documented in the task
-/// report as a deliberate reading of the given signature, which has no
-/// `model_id` parameter.
-pub fn run_download(
-    auth_provider: &dyn Fn() -> Result<rest::DownloadAuth, CloudError>,
+/// Where a download's bytes come from and — critically — how a retryable
+/// failure re-authorizes before the next attempt (Task B3). Threading this
+/// through [`run_download_core`] (shared by both [`run_download`] and
+/// [`run_public_download`]) is what lets the GET/resume/streaming-sha256/
+/// atomic-rename core live in exactly ONE place while the two very
+/// different auth stories — a short-lived, per-file B2 token that must be
+/// re-minted on failure, vs. a public catalog-artifact URL that carries no
+/// credential at all — stay cleanly separated. `Copy`: both variants are
+/// just a couple of pointers, so `run_download_core` can pass `source`
+/// around by value at every call site instead of threading a reference
+/// through match ergonomics.
+#[derive(Clone, Copy)]
+enum DownloadSource<'a> {
+    /// The existing hero-model money path, UNCHANGED: `auth_provider` is
+    /// called once up front and again on every re-mint (a retryable
+    /// failure, per worker step 5); the resulting `Authorization` header
+    /// value is attached to every request.
+    Minted(&'a dyn Fn() -> Result<rest::DownloadAuth, CloudError>),
+    /// A public, tokenless catalog-artifact URL (Task B3): NO
+    /// `Authorization` header is ever sent, and a retryable failure never
+    /// calls `mint_download_url` or anything resembling a re-mint — it just
+    /// retries this SAME `url` after the existing backoff.
+    Public { url: &'a str },
+}
+
+/// What to GET and what (if any) bearer value to attach — resolved once up
+/// front by [`resolve_initial_attempt`] and possibly replaced by
+/// [`handle_retryable_failure`] on a retry (only ever replaced for
+/// `DownloadSource::Minted`; a `Public` retry always reproduces the same
+/// `url` with `authorization: None`).
+struct Attempt {
+    url: String,
+    authorization: Option<String>,
+}
+
+/// Resolves the FIRST `Attempt` for `source` (worker step 2 for `Minted`:
+/// mint auth and cross-check the catalog's expected size against the
+/// server's; `Public` has no mint step, so there's nothing to cross-check —
+/// its `expected_bytes` comes straight from the signed catalog record).
+/// Both branches apply the same `download_host_allowed` gate before
+/// returning — see the cfg-gate comment inline for why it's
+/// `#[cfg(not(test))]`.
+fn resolve_initial_attempt(source: DownloadSource, expected_bytes: u64) -> Result<Attempt, String> {
+    match source {
+        DownloadSource::Minted(auth_provider) => {
+            let auth = auth_provider().map_err(|e| e.user_message())?;
+            if auth.file_bytes != expected_bytes {
+                return Err("Catalog out of date — please update the app.".to_string());
+            }
+            // Real builds only: this module's own test suite below drives
+            // both `run_download` and `run_public_download` against
+            // `test_support::start_ranged_server`, which speaks plain HTTP
+            // on 127.0.0.1 (no TLS) — the gate would reject every one of
+            // those mock URLs on scheme alone before a single byte streams.
+            // `download_host_allowed` is validated directly by its own unit
+            // tests instead (see the `download_host_allowed_*` tests
+            // below), so this cfg-gate costs no coverage of the validator
+            // itself, only of this one call site — the same "testability
+            // knob" pattern `streaming_agent` uses above for its read
+            // timeout.
+            #[cfg(not(test))]
+            if !download_host_allowed(&auth.url) {
+                return Err("Download source not recognized — please update the app.".to_string());
+            }
+            Ok(Attempt {
+                url: auth.url,
+                authorization: Some(auth.authorization),
+            })
+        }
+        DownloadSource::Public { url } => {
+            #[cfg(not(test))]
+            if !download_host_allowed(url) {
+                return Err("Download source not recognized — please update the app.".to_string());
+            }
+            Ok(Attempt {
+                url: url.to_string(),
+                authorization: None,
+            })
+        }
+    }
+}
+
+/// What the attempt loop should do after a retryable failure (connect-time
+/// or mid-stream) has already been recorded via `record_failure_and_backoff`.
+enum RetryOutcome {
+    /// `cancel` fired during the backoff sleep (or during a `Minted`
+    /// re-mint's own backoff) — caller emits `cancelled` and returns
+    /// `Ok(())`.
+    Cancelled,
+    /// Retry with this `Attempt` — freshly (re-)minted for `Minted`, the
+    /// unchanged `url` for `Public`.
+    Retry(Attempt),
+}
+
+/// Handles ONE retryable failure — shared by both call sites in
+/// `run_download_core` (a connect-time failure and a mid-stream failure)
+/// AND both `DownloadSource` variants, replacing what was, pre-B3, ~25 lines
+/// duplicated at each of those two call sites. `record_failure_and_backoff`
+/// (the 2s/5s/10s schedule, the 3-consecutive-failure budget, the 403/404
+/// fast-fail) runs unconditionally for both sources — `Public` gets the
+/// EXACT same backoff/give-up policy as `Minted` ("the existing backoff",
+/// per the task brief). Only what happens AFTER a non-give-up failure
+/// differs: `Minted` calls `remint_with_budget` (itself subject to the same
+/// shared budget) and re-gates whatever new URL comes back; `Public` never
+/// calls anything — it just re-attempts the same `url`, already gated once
+/// by `resolve_initial_attempt` — satisfying requirement (b) from the task
+/// brief that the public path never calls `mint_download_url`/re-mint.
+#[allow(clippy::too_many_arguments)]
+fn handle_retryable_failure(
+    source: DownloadSource,
+    kind: FailureKind,
+    consecutive_failures: &mut u32,
+    bytes_at_last_failure: &mut u64,
+    last_failure_kind: &mut Option<FailureKind>,
+    bytes_counter: &AtomicU64,
+    cancel: &AtomicBool,
+) -> Result<RetryOutcome, String> {
+    let cancelled_during_backoff = record_failure_and_backoff(
+        consecutive_failures,
+        bytes_at_last_failure,
+        last_failure_kind,
+        kind,
+        bytes_counter,
+        cancel,
+    )?;
+    if cancelled_during_backoff {
+        return Ok(RetryOutcome::Cancelled);
+    }
+
+    match source {
+        DownloadSource::Minted(auth_provider) => match remint_with_budget(
+            auth_provider,
+            consecutive_failures,
+            bytes_at_last_failure,
+            last_failure_kind,
+            bytes_counter,
+            cancel,
+        )? {
+            Some(new_auth) => {
+                // Re-gate the freshly minted URL — a retry must not attach
+                // the auth token to a host the initial gate never vetted.
+                #[cfg(not(test))]
+                if !download_host_allowed(&new_auth.url) {
+                    return Err("Download source not recognized — please update the app.".to_string());
+                }
+                Ok(RetryOutcome::Retry(Attempt {
+                    url: new_auth.url,
+                    authorization: Some(new_auth.authorization),
+                }))
+            }
+            None => Ok(RetryOutcome::Cancelled),
+        },
+        DownloadSource::Public { url } => Ok(RetryOutcome::Retry(Attempt {
+            url: url.to_string(),
+            authorization: None,
+        })),
+    }
+}
+
+/// The shared testable core (Task B3): every byte of the original
+/// `run_download`'s preflight / resume+stream+retry loop / streaming-sha256
+/// verify / atomic rename, now parameterized on [`DownloadSource`] instead
+/// of hard-coding the minted-auth story. [`run_download`] and
+/// [`run_public_download`] are both thin wrappers around this — neither
+/// duplicates so much as one line of the GET/resume/sha256/rename logic.
+fn run_download_core(
+    source: DownloadSource,
     final_path: &Path,
     expected_bytes: u64,
     expected_sha256: &str,
@@ -132,8 +294,9 @@ pub fn run_download(
     let existing_part_len = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
     check_disk_space(final_path, expected_bytes, existing_part_len)?;
 
-    // 2. Mint auth, cross-check the catalog against the server's idea of
-    // this file's size.
+    // 2. Resolve the starting URL/auth for this source (mint + cross-check
+    // for `Minted`; nothing to mint for `Public` — see
+    // `resolve_initial_attempt`).
     emit(DownloadProgress {
         model_id: String::new(),
         phase: "requesting".into(),
@@ -143,23 +306,7 @@ pub fn run_download(
         error: None,
     });
 
-    let mut auth = auth_provider().map_err(|e| e.user_message())?;
-    if auth.file_bytes != expected_bytes {
-        return Err("Catalog out of date — please update the app.".to_string());
-    }
-    // Real builds only: this module's own test suite below drives
-    // `run_download` against `test_support::start_ranged_server`, which
-    // speaks plain HTTP on 127.0.0.1 (no TLS) — the gate would reject every
-    // one of those mock URLs on scheme alone before a single byte streams.
-    // `download_host_allowed` is validated directly by its own unit tests
-    // instead (see the `download_host_allowed_*` tests below), so this
-    // cfg-gate costs no coverage of the validator itself, only of this one
-    // call site — the same "testability knob" pattern `streaming_agent`
-    // uses above for its read timeout.
-    #[cfg(not(test))]
-    if !download_host_allowed(&auth.url) {
-        return Err("Download source not recognized — please update the app.".to_string());
-    }
+    let mut attempt = resolve_initial_attempt(source, expected_bytes)?;
 
     let agent = streaming_agent();
     let mut consecutive_failures: u32 = 0;
@@ -185,7 +332,10 @@ pub fn run_download(
         let (mut file, mut hasher, resume_from) = prepare_part_file(&part_path, expected_bytes)?;
         bytes_counter.store(resume_from, Ordering::Relaxed);
 
-        let mut req = agent.get(&auth.url).set("Authorization", &auth.authorization);
+        let mut req = agent.get(&attempt.url);
+        if let Some(authorization) = &attempt.authorization {
+            req = req.set("Authorization", authorization);
+        }
         if resume_from > 0 {
             req = req.set("Range", &format!("bytes={resume_from}-"));
         }
@@ -197,44 +347,22 @@ pub fn run_download(
             // give-up message and fast-fail behavior below depend on which.
             Err(connect_err) => {
                 let kind = classify_connect_err(&connect_err);
-                match record_failure_and_backoff(
+                match handle_retryable_failure(
+                    source,
+                    kind,
                     &mut consecutive_failures,
                     &mut bytes_at_last_failure,
                     &mut last_failure_kind,
-                    kind,
                     bytes_counter,
                     cancel,
                 ) {
-                    Ok(true) => {
+                    Ok(RetryOutcome::Cancelled) => {
                         emit(cancelled_progress(bytes_counter, expected_bytes));
                         return Ok(());
                     }
-                    Ok(false) => {
-                        match remint_with_budget(
-                            auth_provider,
-                            &mut consecutive_failures,
-                            &mut bytes_at_last_failure,
-                            &mut last_failure_kind,
-                            bytes_counter,
-                            cancel,
-                        ) {
-                            Ok(Some(new_auth)) => {
-                                // Re-gate the freshly minted URL — a retry
-                                // must not attach the auth token to a host
-                                // the initial gate never vetted.
-                                #[cfg(not(test))]
-                                if !download_host_allowed(&new_auth.url) {
-                                    return Err("Download source not recognized — please update the app.".to_string());
-                                }
-                                auth = new_auth;
-                                continue 'attempt;
-                            }
-                            Ok(None) => {
-                                emit(cancelled_progress(bytes_counter, expected_bytes));
-                                return Ok(());
-                            }
-                            Err(msg) => return Err(msg),
-                        }
+                    Ok(RetryOutcome::Retry(new_attempt)) => {
+                        attempt = new_attempt;
+                        continue 'attempt;
                     }
                     Err(msg) => return Err(msg),
                 }
@@ -270,44 +398,22 @@ pub fn run_download(
                 // A mid-stream failure never carries an HTTP status — the
                 // connect already succeeded (200/206) before the body read
                 // failed — so it's always classified as Transport.
-                match record_failure_and_backoff(
+                match handle_retryable_failure(
+                    source,
+                    FailureKind::Transport,
                     &mut consecutive_failures,
                     &mut bytes_at_last_failure,
                     &mut last_failure_kind,
-                    FailureKind::Transport,
                     bytes_counter,
                     cancel,
                 ) {
-                    Ok(true) => {
+                    Ok(RetryOutcome::Cancelled) => {
                         emit(cancelled_progress(bytes_counter, expected_bytes));
                         return Ok(());
                     }
-                    Ok(false) => {
-                        match remint_with_budget(
-                            auth_provider,
-                            &mut consecutive_failures,
-                            &mut bytes_at_last_failure,
-                            &mut last_failure_kind,
-                            bytes_counter,
-                            cancel,
-                        ) {
-                            Ok(Some(new_auth)) => {
-                                // Re-gate the freshly minted URL — a retry
-                                // must not attach the auth token to a host
-                                // the initial gate never vetted.
-                                #[cfg(not(test))]
-                                if !download_host_allowed(&new_auth.url) {
-                                    return Err("Download source not recognized — please update the app.".to_string());
-                                }
-                                auth = new_auth;
-                                continue 'attempt;
-                            }
-                            Ok(None) => {
-                                emit(cancelled_progress(bytes_counter, expected_bytes));
-                                return Ok(());
-                            }
-                            Err(msg) => return Err(msg),
-                        }
+                    Ok(RetryOutcome::Retry(new_attempt)) => {
+                        attempt = new_attempt;
+                        continue 'attempt;
                     }
                     Err(msg) => return Err(msg),
                 }
@@ -350,6 +456,71 @@ pub fn run_download(
     Ok(())
 }
 
+/// The testable core of the existing hero-model money path — a thin
+/// `DownloadSource::Minted` wrapper around [`run_download_core`], with
+/// UNCHANGED behavior (same headers, same re-mint budget, same events).
+/// `auth_provider` is called once at start and again on every re-mint (a
+/// retryable failure, per worker step 5). Deliberately takes no `model_id`:
+/// it doesn't need one — the destination path, expected size, and expected
+/// hash fully describe the download, and `auth_provider` already has
+/// `model_id` baked in as a closure (the `download_model` command's
+/// `move || cloud.download_authorization(&model_id)`). Consequently the
+/// `DownloadProgress` values this function builds carry
+/// `model_id: String::new()` — the Tauri command wrapper's `emit` closure
+/// patches the real `model_id` in before forwarding to `app.emit`, since
+/// only it (not this model-agnostic core) knows it. Documented in the task
+/// report as a deliberate reading of the given signature, which has no
+/// `model_id` parameter.
+pub fn run_download(
+    auth_provider: &dyn Fn() -> Result<rest::DownloadAuth, CloudError>,
+    final_path: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    emit: &dyn Fn(DownloadProgress),
+    cancel: &AtomicBool,
+    bytes_counter: &AtomicU64,
+) -> Result<(), String> {
+    run_download_core(
+        DownloadSource::Minted(auth_provider),
+        final_path,
+        expected_bytes,
+        expected_sha256,
+        emit,
+        cancel,
+        bytes_counter,
+    )
+}
+
+/// The public-URL counterpart to `run_download` (Task B3): downloads a
+/// catalog artifact (base model or LoRA adapter) from a public, tokenless
+/// URL. Shares the ENTIRE GET/resume/streaming-sha256/atomic-rename core
+/// with `run_download` via [`run_download_core`] — the only difference is
+/// `DownloadSource`: no `Authorization` header is ever attached, and
+/// `mint_download_url`/re-mint is never called — a retryable failure just
+/// retries this SAME `url` after the existing backoff (requirement (b) from
+/// the task brief). `download_host_allowed` is still enforced (requirement
+/// (d)) via the same `resolve_initial_attempt`/`handle_retryable_failure`
+/// gates `run_download` uses.
+pub fn run_public_download(
+    url: &str,
+    final_path: &Path,
+    expected_bytes: u64,
+    expected_sha256: &str,
+    emit: &dyn Fn(DownloadProgress),
+    cancel: &AtomicBool,
+    bytes_counter: &AtomicU64,
+) -> Result<(), String> {
+    run_download_core(
+        DownloadSource::Public { url },
+        final_path,
+        expected_bytes,
+        expected_sha256,
+        emit,
+        cancel,
+        bytes_counter,
+    )
+}
+
 fn cancelled_progress(bytes_counter: &AtomicU64, expected_bytes: u64) -> DownloadProgress {
     DownloadProgress {
         model_id: String::new(),
@@ -368,6 +539,26 @@ fn part_path_for(final_path: &Path) -> PathBuf {
     let mut os = final_path.as_os_str().to_os_string();
     os.push(".part");
     PathBuf::from(os)
+}
+
+/// Extracts the final `/`-separated component of a signed catalog
+/// `Artifact::path` (Task B3) and validates it's safe to use, bare, as an
+/// on-disk file name — `download_artifact`'s destination is always
+/// `<app_data>/models/<this>`, so ONLY this final component (never the rest
+/// of `artifact_path`) ever reaches the filesystem, and a value this
+/// function accepts can never escape that directory. The catalog itself is
+/// ed25519-signed (Task B1) so this isn't the primary defense — it's the
+/// same cheap defense-in-depth the task brief calls for: reject an empty
+/// final component, or one containing a path separator (`/` — redundant
+/// with the split below, kept for clarity — or a stray `\`, which a
+/// `/`-only split would otherwise let through unnoticed on a Windows
+/// destination) or a literal/embedded `..`.
+fn artifact_dest_filename(artifact_path: &str) -> Result<String, String> {
+    let last = artifact_path.rsplit('/').next().unwrap_or("");
+    if last.is_empty() || last.contains('/') || last.contains('\\') || last.contains("..") {
+        return Err(format!("catalog artifact path is not a safe file name: {artifact_path:?}"));
+    }
+    Ok(last.to_string())
 }
 
 /// Preflight disk-space check: the longest mount-point-prefix match against
@@ -891,6 +1082,135 @@ pub async fn download_model(
     Ok(())
 }
 
+/// Task B3: downloads ONE signed-catalog artifact (base model or LoRA
+/// adapter) from the public, tokenless `catalog_dist::ARTIFACT_BASE_URL` —
+/// via `run_public_download`, so it shares the identical GET/resume/
+/// streaming-sha256/atomic-rename core `download_model` uses, just with no
+/// `Authorization` header and no `mint_download_url`/re-mint. Integrity
+/// comes from `artifact.sha256`/`artifact.size`, themselves already
+/// authenticated by the catalog's ed25519 signature (Task B1) — this
+/// command trusts the `Artifact` record it's handed exactly as
+/// `download_model` trusts the bundled `catalog.json`'s hero entry.
+///
+/// Destination is `<app_data>/models/<final component of artifact.path>`
+/// (`artifact_dest_filename` validates that component defense-in-depth) —
+/// the same `models/` subdirectory the bundled catalog's `modelFile` values
+/// already use (e.g. `models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`), so a
+/// future catalog entry can point straight at a downloaded artifact's
+/// basename (Task B4).
+///
+/// Reuses the single-slot `Downloads` registry `download_model` uses, so
+/// `cancel_download` cancels whichever of the two is active and
+/// `download-progress` events flow through the exact same front-end
+/// listener; base and adapter are downloaded ONE AT A TIME by the caller,
+/// so single-slot is sufficient (per the task brief). Unlike
+/// `download_model`, this command never calls `start_if_no_model` —
+/// wiring a freshly downloaded base/adapter pair into the engine is Task
+/// B4's job, not this one's.
+#[tauri::command]
+pub async fn download_artifact(
+    app: AppHandle,
+    downloads: State<'_, Arc<Downloads>>,
+    artifact: crate::catalog_dist::Artifact,
+) -> Result<(), String> {
+    let downloads = downloads.inner().clone();
+
+    let dest_name = artifact_dest_filename(&artifact.path)?;
+    let url = format!("{}/{}", crate::catalog_dist::ARTIFACT_BASE_URL, artifact.path);
+    let expected_bytes = artifact.size;
+    let sha256 = artifact.sha256.clone();
+
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let final_path = app_data.join("models").join(&dest_name);
+
+    if final_path.exists() {
+        return Err("Already installed.".to_string());
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let bytes = Arc::new(AtomicU64::new(0));
+
+    {
+        let mut guard = downloads.active.lock().unwrap();
+        if guard.is_some() {
+            return Err("A download is already in progress.".to_string());
+        }
+        *guard = Some(Active {
+            model_id: artifact.path.clone(),
+            cancel: cancel.clone(),
+            bytes: bytes.clone(),
+            total: expected_bytes,
+        });
+    }
+
+    let downloads_for_thread = downloads.clone();
+    let app_for_thread = app.clone();
+    let model_id_for_thread = artifact.path.clone();
+    let final_path_for_thread = final_path.clone();
+
+    std::thread::spawn(move || {
+        // Same panic-safety Drop guard as `download_model`'s worker thread —
+        // see its comment.
+        struct ClearActiveOnDrop {
+            downloads: Arc<Downloads>,
+        }
+        impl Drop for ClearActiveOnDrop {
+            fn drop(&mut self) {
+                *self.downloads.active.lock().unwrap() = None;
+            }
+        }
+        let _clear_guard = ClearActiveOnDrop {
+            downloads: downloads_for_thread,
+        };
+
+        let emit = {
+            let app = app_for_thread.clone();
+            let model_id = model_id_for_thread.clone();
+            move |mut p: DownloadProgress| {
+                p.model_id = model_id.clone();
+                let _ = app.emit("download-progress", &p);
+            }
+        };
+
+        let result = run_public_download(
+            &url,
+            &final_path_for_thread,
+            expected_bytes,
+            &sha256,
+            &emit,
+            &cancel,
+            &bytes,
+        );
+
+        match result {
+            Ok(()) => {
+                if final_path_for_thread.exists() {
+                    emit(DownloadProgress {
+                        model_id: model_id_for_thread,
+                        phase: "done".into(),
+                        bytes_downloaded: expected_bytes,
+                        total_bytes: expected_bytes,
+                        bytes_per_sec: 0,
+                        error: None,
+                    });
+                }
+            }
+            Err(msg) => {
+                emit(DownloadProgress {
+                    model_id: model_id_for_thread,
+                    phase: "failed".into(),
+                    bytes_downloaded: bytes.load(Ordering::Relaxed),
+                    total_bytes: expected_bytes,
+                    bytes_per_sec: 0,
+                    error: Some(msg),
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cancel_download(downloads: State<'_, Arc<Downloads>>) -> Result<(), String> {
     downloads.request_cancel();
@@ -916,7 +1236,17 @@ pub async fn download_status(
     let final_path = app_data.join(&model_file);
     let part_path = part_path_for(&final_path);
 
-    let installed = final_path.exists();
+    // B4: when the hero declares an always-on adapter, "installed" requires
+    // BOTH the base and the adapter on disk — a base-only state must never
+    // read as installed (the drawer would otherwise offer "Open chat" for a
+    // hero the engine will refuse to launch base-only). Mirrors
+    // `inference::resolve_launch`'s fail-closed contract.
+    let base_installed = final_path.exists();
+    let adapter_installed = match hero.adapter_file.as_deref() {
+        Some(adapter_file) => app_data.join(adapter_file).exists(),
+        None => true,
+    };
+    let installed = base_installed && adapter_installed;
     let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
 
     let guard = downloads.active.lock().unwrap();
@@ -1600,5 +1930,205 @@ mod tests {
     #[test]
     fn download_host_allowed_accepts_mixed_case_host() {
         assert!(download_host_allowed("https://DL.Cleophis.com/file/abc"));
+    }
+
+    // ---------------------------------------------------------------
+    // Task B3: `run_public_download` — the public-URL catalog-artifact
+    // core, sharing `run_download_core` with `run_download` above via
+    // `DownloadSource`. Each test below deliberately mirrors an existing
+    // `run_download` test by name/shape (see the comment on each) so the
+    // shared core's regression coverage is symmetric across both sources.
+    // ---------------------------------------------------------------
+
+    // 20. Public happy path — mirrors `fresh_happy_path_completes_and_renames`
+    // (test 1 above), but with NO `auth_provider` at all, and additionally
+    // confirms the request the mock server observed carried NO
+    // `Authorization` header: a public catalog artifact must never receive
+    // the B2 bearer-token treatment.
+    #[test]
+    fn public_happy_path_completes_with_no_authorization_header() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let sha = sha256_hex(&content);
+        let (base_url, _handle, rx) = start_ranged_server(content.clone(), vec![RangedBehavior::Serve206]);
+
+        let dir = unique_dir("public-happy");
+        let final_path = dir.join("adapter.gguf");
+        let url = format!("{base_url}/file");
+
+        let (emit, events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_public_download(&url, &final_path, SIZE as u64, &sha, &emit, &cancel, &bytes_counter);
+
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        assert!(final_path.exists(), "expected the final file to exist");
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, content);
+
+        let phases: Vec<String> = events.lock().unwrap().iter().map(|p| p.phase.clone()).collect();
+        assert!(phases.contains(&"requesting".to_string()), "phases: {phases:?}");
+        assert!(phases.contains(&"downloading".to_string()), "phases: {phases:?}");
+        assert_eq!(phases.last(), Some(&"verifying".to_string()), "phases: {phases:?}");
+
+        let requests = drain_all(&rx);
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].authorization.is_none(),
+            "a public artifact download must never send an Authorization header, got {:?}",
+            requests[0].authorization
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 21. Public sha mismatch — mirrors `sha_mismatch_reports_corrupted_and_cleans_up`
+    // (test 6 above): Err containing "corrupted", no final file, `.part`
+    // cleaned up.
+    #[test]
+    fn public_sha_mismatch_reports_corrupted_and_cleans_up() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let wrong_content: Vec<u8> = content.iter().map(|b| b.wrapping_add(1)).collect();
+        let expected_sha = sha256_hex(&content); // the hash of the RIGHT content
+        let (base_url, _handle, _rx) = start_ranged_server(wrong_content, vec![RangedBehavior::Serve206]);
+
+        let dir = unique_dir("public-sha-mismatch");
+        let final_path = dir.join("adapter.gguf");
+        let url = format!("{base_url}/file");
+
+        let (emit, events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_public_download(
+            &url,
+            &final_path,
+            SIZE as u64,
+            &expected_sha,
+            &emit,
+            &cancel,
+            &bytes_counter,
+        );
+
+        let err = result.expect_err("expected an Err for a sha mismatch");
+        assert!(err.contains("corrupted"), "error was: {err}");
+        assert!(!final_path.exists());
+        assert!(!part_path_for(&final_path).exists());
+
+        let phases: Vec<String> = events.lock().unwrap().iter().map(|p| p.phase.clone()).collect();
+        assert!(phases.contains(&"verifying".to_string()), "phases: {phases:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 22. Public resume — mirrors `resume_sends_range_header_and_completes`
+    // (test 2 above): a pre-seeded `.part` produces a `Range: bytes=307200-`
+    // request, still with no `Authorization` header.
+    #[test]
+    fn public_resume_sends_range_header_and_completes() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let sha = sha256_hex(&content);
+        let (base_url, _handle, rx) = start_ranged_server(content.clone(), vec![RangedBehavior::Serve206]);
+
+        let dir = unique_dir("public-resume");
+        let final_path = dir.join("adapter.gguf");
+        let part_path = part_path_for(&final_path);
+        let seed_len = 300 * 1024;
+        std::fs::write(&part_path, &content[..seed_len]).unwrap();
+        let url = format!("{base_url}/file");
+
+        let (emit, _events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_public_download(&url, &final_path, SIZE as u64, &sha, &emit, &cancel, &bytes_counter);
+
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, content);
+
+        let requests = drain_all(&rx);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].range.as_deref(), Some("bytes=307200-"));
+        assert!(requests[0].authorization.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 23. Public retry-without-remint — mirrors
+    // `disconnect_mid_body_retries_and_completes` (test 4 above), but for
+    // the public source: a mid-body disconnect must still retry (the SAME
+    // url, after the existing backoff) and complete, with every observed
+    // request still carrying no `Authorization` header — proving the retry
+    // path never reaches for anything resembling a re-mint.
+    #[test]
+    fn public_disconnect_mid_body_retries_same_url_and_completes() {
+        let _g = env_lock();
+        let content = deterministic_content();
+        let sha = sha256_hex(&content);
+        let (base_url, _handle, rx) = start_ranged_server(
+            content.clone(),
+            vec![RangedBehavior::DisconnectAfter(100_000), RangedBehavior::Serve206],
+        );
+
+        let dir = unique_dir("public-disconnect");
+        let final_path = dir.join("adapter.gguf");
+        let url = format!("{base_url}/file");
+
+        let (emit, _events) = collecting_emit();
+        let cancel = AtomicBool::new(false);
+        let bytes_counter = AtomicU64::new(0);
+
+        let result = run_public_download(&url, &final_path, SIZE as u64, &sha, &emit, &cancel, &bytes_counter);
+
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, content);
+
+        let requests = drain_all(&rx);
+        assert!(requests.len() >= 2, "expected >=2 requests, got {}", requests.len());
+        assert!(requests[1].range.is_some(), "expected the retry to send a Range header");
+        assert!(
+            requests.iter().all(|r| r.authorization.is_none()),
+            "no request in a public download may ever carry an Authorization header"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------------
+    // `artifact_dest_filename` (Task B3)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn artifact_dest_filename_extracts_final_component() {
+        assert_eq!(
+            artifact_dest_filename("base/qwen3-4b-q4.gguf").unwrap(),
+            "qwen3-4b-q4.gguf"
+        );
+        assert_eq!(
+            artifact_dest_filename("adapter.safetensors").unwrap(),
+            "adapter.safetensors"
+        );
+    }
+
+    #[test]
+    fn artifact_dest_filename_rejects_empty_final_component() {
+        assert!(artifact_dest_filename("base/").is_err());
+        assert!(artifact_dest_filename("").is_err());
+    }
+
+    #[test]
+    fn artifact_dest_filename_rejects_dot_dot_final_component() {
+        assert!(artifact_dest_filename("base/..").is_err());
+        assert!(artifact_dest_filename("..").is_err());
+    }
+
+    #[test]
+    fn artifact_dest_filename_rejects_embedded_backslash() {
+        assert!(artifact_dest_filename("base/evil\\thing").is_err());
     }
 }

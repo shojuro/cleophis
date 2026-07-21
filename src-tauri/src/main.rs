@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalog;
+mod catalog_dist;
 mod cloud;
 mod convstore;
 mod hardware;
@@ -43,10 +44,20 @@ fn engine_info(engine: tauri::State<'_, Arc<Engine>>) -> EngineInfo {
 #[tauri::command]
 async fn load_model(
     _model_id: String,
+    app: tauri::AppHandle,
     engine: tauri::State<'_, Arc<Engine>>,
 ) -> Result<EngineInfo, String> {
     if *engine.status.lock().unwrap() == EngineStatus::NoModel {
-        return Err("Model not downloaded yet.".to_string());
+        // The dist-catalog download path (download_artifact) lands the base +
+        // adapter but — unlike download_model — never starts the engine
+        // itself (that wiring is this command's job, B4). If the hero is now
+        // fully on disk (base AND, when declared, adapter — resolve_launch
+        // enforces both), start it; otherwise it is genuinely not downloaded.
+        if inference::model_path(&app).is_some() {
+            inference::start_if_no_model(app.clone(), engine.inner().clone());
+        } else {
+            return Err("Model not downloaded yet.".to_string());
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {
@@ -123,6 +134,7 @@ fn main() {
             detect_hardware,
             engine_info,
             load_model,
+            catalog_dist::fetch_dist_catalog,
             kpack::mount_pack,
             kpack::build_personal_pack,
             kpack::cancel_build,
@@ -141,6 +153,7 @@ fn main() {
             cloud::commands::start_checkout,
             cloud::commands::open_billing_portal,
             cloud::download::download_model,
+            cloud::download::download_artifact,
             cloud::download::cancel_download,
             cloud::download::download_status,
             convstore::create_folder,

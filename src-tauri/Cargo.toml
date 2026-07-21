@@ -35,6 +35,15 @@ kpack-embed = { path = "../crates/kpack-embed", features = ["real"] }
 # feature/toolchain needed to compile; it binds pdfium.dll at runtime (see
 # `kpack-pdf`'s module doc comment) rather than linking it in.
 kpack-pdf = { path = "../crates/kpack-pdf" }
+# B1 (adapter-distribution milestone): the signed distribution catalog
+# (`catalog_dist.rs`) verifies `catalog.json` against a compiled-in curator
+# `VerifyingKey` by reusing `kpack_core::sign::verify_detached`. That
+# function's signature is expressed in terms of `ed25519_dalek::VerifyingKey`
+# (kpack-core's own EXACT `=2.2.0` pin — see that crate's Cargo.toml), so this
+# crate needs the identical exact pin to name the same type; Cargo's
+# workspace resolver already unifies both to one entry in the lock file, so
+# this adds zero new versions to the dependency graph.
+ed25519-dalek = "=2.2.0"
 # §7 S7-1: the local conversation store (folders/chats/messages + fts5
 # search) in convstore.rs. Same exact version pin as kpack-core's rusqlite
 # dep (`bundled` compiles SQLite from source and ships FTS5) — already a

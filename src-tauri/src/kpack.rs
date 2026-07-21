@@ -361,9 +361,9 @@ fn mount_pack_at(path: &Path) -> Result<PackManifestInfo, String> {
     let available = vec![EMBEDDER_SHA256.to_string()];
     let ctx = LoadContext {
         available_embedder_sha256: &available,
-        // Sourced from the pinned curator key, not hardcoded None — returns
-        // None today (no key pinned yet), but when §2.6 pins CURATOR_PUBLIC_KEY
-        // this app picks up curated-pack verification automatically, with no
+        // Sourced from the pinned curator key, not hardcoded None — Task B5
+        // pinned CURATOR_PUBLIC_KEY, so this now resolves to Some in every
+        // production build, and curated-pack verification is live with no
         // forgotten swap here.
         curator_key: kpack_core::sign::curator_verifying_key(),
     };
