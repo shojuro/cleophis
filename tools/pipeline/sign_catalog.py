@@ -343,14 +343,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {args.catalog} not found", file=sys.stderr)
         return 1
 
-    catalog_bytes = args.catalog.read_bytes()
-    if len(catalog_bytes) > MAX_CATALOG_BYTES:
+    # Check the size via stat() BEFORE reading — an oversized file must
+    # never be read into memory just to be rejected; that would defeat the
+    # whole point of the cap (bounding how much this script ever buffers).
+    catalog_size = args.catalog.stat().st_size
+    if catalog_size > MAX_CATALOG_BYTES:
         print(
-            f"error: {args.catalog} is {len(catalog_bytes)} bytes, exceeding the {MAX_CATALOG_BYTES}-byte "
+            f"error: {args.catalog} is {catalog_size} bytes, exceeding the {MAX_CATALOG_BYTES}-byte "
             "sanity cap (matches the app's own fetch cap) — refusing to sign",
             file=sys.stderr,
         )
         return 1
+
+    catalog_bytes = args.catalog.read_bytes()
 
     try:
         seed_hex = load_curator_seed_hex(ENV_FILE)

@@ -160,6 +160,12 @@ REQUIRED_MANIFEST_FIELDS = ("kind", "base_model", "sha256", "size", "name")
 # misbehaving/compromised endpoint.
 MAX_FETCH_BYTES = 1024 * 1024  # 1 MiB
 
+# Exclusive sane ceiling on a `catalog_version` this script will ever trust,
+# whether read directly off a fetched (UNAUTHENTICATED, attacker-reachable)
+# `--base-url` response or computed as that value + 1 — see
+# `check_version_in_bounds`'s docstring for why this exists.
+MAX_SANE_CATALOG_VERSION = 1_000_000
+
 
 class CatalogAssemblyError(RuntimeError):
     """Any refusal while assembling the catalog — missing/malformed
@@ -184,12 +190,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--manifests",
         nargs="+",
-        required=True,
+        default=None,
         type=Path,
         metavar="MANIFEST_JSON",
-        help="explicit list of manifest.json paths to include (required; refuses if any is missing)",
+        help="explicit list of manifest.json paths to include (required unless --self-test; refuses if any is missing)",
     )
-    version_group = parser.add_mutually_exclusive_group(required=True)
+    # required=False here — "at least one of these two" is enforced by hand
+    # in main(), ONLY when --self-test isn't given (mirrors sign_catalog.py's
+    # --catalog: not argparse-required, checked explicitly so --self-test can
+    # run standalone with no other flags). Mutual EXCLUSIVITY (refuse if
+    # BOTH are given) is still enforced by argparse itself either way.
+    version_group = parser.add_mutually_exclusive_group(required=False)
     version_group.add_argument(
         "--catalog-version",
         type=int,
@@ -209,6 +220,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='fallback license for manifests of the given kind ("base" or "adapter") that carry none; repeatable',
     )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output path (default: {DEFAULT_OUT})")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run the hostile-catalog_version bound-check self-test and exit (no --manifests/--catalog-version/--base-url needed)",
+    )
     return parser.parse_args(argv)
 
 
@@ -332,12 +348,43 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
     }
 
 
+def check_version_in_bounds(version: int, ceiling: int = MAX_SANE_CATALOG_VERSION) -> None:
+    """Refuses (raises CatalogAssemblyError) any `version` outside
+    `[0, ceiling)`. A pure function of one value — no network, no argparse
+    — specifically so the hostile-input cases can be unit-tested directly
+    on a value, not just through a live/mocked HTTP fetch.
+
+    Why this exists: `--base-url` reads `catalog_version` off a public,
+    UNAUTHENTICATED HTTP response — the one place in this whole pipeline
+    an attacker-influenceable value flows in without ever touching the
+    curator signing key. Before this check existed, a poisoned published
+    catalog claiming e.g. `catalog_version: 18446744073709551615` (2**64-1)
+    would make `fetch_published_version` return it verbatim; the operator
+    would then sign `published + 1` as a perfectly normal-looking catalog;
+    every client that verified it would persist that value as its
+    highest-ever-verified version (`catalog_dist.rs::check_not_downgrade`'s
+    persisted state) — a PERMANENT downgrade-guard lockout (no legitimate
+    future catalog_version could ever be "newer"), achieved without the
+    attacker ever forging a signature or touching the private key. Called
+    both on the raw fetched value AND on `fetched + 1` (see `main()`) —
+    checking only the raw value would still let a value one below the
+    ceiling silently overflow into an out-of-bounds "next" version.
+    """
+    if not (0 <= version < ceiling):
+        raise CatalogAssemblyError(
+            f"fetched catalog_version={version} is outside the sane bound [0, {ceiling}) — refusing to trust it. "
+            "This could mean the published catalog is corrupted or poisoned. Investigate it, and/or pass "
+            "--catalog-version explicitly instead of --base-url."
+        )
+
+
 def fetch_published_version(base_url: str, timeout: float = 15.0) -> int:
     """GET `<base_url>/catalog.json` (public, unauthenticated) and return
     its `catalog_version` field. Any failure — network error, non-2xx,
-    oversized response, malformed JSON, missing/non-integer field — raises
-    CatalogAssemblyError; there is deliberately no fallback to 0/1 (see the
-    module docstring's "catalog_version precedence" section for why)."""
+    oversized response, malformed JSON, missing/non-integer field, or a
+    value `check_version_in_bounds` rejects — raises CatalogAssemblyError;
+    there is deliberately no fallback to 0/1 (see the module docstring's
+    "catalog_version precedence" section for why)."""
     url = base_url.rstrip("/") + "/catalog.json"
     req = urllib.request.Request(url, headers={"User-Agent": "cleophis-build_catalog/1.0"})
     try:
@@ -357,6 +404,7 @@ def fetch_published_version(base_url: str, timeout: float = 15.0) -> int:
     version = data.get("catalog_version") if isinstance(data, dict) else None
     if not isinstance(version, int) or isinstance(version, bool):
         raise CatalogAssemblyError(f"{url} response has no integer catalog_version field (got {version!r})")
+    check_version_in_bounds(version)
     return version
 
 
@@ -376,8 +424,54 @@ def write_catalog_atomic(path: Path, catalog: dict) -> None:
     tmp.replace(path)  # atomic rename on POSIX, same filesystem
 
 
+def self_test() -> bool:
+    """Local, network-free checks for `check_version_in_bounds` — the
+    hostile-`catalog_version` guard (see its own docstring for the attack
+    it closes). Exercises the reviewed hostile-input cases directly on
+    values, with no HTTP fetch/mock server needed. Returns True iff every
+    check passes."""
+    ok = True
+
+    def check(name: str, cond: bool) -> None:
+        nonlocal ok
+        print(f"[self-test] {'PASS' if cond else 'FAIL'}: {name}", flush=True)
+        if not cond:
+            ok = False
+
+    def refuses(version: int) -> bool:
+        try:
+            check_version_in_bounds(version)
+            return False
+        except CatalogAssemblyError:
+            return True
+
+    check("a poisoned huge version (2**64 - 1) is refused", refuses(2**64 - 1))
+    check("a negative version (-1) is refused", refuses(-1))
+    check("999_999 (one below the ceiling) is in-bounds on its own", not refuses(999_999))
+    check(
+        "999_999 + 1 (== the 1_000_000 ceiling) is refused — the +1-overflow case",
+        refuses(999_999 + 1),
+    )
+    check("a normal small version (5) is in-bounds", not refuses(5))
+    check("that normal version + 1 (6) is still in-bounds", not refuses(6))
+    check("0 (the very first catalog_version) is in-bounds", not refuses(0))
+
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.self_test:
+        return 0 if self_test() else 1
+
+    if not args.manifests:
+        print("error: --manifests is required (unless --self-test)", file=sys.stderr)
+        return 1
+
+    if args.catalog_version is None and args.base_url is None:
+        print("error: one of --catalog-version or --base-url is required (unless --self-test)", file=sys.stderr)
+        return 1
 
     try:
         overrides = parse_license_overrides(args.license_override)
@@ -397,6 +491,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         catalog_version = published + 1
+        try:
+            # fetch_published_version already bound-checked `published`
+            # itself; this second check catches the value ONE BELOW the
+            # ceiling (in-bounds on its own) overflowing into an
+            # out-of-bounds "next" version once +1 is applied.
+            check_version_in_bounds(catalog_version)
+        except CatalogAssemblyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(
             f"[version] currently published catalog_version={published} at {args.base_url} -> using {catalog_version}",
             flush=True,
