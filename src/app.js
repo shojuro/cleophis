@@ -27,6 +27,9 @@ const state = {
   // dropdowns (a chat's "Move to…" list, a chat's export-format menu
   // [§7 S7-6], a folder's Rename/Delete menu).
   sidebar: { chats: [], folders: [], showArchived: false, query: '', searchResults: null, moveMenuFor: null, folderMenuFor: null, exportMenuFor: null, expandedFolders: new Set() },
+  // Wrapper tier-selection state from get_tier_selection: { mode, activeTier,
+  // effectiveTier, committed, switchAvailable, nextChangeAt }.
+  tierSel: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -59,10 +62,33 @@ function stripLeadingThink(text) {
   return String(text).replace(/^\s*<think>\s*<\/think>\s*/, '');
 }
 
-// B4: the signed dist catalog labels the hero's base + adapter artifacts with
-// this `base_model`; heroDownload selects the kind:'base'/'adapter' records
-// carrying it. Kept as a single constant so the FE selection can't drift.
-const HERO_BASE_MODEL = 'Qwen3-4B';
+// Wrapper tier-selection: the hero installs/runs the base+adapter for the
+// EFFECTIVE device tier (override, else detected). The bundled catalog entry
+// carries a per-tier `tiers` block; `get_tier_selection` (Rust) resolves the
+// effective tier + the switch-limit state, cached in `state.tierSel`. These
+// helpers keep the download picker, the selector UI, and the provenance stamp
+// all reading the same source, so the FE selection can't drift.
+function heroEntry() { return state.catalog.find((m) => m.real); }
+function effectiveTier() { return (state.tierSel && state.tierSel.effectiveTier) || 'mid'; }
+function tierVariant(tier) {
+  const h = heroEntry();
+  return h && h.tiers && h.tiers[tier] ? h.tiers[tier] : null;
+}
+// The dist-catalog `base_model` for a tier (the kind:'base'/'adapter' records
+// carry it). Falls back to the 4B hero if the catalog predates `tiers`.
+function heroBaseModel(tier) {
+  const v = tierVariant(tier || effectiveTier());
+  return v && v.baseModel ? v.baseModel : 'Qwen3-4B';
+}
+// The always-on adapter id stamped as per-chat provenance — the ACTIVE tier's,
+// not always the 4B one.
+function heroAdapterId(m) {
+  if (m && m.real) {
+    const v = tierVariant(effectiveTier());
+    if (v && v.adapterId) return v.adapterId;
+  }
+  return m && m.adapterId ? m.adapterId : null;
+}
 
 /* ---------------- boot ---------------- */
 async function boot() {
@@ -73,10 +99,13 @@ async function boot() {
   await listen('build-progress', onBuildProgress);
   state.catalog = await invoke('get_catalog');
   for (const m of state.catalog) m.coverUrl = convertFileSrc(m.coverAbs);
-  const heroEntry = state.catalog.find((m) => m.real);
-  if (heroEntry) {
+  // Tier-selection state first — download_status is now tier-aware, so the
+  // effective tier must be known before we ask whether the hero is installed.
+  try { state.tierSel = await invoke('get_tier_selection'); } catch (_) {}
+  const hero = state.catalog.find((m) => m.real);
+  if (hero) {
     try {
-      const ds = await invoke('download_status', { modelId: heroEntry.id });
+      const ds = await invoke('download_status', { modelId: hero.id });
       state.dl = { installed: ds.installed, partBytes: ds.partBytes, active: ds.active };
     } catch (_) {}
   }
@@ -153,6 +182,40 @@ function renderGrid() {
   }).join('');
 }
 
+/* ---------------- tier selector ---------------- */
+// "Pick your engine size" — only shown for the hero, once owned/installed.
+// Reads state.tierSel (from get_tier_selection). The active mode is
+// highlighted; when a change isn't available this period, the other options
+// are disabled with a hint.
+const TIER_OPTS = [
+  { mode: 'auto', label: 'Auto', sub: 'match my device' },
+  { mode: 'low', label: 'Small · 1B', sub: '≈0.8 GB · fastest' },
+  { mode: 'mid', label: 'Balanced · 4B', sub: '≈2.4 GB' },
+  { mode: 'high', label: 'Large · 8B', sub: '≈4.8 GB · most capable' },
+];
+function tierSelectorHtml(m) {
+  if (!m.real || !(state.mine.has(m.id) || state.dl.installed)) return '';
+  const ts = state.tierSel || { mode: 'auto', effectiveTier: 'mid', switchAvailable: true, nextChangeAt: null };
+  const opts = TIER_OPTS.map((o) => {
+    const active = ts.mode === o.mode;
+    const sub = o.mode === 'auto' ? `detected: ${escapeHtml(ts.effectiveTier)}` : o.sub;
+    const disabled = !ts.switchAvailable && !active;
+    return `<button class="tieropt${active ? ' active' : ''}" data-tier="${o.mode}"${disabled ? ' disabled' : ''}>
+      <span class="tieropt-l">${o.label}</span><span class="tieropt-s mono">${sub}</span></button>`;
+  }).join('');
+  let note = '';
+  if (!ts.switchAvailable) {
+    note = ts.nextChangeAt
+      ? `One change per billing period — next change after ${escapeHtml(new Date(ts.nextChangeAt).toLocaleDateString())}.`
+      : 'Renew your subscription to change your model.';
+  }
+  return `<div class="tiersel">
+    <div class="tiersel-h">Pick your engine size</div>
+    <div class="tiersel-opts">${opts}</div>
+    ${note ? `<div class="tiersel-note mono">${note}</div>` : ''}
+  </div>`;
+}
+
 /* ---------------- drawer ---------------- */
 function openDrawer(id) {
   const m = state.catalog.find((x) => x.id === id); if (!m) return;
@@ -206,6 +269,7 @@ function openDrawer(id) {
       <div class="errmsg" id="errMsg"></div>
       ${renewLineHtml}
     </div>
+    ${tierSelectorHtml(m)}
     <div class="body">
       <h4>About</h4><p>${escapeHtml(m.long || m.blurb)}</p>
       <h4>What's inside</h4>
@@ -219,6 +283,12 @@ function openDrawer(id) {
     const renewEl = $('renewLine');
     renewEl.onclick = () => startCheckoutFlow(m, renewEl);
   }
+  $('drawer').querySelectorAll('.tieropt[data-tier]').forEach((b) => {
+    b.onclick = () => {
+      if (b.disabled || b.classList.contains('active')) return;
+      selectTier(m, b.dataset.tier);
+    };
+  });
 }
 
 function closeDrawer() {
@@ -316,43 +386,89 @@ function startCheckoutFlow(m, btn) {
 // mirroring inference::resolve_launch + download_status). The
 // entitlement/purchase gating that led here (runGetFlow / beginPaymentPoll /
 // alreadyOwned) is unchanged — only the transport is new.
-async function heroDownload(m, btn) {
+// Download the base+adapter pair for a given dist-catalog `baseModel`, ONE AT
+// A TIME (single-slot Downloads registry). Resolves only when BOTH files have
+// landed on disk; throws on a missing artifact or a download failure. Shared
+// by the initial hero install and a tier switch (which pass different
+// baseModels). The bar/line UI in onDownloadProgress is driven by the
+// download-progress events download_artifact emits.
+async function downloadHeroPair(baseModel, btn) {
   const prog = $('prog');
-  prog.style.display = 'block';
-  btn.disabled = true;
-  btn.textContent = 'Downloading…';
+  if (prog) prog.style.display = 'block';
+  if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
   state.dl.active = true;
+  const cat = await invoke('fetch_dist_catalog');
+  const arts = (cat && cat.artifacts) || [];
+  const base = arts.find((a) => a.kind === 'base' && a.base_model === baseModel);
+  const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === baseModel);
+  if (!base || !adapter) {
+    throw new Error("This model isn't available to download yet — please update the app or try again later.");
+  }
+  await downloadArtifact(base);
+  await downloadArtifact(adapter);
+  state.dl.active = false;
+  if (prog) prog.style.display = 'none';
+}
+
+// B4: the hero installs through the SIGNED DISTRIBUTION CATALOG. Only when
+// BOTH files have landed is the hero considered installed and the engine
+// loaded — a base-only state is never treated as installed (fail-closed,
+// mirroring inference::resolve_launch + download_status). The tier is whatever
+// is effective now (auto/detected, or a pre-install override).
+async function heroDownload(m, btn) {
   const el = $('errMsg');
   const fail = (msg) => {
     state.dl.active = false;
     state.artDl = null;
-    prog.style.display = 'none';
-    btn.disabled = false;
-    btn.textContent = 'Retry download';
+    const prog = $('prog'); if (prog) prog.style.display = 'none';
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry download'; }
     if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = msg; }
   };
   try {
-    const cat = await invoke('fetch_dist_catalog');
-    const arts = (cat && cat.artifacts) || [];
-    const base = arts.find((a) => a.kind === 'base' && a.base_model === HERO_BASE_MODEL);
-    const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === HERO_BASE_MODEL);
-    if (!base || !adapter) {
-      fail("This model isn't available to download yet — please update the app or try again later.");
-      return;
-    }
-    // Sequential: base first, then adapter. download_artifact emits the SAME
-    // download-progress events download_model did, so the bar/line UI in
-    // onDownloadProgress keeps working; each artifact's terminal event is
-    // consumed by downloadArtifact via the state.artDl coordinator.
-    await downloadArtifact(base);
-    await downloadArtifact(adapter);
-    // Both files present → installed. finishInstalled loads the engine
-    // (which now launches base + adapter via --lora) and enters the chat.
+    await downloadHeroPair(heroBaseModel(), btn);
+    // Both files present → installed. finishInstalled loads the engine (which
+    // launches base + adapter via --lora) and enters the chat.
     state.dl = { installed: true, partBytes: 0, active: false };
-    prog.style.display = 'none';
     await finishInstalled(m, btn);
   } catch (err) {
     fail(String(err && err.message ? err.message : err));
+  }
+}
+
+// Wrapper tier-selection: change the hero's engine size. begin_tier_switch
+// enforces the switch limit (offline); on approval we download the target
+// pair if needed, then complete_tier_switch persists + relaunches the engine
+// on it and sweeps the old pair off disk. A `noOp` (mode relabel, same model)
+// just persists. Denials + errors surface on the drawer's errMsg line.
+async function selectTier(m, mode) {
+  const el = $('errMsg');
+  const btn = $('dlBtn');
+  const showErr = (msg, muted) => {
+    if (el) { el.style.display = 'block'; el.style.color = muted ? 'var(--muted)' : ''; el.textContent = msg; }
+  };
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
+  let plan;
+  try {
+    plan = await invoke('begin_tier_switch', { mode });
+  } catch (err) {
+    // A denial (limit / no entitlement) — informational, not a hard error.
+    showErr(String(err && err.message ? err.message : err), true);
+    return;
+  }
+  try {
+    if (plan.needsDownload) {
+      await downloadHeroPair(plan.baseModel, btn);
+    }
+    await invoke('complete_tier_switch', { mode });
+    state.dl = { installed: true, partBytes: 0, active: false };
+    state.tierSel = await invoke('get_tier_selection');
+    // Re-render the drawer to reflect the new active tier + engine state.
+    if (state.drawerId === m.id) openDrawer(m.id);
+    renderGrid();
+  } catch (err) {
+    showErr(String(err && err.message ? err.message : err));
+    try { state.tierSel = await invoke('get_tier_selection'); } catch (_) {}
+    if (state.drawerId === m.id) openDrawer(m.id);
   }
 }
 
@@ -914,7 +1030,7 @@ async function newChat() {
       modelId: m?.id ?? '',
       // B4 provenance: stamp the hero's always-on behavioral adapter id when
       // the model declares one (empty otherwise — the historical value).
-      adapterIds: m?.adapterId ? [m.adapterId] : [],
+      adapterIds: heroAdapterId(m) ? [heroAdapterId(m)] : [],
     });
     chatId = chat.id;
   } catch (_) { /* persistence failed — still hand back a clean local chat */ }
@@ -1143,6 +1259,14 @@ async function sendCompletion(userText) {
   $('sendBtn').hidden = true; $('stopBtn').hidden = false;
   state.chat.aborter = new AbortController();
 
+  // Wrapper tier-selection: the first chat commits the current engine size —
+  // after this, tier changes are limited to once per billing period. Idempotent
+  // in Rust (a no-op once already committed), so firing it every send is fine;
+  // refresh the cached selector state so the drawer reflects the new limit.
+  invoke('mark_tier_committed')
+    .then(() => invoke('get_tier_selection').then((ts) => { state.tierSel = ts; }))
+    .catch(() => {});
+
   // §7 S7-5: detect the first exchange SYNCHRONOUSLY (before any await
   // below) — state.chat.messages is this (the ACTIVE) chat's transcript,
   // and the just-pushed user message is present with no assistant reply
@@ -1181,7 +1305,7 @@ async function sendCompletion(userText) {
           modelId: m?.id ?? '',
           // B4 provenance: the hero's always-on behavioral adapter id (empty
           // for models that declare none — the historical value).
-          adapterIds: m?.adapterId ? [m.adapterId] : [],
+          adapterIds: heroAdapterId(m) ? [heroAdapterId(m)] : [],
         });
         turnChatId = chat.id;
         // Only adopt it as the app's ACTIVE chat if nothing else claimed

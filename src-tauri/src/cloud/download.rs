@@ -1259,10 +1259,17 @@ pub async fn download_status(
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = crate::catalog::parse_catalog(&raw)?;
     let hero = crate::catalog::hero(&entries).ok_or_else(|| "catalog missing integrity data".to_string())?;
-    let model_file = hero
+    // Tier-selection: "installed" is about the EFFECTIVE tier's base+adapter,
+    // not the flat 4B fields — a low/high-tier device must see its own 1B/8B
+    // pair as installed. Mirrors `inference::resolve_launch`, which keys off
+    // the same `effective_tier`.
+    let tier = crate::tier_select::effective_tier(&app);
+    let variant = crate::catalog::hero_variant(hero, &tier);
+    let model_file = variant
         .model_file
         .clone()
         .ok_or_else(|| "catalog missing integrity data".to_string())?;
+    let adapter_file = variant.adapter_file.clone();
 
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let final_path = app_data.join(&model_file);
@@ -1274,7 +1281,7 @@ pub async fn download_status(
     // hero the engine will refuse to launch base-only). Mirrors
     // `inference::resolve_launch`'s fail-closed contract.
     let base_installed = final_path.exists();
-    let adapter_installed = match hero.adapter_file.as_deref() {
+    let adapter_installed = match adapter_file.as_deref() {
         Some(adapter_file) => app_data.join(adapter_file).exists(),
         None => true,
     };
@@ -1284,8 +1291,7 @@ pub async fn download_status(
     // mid-flight) the adapter's. Sum them — at most one is normally nonzero —
     // so a resume label never reads 0 GiB while an adapter `.part` sits on
     // disk.
-    let adapter_part_bytes = hero
-        .adapter_file
+    let adapter_part_bytes = adapter_file
         .as_deref()
         .map(|f| {
             std::fs::metadata(part_path_for(&app_data.join(f)))
@@ -1306,7 +1312,7 @@ pub async fn download_status(
             &model_id,
             &hero.id,
             &model_file,
-            hero.adapter_file.as_deref(),
+            adapter_file.as_deref(),
         ) =>
         {
             (true, a.bytes.load(Ordering::Relaxed), a.total)

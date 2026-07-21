@@ -258,3 +258,17 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
   transition:opacity .25s ease,transform .25s ease;cursor:pointer;box-shadow:0 8px 30px rgba(0,0,0,.45)}
 .toast.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
 .card.locked{opacity:.45;filter:saturate(.35)}
+
+/* Wrapper tier-selection: "pick your engine size" in the hero drawer. */
+.tiersel{margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}
+.tiersel-h{font-size:13px;font-weight:600;color:var(--muted);margin-bottom:10px}
+.tiersel-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tieropt{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;
+  background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+  color:var(--text);cursor:pointer;transition:border-color .12s ease,background .12s ease}
+.tieropt:hover:not(:disabled):not(.active){border-color:var(--faint)}
+.tieropt.active{border-color:var(--teal);background:var(--surface2)}
+.tieropt:disabled{opacity:.45;cursor:default}
+.tieropt-l{font-size:13.5px;font-weight:600}
+.tieropt-s{font-size:11.5px;color:var(--muted)}
+.tiersel-note{margin-top:10px;font-size:12px;color:var(--muted)}
