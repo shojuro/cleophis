@@ -25,7 +25,7 @@ performs, with zero secrets, from any machine.
 
 Inputs:
     --base-url <url>   Public artifact base URL (default:
-                        https://f005.backblazeb2.com/file/cleophis-dist —
+                        https://cleophis-dist.s3.us-east-005.backblazeb2.com —
                         the same compiled-in constant the app pins as
                         `catalog_dist::ARTIFACT_BASE_URL`). `catalog.json`,
                         `catalog.json.sig`, and every artifact `path` in
@@ -144,7 +144,7 @@ from sign_catalog import sign_bytes, verify_bytes  # Task A6 binding decision �
 
 PIPELINE_ROOT = Path(__file__).resolve().parent
 
-DEFAULT_BASE_URL = "https://f005.backblazeb2.com/file/cleophis-dist"
+DEFAULT_BASE_URL = "https://cleophis-dist.s3.us-east-005.backblazeb2.com"
 
 MAX_CATALOG_BYTES = 1024 * 1024  # 1 MiB — mirrors sign_catalog.py/publish.py/the app's own catalog.json cap.
 SIG_BYTES_LEN = 64  # a raw detached ed25519 signature always is — see kpack-core's read_sig_capped.

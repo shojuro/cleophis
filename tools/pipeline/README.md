@@ -190,8 +190,10 @@ section as load-bearing, not a suggestion:
   (the superseded catalog is archived to `cleophis-models` before the new
   one is written) — publish.py (A5) owns this immutability guard.
 - **Artifact base URL:** a single config value, currently
-  `https://f005.backblazeb2.com/file/cleophis-dist` (native B2 URL today,
-  Cloudflare in front of the same bucket later — see
+  `https://cleophis-dist.s3.us-east-005.backblazeb2.com` (the live
+  production S3-style B2 endpoint — the friendly `f005.backblazeb2.com`
+  alias does not resolve for the `us-east-005` region; Cloudflare in front
+  of the same bucket later — see
   `src-tauri/src/catalog_dist.rs::ARTIFACT_BASE_URL`, the app-side pin).
   Every catalog `path` is relative to this base; the pipeline's `B2_ENDPOINT`
   (used for the S3-compatible upload API) is a *different* value from this

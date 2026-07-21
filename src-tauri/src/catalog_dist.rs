@@ -90,13 +90,16 @@ pub fn check_not_downgrade(new_version: u64, highest_seen: u64) -> Result<(), St
 // ---------------------------------------------------------------------
 
 /// Compiled-in artifact bucket base URL — the single config value the task
-/// brief calls for (the exact URL is confirmed at a later handoff; one
-/// constant IS the contract for now: `cleophis-dist`'s native B2 URL today,
-/// Cloudflare later). `catalog.json` and its detached signature live at
-/// `<ARTIFACT_BASE_URL>/catalog.json` and `<ARTIFACT_BASE_URL>/catalog.json.sig`
-/// respectively; every catalog `Artifact::path` (Task B3) is relative to
-/// this same base.
-pub const ARTIFACT_BASE_URL: &str = "https://f005.backblazeb2.com/file/cleophis-dist";
+/// brief calls for: `cleophis-dist`'s live production S3-style B2 endpoint
+/// (the friendly `f005.backblazeb2.com` alias does NOT resolve for the
+/// `us-east-005` region — NXDOMAIN; this host is confirmed live by
+/// `verify_published.py`'s public-path self-check and passes
+/// `download_host_allowed`'s `*.backblazeb2.com` suffix rule), Cloudflare
+/// in front of the same bucket later. `catalog.json` and its detached
+/// signature live at `<ARTIFACT_BASE_URL>/catalog.json` and
+/// `<ARTIFACT_BASE_URL>/catalog.json.sig` respectively; every catalog
+/// `Artifact::path` (Task B3) is relative to this same base.
+pub const ARTIFACT_BASE_URL: &str = "https://cleophis-dist.s3.us-east-005.backblazeb2.com";
 
 /// The app-data file name the persisted highest-ever-verified
 /// `catalog_version` lives in — see [`read_highest_version`] /
