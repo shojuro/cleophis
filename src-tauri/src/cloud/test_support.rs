@@ -325,6 +325,57 @@ fn serve_ranged(
     }
 }
 
+/// Serves requests from a fixed `(path, body)` routing table — a
+/// PATH-AWARE alternative to `start_mock_server`/`start_ranged_server`
+/// (both of which serve exactly one blob regardless of the request path),
+/// needed by Task B2's catalog-fetch tests: `GET /catalog.json` and `GET
+/// /catalog.json.sig` must return DIFFERENT bodies from the SAME base URL.
+/// A request whose path isn't in `routes` gets a plain `404`.
+///
+/// Accepts connections forever on its own thread (same lingering
+/// background-thread shape as `start_mock_server`/`start_ranged_server` —
+/// tests are not expected to join the returned handle) and handles each
+/// connection inline, one at a time: unlike `start_ranged_server`, these
+/// tests never need to model a stall or a slow body, so there's no need for
+/// the per-connection-thread trick that exists there solely to keep
+/// `RangedBehavior::StallForever` from starving other connections.
+pub(crate) fn start_path_server(
+    routes: Vec<(String, Vec<u8>)>,
+) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind path-aware mock server");
+    let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let handle = std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let headers = read_request_headers(&mut stream);
+            let path = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("")
+                .to_string();
+
+            match routes.iter().find(|(route_path, _)| *route_path == path) {
+                Some((_, body)) => write_binary_response(&mut stream, "200 OK", body),
+                None => write_binary_response(&mut stream, "404 Not Found", &[]),
+            }
+        }
+    });
+
+    (base_url, handle)
+}
+
+fn write_binary_response(stream: &mut TcpStream, status_line: &str, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 {status_line}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+}
+
 fn write_200(stream: &mut TcpStream, content: &[u8]) {
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

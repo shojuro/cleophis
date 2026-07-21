@@ -124,6 +124,7 @@ fn main() {
             detect_hardware,
             engine_info,
             load_model,
+            catalog_dist::fetch_dist_catalog,
             kpack::mount_pack,
             kpack::build_personal_pack,
             kpack::cancel_build,
