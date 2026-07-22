@@ -183,7 +183,10 @@ async function main() {
   const workDir = mkdtempSync(join(tmpdir(), 'fetch-tesseract-'));
   try {
     const installerPath = join(workDir, TESSERACT_ASSET);
-    const installerBuf = await fetchAndVerify(TESSERACT_URL, EXPECTED_INSTALLER_SHA256, 'tesseract installer', { hardFail: false });
+    // FAIL-CLOSED (stricter than the DRY sibling fetch scripts, which warn):
+    // this download is an EXECUTABLE that gets spawned as a subprocess
+    // (src-tauri/src/ocr.rs), so a sha256 mismatch must abort, never proceed.
+    const installerBuf = await fetchAndVerify(TESSERACT_URL, EXPECTED_INSTALLER_SHA256, 'tesseract installer', { hardFail: true });
     writeFileSync(installerPath, installerBuf);
 
     console.log('extracting', REQUIRED_FILES.length, 'files from', TESSERACT_ASSET, '...');
@@ -198,7 +201,7 @@ async function main() {
     }
     console.log('wrote', REQUIRED_FILES.length, 'files to', destDir, `(${(sumSizes(destDir, REQUIRED_FILES) / 1e6).toFixed(1)} MB)`);
 
-    const traineddataBuf = await fetchAndVerify(TRAINEDDATA_URL, EXPECTED_TRAINEDDATA_SHA256, 'eng.traineddata', { hardFail: false });
+    const traineddataBuf = await fetchAndVerify(TRAINEDDATA_URL, EXPECTED_TRAINEDDATA_SHA256, 'eng.traineddata', { hardFail: true });
     const traineddataPath = `${tessdataDir}/eng.traineddata`;
     writeFileSync(traineddataPath, traineddataBuf);
     console.log('wrote', traineddataPath, `${(traineddataBuf.length / 1e6).toFixed(2)} MB`);
