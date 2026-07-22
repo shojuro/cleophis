@@ -28,8 +28,11 @@ CATALOG = os.path.join(REPO, "src-tauri", "resources", "catalog.json")
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 DOMAINS = ["math", "history", "science", "medical-reference"]
-# mode -> (category tag, weight for the full run). Pilot uses 1 each.
 MODES = ["cite", "summarize", "refuse_uncovered", "no_evidence", "non_grounded"]
+# Weighted toward ANSWERS (the over-refusal fix): 60% cited answers
+# (cite+summarize), 30% refusals (uncovered+no-evidence), 10% non-grounded.
+MODE_WEIGHTS = {"cite": 0.40, "summarize": 0.20, "refuse_uncovered": 0.20,
+                "no_evidence": 0.10, "non_grounded": 0.10}
 
 
 def envval(*names):
@@ -181,46 +184,99 @@ def validate(ex, mode):
     return True
 
 
+def gen_one(key, c, tutor, domain, mode, temperature):
+    g = deepseek(key, GEN_SYS, gen_instruction(domain, mode, c), temperature)
+    chunks = g.get("sources") or []
+    if mode == "no_evidence":
+        system = assemble_system(c, [], no_evidence=True)
+    elif mode == "non_grounded":
+        system = tutor
+    else:
+        if not chunks:
+            raise ValueError("grounded modes need sources")
+        system = assemble_system(c, chunks, no_evidence=False)
+    ex = {"messages": [{"role": "system", "content": system},
+                       {"role": "user", "content": g["question"].strip()},
+                       {"role": "assistant", "content": g["answer"].strip()}],
+          "source": "synthetic_deepseek", "category": f"contract_{mode}_{domain}"}
+    validate(ex, mode)
+    return ex
+
+
 def main():
+    import random
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=1, help="examples per (domain,mode) cell")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--total", type=int, default=3000, help="target example count (weighted by mode)")
+    ap.add_argument("--workers", type=int, default=12)
+    ap.add_argument("--eval-frac", type=float, default=0.05)
+    ap.add_argument("--out-dir", default="work/contract-v1")
     ap.add_argument("--temperature", type=float, default=0.9)
+    ap.add_argument("--n", type=int, help="pilot: fixed count per (domain,mode) cell, one file")
+    ap.add_argument("--out", help="pilot: single output file (implies --n)")
     args = ap.parse_args()
 
     key = envval("DEEPSEEK_API", "DEEPSEEK_API_KEY") or sys.exit("no DEEPSEEK_API in .env")
     c = load_contract()
     tutor = tutor_system_prompt()
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    out = open(args.out, "w", encoding="utf-8")
-    n_ok = n_fail = 0
-    for domain in DOMAINS:
-        for mode in MODES:
-            for _ in range(args.n):
-                try:
-                    g = deepseek(key, GEN_SYS, gen_instruction(domain, mode, c), args.temperature)
-                    chunks = g.get("sources") or []
-                    if mode == "no_evidence":
-                        system = assemble_system(c, [], no_evidence=True)
-                    elif mode == "non_grounded":
-                        system = tutor
-                    else:
-                        assert chunks, "grounded modes need sources"
-                        system = assemble_system(c, chunks, no_evidence=False)
-                    ex = {"messages": [{"role": "system", "content": system},
-                                       {"role": "user", "content": g["question"].strip()},
-                                       {"role": "assistant", "content": g["answer"].strip()}],
-                          "source": "synthetic_deepseek", "category": f"contract_{mode}_{domain}"}
-                    validate(ex, mode)
-                    out.write(json.dumps(ex, ensure_ascii=False) + "\n"); out.flush()
-                    n_ok += 1
-                    print(f"  ok  {domain:16} {mode}")
-                except Exception as e:
-                    n_fail += 1
-                    print(f"  FAIL {domain:16} {mode}: {type(e).__name__}: {str(e)[:120]}")
-    out.close()
-    print(f"\n{n_ok} examples written to {args.out} ({n_fail} failed)")
+    # Build the weighted (domain, mode) task list.
+    if args.out:  # pilot mode: fixed n per cell
+        n = args.n or 1
+        tasks = [(d, m) for d in DOMAINS for m in MODES for _ in range(n)]
+    else:
+        tasks = []
+        for mode, w in MODE_WEIGHTS.items():
+            per_cell = max(1, round(args.total * w) // len(DOMAINS))
+            for d in DOMAINS:
+                tasks += [(d, mode)] * per_cell
+    random.seed(7)
+    random.shuffle(tasks)
+    print(f"generating {len(tasks)} examples with {args.workers} workers...")
+
+    rows, n_fail = [], 0
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futs = {pool.submit(gen_one, key, c, tutor, d, m, args.temperature): (d, m) for d, m in tasks}
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                rows.append(fut.result())
+            except Exception as e:
+                n_fail += 1
+                if n_fail <= 20:
+                    print(f"  FAIL: {type(e).__name__}: {str(e)[:120]}")
+            if i % 100 == 0:
+                print(f"  {i}/{len(tasks)} done, {n_fail} failed")
+
+    # Dedup by the user question (case-insensitive).
+    seen, dedup = set(), []
+    for r in rows:
+        q = r["messages"][1]["content"].strip().lower()
+        if q not in seen:
+            seen.add(q)
+            dedup.append(r)
+    print(f"{len(rows)} generated, {len(dedup)} after dedup, {n_fail} failed")
+
+    if args.out:  # pilot: one file
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            for r in dedup:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"wrote {len(dedup)} to {args.out}")
+        return
+
+    random.shuffle(dedup)
+    n_eval = max(1, int(len(dedup) * args.eval_frac))
+    ev, tr = dedup[:n_eval], dedup[n_eval:]
+    os.makedirs(args.out_dir, exist_ok=True)
+    for name, data in (("final_train.jsonl", tr), ("final_eval.jsonl", ev)):
+        with open(os.path.join(args.out_dir, name), "w", encoding="utf-8") as f:
+            for r in data:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    # category histogram
+    from collections import Counter
+    hist = Counter(r["category"].rsplit("_", 1)[0] for r in dedup)
+    print(f"wrote {len(tr)} train + {len(ev)} eval to {args.out_dir}")
+    print("by mode:", dict(hist))
 
 
 if __name__ == "__main__":
