@@ -146,7 +146,11 @@ fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<S
             Err(e) => return Err(OcrError::Failed(format!("wait: {e}"))),
         }
     }
-    std::fs::read_to_string(&out_txt)
+    // Lossy (not read_to_string): a noisy page whose OCR text has a few
+    // invalid bytes should still contribute its readable text (degrade per
+    // page, never hard-fail) — a genuine read error (missing file) still fails.
+    std::fs::read(&out_txt)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
         .map_err(|e| OcrError::Failed(format!("read ocr output: {e}")))
 }
 
