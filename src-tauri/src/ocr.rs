@@ -82,38 +82,50 @@ pub fn ocr_png(app: &AppHandle, png_bytes: &[u8]) -> Result<String, OcrError> {
 /// directly against the dev `resources/ocr/` tree without needing a mocked
 /// Tauri app. `ocr_png` is a thin `AppHandle`-resolving wrapper around this.
 ///
-/// Writes the PNG to a unique scratch temp, runs `tesseract <tmp> stdout -l
-/// eng --tessdata-dir <dir>`, returns stdout. Temp is removed on every path
-/// (success, error, or panic) via the `TempFile` RAII guard.
+/// Writes the PNG to a unique scratch temp, runs `tesseract <tmp.png>
+/// <out_base> -l eng --tessdata-dir <dir>` (tesseract writes `<out_base>.txt`),
+/// and returns that file's contents. Both temps are removed on every path
+/// (success, error, or panic) via `TempFile` RAII guards.
+///
+/// Output goes to a FILE, not tesseract's `stdout` pseudo-target, on purpose:
+/// draining stdout would mean reading the pipe concurrently with the poll
+/// loop, and NOT draining it (as a naive `try_wait` loop does) deadlocks a
+/// verbose page against the OS pipe buffer — a fast-but-wordy scan (esp. a
+/// noisy image tesseract hallucinates lots of garbage text from) would block
+/// in `write()` and masquerade as a genuine `PER_PAGE_TIMEOUT` hang. A file
+/// sidesteps pipe capacity entirely.
 fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<String, OcrError> {
     if !bin.is_file() {
         return Err(OcrError::Unavailable);
     }
-    // Unique temp under the OS temp dir; process id + a monotonic, strictly-
+    // Unique stem under the OS temp dir; process id + a monotonic, strictly-
     // increasing per-process counter keep concurrent/rapid-fire calls from
     // colliding on the same filename.
     let seq = NEXT_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = std::env::temp_dir().join(format!(
-        "cleophis-ocr-{}-{}.png",
-        std::process::id(),
-        seq
-    ));
-    let _guard = TempFile(tmp.clone());
-    std::fs::File::create(&tmp)
+    let stem = format!("cleophis-ocr-{}-{}", std::process::id(), seq);
+    let tmp_png = std::env::temp_dir().join(format!("{stem}.png"));
+    let out_base = std::env::temp_dir().join(&stem); // tesseract appends ".txt"
+    let out_txt = std::env::temp_dir().join(format!("{stem}.txt"));
+    // Guards constructed BEFORE the write so both temps are cleaned up even if
+    // the PNG write or the spawn fails.
+    let _png_guard = TempFile(tmp_png.clone());
+    let _txt_guard = TempFile(out_txt.clone());
+    std::fs::File::create(&tmp_png)
         .and_then(|mut f| f.write_all(png_bytes))
         .map_err(|e| OcrError::Failed(format!("write temp: {e}")))?;
 
     let mut child = Command::new(bin)
-        .arg(&tmp)
-        .arg("stdout")
+        .arg(&tmp_png)
+        .arg(&out_base)
         .arg("-l").arg("eng")
         .arg("--tessdata-dir").arg(tessdata)
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| OcrError::Failed(format!("spawn tesseract: {e}")))?;
 
-    // Bounded wait: poll try_wait, kill on timeout.
+    // Bounded wait: poll try_wait; on timeout, kill AND reap. `kill()` alone
+    // leaves a zombie until app exit — `Child`'s Drop does not `wait()`.
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -126,6 +138,7 @@ fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<S
             Ok(None) => {
                 if start.elapsed() > PER_PAGE_TIMEOUT {
                     let _ = child.kill();
+                    let _ = child.wait(); // reap the killed child — no zombie
                     return Err(OcrError::Failed("timed out".into()));
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -133,8 +146,8 @@ fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<S
             Err(e) => return Err(OcrError::Failed(format!("wait: {e}"))),
         }
     }
-    let out = child.wait_with_output().map_err(|e| OcrError::Failed(format!("output: {e}")))?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    std::fs::read_to_string(&out_txt)
+        .map_err(|e| OcrError::Failed(format!("read ocr output: {e}")))
 }
 
 /// RAII cleanup for the scratch PNG — removed even on an early return/panic.
