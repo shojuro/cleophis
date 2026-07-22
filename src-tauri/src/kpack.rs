@@ -534,11 +534,21 @@ fn ocr_page_budget(image_page_count: usize) -> OcrBudget {
 fn ocr_fill_pages(
     pages: &mut [(u32, String)],
     image_idx: &[usize],
+    cancel: &AtomicBool,
     mut ocr_one: impl FnMut(usize) -> Option<String>,
     mut progress: impl FnMut(usize, usize),
 ) {
     let total = image_idx.len();
     for (n, &i) in image_idx.iter().enumerate() {
+        // Honor the build's Cancel button DURING OCR — this is the feature's
+        // slow phase (minutes for a large scan), the one place a user most
+        // wants Cancel to work. Stop promptly; the caller re-checks the flag
+        // and returns `Error::Cancelled` rather than building a half-OCR'd
+        // pack. (The rest of the build already checks `cancel` between chunks
+        // via `build_pack_with_progress`; this closes the pre-build-phase gap.)
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         progress(n + 1, total);
         if let Some(text) = ocr_one(i) {
             pages[i].1 = text;
@@ -755,6 +765,7 @@ fn build_personal_pack_with_embedder(
                     ocr_fill_pages(
                         &mut pages,
                         &image_idx,
+                        cancel,
                         |i| {
                             kpack_pdf::render_page(&bytes, i, 300, pdfium_path)
                                 .ok()
@@ -769,6 +780,12 @@ fn build_personal_pack_with_embedder(
                         },
                     );
                 }
+            }
+            // Cancel observed during the OCR loop: abort with the SAME signal
+            // build_pack_with_progress uses for a between-chunk cancel, rather
+            // than proceeding to build a partially-OCR'd pack.
+            if cancel.load(Ordering::Relaxed) {
+                return Err(kpack_core::build::Error::Cancelled.to_string());
             }
             // If STILL no text anywhere (OCR found nothing on every image
             // page, or every page was image-only and somehow slipped past
@@ -1313,6 +1330,7 @@ mod tests {
         ocr_fill_pages(
             &mut pages,
             &image_idx,
+            &AtomicBool::new(false),
             |i| match i {
                 1 => Some("ocr'd page two".to_string()),
                 4 => Some("ocr'd page five".to_string()),
@@ -1350,6 +1368,7 @@ mod tests {
         ocr_fill_pages(
             &mut pages,
             &[],
+            &AtomicBool::new(false),
             |_| {
                 ocr_calls += 1;
                 Some("should never happen".to_string())
@@ -1359,6 +1378,33 @@ mod tests {
         assert_eq!(ocr_calls, 0);
         assert_eq!(progress_calls, 0);
         assert_eq!(pages[0].1, "text");
+    }
+
+    #[test]
+    fn ocr_fill_pages_stops_when_cancelled() {
+        // Cancel set before the loop starts → no page is rendered/OCR'd and
+        // the pages are left exactly as extract_pages gave them. Mirrors the
+        // Cancel button being hit during the OCR phase.
+        let mut pages = vec![
+            (1u32, "".to_string()),
+            (2u32, "".to_string()),
+            (3u32, "".to_string()),
+        ];
+        let image_idx = vec![0usize, 1usize, 2usize];
+        let cancelled = AtomicBool::new(true);
+        let mut ocr_calls = 0usize;
+        ocr_fill_pages(
+            &mut pages,
+            &image_idx,
+            &cancelled,
+            |_| {
+                ocr_calls += 1;
+                Some("should never run".to_string())
+            },
+            |_, _| {},
+        );
+        assert_eq!(ocr_calls, 0, "cancel must short-circuit before any OCR work");
+        assert!(pages.iter().all(|(_, t)| t.is_empty()), "no page filled after cancel");
     }
 
     #[test]
