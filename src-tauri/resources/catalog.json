@@ -43,6 +43,9 @@
         "adapterFile": "models/behavioral-v1-Qwen3-4B.gguf",
         "adapterSha256": "b444e18f9372b194766a76030483b7f6ea0bb54d1d032ca30070d8162f4f9e6d",
         "adapterId": "behavioral-v1-qwen3-4b",
+        "contractAdapterFile": "models/contract-v1-Qwen3-4B.gguf",
+        "contractAdapterSha256": "899303bba33280111d353bae29ef240e0d474fd67d02f1eb2a978af65fa0d4e3",
+        "contractAdapterId": "contract-v1-qwen3-4b",
         "fileBytes": 2497280384
       },
       "high": {
