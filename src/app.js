@@ -399,6 +399,14 @@ function startCheckoutFlow(m, btn) {
 // by the initial hero install and a tier switch (which pass different
 // baseModels). The bar/line UI in onDownloadProgress is driven by the
 // download-progress events download_artifact emits.
+// The tiers-block variant for a given dist-catalog base_model (used to learn
+// whether that tier declares a contract adapter).
+function tierVariantByBase(baseModel) {
+  const h = heroEntry();
+  if (!h || !h.tiers) return null;
+  return Object.values(h.tiers).find((t) => t.baseModel === baseModel) || null;
+}
+
 async function downloadHeroPair(baseModel, btn) {
   const prog = $('prog');
   if (prog) prog.style.display = 'block';
@@ -414,6 +422,17 @@ async function downloadHeroPair(baseModel, btn) {
     }
     await downloadArtifact(base);
     await downloadArtifact(adapter);
+    // Adapter v2 static composition: if this tier declares a contract adapter,
+    // download it too (composed alongside the behavioral one via `--lora a,b`).
+    // Absent until v2's catalog (v5) ships, so this is a no-op today.
+    const v = tierVariantByBase(baseModel);
+    if (v && v.contractAdapterFile) {
+      const contract = arts.find((a) => a.kind === 'contract-adapter' && a.base_model === baseModel);
+      if (!contract) {
+        throw new Error("The contract adapter isn't available to download yet — please update the app.");
+      }
+      await downloadArtifact(contract);
+    }
   } finally {
     // Always clear the in-flight flag + progress bar, even on a missing-artifact
     // throw or a download rejection — otherwise the button sticks on "Downloading…".
@@ -1383,52 +1402,57 @@ async function sendCompletion(userText) {
       // refusal or a grounded answer to history or the pill.
       if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
       if (rag.status === 'noEvidence') {
-        // Short-circuit to a deterministic refusal rather than handing the
-        // model rag.prompt's [[NO_EVIDENCE]] marker: without the
-        // contract-trained adapter (parked track — see the §3a plan) the
-        // base model won't reliably refuse on its own, so a scripted
-        // refusal is the honest, demo-safe interim. Once the adapter
-        // lands, this branch can feed the marker to the model instead.
-        const n = state.chat.packPaths.length;
-        const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
-        // §7 S7-2: only touch the live DOM/in-memory transcript if this
-        // turn's chat is STILL the active one (mirrors finishStream below)
-        // — the user may have switched away while rag_query was in flight.
-        const isActive = turnChatId === state.chat.chatId;
-        bubble.classList.remove('streaming');
-        if (isActive) {
-          bubble.textContent = refusal;
-          state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+        // Adapter v2: when the contract adapter is composed on this tier, it is
+        // trained to emit the fixed refusal-with-offer on the [[NO_EVIDENCE]]
+        // marker — so hand the marker to the model and let IT refuse. Only when
+        // no contract adapter is present do we fall back to the interim scripted
+        // refusal (the un-adapted base model won't reliably refuse on its own).
+        const contractActive = tierVariant(effectiveTier())?.contractAdapterId;
+        if (!contractActive) {
+          const n = state.chat.packPaths.length;
+          const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
+          // §7 S7-2: only touch the live DOM/transcript if this turn's chat is
+          // STILL active — the user may have switched away mid rag_query.
+          const isActive = turnChatId === state.chat.chatId;
+          bubble.classList.remove('streaming');
+          if (isActive) {
+            bubble.textContent = refusal;
+            state.chat.messages.push({ role: 'assistant', content: refusal, noEvidence: true });
+          }
+          if (turnChatId != null) {
+            invoke('append_message', { chatId: turnChatId, role: 'assistant', content: refusal })
+              .then(refreshChatList).catch(() => {});
+          }
+          state.chat.streaming = false;
+          $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+          $('sendBtn').disabled = false;
+          if (isActive) {
+            const pill = $('groundPill');
+            pill.hidden = false;
+            pill.textContent = 'No evidence in your packs';
+          }
+          // Returns without finishStream, so a no-evidence first turn never
+          // auto-titles — the first-line title stands.
+          return; // no model call — no inference ran
         }
-        // Persist to the chat this turn actually belongs to, fire-and-
-        // forget (never blocks the composer restore below).
-        if (turnChatId != null) {
-          invoke('append_message', { chatId: turnChatId, role: 'assistant', content: refusal })
-            .then(refreshChatList).catch(() => {});
-        }
-        state.chat.streaming = false;
-        $('sendBtn').hidden = false; $('stopBtn').hidden = true;
-        $('sendBtn').disabled = false;
-        if (isActive) {
-          const pill = $('groundPill');
-          pill.hidden = false;
-          pill.textContent = 'No evidence in your packs';
-        }
-        // §7 S7-5: this branch returns without calling finishStream, so a
-        // no-evidence first turn never triggers auto-titling — the
-        // first-line title stands. Acceptable v1: a refusal has nothing
-        // worth summarizing into a title anyway.
-        return; // no model call — pulseCost() intentionally skipped, no inference ran
+        // Contract adapter composed: send rag.prompt (contract + [[NO_EVIDENCE]])
+        // and let the adapter produce the refusal. Fall through to streaming.
+        groundedPrompt = rag.prompt;
+        groundedCitations = [];
+        bubble.textContent = '';
+        const pill = $('groundPill');
+        pill.hidden = false;
+        pill.textContent = 'No evidence in your packs';
+      } else {
+        // grounded: swap this turn's system message for the assembled grounded
+        // prompt (contract + numbered sources) and continue into streaming.
+        groundedPrompt = rag.prompt;
+        groundedCitations = rag.citations;
+        bubble.textContent = '';
+        const pill = $('groundPill');
+        pill.hidden = false;
+        pill.textContent = `Grounded in ${groundedCitations.length} source${groundedCitations.length === 1 ? '' : 's'}`;
       }
-      // grounded: swap this turn's system message for the assembled
-      // grounded prompt (contract + numbered sources) and continue into
-      // the normal streaming path below.
-      groundedPrompt = rag.prompt;
-      groundedCitations = rag.citations;
-      bubble.textContent = '';
-      const pill = $('groundPill');
-      pill.hidden = false;
-      pill.textContent = `Grounded in ${groundedCitations.length} source${groundedCitations.length === 1 ? '' : 's'}`;
     }
   }
 
