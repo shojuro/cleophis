@@ -148,8 +148,11 @@ DEFAULT_OUT = PIPELINE_ROOT / "work" / "catalog" / "catalog.json"
 # The tier base_models this catalog format knows — the three trained tiers.
 # base_model is the CLEAN tier name (never the unsloth-bnb-4bit training-repo
 # name); the app's per-tier resolution keys off exactly these strings.
-KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B"})
-VALID_KINDS = ("base", "adapter")
+KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B", "Qwen3-1.7B"})
+# "contract-adapter" (adapter v2) is a distinct kind so the app can pick the
+# contract-grounding adapter apart from the always-on behavioral "adapter"
+# (both share a base_model).
+VALID_KINDS = ("base", "adapter", "contract-adapter")
 CATALOG_ARTIFACT_VERSION = "v1"
 
 
@@ -163,6 +166,8 @@ def expected_basename(kind: str, base_model: str, quant: str | None) -> str | No
         return f"{base_model}-Instruct-{quant}.gguf" if quant else None
     if kind == "adapter":
         return f"behavioral-v1-{base_model}.gguf"
+    if kind == "contract-adapter":
+        return f"contract-v1-{base_model}.gguf"
     return None
 
 REQUIRED_MANIFEST_FIELDS = ("kind", "base_model", "sha256", "size", "name")
@@ -314,6 +319,8 @@ def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, 
         return f"models/{base_model}/v1/{name}"
     if kind == "adapter":
         return f"adapters/behavioral/v1/{base_model}/{name}"
+    if kind == "contract-adapter":
+        return f"adapters/contract/v1/{base_model}/{name}"
     raise AssertionError(f"unreachable: kind {kind!r} passed the expected_basename check above")
 
 
@@ -325,9 +332,9 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
         )
 
     kind = manifest["kind"]
-    if kind not in ("base", "adapter"):
+    if kind not in VALID_KINDS:
         raise CatalogAssemblyError(
-            f'{manifest_path}: kind={kind!r} is not "base" or "adapter" — the only two the catalog wire format allows'
+            f'{manifest_path}: kind={kind!r} is not one of {list(VALID_KINDS)} — the only kinds the catalog wire format allows'
         )
 
     base_model = manifest["base_model"]

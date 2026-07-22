@@ -671,7 +671,12 @@ def build_manifest(
         "peft_content_sha256": peft_content_sha256,
         "base_model": base_model,
         "base_revision": base_revision,
-        "kind": "adapter",
+        # Catalog kind derived from the adapter identity: the contract-grounding
+        # adapter (adapter v2, basename `contract-v1-<base>.gguf`) is a
+        # DISTINCT catalog kind so the app can pick it apart from the always-on
+        # behavioral adapter (both share base_model). All other adapters are the
+        # plain behavioral "adapter" kind.
+        "kind": "contract-adapter" if basename.startswith("contract-") else "adapter",
         "sha256": sha256,
         "size": size,
         # A LoRA adapter is a derivative of its base — it inherits the base

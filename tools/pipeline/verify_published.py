@@ -157,8 +157,8 @@ RETRY_BACKOFF_BASE = 5  # seconds; attempt N waits N * this many seconds (mirror
 
 MAX_SANE_CATALOG_VERSION = 1_000_000  # matches build_catalog.py/publish.py's own hostile-version bound.
 REQUIRED_ARTIFACT_FIELDS = ("path", "sha256", "size", "kind", "base_model", "version", "license")
-VALID_KINDS = {"base", "adapter"}
-KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B"})
+VALID_KINDS = {"base", "adapter", "contract-adapter"}
+KNOWN_BASE_MODELS = frozenset({"Qwen3-4B", "Llama-3.2-1B", "Qwen3-8B", "Qwen3-1.7B"})
 
 # HTTP redirect statuses urllib's HTTPRedirectHandler intercepts (301/302/
 # 303/307 -- see its http_error_30x aliases) plus 308 for completeness
