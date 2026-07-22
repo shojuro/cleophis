@@ -270,7 +270,10 @@ SIG_KEY = "catalog.json.sig"
 # imported from build_base.py/build_adapter.py/build_catalog.py) so this
 # script stays a standalone, env-dumb unit, matching the house pattern those
 # scripts already set for their own duplicated cross-track constants.
-LOCAL_ARTIFACT_SUBDIR_BY_KIND = {"base": "Q4_K_M", "adapter": "adapter"}
+# The contract adapter (adapter v2) shares the behavioral adapter's local
+# `adapter/` build subdir (build_adapter.py writes both under
+# `<out>/<model>/adapter/`); only its catalog `kind`/basename differ.
+LOCAL_ARTIFACT_SUBDIR_BY_KIND = {"base": "Q4_K_M", "adapter": "adapter", "contract-adapter": "adapter"}
 
 REQUIRED_ARTIFACT_FIELDS = ("path", "sha256", "size", "kind", "base_model")
 

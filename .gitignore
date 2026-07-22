@@ -28,3 +28,6 @@ tools/pipeline/work/
 # .env.* above would also match .env.example; explicitly un-ignore it so the
 # committed template stays trackable.
 !tools/pipeline/.env.example
+
+# generated datasets (synthetic) — never committed
+tools/dataset/work/

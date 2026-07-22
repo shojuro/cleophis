@@ -577,6 +577,7 @@ fn active_matches_status_request(
     hero_id: &str,
     model_file: &str,
     adapter_file: Option<&str>,
+    contract_adapter_file: Option<&str>,
 ) -> bool {
     if active_model_id == requested_model_id {
         return true;
@@ -589,8 +590,11 @@ fn active_matches_status_request(
     if active_name.is_empty() {
         return false;
     }
+    // An in-flight download of the base OR either composed adapter counts as
+    // the hero's download in progress.
     active_name == final_component(model_file)
         || adapter_file.is_some_and(|f| active_name == final_component(f))
+        || contract_adapter_file.is_some_and(|f| active_name == final_component(f))
 }
 
 /// Preflight disk-space check: the longest mount-point-prefix match against
@@ -1270,6 +1274,11 @@ pub async fn download_status(
         .clone()
         .ok_or_else(|| "catalog missing integrity data".to_string())?;
     let adapter_file = variant.adapter_file.clone();
+    // Adapter v2 static composition: a tier may declare a SECOND (contract)
+    // adapter composed alongside the behavioral one. When declared, it too must
+    // be on disk for "installed" — mirroring `resolve_launch`'s fail-closed
+    // three-file (base + behavioral + contract) contract.
+    let contract_adapter_file = variant.contract_adapter_file.clone();
 
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let final_path = app_data.join(&model_file);
@@ -1281,25 +1290,29 @@ pub async fn download_status(
     // hero the engine will refuse to launch base-only). Mirrors
     // `inference::resolve_launch`'s fail-closed contract.
     let base_installed = final_path.exists();
-    let adapter_installed = match adapter_file.as_deref() {
-        Some(adapter_file) => app_data.join(adapter_file).exists(),
+    let declared_on_disk = |f: &Option<String>| match f.as_deref() {
+        Some(name) => app_data.join(name).exists(),
         None => true,
     };
-    let installed = base_installed && adapter_installed;
-    // B4: "so far" bytes may live in EITHER pending `.part` — the base's, or
-    // (once the base has been renamed to its final path and the adapter is
-    // mid-flight) the adapter's. Sum them — at most one is normally nonzero —
-    // so a resume label never reads 0 GiB while an adapter `.part` sits on
-    // disk.
-    let adapter_part_bytes = adapter_file
-        .as_deref()
-        .map(|f| {
-            std::fs::metadata(part_path_for(&app_data.join(f)))
-                .map(|m| m.len())
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
-    let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0) + adapter_part_bytes;
+    let installed = base_installed
+        && declared_on_disk(&adapter_file)
+        && declared_on_disk(&contract_adapter_file);
+    // B4: "so far" bytes may live in the base's pending `.part` or any
+    // adapter's (base first, then behavioral, then contract, one at a time).
+    // Sum them — at most one is normally nonzero — so a resume label never
+    // reads 0 GiB while an adapter `.part` sits on disk.
+    let part_of = |f: &Option<String>| {
+        f.as_deref()
+            .map(|name| {
+                std::fs::metadata(part_path_for(&app_data.join(name)))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    };
+    let part_bytes = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0)
+        + part_of(&adapter_file)
+        + part_of(&contract_adapter_file);
 
     let guard = downloads.active.lock().unwrap();
     let (active, bytes_downloaded, total_bytes) = match guard.as_ref() {
@@ -1313,6 +1326,7 @@ pub async fn download_status(
             &hero.id,
             &model_file,
             adapter_file.as_deref(),
+            contract_adapter_file.as_deref(),
         ) =>
         {
             (true, a.bytes.load(Ordering::Relaxed), a.total)
@@ -2213,6 +2227,7 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             Some(ADAPTER_FILE),
+            None,
         ));
     }
 
@@ -2224,6 +2239,7 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             Some(ADAPTER_FILE),
+            None,
         ));
     }
 
@@ -2235,6 +2251,7 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             Some(ADAPTER_FILE),
+            None,
         ));
     }
 
@@ -2246,6 +2263,21 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn active_match_contract_adapter_path_counts_for_hero_id() {
+        // A composed contract adapter (adapter v2) download in flight also
+        // reports as the hero's download in progress.
+        assert!(active_matches_status_request(
+            "adapters/contract/v1/Qwen3-4B/contract-v1-Qwen3-4B.gguf",
+            HERO_ID,
+            HERO_ID,
+            MODEL_FILE,
+            Some(ADAPTER_FILE),
+            Some("models/contract-v1-Qwen3-4B.gguf"),
         ));
     }
 
@@ -2257,6 +2289,7 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             Some(ADAPTER_FILE),
+            None,
         ));
     }
 
@@ -2270,6 +2303,7 @@ mod tests {
             HERO_ID,
             MODEL_FILE,
             Some(ADAPTER_FILE),
+            None,
         ));
     }
 }

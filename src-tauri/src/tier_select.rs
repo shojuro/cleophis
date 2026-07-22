@@ -264,7 +264,11 @@ fn basename(path: &str) -> Option<String> {
 }
 
 /// The base + adapter basenames of a resolved tier variant — the "keep set"
-/// for [`sweep_models`].
+/// for [`sweep_models`] AND the on-disk set for [`variant_on_disk`]. Includes
+/// the contract adapter (adapter v2): it is part of the active composition, so
+/// the sweep must PRESERVE it (omitting it deletes it on the next switch, and
+/// the engine then fail-closes its load-time integrity check) and
+/// `variant_on_disk` must REQUIRE it before relaunching onto the tier.
 fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
     let mut keep = Vec::new();
     if let Some(m) = variant.model_file.as_deref().and_then(basename) {
@@ -273,10 +277,15 @@ fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
     if let Some(a) = variant.adapter_file.as_deref().and_then(basename) {
         keep.push(a);
     }
+    if let Some(c) = variant.contract_adapter_file.as_deref().and_then(basename) {
+        keep.push(c);
+    }
     keep
 }
 
-/// Does the tier variant's base + adapter both already exist under `models/`?
+/// Does the tier variant's base + behavioral adapter + (when declared) contract
+/// adapter all already exist under `models/`? Mirrors `resolve_launch`'s
+/// fail-closed set — a switch must not relaunch onto a partially-present tier.
 fn variant_on_disk(app: &AppHandle, variant: &crate::catalog::ResolvedHero) -> bool {
     let Some(dir) = models_dir(app) else {
         return false;
@@ -663,6 +672,42 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(effective_tier_from(&sel, "mid"), "mid");
+    }
+
+    #[test]
+    fn keep_basenames_includes_contract_adapter() {
+        // Regression (adapter v2): the post-switch sweep deletes every models/
+        // file NOT in this set, and `variant_on_disk` requires every file IN it.
+        // Omitting the contract adapter here is exactly what let a tier switch
+        // delete `contract-v1-*.gguf`, after which the engine fail-closed its
+        // integrity check with no on-disk contract adapter to load.
+        let variant = crate::catalog::ResolvedHero {
+            model_file: Some("models/Qwen3-4B-Instruct-Q4_K_M.gguf".to_string()),
+            adapter_file: Some("models/behavioral-v1-Qwen3-4B.gguf".to_string()),
+            contract_adapter_file: Some("models/contract-v1-Qwen3-4B.gguf".to_string()),
+            ..Default::default()
+        };
+        let keep = keep_basenames(&variant);
+        assert!(
+            keep.contains(&"contract-v1-Qwen3-4B.gguf".to_string()),
+            "keep-set must include the contract adapter, else a tier switch deletes it: {keep:?}"
+        );
+        assert!(keep.contains(&"Qwen3-4B-Instruct-Q4_K_M.gguf".to_string()));
+        assert!(keep.contains(&"behavioral-v1-Qwen3-4B.gguf".to_string()));
+    }
+
+    #[test]
+    fn keep_basenames_omits_contract_when_tier_declares_none() {
+        // low/high tiers don't (yet) declare a contract adapter — the keep-set
+        // is just base + behavioral, never a phantom contract entry.
+        let variant = crate::catalog::ResolvedHero {
+            model_file: Some("models/Llama-3.2-1B-Instruct-Q4_K_M.gguf".to_string()),
+            adapter_file: Some("models/behavioral-v1-Llama-3.2-1B.gguf".to_string()),
+            contract_adapter_file: None,
+            ..Default::default()
+        };
+        let keep = keep_basenames(&variant);
+        assert_eq!(keep.len(), 2, "no contract declared → base + behavioral only: {keep:?}");
     }
 
     #[test]

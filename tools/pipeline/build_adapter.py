@@ -142,6 +142,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -660,7 +661,12 @@ def build_manifest(
     license: str,
     source_manifest: dict | None,
 ) -> dict:
-    return {
+    # Catalog kind derived from the adapter identity: the contract-grounding
+    # adapter (basename `contract-v<N>-<base>.gguf`) is a DISTINCT catalog kind
+    # so the app can pick it apart from the always-on behavioral adapter (both
+    # share base_model). All other adapters are the plain behavioral "adapter".
+    kind = "contract-adapter" if basename.startswith("contract-") else "adapter"
+    manifest = {
         "name": basename,
         "source": source,
         # Content hash of the PEFT source dir this adapter was converted
@@ -671,7 +677,7 @@ def build_manifest(
         "peft_content_sha256": peft_content_sha256,
         "base_model": base_model,
         "base_revision": base_revision,
-        "kind": "adapter",
+        "kind": kind,
         "sha256": sha256,
         "size": size,
         # A LoRA adapter is a derivative of its base — it inherits the base
@@ -683,6 +689,19 @@ def build_manifest(
         "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_manifest": source_manifest,
     }
+    # The contract adapter is retrained + re-published under bumped,
+    # version-scoped catalog paths (contract-v1 → v2 → …). Emit the version
+    # build_catalog.py keys those paths on, DERIVED from the basename so the two
+    # tracks can never drift. Without this the next contract-v2 catalog build
+    # defaults to v1 and fails the basename check.
+    if kind == "contract-adapter":
+        m = re.match(r"^contract-(v\d+)-", basename)
+        if not m:
+            raise ValueError(
+                f"contract adapter basename {basename!r} must be contract-v<N>-<base>.gguf"
+            )
+        manifest["dist_version"] = m.group(1)
+    return manifest
 
 
 def main(argv: list[str] | None = None) -> int:
