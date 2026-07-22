@@ -679,46 +679,54 @@ fn build_personal_pack_with_embedder(
             // untouched.
             let image_idx = image_page_indices(&pages);
             if !image_idx.is_empty() {
-                // Every image page AND OCR unavailable on this install → the
-                // same refusal this branch always gave for scanned PDFs,
-                // just reworded now that OCR is sometimes the alternative.
                 if !ocr_ready {
-                    return Err(format!(
-                        "\"{title}\" looks scanned or image-only — no text could be extracted, \
-                         and OCR isn't available on this install. Try a PDF with selectable text."
-                    ));
-                }
-                match ocr_page_budget(image_idx.len()) {
-                    OcrBudget::Refuse => {
+                    // OCR unavailable. Refuse ONLY when the WHOLE document is
+                    // image-only (the original scanned-PDF refusal). A
+                    // PARTIALLY-scanned PDF — some real text pages, some blank
+                    // — still builds a useful pack from the text pages it has,
+                    // exactly as it did before OCR existed (`pdf_has_no_text`
+                    // only ever refused when EVERY page was empty). Refusing
+                    // the whole build over a few blank pages would regress that
+                    // previously-working case, so fall through here.
+                    if image_idx.len() == pages.len() {
                         return Err(format!(
-                            "\"{title}\" has {} scanned pages — too many to OCR in one build \
-                             (limit 500). Split it into smaller PDFs.",
-                            image_idx.len()
+                            "\"{title}\" looks scanned or image-only — no text could be extracted, \
+                             and OCR isn't available on this install. Try a PDF with selectable text."
                         ));
                     }
-                    OcrBudget::Warn => {
-                        progress(BuildProgress {
-                            phase: "ocr-notice".to_string(),
-                            done: 0,
-                            total: image_idx.len(),
-                        });
+                } else {
+                    match ocr_page_budget(image_idx.len()) {
+                        OcrBudget::Refuse => {
+                            return Err(format!(
+                                "\"{title}\" has {} scanned pages — too many to OCR in one build \
+                                 (limit 500). Split it into smaller PDFs.",
+                                image_idx.len()
+                            ));
+                        }
+                        OcrBudget::Warn => {
+                            progress(BuildProgress {
+                                phase: "ocr-notice".to_string(),
+                                done: 0,
+                                total: image_idx.len(),
+                            });
+                        }
+                        OcrBudget::None | OcrBudget::Ok => {}
                     }
-                    OcrBudget::None | OcrBudget::Ok => {}
-                }
-                let total = image_idx.len();
-                for (n, &i) in image_idx.iter().enumerate() {
-                    progress(BuildProgress {
-                        phase: "ocr".to_string(),
-                        done: n + 1,
-                        total,
-                    });
-                    // Render one page → OCR → drop the PNG. Any failure
-                    // degrades THIS page to empty (it stays whatever
-                    // extract_pages gave, i.e. blank) — never fails the
-                    // whole build over one bad page.
-                    if let Ok(png) = kpack_pdf::render_page(&bytes, i, 300, pdfium_path) {
-                        if let Ok(text) = ocr_page(&png) {
-                            pages[i].1 = text;
+                    let total = image_idx.len();
+                    for (n, &i) in image_idx.iter().enumerate() {
+                        progress(BuildProgress {
+                            phase: "ocr".to_string(),
+                            done: n + 1,
+                            total,
+                        });
+                        // Render one page → OCR → drop the PNG. Any failure
+                        // degrades THIS page to empty (it stays whatever
+                        // extract_pages gave, i.e. blank) — never fails the
+                        // whole build over one bad page.
+                        if let Ok(png) = kpack_pdf::render_page(&bytes, i, 300, pdfium_path) {
+                            if let Ok(text) = ocr_page(&png) {
+                                pages[i].1 = text;
+                            }
                         }
                     }
                 }
@@ -1233,6 +1241,11 @@ mod tests {
         assert_eq!(ocr_page_budget(40), OcrBudget::Ok);
         assert_eq!(ocr_page_budget(200), OcrBudget::Warn);
         assert_eq!(ocr_page_budget(600), OcrBudget::Refuse);
+        // Exact boundaries: warn STARTS at 151, refuse STARTS at 501.
+        assert_eq!(ocr_page_budget(150), OcrBudget::Ok);
+        assert_eq!(ocr_page_budget(151), OcrBudget::Warn);
+        assert_eq!(ocr_page_budget(500), OcrBudget::Warn);
+        assert_eq!(ocr_page_budget(501), OcrBudget::Refuse);
     }
 
     #[test]
