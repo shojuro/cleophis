@@ -56,6 +56,10 @@ pub struct Engine {
     /// same first-time-only session caching, so a watchdog respawn of the
     /// same base+adapter pair doesn't re-hash either file.
     verified_adapter: Mutex<Option<PathBuf>>,
+    /// The contract adapter's (adapter v2) counterpart, checked against
+    /// `contract_adapter_sha256` — its own cache slot so both composed
+    /// adapters can be verified-once independently.
+    verified_contract_adapter: Mutex<Option<PathBuf>>,
 }
 
 impl Engine {
@@ -70,6 +74,7 @@ impl Engine {
             closing: AtomicBool::new(false),
             verified_model: Mutex::new(None),
             verified_adapter: Mutex::new(None),
+            verified_contract_adapter: Mutex::new(None),
         }
     }
 
@@ -113,12 +118,26 @@ pub fn resources_root(app: &AppHandle) -> PathBuf {
 }
 
 /// The resolved on-disk paths a launch needs: the base model, plus the LoRA
-/// adapter iff the hero declares one. `lora` is `None` when the hero declares
-/// no adapter at all — NOT when a declared adapter is merely missing (that
-/// case makes the whole resolution fail; see [`resolve_launch`]).
+/// adapters composed onto it (static composition) — the always-on behavioral
+/// adapter and, once adapter v2 ships, the contract-grounding adapter. Each is
+/// `None` when the hero declares none — NOT when a declared one is merely
+/// missing (that case fails the whole resolution; see [`resolve_launch`]).
 pub struct LaunchPaths {
     pub model: PathBuf,
-    pub lora: Option<PathBuf>,
+    pub behavioral_lora: Option<PathBuf>,
+    pub contract_lora: Option<PathBuf>,
+}
+
+impl LaunchPaths {
+    /// The adapters to hand llama.cpp, in composition order (behavioral first,
+    /// then contract), skipping any the hero doesn't declare. Emitted by
+    /// `build_server_args` as a single comma-separated `--lora`.
+    pub fn loras(&self) -> Vec<&Path> {
+        [self.behavioral_lora.as_deref(), self.contract_lora.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
 }
 
 /// Resolve the hero model on disk: downloaded copy first (app data),
@@ -157,7 +176,13 @@ pub fn resolve_launch(app: &AppHandle) -> Option<LaunchPaths> {
     let variant = crate::catalog::hero_variant(hero, &tier);
     let model_file = variant.model_file.clone()?;
     let app_data = app.path().app_data_dir().ok();
-    resolve_launch_paths(app_data, root, &model_file, variant.adapter_file.as_deref())
+    resolve_launch_paths(
+        app_data,
+        root,
+        &model_file,
+        variant.adapter_file.as_deref(),
+        variant.contract_adapter_file.as_deref(),
+    )
 }
 
 /// Pure resolution logic behind [`resolve_launch`]: resolves the base
@@ -172,13 +197,21 @@ fn resolve_launch_paths(
     resources: PathBuf,
     model_file: &str,
     adapter_file: Option<&str>,
+    contract_adapter_file: Option<&str>,
 ) -> Option<LaunchPaths> {
     let model = resolve_model(app_data.clone(), resources.clone(), model_file)?;
-    let lora = match adapter_file {
-        Some(adapter_file) => Some(resolve_model(app_data, resources, adapter_file)?),
+    // Each DECLARED adapter must resolve on disk, else the whole launch
+    // collapses to `None` (fail-closed via `?`) — never launch base-only, or
+    // behavioral-only when a contract adapter is declared.
+    let behavioral_lora = match adapter_file {
+        Some(f) => Some(resolve_model(app_data.clone(), resources.clone(), f)?),
         None => None,
     };
-    Some(LaunchPaths { model, lora })
+    let contract_lora = match contract_adapter_file {
+        Some(f) => Some(resolve_model(app_data, resources, f)?),
+        None => None,
+    };
+    Some(LaunchPaths { model, behavioral_lora, contract_lora })
 }
 
 /// Pure resolution logic behind `model_path`: app-data copy wins if present,
@@ -255,6 +288,23 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
     verify_hash_once(&engine.verified_adapter, adapter, expected.as_deref(), "adapter")
 }
 
+/// The contract adapter's (adapter v2) counterpart of [`verify_adapter_once`]:
+/// re-hashes it against the catalog's `contract_adapter_sha256` with its own
+/// session cache. Only called when [`resolve_launch`] produced a
+/// `contract_lora` path (i.e. the tier declares a `contract_adapter_file`).
+fn verify_contract_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
+    if engine.verified_contract_adapter.lock().unwrap().as_deref() == Some(adapter) {
+        return Ok(());
+    }
+    let expected = hero_hash(app, |v| v.contract_adapter_sha256.clone())?;
+    verify_hash_once(
+        &engine.verified_contract_adapter,
+        adapter,
+        expected.as_deref(),
+        "contract adapter",
+    )
+}
+
 /// Reads the hero entry and projects one of its pinned hashes out of it —
 /// the shared catalog read behind `verify_model_once`/`verify_adapter_once`.
 /// Returns the (owned) hash string, or `None` when the catalog pins none.
@@ -315,12 +365,13 @@ fn pid_file_path() -> PathBuf {
     std::env::temp_dir().join("cleophis-llama.pid")
 }
 
-/// Builds the exact llama-server argument vector (B4's testable unit). With
-/// `lora: None` it is byte-identical to the args this app has always passed;
-/// with `lora: Some(path)` it appends `--lora <path>` so the base and adapter
-/// are loaded SEPARATELY (never merged). Pure — no `AppHandle`, no process —
-/// so both branches are covered directly by the unit tests below.
-fn build_server_args(model: &Path, port: u16, ngl: u32, lora: Option<&Path>) -> Vec<String> {
+/// Builds the exact llama-server argument vector (B4's testable unit). With no
+/// adapters it is byte-identical to the args this app has always passed; with
+/// one or more it appends a single `--lora a,b` — llama.cpp b10042 takes
+/// comma-separated adapters and COMPOSES them on the base at load (never
+/// merged), verified against the bundled binary's `--help`. Pure — no
+/// `AppHandle`, no process — so every branch is covered by the unit tests below.
+fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
         model.to_string_lossy().into_owned(),
@@ -334,9 +385,15 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, lora: Option<&Path>) -> 
         "4096".to_string(),
         "--no-webui".to_string(),
     ];
-    if let Some(lora) = lora {
+    if !loras.is_empty() {
         args.push("--lora".to_string());
-        args.push(lora.to_string_lossy().into_owned());
+        args.push(
+            loras
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
     }
     args
 }
@@ -353,7 +410,7 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
         .append(true)
         .open(&log_path)?;
 
-    let args = build_server_args(&launch.model, port, ngl, launch.lora.as_deref());
+    let args = build_server_args(&launch.model, port, ngl, &launch.loras());
     let mut cmd = Command::new(exe);
     cmd.args(&args)
         .stdout(Stdio::from(log.try_clone()?))
@@ -476,12 +533,18 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
                 // Verify the base, then (when declared) the adapter — both are
                 // fed to llama.cpp, so both get the same load-time integrity
                 // gate before a single byte is parsed.
-                let integrity = verify_model_once(&engine, &app, &launch.model).and_then(|()| {
-                    match &launch.lora {
+                // Verify the base, the behavioral adapter, and (when declared)
+                // the contract adapter — every file fed to `--lora` gets its
+                // load-time integrity gate before a byte is parsed.
+                let integrity = verify_model_once(&engine, &app, &launch.model)
+                    .and_then(|()| match &launch.behavioral_lora {
                         Some(lora) => verify_adapter_once(&engine, &app, lora),
                         None => Ok(()),
-                    }
-                });
+                    })
+                    .and_then(|()| match &launch.contract_lora {
+                        Some(lora) => verify_contract_adapter_once(&engine, &app, lora),
+                        None => Ok(()),
+                    });
                 if let Err(e) = integrity {
                     eprintln!("start: integrity check failed: {e}");
                     engine.set_status(EngineStatus::Failed);
@@ -628,6 +691,7 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     engine.shutting_down.store(false, Ordering::Relaxed);
     *engine.verified_model.lock().unwrap() = None;
     *engine.verified_adapter.lock().unwrap() = None;
+    *engine.verified_contract_adapter.lock().unwrap() = None;
     engine.set_status(EngineStatus::Starting);
     start(app, engine);
 }
@@ -700,7 +764,7 @@ mod tests {
     #[test]
     fn build_server_args_without_lora_is_the_historical_arg_vec() {
         let model = PathBuf::from("/models/base.gguf");
-        let got = build_server_args(&model, 8080, 99, None);
+        let got = build_server_args(&model, 8080, 99, &[]);
         assert_eq!(
             got,
             vec![
@@ -720,7 +784,7 @@ mod tests {
     fn build_server_args_with_lora_appends_lora_flag_and_path() {
         let model = PathBuf::from("/models/base.gguf");
         let lora = PathBuf::from("/models/adapter.gguf");
-        let got = build_server_args(&model, 8080, 0, Some(&lora));
+        let got = build_server_args(&model, 8080, 0, &[lora.as_path()]);
         assert_eq!(
             got,
             vec![
@@ -735,9 +799,28 @@ mod tests {
         );
         // The only difference vs. the no-lora branch is the trailing pair —
         // every leading arg is identical, byte for byte.
-        let base = build_server_args(&model, 8080, 0, None);
+        let base = build_server_args(&model, 8080, 0, &[]);
         assert_eq!(&got[..base.len()], base.as_slice());
         assert_eq!(&got[base.len()..], &["--lora".to_string(), "/models/adapter.gguf".to_string()]);
+    }
+
+    #[test]
+    fn build_server_args_with_two_loras_comma_joins_a_single_flag() {
+        // Static composition: behavioral + contract adapters go in ONE
+        // comma-separated `--lora`, in order (llama.cpp b10042 composes them).
+        let model = PathBuf::from("/models/base.gguf");
+        let behavioral = PathBuf::from("/models/behavioral.gguf");
+        let contract = PathBuf::from("/models/contract.gguf");
+        let got = build_server_args(&model, 8080, 0, &[behavioral.as_path(), contract.as_path()]);
+        assert_eq!(
+            &got[got.len() - 2..],
+            &[
+                "--lora".to_string(),
+                "/models/behavioral.gguf,/models/contract.gguf".to_string(),
+            ]
+        );
+        // Exactly one `--lora` flag, never two.
+        assert_eq!(got.iter().filter(|a| *a == "--lora").count(), 1);
     }
 
     // ---- B4 Step 1: adapter-aware launch resolution ----
@@ -755,10 +838,59 @@ mod tests {
             resources,
             "models/base.gguf",
             Some("models/adapter.gguf"),
+            None,
         )
         .expect("both files present -> Some");
         assert_eq!(got.model, app_data.join("models/base.gguf"));
-        assert_eq!(got.lora, Some(app_data.join("models/adapter.gguf")));
+        assert_eq!(got.behavioral_lora, Some(app_data.join("models/adapter.gguf")));
+        assert_eq!(got.contract_lora, None);
+        assert_eq!(got.loras(), vec![app_data.join("models/adapter.gguf").as_path()]);
+    }
+
+    #[test]
+    fn resolve_launch_paths_composes_behavioral_and_contract_when_both_declared() {
+        let app_data = unique_dir("launch-compose-ad");
+        let resources = unique_dir("launch-compose-res");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        for f in ["models/base.gguf", "models/behavioral.gguf", "models/contract.gguf"] {
+            std::fs::write(app_data.join(f), b"x").unwrap();
+        }
+        let got = resolve_launch_paths(
+            Some(app_data.clone()),
+            resources,
+            "models/base.gguf",
+            Some("models/behavioral.gguf"),
+            Some("models/contract.gguf"),
+        )
+        .expect("all three present -> Some");
+        // Composition order: behavioral first, contract second.
+        assert_eq!(
+            got.loras(),
+            vec![
+                app_data.join("models/behavioral.gguf").as_path(),
+                app_data.join("models/contract.gguf").as_path(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_launch_paths_declared_contract_adapter_missing_is_none() {
+        // Fail-closed: a declared contract adapter that isn't on disk collapses
+        // the launch even though base + behavioral are present.
+        let app_data = unique_dir("launch-nocontract-ad");
+        let resources = unique_dir("launch-nocontract-res");
+        std::fs::create_dir_all(app_data.join("models")).unwrap();
+        std::fs::write(app_data.join("models/base.gguf"), b"x").unwrap();
+        std::fs::write(app_data.join("models/behavioral.gguf"), b"x").unwrap();
+        // contract.gguf deliberately NOT written.
+        let got = resolve_launch_paths(
+            Some(app_data),
+            resources,
+            "models/base.gguf",
+            Some("models/behavioral.gguf"),
+            Some("models/contract.gguf"),
+        );
+        assert!(got.is_none(), "declared-but-missing contract adapter must resolve to None");
     }
 
     #[test]
@@ -777,6 +909,7 @@ mod tests {
             resources,
             "models/base.gguf",
             Some("models/adapter.gguf"),
+            None,
         );
         assert!(got.is_none(), "declared-but-missing adapter must resolve to None");
     }
@@ -788,10 +921,11 @@ mod tests {
         std::fs::create_dir_all(app_data.join("models")).unwrap();
         std::fs::write(app_data.join("models/base.gguf"), b"base").unwrap();
 
-        let got = resolve_launch_paths(Some(app_data.clone()), resources, "models/base.gguf", None)
+        let got = resolve_launch_paths(Some(app_data.clone()), resources, "models/base.gguf", None, None)
             .expect("base present, no adapter declared -> Some");
         assert_eq!(got.model, app_data.join("models/base.gguf"));
-        assert_eq!(got.lora, None);
+        assert_eq!(got.behavioral_lora, None);
+        assert!(got.loras().is_empty());
     }
 
     #[test]
@@ -804,6 +938,7 @@ mod tests {
             resources,
             "models/base.gguf",
             Some("models/adapter.gguf"),
+            None,
         );
         assert!(got.is_none(), "missing base must resolve to None");
     }

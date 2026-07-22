@@ -78,6 +78,17 @@ pub struct TierVariant {
     pub adapter_file: String,
     pub adapter_sha256: String,
     pub adapter_id: String,
+    /// The contract-grounding (adapter v2) LoRA, composed onto the base
+    /// ALONGSIDE `adapter_file` via a second `--lora` (static composition).
+    /// `Option` — absent until adapter v2 ships for this tier; when present,
+    /// all three files (base + behavioral + contract) must be on disk to
+    /// launch (see `inference::resolve_launch`).
+    #[serde(default)]
+    pub contract_adapter_file: Option<String>,
+    #[serde(default)]
+    pub contract_adapter_sha256: Option<String>,
+    #[serde(default)]
+    pub contract_adapter_id: Option<String>,
     pub file_bytes: u64,
 }
 
@@ -119,6 +130,12 @@ pub struct ResolvedHero {
     pub adapter_file: Option<String>,
     pub adapter_sha256: Option<String>,
     pub adapter_id: Option<String>,
+    /// The contract-grounding (adapter v2) LoRA for this tier, composed
+    /// alongside `adapter_file`. `None` on the flat-field fallback and until
+    /// v2 ships.
+    pub contract_adapter_file: Option<String>,
+    pub contract_adapter_sha256: Option<String>,
+    pub contract_adapter_id: Option<String>,
     pub file_bytes: Option<u64>,
 }
 
@@ -136,6 +153,9 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
             adapter_file: Some(v.adapter_file.clone()),
             adapter_sha256: Some(v.adapter_sha256.clone()),
             adapter_id: Some(v.adapter_id.clone()),
+            contract_adapter_file: v.contract_adapter_file.clone(),
+            contract_adapter_sha256: v.contract_adapter_sha256.clone(),
+            contract_adapter_id: v.contract_adapter_id.clone(),
             file_bytes: Some(v.file_bytes),
         }
     } else {
@@ -147,6 +167,9 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
             adapter_file: entry.adapter_file.clone(),
             adapter_sha256: entry.adapter_sha256.clone(),
             adapter_id: entry.adapter_id.clone(),
+            contract_adapter_file: None,
+            contract_adapter_sha256: None,
+            contract_adapter_id: None,
             file_bytes: Some(entry.file_bytes),
         }
     }
