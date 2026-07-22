@@ -156,18 +156,22 @@ VALID_KINDS = ("base", "adapter", "contract-adapter")
 CATALOG_ARTIFACT_VERSION = "v1"
 
 
-def expected_basename(kind: str, base_model: str, quant: str | None) -> str | None:
+def expected_basename(kind: str, base_model: str, quant: str | None, version: str = "v1") -> str | None:
     """Artifact basename DERIVED from base_model — matching build_base.py's
     ``{model_name}-Instruct-{quant}.gguf`` and build_adapter.py's
     ``behavioral-v1-{base_model}.gguf``. A derivation, not a per-tier table,
     so adding a tier needs no edit here — only the KNOWN_BASE_MODELS allowlist.
-    Returns None for an unknown kind, or a base with no quant to derive from."""
+    Returns None for an unknown kind, or a base with no quant to derive from.
+
+    `version` applies only to the contract adapter — its retrains are published
+    as distinct, immutable artifacts (contract-v1, contract-v2, …) at
+    version-scoped paths, so the same base can carry more than one over time."""
     if kind == "base":
         return f"{base_model}-Instruct-{quant}.gguf" if quant else None
     if kind == "adapter":
         return f"behavioral-v1-{base_model}.gguf"
     if kind == "contract-adapter":
-        return f"contract-v1-{base_model}.gguf"
+        return f"contract-{version}-{base_model}.gguf"
     return None
 
 REQUIRED_MANIFEST_FIELDS = ("kind", "base_model", "sha256", "size", "name")
@@ -301,8 +305,8 @@ def resolve_license(manifest: dict, overrides: dict[str, str], manifest_path: Pa
     )
 
 
-def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, manifest_path: Path) -> str:
-    expected_name = expected_basename(kind, base_model, quant)
+def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, manifest_path: Path, version: str = "v1") -> str:
+    expected_name = expected_basename(kind, base_model, quant, version)
     if expected_name is None:
         detail = (
             'a base manifest needs a "quant" field to derive its basename'
@@ -320,7 +324,7 @@ def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, 
     if kind == "adapter":
         return f"adapters/behavioral/v1/{base_model}/{name}"
     if kind == "contract-adapter":
-        return f"adapters/contract/v1/{base_model}/{name}"
+        return f"adapters/contract/{version}/{base_model}/{name}"
     raise AssertionError(f"unreachable: kind {kind!r} passed the expected_basename check above")
 
 
@@ -356,8 +360,21 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise CatalogAssemblyError(f"{manifest_path}: size={size!r} is not a positive integer")
 
+    # The contract adapter is the one artifact that gets retrained and
+    # re-published under a bumped, version-scoped path (contract-v1 → v2 → …);
+    # every other kind stays "v1". `dist_version` selects which (default v1 for
+    # back-compat with existing contract-v1 manifests).
+    if kind == "contract-adapter":
+        dist_version = manifest.get("dist_version", "v1")
+        if dist_version not in ("v1", "v2"):
+            raise CatalogAssemblyError(
+                f"{manifest_path}: dist_version={dist_version!r} must be 'v1' or 'v2'"
+            )
+    else:
+        dist_version = CATALOG_ARTIFACT_VERSION
+
     license_id = resolve_license(manifest, overrides, manifest_path)
-    path = artifact_path_for(kind, base_model, name, manifest.get("quant"), manifest_path)
+    path = artifact_path_for(kind, base_model, name, manifest.get("quant"), manifest_path, dist_version)
 
     return {
         "path": path,
@@ -365,7 +382,7 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
         "size": size,
         "kind": kind,
         "base_model": base_model,
-        "version": CATALOG_ARTIFACT_VERSION,
+        "version": dist_version,
         "license": license_id,
     }
 

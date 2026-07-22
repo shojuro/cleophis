@@ -108,13 +108,9 @@ def build_probes(c, tutor):
     ]
 
 
-def ask(url, system, user, greeting, timeout=180):
-    msgs = [{"role": "system", "content": system}]
-    if greeting:
-        msgs.append({"role": "assistant", "content": greeting})
-    msgs.append({"role": "user", "content": user})
+def chat(url, messages, timeout=200):
     body = json.dumps({
-        "messages": msgs,
+        "messages": messages,
         "stream": False,
         "temperature": 0,
         "max_tokens": 320,
@@ -126,6 +122,49 @@ def ask(url, system, user, greeting, timeout=180):
     )
     r = json.load(urllib.request.urlopen(req, timeout=timeout))
     return r["choices"][0]["message"]["content"]
+
+
+def ask(url, system, user, greeting, timeout=200):
+    msgs = [{"role": "system", "content": system}]
+    if greeting:
+        msgs.append({"role": "assistant", "content": greeting})
+    msgs.append({"role": "user", "content": user})
+    return chat(url, msgs, timeout)
+
+
+def multiturn_cascade(url, c, greeting):
+    """The v2 ship gate: an early (correct) refusal must NOT poison the following
+    answerable grounded turns. Replays the exact failure shape found in the E2E.
+    Returns (id, required, ok, why, resp) rows. The trigger is advisory; the two
+    recovery turns are REQUIRED — they are what v1 got wrong."""
+    sysmsg = assemble_system(c, PHOTO, no_evidence=False)
+    hist = [{"role": "system", "content": sysmsg}]
+    if greeting:
+        hist.append({"role": "assistant", "content": greeting})
+    seq = [
+        ("mt_trigger", False,
+         "What is the boiling point of water at sea level?",
+         is_refusal, "uncovered question -> refuse (arms the cascade)"),
+        ("mt_recover_summarize", True,
+         "summarize the sources",
+         lambda r: has_citation(r) and not is_refusal(r),
+         "AFTER a refusal, 'summarize' must ANSWER + cite (v1 cascaded here)"),
+        ("mt_recover_cite", True,
+         "What is the source of the oxygen that photosynthesis releases?",
+         lambda r: has_citation(r) and not is_refusal(r),
+         "AFTER refusals, a covered question must ANSWER + cite"),
+    ]
+    rows = []
+    for pid, required, q, check, why in seq:
+        hist.append({"role": "user", "content": q})
+        try:
+            r = strip_think(chat(url, hist))
+        except Exception as e:  # noqa: BLE001
+            r = f"<request error: {e}>"
+        hist.append({"role": "assistant", "content": r})
+        ok = False if r.startswith("<request error") else bool(check(r))
+        rows.append((pid, required, ok, why, r))
+    return rows
 
 
 def hero_greeting():
@@ -169,6 +208,19 @@ def main():
         print(f"        -> {oneline[:args.show]}{'…' if len(oneline) > args.show else ''}\n")
 
     total_req = sum(1 for p in probes if p[1])
+
+    # Multi-turn cascade gate — the v2 acceptance test.
+    print("--- multi-turn cascade (an early refusal must not poison later turns) ---\n")
+    for pid, required, ok, why, resp in multiturn_cascade(args.url, c, greeting):
+        tag = "PASS" if ok else ("FAIL" if required else "warn")
+        if required:
+            total_req += 1
+            if not ok:
+                required_fail += 1
+        oneline = " ".join(resp.split())
+        print(f"[{tag}] {pid:<22} ({'req' if required else 'adv'}) — {why}")
+        print(f"        -> {oneline[:args.show]}{'…' if len(oneline) > args.show else ''}\n")
+
     passed_req = total_req - required_fail
     print(f"=== REQUIRED: {passed_req}/{total_req} passed ===")
     if required_fail:
