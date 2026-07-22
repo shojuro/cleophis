@@ -12,6 +12,8 @@ src-tauri/resources/models/*.gguf
 src-tauri/resources/llama/
 src-tauri/resources/embedders/*.gguf
 src-tauri/resources/pdfium/*.dll
+# fetched OCR runtime (tesseract binary + traineddata) — never committed, like resources/pdfium/
+src-tauri/resources/ocr/
 models-lab/
 tools/covers/out/
 *.log
