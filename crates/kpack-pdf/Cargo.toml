@@ -22,10 +22,21 @@ edition = "2021"
 # AND the bblanchon/pdfium-binaries release tag together), not a side
 # effect.
 [dependencies]
+# NOTE: the brief pins the `image_api` feature for `PdfBitmap::as_image()`,
+# but in 0.9.3 `image_api` alone is an empty marker feature — it does NOT
+# pull in an `image` dependency (confirmed via this crate's own upstream
+# Cargo.toml: `image_api = []`, while `image_025 = ["dep:image_025",
+# "image_api"]`). `image_025` is the feature that actually wires in
+# `image` 0.25 (aliased internally as `image_025`, `package = "image"`)
+# AND turns on `image_api`, matching our own pinned `image = "0.25"` below
+# so Cargo unifies both into one dependency (pdfium-render's `jpeg`
+# feature + our `png` feature on the same `image` crate).
 pdfium-render = { version = "=0.9.3", default-features = false, features = [
     "pdfium_7881",
     "thread_safe",
+    "image_025",
 ] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Do NOT depend on `kpack-core` here: this crate is pure bytes-in,
 # text-out. The `.kpack` `Document` builder that turns `PageText` output
