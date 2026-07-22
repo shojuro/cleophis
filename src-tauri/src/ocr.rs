@@ -94,7 +94,14 @@ pub fn ocr_png(app: &AppHandle, png_bytes: &[u8]) -> Result<String, OcrError> {
 /// noisy image tesseract hallucinates lots of garbage text from) would block
 /// in `write()` and masquerade as a genuine `PER_PAGE_TIMEOUT` hang. A file
 /// sidesteps pipe capacity entirely.
-fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<String, OcrError> {
+///
+/// `pub(crate)` (not private) so `kpack`'s real-dependency `#[ignore]`d
+/// tests can build an `ocr_page` closure over it directly, exactly like
+/// this module's own `ocr_png_reads_printed_english` test does — those
+/// tests have no `AppHandle` either (see `build_personal_pack_with_embedder`'s
+/// doc comment for why it's `AppHandle`-free), so they resolve the bundled
+/// tesseract/tessdata paths the same manual way, from `CARGO_MANIFEST_DIR`.
+pub(crate) fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<String, OcrError> {
     if !bin.is_file() {
         return Err(OcrError::Unavailable);
     }
@@ -185,11 +192,18 @@ mod tests {
     /// Real-tesseract smoke test — exercises `ocr_png_with_paths` directly
     /// against the dev `resources/ocr/` tree, no `AppHandle`/mock needed
     /// (mirrors `kpack-pdf`'s `pdf_smoke.rs` real-artifact `#[ignore]`
-    /// pattern). NOT runnable yet: the bundled tesseract binary ships in a
-    /// later task (`node tools/fetch-tesseract.mjs`), so this is deferred —
-    /// see the OCR task report.
+    /// pattern). Runnable now (Task 5, D2): the bundled tesseract binary +
+    /// `tessdata/eng.traineddata` ship in `resources/ocr/`
+    /// (`node tools/fetch-tesseract.mjs`), and the fixture
+    /// `tests/fixtures/scanned-eng.png` is a real 300-DPI raster of
+    /// `crates/kpack-pdf/tests/fixtures/sample.pdf` page 1 (whose known text
+    /// is "...page one alpha"), rendered via `kpack_pdf::render_page` —
+    /// see `examples/gen_ocr_fixture.rs`'s history for how it was made.
+    /// `#[ignore]`d like the other real-dependency tests in this app (not
+    /// run by a plain `cargo test`); run explicitly with `cargo test -p
+    /// cleophis ocr::tests::ocr_png_reads_printed_english -- --ignored`.
     #[test]
-    #[ignore] // needs the bundled tesseract (`node tools/fetch-tesseract.mjs`) + fixture
+    #[ignore] // real bundled tesseract + fixture — see doc comment above
     fn ocr_png_reads_printed_english() {
         let ocr_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(OCR_RELATIVE_DIR);
         let bin = ocr_dir.join(tesseract_binary_name());
