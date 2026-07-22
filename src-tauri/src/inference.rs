@@ -60,6 +60,15 @@ pub struct Engine {
     /// `contract_adapter_sha256` — its own cache slot so both composed
     /// adapters can be verified-once independently.
     verified_contract_adapter: Mutex<Option<PathBuf>>,
+    /// Serializes [`restart`] across all callers (tier switch, and now
+    /// `load_model`'s Failed→restart recovery). `restart`'s own `thread_alive`
+    /// wait only guards against a *previously running* watchdog, not a *second
+    /// concurrent restart*: two restarts that both observe `thread_alive ==
+    /// false` before either calls `start` would each spawn a watchdog thread,
+    /// and the two llama-servers would fight over the fixed port + `child`
+    /// (orphaning one, holding VRAM). Holding this for the whole restart makes
+    /// concurrent restarts run one-at-a-time instead.
+    restart_lock: Mutex<()>,
 }
 
 impl Engine {
@@ -75,6 +84,7 @@ impl Engine {
             verified_model: Mutex::new(None),
             verified_adapter: Mutex::new(None),
             verified_contract_adapter: Mutex::new(None),
+            restart_lock: Mutex::new(()),
         }
     }
 
@@ -668,6 +678,14 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
 /// could expire mid-load and spawn a second thread (the race this prevents).
 /// Blocking — call it off the async runtime (`spawn_blocking`).
 pub fn restart(app: AppHandle, engine: Arc<Engine>) {
+    // Serialize with any other restart in flight (a concurrent tier switch, or a
+    // rapid double of load_model's Failed→restart recovery). Without this, two
+    // callers could both pass the `thread_alive` wait below before either spawns
+    // and end up with two watchdog threads racing on the port + `child`. Held
+    // for the whole stop→wait→relaunch so the second caller's sequence only
+    // begins once the first has fully completed. Blocking is fine — restart is
+    // always called off the async runtime.
+    let _restart_guard = engine.restart_lock.lock().unwrap();
     // Stop the running engine WITHOUT setting `closing` (that flag is reserved
     // for real app teardown): flag shutdown so the old watchdog thread breaks
     // at its next checkpoint, and kill its child now.
@@ -693,7 +711,11 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     *engine.verified_adapter.lock().unwrap() = None;
     *engine.verified_contract_adapter.lock().unwrap() = None;
     engine.set_status(EngineStatus::Starting);
-    start(app, engine);
+    // Clone so `engine` (and thus `_restart_guard`, which borrows it) stays
+    // alive through `start`: the lock must be held until `start` has set
+    // `thread_alive = true`, or a second restart could still slip past the
+    // wait above. The guard drops at function end, just after `start` returns.
+    start(app, engine.clone());
 }
 
 #[cfg(test)]

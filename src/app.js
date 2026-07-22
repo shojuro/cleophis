@@ -1444,7 +1444,12 @@ async function sendCompletion(userText) {
         // marker — so hand the marker to the model and let IT refuse. Only when
         // no contract adapter is present do we fall back to the interim scripted
         // refusal (the un-adapted base model won't reliably refuse on its own).
-        const contractActive = tierVariant(effectiveTier())?.contractAdapterId;
+        // Gate on the SAME field the engine composes + verifies the adapter on
+        // (contractAdapterFile — inference.rs / downloadHeroPair), not
+        // contractAdapterId: if a catalog ever declared the id without the file,
+        // keying off the id would hand [[NO_EVIDENCE]] to a NON-contract-composed
+        // base model that won't reliably refuse — fail-open toward hallucination.
+        const contractActive = tierVariant(effectiveTier())?.contractAdapterFile;
         if (!contractActive) {
           const n = state.chat.packPaths.length;
           const refusal = `I couldn't find anything about that in your attached pack${n > 1 ? 's' : ''}, so I won't guess. Try rephrasing, or attach a pack that covers it.`;
