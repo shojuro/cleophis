@@ -7,9 +7,6 @@ mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
-// Wired into the scanned-PDF build path by the OCR orchestration (kpack.rs);
-// until that caller lands its API is legitimately unused. Drop this allow then.
-#[allow(dead_code)]
 mod ocr;
 mod tier_select;
 
