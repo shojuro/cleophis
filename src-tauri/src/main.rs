@@ -48,17 +48,42 @@ async fn load_model(
     app: tauri::AppHandle,
     engine: tauri::State<'_, Arc<Engine>>,
 ) -> Result<EngineInfo, String> {
-    if *engine.status.lock().unwrap() == EngineStatus::NoModel {
+    // Snapshot the status, then drop the lock before any (re)start — restart()
+    // re-takes the engine's locks.
+    let status = { engine.status.lock().unwrap().clone() };
+    match status {
         // The dist-catalog download path (download_artifact) lands the base +
         // adapter but — unlike download_model — never starts the engine
         // itself (that wiring is this command's job, B4). If the hero is now
         // fully on disk (base AND, when declared, adapter — resolve_launch
         // enforces both), start it; otherwise it is genuinely not downloaded.
-        if inference::model_path(&app).is_some() {
-            inference::start_if_no_model(app.clone(), engine.inner().clone());
-        } else {
-            return Err("Model not downloaded yet.".to_string());
+        EngineStatus::NoModel => {
+            if inference::model_path(&app).is_some() {
+                inference::start_if_no_model(app.clone(), engine.inner().clone());
+            } else {
+                return Err("Model not downloaded yet.".to_string());
+            }
         }
+        // A prior launch failed its load-time integrity gate — most often a
+        // required file (e.g. the adapter-v2 contract adapter) was missing at
+        // boot and has since been re-downloaded from the failed-engine banner.
+        // `start_if_no_model` is a no-op from Failed, so recovery must go
+        // through restart(), which re-runs resolve_launch + the integrity gate
+        // over the now-complete set (a still-incomplete set just fails again,
+        // re-surfacing engine-failed). restart() joins the old watchdog thread,
+        // so it is blocking — run it off the async runtime.
+        EngineStatus::Failed => {
+            if inference::model_path(&app).is_some() {
+                let app2 = app.clone();
+                let eng = engine.inner().clone();
+                tauri::async_runtime::spawn_blocking(move || inference::restart(app2, eng))
+                    .await
+                    .map_err(|_| "The local engine failed to restart.".to_string())?;
+            } else {
+                return Err("Model not downloaded yet.".to_string());
+            }
+        }
+        _ => {}
     }
     let deadline = Instant::now() + Duration::from_secs(180);
     loop {

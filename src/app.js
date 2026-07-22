@@ -98,7 +98,29 @@ function heroAdapterId(m) {
 async function boot() {
   await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); });
   await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); });
-  await listen('engine-failed', (e) => { showEngineBanner('Local engine failed: ' + e.payload); setComposerEnabled(false); });
+  await listen('engine-failed', async (e) => {
+    setComposerEnabled(false);
+    // A failed integrity check almost always means a required model file is
+    // missing (e.g. an install predating a newly-required adapter, or one the
+    // tier-switch sweep removed). When download_status agrees the hero isn't
+    // fully installed, offer an in-place re-download — the "re-download it"
+    // message is useless without a control, especially from inside a chat.
+    // heroDownload fetches only the missing file(s), then load_model restarts
+    // the engine off Failed and re-enters the chat (engine-ready clears this).
+    const hero = state.catalog.find((m) => m.real);
+    let notInstalled = false;
+    if (hero) {
+      try { notInstalled = !(await invoke('download_status', { modelId: hero.id })).installed; } catch (_) {}
+    }
+    if (hero && notInstalled) {
+      showEngineBanner('Local engine failed — a required model file is missing.', {
+        label: 'Re-download',
+        onClick: () => heroDownload(hero, $('engineBanner').querySelector('.banner-action')),
+      });
+    } else {
+      showEngineBanner('Local engine failed: ' + e.payload);
+    }
+  });
   await listen('download-progress', onDownloadProgress);
   await listen('build-progress', onBuildProgress);
   state.catalog = await invoke('get_catalog');
@@ -1259,7 +1281,22 @@ function setComposerEnabled(on) {
   $('sendBtn').disabled = !on || state.chat.streaming;
 }
 
-function showEngineBanner(text) { const b = $('engineBanner'); b.hidden = false; b.textContent = text; }
+// The engine banner is normally a plain status line. `action` (optional) turns
+// it into an actionable one — a trailing button — so a recoverable failure
+// (a missing model file) carries its own fix instead of a dead instruction.
+function showEngineBanner(text, action) {
+  const b = $('engineBanner');
+  b.hidden = false;
+  b.textContent = text; // wipes any prior action button
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'banner-action';
+    btn.textContent = action.label;
+    btn.onclick = action.onClick;
+    b.appendChild(btn);
+  }
+}
 function hideEngineBanner() { $('engineBanner').hidden = true; }
 
 function pulseCost() {
