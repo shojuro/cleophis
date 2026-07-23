@@ -1068,6 +1068,11 @@ async function openChat(id) {
     role: msg.role,
     content: msg.content,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
+    // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
+    // convstore's MessageInfo `#[serde(rename_all = "camelCase")]`) as
+    // `msg.toolCalls` — NOT `msg.tool_calls`. Same shape finishStream stashed
+    // it in: `[{expression, display}]` or `[{expression, error}]`.
+    calculations: msg.toolCalls && msg.toolCalls.length ? msg.toolCalls : undefined,
   }));
   rebuildChatDom();
   updateGroundPill();
@@ -1182,16 +1187,20 @@ function rebuildChatDom() {
   // grounded turn) is replayed here so citations don't vanish when the
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
-  for (const msg of state.chat.messages) appendBubble(msg.role, msg.content, msg.citations);
+  // .calculations (Task 7) replays the same way, from `messages.tool_calls`.
+  for (const msg of state.chat.messages) {
+    appendBubble(msg.role, msg.content, msg.citations, msg.calculations);
+  }
   updateContextDivider();
 }
 
-function appendBubble(role, text, citations) {
+function appendBubble(role, text, citations, calculations) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
   $('chatMessages').appendChild(el);
   if (citations && citations.length) renderCitations(el, citations);
+  if (calculations && calculations.length) renderCalculations(el, calculations);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return el;
 }
@@ -1271,6 +1280,39 @@ function renderCitations(afterEl, citations) {
       pk.textContent = `pack: ${c.packId}`;
       row.appendChild(pk);
     }
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  afterEl.insertAdjacentElement('afterend', box);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
+}
+
+// Mirrors renderCitations immediately above (§3a A4's visual grammar: a
+// collapsed-by-default disclosure panel under the bubble, "here's where
+// this came from") for the calc() tool's provenance — expressions/results
+// are model-generated text, so textContent only, never innerHTML. Each row
+// is `expression = display` for a clean eval, or `expression → error` when
+// the tool call failed (kpack-calc's domain/parse errors — see calc-tool.js).
+function renderCalculations(afterEl, calcs) {
+  const box = document.createElement('div');
+  box.className = 'calculations';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'calctoggle';
+  const label = (open) => `${open ? '⌃' : '⌄'} ${calcs.length} calculation${calcs.length === 1 ? '' : 's'}`;
+  toggle.textContent = label(false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = label(open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'calclist';
+  for (const c of calcs) {
+    const row = document.createElement('div');
+    row.className = 'calc';
+    row.textContent = c.error ? `${c.expression} → ${c.error}` : `${c.expression} = ${c.display}`;
     list.appendChild(row);
   }
   box.appendChild(list);
@@ -1568,9 +1610,10 @@ async function sendCompletion(userText) {
 // null — also fire-and-forget, threaded through the same way as
 // `turnChatId` so a mid-stream chat switch still titles the RIGHT chat.
 // `calculations` ([{expression, display}] or [{expression, error}] from
-// streamWithTools, `[]` on abort/partial paths) is accepted but not yet
-// used here — Task 7 renders/persists it; the parameter exists now purely
-// so `turnChatId`/`autoTitle` don't shift position across call sites.
+// streamWithTools, `[]`/undefined on abort/partial paths) is stashed on the
+// pushed message + rendered via renderCalculations, and persisted to the
+// `messages.tool_calls` column below (Task 7) — same treatment as
+// `citations` throughout this function.
 function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
   // Only touch the live DOM/in-memory transcript if this turn's chat is
@@ -1593,6 +1636,12 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
       if (citations && citations.length) {
         msg.citations = citations;
         renderCitations(bubble, citations);
+      }
+      // Same treatment for the calc() tool's provenance (Task 7) — stashed
+      // on `msg` so rebuildChatDom's replay picks it up via `msg.calculations`.
+      if (calculations && calculations.length) {
+        msg.calculations = calculations;
+        renderCalculations(bubble, calculations);
       }
       state.chat.messages.push(msg);
     } else {
@@ -1621,6 +1670,9 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
       role: 'assistant',
       content: shown,
       citations: citations && citations.length ? citations : null,
+      // Tauri maps this camelCase invoke-arg to append_message's `tool_calls`
+      // Rust param (convstore.rs) — same convention as `chatId` -> `chat_id`.
+      toolCalls: calculations && calculations.length ? calculations : null,
     }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
   }
   // §7 S7-5: fire-and-forget the auto-title generation for this turn — do

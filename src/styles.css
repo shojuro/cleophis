@@ -245,6 +245,17 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .citations.expanded .citelist{display:flex}
 .cite{font-size:12.5px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
 .cite-pack{font-size:11px;color:var(--faint)}
+/* Task 7: calc() tool provenance panel — same visual grammar as .citations
+   above (collapsed by default, disclosure toggle), monospace rows since
+   these are expressions/results rather than prose. */
+.calculations{align-self:flex-start;margin-left:24px;max-width:min(720px,78%);display:flex;flex-direction:column;gap:6px;
+  padding-top:8px;border-top:1px solid var(--line)}
+.calctoggle{align-self:flex-start;background:none;border:0;color:var(--muted);font-size:12px;font-weight:600;
+  padding:0;cursor:pointer}
+.calctoggle:hover{color:var(--text)}
+.calclist{display:none;flex-direction:column;gap:4px}
+.calculations.expanded .calclist{display:flex}
+.calc{font-size:12.5px;color:var(--muted);font-family:var(--mono);font-variant-numeric:tabular-nums}
 .retrychip{align-self:flex-start;margin-left:24px;background:none;border:1px dashed var(--heavy);color:var(--heavy);
   border-radius:999px;padding:5px 14px;font-size:12.5px}
 /* §7 S7-4: context-window boundary — a system hint, not a message, so it
