@@ -95,6 +95,9 @@ impl<'a> Parser<'a> {
         self.depth += 1;
         if self.depth > MAX_DEPTH { return Err(CalcError::TooDeep); }
         let mut lhs = self.unary()?;
+        if let Some(Tok::Ident(id)) = self.peek() {
+            if id == "deg" { self.pos += 1; lhs = lhs * std::f64::consts::PI / 180.0; }
+        }
         loop {
             let (bp, right_assoc, op) = match self.peek() {
                 Some(Tok::Plus) => (1, false, '+'),
@@ -141,13 +144,50 @@ impl<'a> Parser<'a> {
                     _ => Err(CalcError::Syntax("expected ')'".into())),
                 }
             }
-            // Task 2 replaces this arm with ident (function/constant/deg) handling.
-            Some(Tok::Ident(name)) => Err(CalcError::UnknownName(name)),
+            Some(Tok::Ident(name)) => {
+                match name.as_str() {
+                    "pi" => Ok(std::f64::consts::PI),
+                    "e" => Ok(std::f64::consts::E),
+                    "deg" => Err(CalcError::Syntax("'deg' must follow a number, e.g. 30 deg".into())),
+                    _ => {
+                        // function call: name '(' expr ')'
+                        match self.next() {
+                            Some(Tok::LParen) => {}
+                            _ => return Err(CalcError::UnknownName(name)),
+                        }
+                        let arg = self.expr(0)?;
+                        match self.next() {
+                            Some(Tok::RParen) => {}
+                            _ => return Err(CalcError::Syntax(format!("expected ')' after {name}("))),
+                        }
+                        apply_fn(&name, arg)
+                    }
+                }
+            }
             Some(t) => Err(CalcError::Syntax(format!("unexpected token {t:?}"))),
             None => Err(CalcError::Syntax("unexpected end of expression".into())),
         }
     }
 }
+
+fn apply_fn(name: &str, x: f64) -> Result<f64, CalcError> {
+    let v = match name {
+        "sqrt" => { if x < 0.0 { return Err(CalcError::Domain("sqrt of a negative number".into())); } x.sqrt() }
+        "sin" => x.sin(),
+        "cos" => x.cos(),
+        "tan" => x.tan(),
+        "log" => { if x <= 0.0 { return Err(CalcError::Domain("log of a non-positive number".into())); } x.log10() }
+        "ln" => { if x <= 0.0 { return Err(CalcError::Domain("ln of a non-positive number".into())); } x.ln() }
+        "abs" => x.abs(),
+        "round" => round_half_away(x),
+        _ => return Err(CalcError::UnknownName(name.to_string())),
+    };
+    Ok(v)
+}
+
+/// Round to nearest integer, half-AWAY-from-zero (Rust's f64::round already
+/// does this; wrapped + tested so the contract is explicit and can't drift).
+fn round_half_away(x: f64) -> f64 { x.round() }
 
 #[cfg(test)]
 mod tests {
@@ -175,5 +215,31 @@ mod tests {
         assert!(matches!(evaluate("1 2"), Err(CalcError::Syntax(_))));
         assert!(matches!(evaluate("1/0"), Err(CalcError::DivByZero)));
         assert!(matches!(evaluate(""), Err(CalcError::Syntax(_))));
+    }
+
+    fn approx(a: f64, b: f64) { assert!((a - b).abs() < 1e-9, "{a} vs {b}"); }
+
+    #[test]
+    fn functions_constants_and_degrees() {
+        approx(ev("sqrt(144) + 5"), 17.0);
+        approx(ev("abs(-7)"), 7.0);
+        approx(ev("round(2.5)"), 3.0);      // half-away-from-zero
+        approx(ev("round(-2.5)"), -3.0);
+        approx(ev("log(1000)"), 3.0);       // base 10
+        approx(ev("ln(e)"), 1.0);
+        approx(ev("pi"), std::f64::consts::PI);
+        approx(ev("sin(0)"), 0.0);          // radians
+        approx(ev("sin(30 deg)"), 0.5);     // deg postfix unit
+        approx(ev("cos(60 deg)"), 0.5);
+        approx(ev("pi * 5 ^ 2"), std::f64::consts::PI * 25.0);
+    }
+
+    #[test]
+    fn function_and_domain_errors() {
+        assert!(matches!(evaluate("nope(2)"), Err(CalcError::UnknownName(_))));
+        assert!(matches!(evaluate("bogus"), Err(CalcError::UnknownName(_))));
+        assert!(matches!(evaluate("sqrt(-1)"), Err(CalcError::Domain(_))));
+        assert!(matches!(evaluate("ln(0)"), Err(CalcError::Domain(_))));
+        assert!(matches!(evaluate("sqrt()"), Err(CalcError::Syntax(_))));
     }
 }
