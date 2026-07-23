@@ -52,21 +52,25 @@ function escapeHtml(s) {
 }
 
 // B4: the Qwen3 hero opens each turn with an EMPTY reasoning block
-// (`<think></think>`) before its visible answer. Strip exactly ONE such
-// block — optionally whitespace-wrapped — and ONLY at the very start of the
-// turn. The pattern is anchored at `^` and requires the block to be empty
-// (only whitespace between the tags), so it:
+// (`<think></think>`) before its visible answer. The multi-round tool loop
+// (one generation per round under `--jinja`) means this quirk can fire on
+// MORE THAN ONE round of the same turn (e.g. the tool-call round AND the
+// answer round), which accumulates as `<think></think><think></think>...`
+// once the rounds' content is concatenated. Strip ONE-OR-MORE consecutive
+// leading empty-think blocks — optionally whitespace-wrapped — and ONLY at
+// the very start of the turn. The pattern is anchored at `^` and requires
+// each block to be empty (only whitespace between the tags), so it:
 //   • never touches a NON-empty <think>…</think> (real reasoning is left in
 //     place — it just won't occur for this always-on behavioral adapter),
 //   • never strips anything mid-answer (a `</think>` appearing after real
 //     text is not at `^`, so it can't match), and
 //   • leaves a turn that doesn't start with the pattern 100% untouched.
-// `String.replace` with this anchored regex removes at most one occurrence,
-// and re-running it on a longer `acc` is idempotent (the same leading prefix
-// is removed each time), so it is safe to call on every partial render as
-// well as on the final persisted text.
+// `String.replace` with this anchored regex removes the entire leading run
+// in one pass, and re-running it on a longer `acc` is idempotent (the same
+// leading prefix is removed each time), so it is safe to call on every
+// partial render as well as on the final persisted text.
 function stripLeadingThink(text) {
-  return String(text).replace(/^\s*<think>\s*<\/think>\s*/, '');
+  return String(text).replace(/^(?:\s*<think>\s*<\/think>\s*)+/, '');
 }
 
 // Wrapper tier-selection: the hero installs/runs the base+adapter for the

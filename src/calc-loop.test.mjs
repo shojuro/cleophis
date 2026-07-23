@@ -55,6 +55,7 @@ test('caps at maxRounds to prevent runaway tool loops', async () => {
     fetchImpl, runCalc: async () => ({ display: '2' }), onContentDelta: () => {}, maxRounds: 5,
   });
   assert.equal(out.calculations.length, 5); // stopped after 5 rounds, didn't hang
+  assert.equal(out.content, 'I reached the calculation limit for this turn.'); // provenance not silently dropped
 });
 
 test('a calc error becomes the tool result so the model can recover', async () => {

@@ -22,7 +22,6 @@ export async function streamWithTools({
     const dec = new TextDecoder();
     let buf = '';
     const toolAcc = new Map(); // index -> { id, name, args }
-    let finish = null;
 
     outer: while (true) {
       const { done, value } = await reader.read();
@@ -38,7 +37,6 @@ export async function streamWithTools({
         let choice;
         try { choice = JSON.parse(data).choices?.[0]; } catch { continue; }
         if (!choice) continue;
-        if (choice.finish_reason) finish = choice.finish_reason;
         const d = choice.delta || {};
         if (d.content) { content += d.content; onContentDelta(d.content); }
         for (const tc of d.tool_calls || []) {
@@ -51,7 +49,10 @@ export async function streamWithTools({
       }
     }
 
-    if (toolAcc.size === 0) return { content, calculations };
+    if (toolAcc.size === 0) {
+      if (!content && calculations.length) content = 'Calculation complete.';
+      return { content, calculations };
+    }
 
     // Execute each tool call; append the assistant tool-call turn + tool results.
     const calls = [...toolAcc.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
@@ -77,5 +78,6 @@ export async function streamWithTools({
     }
   }
   // Hit the round cap — return what we have rather than looping forever.
+  if (!content && calculations.length) content = 'I reached the calculation limit for this turn.';
   return { content, calculations };
 }
