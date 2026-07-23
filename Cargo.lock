@@ -2388,6 +2388,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kpack-calc"
+version = "0.1.0"
+
+[[package]]
 name = "kpack-core"
 version = "0.1.0"
 dependencies = [

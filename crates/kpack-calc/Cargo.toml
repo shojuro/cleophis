@@ -1,0 +1,12 @@
+[package]
+name = "kpack-calc"
+version = "0.1.0"
+edition = "2021"
+
+# A safe, on-device scientific expression evaluator for the calc() tool.
+# PURE and DEPENDENCY-FREE by constraint (nothing under [dependencies]):
+# it evaluates model-generated expressions, so it must be a math-only
+# evaluator with no `eval` of arbitrary code and no supply-chain surface.
+# Mirrors kpack-pdf's "pure crate + thin src-tauri wrapper" split so the
+# bulk of the tests run on fast Linux cargo, not Windows cargo.
+[dependencies]

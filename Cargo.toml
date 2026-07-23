@@ -12,4 +12,5 @@ members = [
     "crates/kpack-core",
     "crates/kpack-embed",
     "crates/kpack-pdf",
+    "crates/kpack-calc",
 ]
