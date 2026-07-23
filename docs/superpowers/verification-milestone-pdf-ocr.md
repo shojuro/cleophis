@@ -36,6 +36,26 @@ deferred.
 
 Every task reviewed (spec + quality); Tasks 2, 4 went through fix loops (subprocess zombie/pipe/UTF-8; a partial-scan regression). **Final whole-branch review (opus): ready to merge, no Critical/blocking** — verified the units compose end-to-end and the non-OCR paths are unchanged; its one Important (Cancel dead during OCR) was fixed (commit d313ee4).
 
+## The bug the acceptance test caught (fix `6ab0e6b`)
+
+The user's first real-world run refused **every** scanned PDF ("OCR couldn't read
+any text") — while render + tesseract worked on the identical files in every
+isolated test. Root cause (systematic-debugging → an in-app diagnostic log):
+Tauri's `resource_dir()` returns Windows **verbatim** paths (`\\?\C:\…`), and
+tesseract appends `/eng.traineddata` (a forward slash) to `--tessdata-dir`.
+Windows never normalizes `\\?\` paths, so the `/` is a literal character →
+`Error opening data file … Failed loading language 'eng'` → every page empty →
+refusal. It bit **only** the packaged app because only `resource_dir()` yields
+verbatim paths; every dev/test/E2E path is plain and tolerates the `/` — which
+is precisely why the whole test suite and every repro passed. Fix:
+`strip_verbatim()` de-prefixes `\\?\`/`\\?\UNC\` before tesseract sees the path;
+tesseract's stderr is now captured (was nulled) so a failure reports its real
+reason. Regression tests: a `strip_verbatim` unit test + a real-tesseract
+`#[ignore]` test that feeds a `\\?\` tessdata dir and asserts it still reads
+(red before, green after). **General lesson:** the app resolves several bundled
+subprocess tools (tesseract, llama-server, pdfium) through `resource_dir()` —
+de-verbatim any resource path handed to one as a command-line argument.
+
 ## Acceptance E2E (user, on the MSI) — the gate
 
 1. Pick a **scanned/image-only** printed-English PDF → it builds a pack with page-numbered citations, OCR progress shown (no longer refused).
