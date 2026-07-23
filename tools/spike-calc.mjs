@@ -24,3 +24,8 @@ const p2Tool = Array.isArray(probe2.tool_calls) && probe2.tool_calls.length > 0;
 console.log('PROBE 2 pushback — grounded via calc (welcome) or plain correction:',
   p2Tool ? 'CALLED calc ✅' : `(no tool) content=${probe2.content}`);
 console.log('\nVERDICT: PROBE 1 = the gate. GREEN if YES. If NO, escalate per plan Task 5 note.');
+
+// Exit non-zero if the gate (Probe 1 emission) is RED, so this doubles as a
+// repeatable regression check, not just a console probe.
+if (!emitted) { console.error('SPIKE RED: model did not emit a calc tool call'); process.exit(1); }
+process.exit(0);
