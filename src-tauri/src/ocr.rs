@@ -47,6 +47,33 @@ fn tesseract_binary_name() -> &'static str {
     if cfg!(windows) { "tesseract.exe" } else { "tesseract" }
 }
 
+/// Strip a Windows `\\?\` **verbatim** (extended-length) path prefix.
+///
+/// Tauri's `resource_dir()` returns verbatim paths (`\\?\C:\Program
+/// Files\...`). Tesseract builds its data-file path by appending
+/// `/eng.traineddata` — with a FORWARD slash — to whatever `--tessdata-dir`
+/// receives, and Windows performs **no normalization** on `\\?\` paths, so a
+/// forward slash in one is a literal filename character, not a separator:
+/// opening `\\?\C:\...\tessdata/eng.traineddata` fails with "Error opening
+/// data file" → `Failed loading language 'eng'` → every scanned page OCRs to
+/// nothing → the whole PDF is refused ("OCR couldn't read any text"). This was
+/// the shipped root cause; it only ever bit the packaged app because only
+/// `resource_dir()` yields verbatim paths — every dev/test path is plain, and
+/// a plain `C:\...` path *does* tolerate the forward slash. De-verbatim'ing the
+/// path before handing it to tesseract is the fix. No-op on plain paths and on
+/// non-Windows.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share` → `\\server\share`
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    p.to_path_buf()
+}
+
 /// The bundled tesseract executable — mirrors `kpack::bundled_pdfium_path`.
 pub fn bundled_tesseract_path(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app)
@@ -102,6 +129,14 @@ pub fn ocr_png(app: &AppHandle, png_bytes: &[u8]) -> Result<String, OcrError> {
 /// doc comment for why it's `AppHandle`-free), so they resolve the bundled
 /// tesseract/tessdata paths the same manual way, from `CARGO_MANIFEST_DIR`.
 pub(crate) fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) -> Result<String, OcrError> {
+    // De-verbatim BOTH paths before they reach tesseract — see `strip_verbatim`
+    // for the full root-cause writeup. The binary path spawns fine either way;
+    // it is the `--tessdata-dir` value that breaks, but normalizing both keeps
+    // the whole invocation on plain paths.
+    let bin_owned = strip_verbatim(bin);
+    let tessdata_owned = strip_verbatim(tessdata);
+    let bin: &Path = &bin_owned;
+    let tessdata: &Path = &tessdata_owned;
     if !bin.is_file() {
         return Err(OcrError::Unavailable);
     }
@@ -113,21 +148,29 @@ pub(crate) fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) 
     let tmp_png = std::env::temp_dir().join(format!("{stem}.png"));
     let out_base = std::env::temp_dir().join(&stem); // tesseract appends ".txt"
     let out_txt = std::env::temp_dir().join(format!("{stem}.txt"));
+    let err_txt = std::env::temp_dir().join(format!("{stem}.err"));
     // Guards constructed BEFORE the write so both temps are cleaned up even if
     // the PNG write or the spawn fails.
     let _png_guard = TempFile(tmp_png.clone());
     let _txt_guard = TempFile(out_txt.clone());
+    let _err_guard = TempFile(err_txt.clone());
     std::fs::File::create(&tmp_png)
         .and_then(|mut f| f.write_all(png_bytes))
         .map_err(|e| OcrError::Failed(format!("write temp: {e}")))?;
 
+    // stderr → a FILE (not a pipe: a pipe could deadlock a verbose page; see
+    // this fn's doc comment). Captured so a non-zero exit reports tesseract's
+    // ACTUAL reason ("Failed loading language 'eng'", etc.) instead of a bare
+    // exit code — the difference between a diagnosable failure and a black box.
+    let err_file = std::fs::File::create(&err_txt)
+        .map_err(|e| OcrError::Failed(format!("create stderr temp: {e}")))?;
     let mut child = Command::new(bin)
         .arg(&tmp_png)
         .arg(&out_base)
         .arg("-l").arg("eng")
         .arg("--tessdata-dir").arg(tessdata)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(err_file))
         .spawn()
         .map_err(|e| OcrError::Failed(format!("spawn tesseract: {e}")))?;
 
@@ -138,7 +181,10 @@ pub(crate) fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) 
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
-                    return Err(OcrError::Failed(format!("tesseract exit {status}")));
+                    let why = std::fs::read_to_string(&err_txt)
+                        .unwrap_or_default()
+                        .replace('\n', " · ");
+                    return Err(OcrError::Failed(format!("tesseract exit {status}: {}", why.trim())));
                 }
                 break;
             }
@@ -177,6 +223,54 @@ mod tests {
     fn ocr_error_display_is_plain_language() {
         assert!(OcrError::Unavailable.to_string().to_lowercase().contains("ocr"));
         assert!(OcrError::Failed("boom".into()).to_string().contains("boom"));
+    }
+
+    #[test]
+    fn strip_verbatim_de_prefixes_windows_extended_paths() {
+        // The exact shape Tauri's resource_dir() produced in the shipped app —
+        // the `\\?\` prefix that made tesseract fail to open eng.traineddata.
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\C:\Program Files\Cleophis\resources\ocr\tessdata")),
+            PathBuf::from(r"C:\Program Files\Cleophis\resources\ocr\tessdata")
+        );
+        // UNC verbatim -> plain UNC.
+        assert_eq!(
+            strip_verbatim(Path::new(r"\\?\UNC\server\share\tessdata")),
+            PathBuf::from(r"\\server\share\tessdata")
+        );
+        // Plain paths pass straight through (the common case, and non-Windows).
+        assert_eq!(strip_verbatim(Path::new(r"C:\x\tessdata")), PathBuf::from(r"C:\x\tessdata"));
+        assert_eq!(strip_verbatim(Path::new("/usr/share/tessdata")), PathBuf::from("/usr/share/tessdata"));
+    }
+
+    /// Regression for the shipped "OCR couldn't read any text" on ALL real
+    /// scanned PDFs (found via an in-app diagnostic log): `resource_dir()` hands
+    /// a `\\?\`-verbatim tessdata dir, and tesseract's `--tessdata-dir` +
+    /// `/eng.traineddata` concatenation cannot open a verbatim path
+    /// ("Error opening data file … Failed loading language 'eng'"), so every
+    /// page OCRs to nothing. `ocr_png_with_paths` must de-verbatim it. Real
+    /// bundled tesseract + fixture; Windows-only (verbatim prefixes are a
+    /// Windows concept) and `#[ignore]`d like the other real-dependency tests —
+    /// run with `cargo test -p cleophis ocr::tests::ocr_png_survives_a_verbatim_tessdata_path -- --ignored`.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn ocr_png_survives_a_verbatim_tessdata_path() {
+        let ocr_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(OCR_RELATIVE_DIR);
+        let bin = ocr_dir.join(tesseract_binary_name());
+        let tessdata_plain = ocr_dir.join("tessdata");
+        // Reconstruct the packaged app's verbatim path exactly.
+        let tessdata_verbatim = PathBuf::from(format!(r"\\?\{}", tessdata_plain.display()));
+        let png = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("scanned-eng.png"),
+        )
+        .expect("fixture missing: tests/fixtures/scanned-eng.png");
+        let text = ocr_png_with_paths(&bin, &tessdata_verbatim, &png)
+            .expect("a verbatim \\\\?\\ tessdata path must still OCR after the fix");
+        assert!(
+            text.to_lowercase().contains("alpha"),
+            "expected \"alpha\" from a verbatim-path OCR, got: {text:?}"
+        );
     }
 
     #[test]
