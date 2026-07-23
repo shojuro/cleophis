@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod calc;
 mod catalog;
 mod catalog_dist;
 mod cloud;
@@ -156,6 +157,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            calc::calc,
             get_catalog,
             detect_hardware,
             engine_info,

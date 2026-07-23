@@ -553,6 +553,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "keyring",
+ "kpack-calc",
  "kpack-core",
  "kpack-embed",
  "kpack-pdf",
