@@ -1,4 +1,7 @@
 // Cleophis front-end. Requires app.withGlobalTauri=true.
+import { CALC_TOOL } from './calc-tool.js';
+import { streamWithTools } from './calc-loop.js';
+
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -1417,7 +1420,7 @@ async function sendCompletion(userText) {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
-        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
+        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
         // instead, same shape as the existing fetch-failure retry chip.
@@ -1437,7 +1440,7 @@ async function sendCompletion(userText) {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
-      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
+      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Adapter v2: when the contract adapter is composed on this tier, it is
         // trained to emit the fixed refusal-with-offer on the [[NO_EVIDENCE]]
@@ -1508,53 +1511,35 @@ async function sendCompletion(userText) {
     // (droppedCount 0), so behavior is byte-identical to before.
     const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
     const win = windowMessages(state.chat.messages, sys, m.greeting);
-    const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    // calc(): src/calc-loop.js owns the fetch/SSE-parse/tool-execute/resubmit
+    // cycle end to end — it's Tauri/DOM-free by design (the reference
+    // implementation the Rust EngineHandle port transcribes). `runCalc` is
+    // the only Tauri touchpoint here; `onContentDelta` keeps `acc` growing
+    // exactly as the old inline loop did, so the AbortError branch below
+    // still sees whatever partial text streamed before the abort.
+    const out = await streamWithTools({
+      url: `http://127.0.0.1:${state.engine.port}/v1/chat/completions`,
+      baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'assistant', content: m.greeting },
+        ...win.sent,
+      ],
+      tools: [CALC_TOOL],
+      runCalc: (expression) => invoke('calc', { expression }),
+      onContentDelta: (d) => {
+        acc += d;
+        // Show the leading-`<think></think>`-stripped view every render
+        // (idempotent — see stripLeadingThink); `acc` keeps the raw text
+        // so the strip decision is always re-made against the full prefix.
+        bubble.textContent = stripLeadingThink(acc);
+        $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+      },
       signal: state.chat.aborter.signal,
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: sys },
-          { role: 'assistant', content: m.greeting },
-          ...win.sent,
-        ],
-        stream: true,
-        max_tokens: REPLY_RESERVE, // bound to the windowing reserve so the two can't drift
-        temperature: 0.7,
-        cache_prompt: true,
-      }),
     });
-    if (!res.ok) throw new Error(`engine returned ${res.status}`);
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
-        try {
-          const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-          if (delta) {
-            acc += delta;
-            // Show the leading-`<think></think>`-stripped view every render
-            // (idempotent — see stripLeadingThink); `acc` keeps the raw text
-            // so the strip decision is always re-made against the full prefix.
-            bubble.textContent = stripLeadingThink(acc);
-            $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
-          }
-        } catch (_) { /* partial line — ignored */ }
-      }
-    }
-    finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle);
+    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -1582,7 +1567,11 @@ async function sendCompletion(userText) {
 // `autoTitle` (§7 S7-5) is `{ source: userText }` on a first exchange, or
 // null — also fire-and-forget, threaded through the same way as
 // `turnChatId` so a mid-stream chat switch still titles the RIGHT chat.
-function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
+// `calculations` ([{expression, display}] or [{expression, error}] from
+// streamWithTools, `[]` on abort/partial paths) is accepted but not yet
+// used here — Task 7 renders/persists it; the parameter exists now purely
+// so `turnChatId`/`autoTitle` don't shift position across call sites.
+function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
   // Only touch the live DOM/in-memory transcript if this turn's chat is
   // STILL the active one — the user may have switched chats mid-stream
