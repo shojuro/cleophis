@@ -797,7 +797,18 @@ function onBuildProgress(e) {
   const prog = $('packProg');
   const bar = prog ? prog.firstElementChild : null;
   const line = $('packLine');
-  if (p.phase === 'parsing') {
+  // Scanned-PDF OCR phases (Task 4) — fired before 'parsing' for a PDF with
+  // image-only pages. 'ocr-notice' is a one-shot soft-cap heads-up (no
+  // page-count progress of its own); 'ocr' is per-page, so it also drives
+  // the progress bar like 'embedding' below. Both carry a ready-made
+  // `note` string from the backend — additive, the MD/TXT/PDF-with-text
+  // phases below are unchanged.
+  if (p.phase === 'ocr-notice') {
+    if (line) { line.style.display = 'block'; line.textContent = p.note || `Scanned PDF: OCR'ing ${p.total} pages — this may take a few minutes.`; }
+  } else if (p.phase === 'ocr') {
+    if (line) { line.style.display = 'block'; line.textContent = p.note || `OCR page ${p.done}/${p.total}`; }
+    if (bar && p.total > 0) bar.style.width = `${Math.floor((p.done / p.total) * 100)}%`;
+  } else if (p.phase === 'parsing') {
     if (line) { line.style.display = 'block'; line.textContent = 'Reading your files…'; }
   } else if (p.phase === 'embedding') {
     if (line) { line.style.display = 'block'; line.textContent = `Embedding ${p.done}/${p.total} chunks`; }

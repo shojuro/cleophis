@@ -130,6 +130,9 @@ pub const PLACEHOLDER_GATE_REL_MARGIN: f64 = 0.05;
 /// `"embedding"` (per chunk, once the total chunk count is known),
 /// `"writing"` (the single tick just before the manifest write + atomic
 /// rename), or `"done"` (the final tick, after the rename succeeds) —
+/// though this is a shared type: callers may emit their own phases through it
+/// OUTSIDE `build_pack_with_progress` (src-tauri's scanned-PDF OCR step emits
+/// `"ocr"` per page and `"ocr-notice"` for the soft-cap warning) —
 /// `done`/`total` are chunk counts for `"embedding"`, and mirror the total
 /// chunk count for `"writing"`/`"done"` (both `0` if the build produced no
 /// chunks at all). Deliberately plain Rust (`Debug`/`Clone`/`PartialEq`/`Eq`

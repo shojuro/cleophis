@@ -287,6 +287,14 @@ pub struct BuildProgressEvent {
     pub phase: String,
     pub done: usize,
     pub total: usize,
+    /// Optional human-readable line for phases the bare `phase`/`done`/
+    /// `total` triple doesn't self-describe (Task 4's OCR phases below) —
+    /// `None`, and omitted from the wire payload entirely
+    /// (`skip_serializing_if`), for every existing MD/TXT/PDF-with-text
+    /// progress tick. Existing non-OCR events are therefore byte-identical
+    /// on the wire to what they were before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl From<BuildProgress> for BuildProgressEvent {
@@ -295,6 +303,34 @@ impl From<BuildProgress> for BuildProgressEvent {
             phase: p.phase,
             done: p.done,
             total: p.total,
+            note: None,
+        }
+    }
+}
+
+impl BuildProgressEvent {
+    /// A human notice line for the OCR phase (soft-cap warning) — a
+    /// one-shot `0`/`0` tick (no page-count progress of its own; the count
+    /// is already baked into `note`) fired once when a scanned PDF's
+    /// image-page count crosses [`OcrBudget::Warn`].
+    pub fn ocr_notice(note: String) -> Self {
+        BuildProgressEvent {
+            phase: "ocr-notice".to_string(),
+            done: 0,
+            total: 0,
+            note: Some(note),
+        }
+    }
+
+    /// Per-page OCR progress (1-based `done` of `total`) — fired once per
+    /// image page as `build_personal_pack_with_embedder`'s PDF branch
+    /// renders + OCRs it.
+    pub fn ocr_progress(done: usize, total: usize) -> Self {
+        BuildProgressEvent {
+            phase: "ocr".to_string(),
+            done,
+            total,
+            note: Some(format!("OCR page {done}/{total}")),
         }
     }
 }
@@ -440,6 +476,86 @@ fn pdf_has_no_text(pages: &[(u32, String)]) -> bool {
     pages.iter().all(|(_, text)| text.trim().is_empty())
 }
 
+/// 0-based indices of pages whose text-layer extraction is empty/whitespace —
+/// the image-only pages that need OCR. Mirrors `pdf_has_no_text`'s per-page
+/// emptiness test, but returns WHICH pages rather than an all-empty bool.
+fn image_page_indices(pages: &[(u32, String)]) -> Vec<usize> {
+    pages
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, text))| text.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Soft-cap classification for how much OCR work a scanned PDF asks for
+/// (Task 4): `None` when there's nothing to OCR, `Ok` under the warn
+/// threshold, `Warn` between warn and refuse (still built, but the FE gets a
+/// heads-up it may take a few minutes), `Refuse` past the hard cap (the
+/// build refuses rather than tying up the device for an unbounded time).
+#[derive(Debug, PartialEq, Eq)]
+enum OcrBudget {
+    None,
+    Ok,
+    Warn,
+    Refuse,
+}
+
+/// Soft cap on OCR work: warn the user past 150 image pages, refuse past 500.
+fn ocr_page_budget(image_page_count: usize) -> OcrBudget {
+    match image_page_count {
+        0 => OcrBudget::None,
+        1..=150 => OcrBudget::Ok,
+        151..=500 => OcrBudget::Warn,
+        _ => OcrBudget::Refuse,
+    }
+}
+
+/// The render→OCR→merge loop for a PDF's image-only pages (Task 4), pulled
+/// out of `build_personal_pack_with_embedder`'s pdf branch so it has a
+/// direct unit test (review Important #2 on Task 4: the loop had no test
+/// exercising merge-order/degrade). For each 0-based page index in
+/// `image_idx`, IN ORDER: reports 1-based progress via `progress(done,
+/// total)`, then calls `ocr_one(i)` — the combined render+OCR step for that
+/// one page. `Some(text)` overwrites `pages[i].1` with the recognized text;
+/// `None` (a render or OCR failure) DEGRADES that page: `pages[i].1` is left
+/// exactly as `extract_pages` gave it (blank, for an image-only page)
+/// instead of failing the whole build over one bad page — the same
+/// per-page-degrade contract the inline loop had. Pages NOT listed in
+/// `image_idx` are never touched, so a partially-scanned PDF's real text
+/// pages pass through untouched (the `ee1786f` partial-scan fix, which lives
+/// in the CALLER's partition/fail-closed logic above this fn, not here).
+///
+/// `ocr_one` bundles render+OCR into one step (rather than taking two
+/// separate closures) so the real caller can short-circuit on a render
+/// failure without a second OCR call, exactly like the original inline
+/// `if let Ok(png) = render_page(..) { if let Ok(text) = ocr_page(&png) {
+/// .. } }` did.
+fn ocr_fill_pages(
+    pages: &mut [(u32, String)],
+    image_idx: &[usize],
+    cancel: &AtomicBool,
+    mut ocr_one: impl FnMut(usize) -> Option<String>,
+    mut progress: impl FnMut(usize, usize),
+) {
+    let total = image_idx.len();
+    for (n, &i) in image_idx.iter().enumerate() {
+        // Honor the build's Cancel button DURING OCR — this is the feature's
+        // slow phase (minutes for a large scan), the one place a user most
+        // wants Cancel to work. Stop promptly; the caller re-checks the flag
+        // and returns `Error::Cancelled` rather than building a half-OCR'd
+        // pack. (The rest of the build already checks `cancel` between chunks
+        // via `build_pack_with_progress`; this closes the pre-build-phase gap.)
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        progress(n + 1, total);
+        if let Some(text) = ocr_one(i) {
+            pages[i].1 = text;
+        }
+    }
+}
+
 /// A "uuid-ish" (not RFC 4122 — no `uuid` crate in this workspace, and none
 /// is needed for a value that only has to be unique across one device's own
 /// personal-pack builds) pack id: this process's PID plus a nanosecond
@@ -545,7 +661,11 @@ fn build_timestamp() -> String {
 /// this fn just stamps it into `BuildMeta` unchanged. Factored out (no
 /// `AppHandle`) so the `#[ignore]`d integration tests below can call it
 /// directly against a temp file, the bundled GGUF, and a plain
-/// `EmbedderCache::default()` — no Tauri `AppHandle` needed.
+/// `EmbedderCache::default()` — no Tauri `AppHandle` needed. A scanned PDF's
+/// image-only pages (Task 4) are rendered + OCR'd through the `ocr_ready`/
+/// `ocr_page` params for the same reason: real OCR needs an `AppHandle` to
+/// find the bundled tesseract binary, so the caller resolves that once and
+/// hands this fn a plain `bool` + closure instead.
 fn build_personal_pack_with_embedder(
     file_paths: &[String],
     pack_id: &str,
@@ -555,6 +675,14 @@ fn build_personal_pack_with_embedder(
     cache: &EmbedderCache,
     progress: &dyn Fn(BuildProgress),
     cancel: &AtomicBool,
+    // OCR (Task 4), threaded as plain values rather than an `AppHandle` so
+    // this fn stays AppHandle-free/testable (this doc comment's whole
+    // point, above): `ocr_ready` is `crate::ocr::ocr_available(&app)`
+    // resolved once by the caller, and `ocr_page` is a thin closure over
+    // `crate::ocr::ocr_png(&app, png)` — the caller (`build_personal_pack`,
+    // which DOES have the `AppHandle`) owns both; this fn just calls them.
+    ocr_ready: bool,
+    ocr_page: &dyn Fn(&[u8]) -> Result<String, crate::ocr::OcrError>,
 ) -> Result<PackManifestInfo, String> {
     if file_paths.is_empty() {
         return Err("no source files given".to_string());
@@ -587,13 +715,86 @@ fn build_personal_pack_with_embedder(
                      password-protected, or not a valid PDF. ({e})"
                 )
             })?;
-            let pages: Vec<(u32, String)> =
+            let mut pages: Vec<(u32, String)> =
                 pages.into_iter().map(|p| (p.page, p.text)).collect();
+            // Partition: pages whose text-layer extraction came back empty
+            // are image-only and need OCR. A partially-scanned PDF (some
+            // text pages, some image pages) OCRs just the image pages and
+            // merges the results back in page order — the text pages are
+            // untouched.
+            let image_idx = image_page_indices(&pages);
+            if !image_idx.is_empty() {
+                if !ocr_ready {
+                    // OCR unavailable. Refuse ONLY when the WHOLE document is
+                    // image-only (the original scanned-PDF refusal). A
+                    // PARTIALLY-scanned PDF — some real text pages, some blank
+                    // — still builds a useful pack from the text pages it has,
+                    // exactly as it did before OCR existed (`pdf_has_no_text`
+                    // only ever refused when EVERY page was empty). Refusing
+                    // the whole build over a few blank pages would regress that
+                    // previously-working case, so fall through here.
+                    if image_idx.len() == pages.len() {
+                        return Err(format!(
+                            "\"{title}\" looks scanned or image-only — no text could be extracted, \
+                             and OCR isn't available on this install. Try a PDF with selectable text."
+                        ));
+                    }
+                } else {
+                    match ocr_page_budget(image_idx.len()) {
+                        OcrBudget::Refuse => {
+                            return Err(format!(
+                                "\"{title}\" has {} scanned pages — too many to OCR in one build \
+                                 (limit 500). Split it into smaller PDFs.",
+                                image_idx.len()
+                            ));
+                        }
+                        OcrBudget::Warn => {
+                            progress(BuildProgress {
+                                phase: "ocr-notice".to_string(),
+                                done: 0,
+                                total: image_idx.len(),
+                            });
+                        }
+                        OcrBudget::None | OcrBudget::Ok => {}
+                    }
+                    // Render one page → OCR → drop the PNG. Any failure
+                    // (render OR OCR) degrades THIS page to empty (it stays
+                    // whatever extract_pages gave, i.e. blank) — never fails
+                    // the whole build over one bad page. See `ocr_fill_pages`
+                    // for the merge-order/degrade contract and its unit test.
+                    ocr_fill_pages(
+                        &mut pages,
+                        &image_idx,
+                        cancel,
+                        |i| {
+                            kpack_pdf::render_page(&bytes, i, 300, pdfium_path)
+                                .ok()
+                                .and_then(|png| ocr_page(&png).ok())
+                        },
+                        |done, total| {
+                            progress(BuildProgress {
+                                phase: "ocr".to_string(),
+                                done,
+                                total,
+                            });
+                        },
+                    );
+                }
+            }
+            // Cancel observed during the OCR loop: abort with the SAME signal
+            // build_pack_with_progress uses for a between-chunk cancel, rather
+            // than proceeding to build a partially-OCR'd pack.
+            if cancel.load(Ordering::Relaxed) {
+                return Err(kpack_core::build::Error::Cancelled.to_string());
+            }
+            // If STILL no text anywhere (OCR found nothing on every image
+            // page, or every page was image-only and somehow slipped past
+            // the `!ocr_ready` refusal above), refuse rather than build an
+            // empty, useless pack.
             if pdf_has_no_text(&pages) {
                 return Err(format!(
-                    "\"{title}\" looks scanned or image-only — no text could be \
-                     extracted from it. Scanned-PDF support (OCR) isn't available \
-                     yet; try a PDF with selectable text."
+                    "\"{title}\" is scanned and OCR couldn't read any text from it — the scan \
+                     may be too low-quality or not text at all."
                 ));
             }
             let doc = kpack_core::document_from_pages(&title, &pages);
@@ -670,6 +871,13 @@ pub async fn build_personal_pack(
 ) -> Result<PackEntry, String> {
     let gguf_path = bundled_embedder_path(&app);
     let pdfium_path = bundled_pdfium_path(&app);
+    // Resolved once, up front, exactly like `pdfium_path` above: the
+    // fail-closed OCR gate (spec Task 4) plus a thin per-page closure over
+    // the real `crate::ocr::ocr_png` — both capture `app` here so
+    // `build_personal_pack_with_embedder` itself never needs an `AppHandle`.
+    let ocr_ready = crate::ocr::ocr_available(&app);
+    let app_for_ocr = app.clone();
+    let ocr_page = move |png: &[u8]| crate::ocr::ocr_png(&app_for_ocr, png);
     // Computed here, before the spawn_blocking build, per spec §3a A2: the
     // out-path is this command's to decide now, not the caller's — `name`
     // (when it sanitizes to something non-empty) becomes the pack_id shown
@@ -723,7 +931,20 @@ pub async fn build_personal_pack(
             }
             *last = Instant::now();
         }
-        let _ = app_for_progress.emit("build-progress", &BuildProgressEvent::from(p));
+        // OCR phases (Task 4) carry a human-readable `note` the FE renders —
+        // `BuildProgressEvent::ocr_notice`/`ocr_progress` build that note
+        // from the plain `phase`/`done`/`total` triple `BuildProgress`
+        // already carries (kpack-core stays note-free/Tauri-free); every
+        // other phase keeps the untouched `From` conversion.
+        let event = match p.phase.as_str() {
+            "ocr-notice" => BuildProgressEvent::ocr_notice(format!(
+                "Scanned PDF: OCR'ing {} pages — this may take a few minutes.",
+                p.total
+            )),
+            "ocr" => BuildProgressEvent::ocr_progress(p.done, p.total),
+            _ => BuildProgressEvent::from(p),
+        };
+        let _ = app_for_progress.emit("build-progress", &event);
     };
 
     let cancel_for_build = cancel.clone();
@@ -741,6 +962,8 @@ pub async fn build_personal_pack(
             cache.inner(),
             &progress,
             &cancel_for_build,
+            ocr_ready,
+            &ocr_page,
         )
     })
     .await
@@ -1052,6 +1275,138 @@ mod tests {
         assert!(!pdf_has_no_text(&[(1, "Real extracted text.".to_string())]));
     }
 
+    /// `image_page_indices` (Task 4): the 0-based indices of pages whose
+    /// extracted text is empty/whitespace — the pages `pdf_has_no_text`
+    /// would call "textless" if EVERY page were like this, but here we want
+    /// to know WHICH pages, so OCR can target just those.
+    #[test]
+    fn image_page_indices_finds_empty_pages() {
+        let pages = vec![
+            (1u32, "real text".to_string()),
+            (2u32, "   \n ".to_string()),   // whitespace-only → image page
+            (3u32, "".to_string()),          // empty → image page
+            (4u32, "more".to_string()),
+        ];
+        assert_eq!(image_page_indices(&pages), vec![1usize, 2usize]); // 0-based indices of pages 2 & 3
+    }
+
+    /// `ocr_page_budget` (Task 4): the soft cap on OCR work per build.
+    #[test]
+    fn ocr_page_budget_classifies_thresholds() {
+        assert_eq!(ocr_page_budget(0), OcrBudget::None);
+        assert_eq!(ocr_page_budget(40), OcrBudget::Ok);
+        assert_eq!(ocr_page_budget(200), OcrBudget::Warn);
+        assert_eq!(ocr_page_budget(600), OcrBudget::Refuse);
+        // Exact boundaries: warn STARTS at 151, refuse STARTS at 501.
+        assert_eq!(ocr_page_budget(150), OcrBudget::Ok);
+        assert_eq!(ocr_page_budget(151), OcrBudget::Warn);
+        assert_eq!(ocr_page_budget(500), OcrBudget::Warn);
+        assert_eq!(ocr_page_budget(501), OcrBudget::Refuse);
+    }
+
+    /// `ocr_fill_pages` (review Important #2 on Task 4): the render→OCR→merge
+    /// loop pulled out of `build_personal_pack_with_embedder`'s pdf branch,
+    /// exercised here with a FAKE `ocr_one` — no pdfium/tesseract/AppHandle.
+    /// Covers: filled pages get OCR text IN PAGE ORDER, a `None` page
+    /// degrades (keeps its original blank text), non-image pages are
+    /// untouched, and progress fires exactly once per image page with a
+    /// 1-based `done` counting up to `total`.
+    #[test]
+    fn ocr_fill_pages_merges_in_order_and_degrades_on_none() {
+        // 5 pages: 0 and 3 are real text (never touched); 1, 2, 4 are
+        // image-only (blank), of which OCR succeeds on 1 and 4 but fails
+        // (degrades) on 2.
+        let mut pages = vec![
+            (1u32, "real text one".to_string()),
+            (2u32, "".to_string()),
+            (3u32, "".to_string()),
+            (4u32, "real text four".to_string()),
+            (5u32, "".to_string()),
+        ];
+        let image_idx = image_page_indices(&pages);
+        assert_eq!(image_idx, vec![1usize, 2usize, 4usize]);
+
+        let progress_calls = std::cell::RefCell::new(Vec::new());
+        ocr_fill_pages(
+            &mut pages,
+            &image_idx,
+            &AtomicBool::new(false),
+            |i| match i {
+                1 => Some("ocr'd page two".to_string()),
+                4 => Some("ocr'd page five".to_string()),
+                _ => None, // page 2 (index 2) fails to OCR -> degrades
+            },
+            |done, total| progress_calls.borrow_mut().push((done, total)),
+        );
+
+        // Filled pages got their OCR text, in page order.
+        assert_eq!(pages[1].1, "ocr'd page two");
+        assert_eq!(pages[4].1, "ocr'd page five");
+        // The `None` page degrades: stays exactly its original (blank) text.
+        assert_eq!(pages[2].1, "");
+        // Non-image pages are untouched.
+        assert_eq!(pages[0].1, "real text one");
+        assert_eq!(pages[3].1, "real text four");
+
+        // Progress fires once per image page (not per total page), 1-based,
+        // in order, each tick carrying the same total.
+        assert_eq!(
+            *progress_calls.borrow(),
+            vec![(1, 3), (2, 3), (3, 3)],
+            "expected one progress tick per image page, 1-based done/total"
+        );
+    }
+
+    /// Empty `image_idx` (an all-text PDF, or one whose OCR budget check
+    /// already short-circuited): `ocr_one` and `progress` are never called,
+    /// and `pages` is left completely untouched.
+    #[test]
+    fn ocr_fill_pages_is_a_no_op_with_no_image_pages() {
+        let mut pages = vec![(1u32, "text".to_string())];
+        let mut ocr_calls = 0usize;
+        let mut progress_calls = 0usize;
+        ocr_fill_pages(
+            &mut pages,
+            &[],
+            &AtomicBool::new(false),
+            |_| {
+                ocr_calls += 1;
+                Some("should never happen".to_string())
+            },
+            |_, _| progress_calls += 1,
+        );
+        assert_eq!(ocr_calls, 0);
+        assert_eq!(progress_calls, 0);
+        assert_eq!(pages[0].1, "text");
+    }
+
+    #[test]
+    fn ocr_fill_pages_stops_when_cancelled() {
+        // Cancel set before the loop starts → no page is rendered/OCR'd and
+        // the pages are left exactly as extract_pages gave them. Mirrors the
+        // Cancel button being hit during the OCR phase.
+        let mut pages = vec![
+            (1u32, "".to_string()),
+            (2u32, "".to_string()),
+            (3u32, "".to_string()),
+        ];
+        let image_idx = vec![0usize, 1usize, 2usize];
+        let cancelled = AtomicBool::new(true);
+        let mut ocr_calls = 0usize;
+        ocr_fill_pages(
+            &mut pages,
+            &image_idx,
+            &cancelled,
+            |_| {
+                ocr_calls += 1;
+                Some("should never run".to_string())
+            },
+            |_, _| {},
+        );
+        assert_eq!(ocr_calls, 0, "cancel must short-circuit before any OCR work");
+        assert!(pages.iter().all(|(_, t)| t.is_empty()), "no page filled after cancel");
+    }
+
     #[test]
     fn citation_info_from_maps_every_field() {
         let c = Citation {
@@ -1172,6 +1527,8 @@ mod tests {
             &cache,
             &|_| {},
             &cancel,
+            false,
+            &|_: &[u8]| Err(crate::ocr::OcrError::Unavailable),
         )
         .expect("build_personal_pack_with_embedder should succeed against the real embedder");
 
@@ -1216,6 +1573,8 @@ mod tests {
             &cache,
             &|_| {},
             &cancel,
+            false,
+            &|_: &[u8]| Err(crate::ocr::OcrError::Unavailable),
         )
         .unwrap_err();
         assert!(err.contains("unsupported file type"), "error was: {err}");
@@ -1284,6 +1643,8 @@ mod tests {
             &cache,
             &progress,
             &cancel,
+            false,
+            &|_: &[u8]| Err(crate::ocr::OcrError::Unavailable),
         )
         .expect("build should succeed against the real embedder, reusing the cached Arc");
         assert_eq!(manifest.pack_tier, "personal");
@@ -1589,6 +1950,8 @@ mod tests {
             &cache,
             &|_| {},
             &cancel,
+            false,
+            &|_: &[u8]| Err(crate::ocr::OcrError::Unavailable),
         )
         .expect("build should succeed against the real embedder");
 
@@ -1668,6 +2031,8 @@ mod tests {
             &cache,
             &|_| {},
             &cancel,
+            false,
+            &|_: &[u8]| Err(crate::ocr::OcrError::Unavailable),
         )
         .expect("build from a real PDF should succeed");
         assert_eq!(manifest.pack_tier, "personal");
@@ -1693,6 +2058,115 @@ mod tests {
             }
             other => panic!(
                 "expected a grounded retrieval for an in-corpus PDF query, got {other}: {:?}",
+                result.prompt
+            ),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Task 5 Deliverable 3: the scanned-PDF end-to-end proof — mirrors
+    /// `build_from_pdf_produces_a_page_locator_citation` above exactly,
+    /// except the fixture (`tests/fixtures/scanned.pdf`, hand-built by
+    /// `examples/gen_scanned_pdf_fixture.rs` — see that file's history) is
+    /// IMAGE-ONLY: one page, no text-showing operator at all, wrapping a
+    /// real 300-DPI raster of `crates/kpack-pdf/tests/fixtures/sample.pdf`
+    /// page 1 (known text "...page one alpha"). `extract_pages` on it
+    /// returns empty text, so this exercises the REAL render→OCR→merge path
+    /// (`ocr_ready = true`, a real `ocr_page` closure over
+    /// `crate::ocr::ocr_png_with_paths` — no `AppHandle` here either, same
+    /// as `ocr.rs`'s own `ocr_png_reads_printed_english` test, so the
+    /// bundled tesseract/tessdata paths are resolved the same manual way)
+    /// end to end: pdfium renders the page, tesseract OCRs it, the
+    /// recognized text gets embedded and chunked into the pack, and a query
+    /// for that text should come back grounded with a `p.N` citation —
+    /// proving the OCR'd text is genuinely present and retrievable, not
+    /// just that the build didn't error.
+    ///
+    /// `#[ignore]`d for the same reasons as the tests above: bundled GGUF +
+    /// pdfium.dll + tesseract (`tools/fetch-embedder.mjs` /
+    /// `fetch-pdfium.mjs` / `fetch-tesseract.mjs`), plus this fixture. Run
+    /// explicitly with `cargo test -p cleophis
+    /// kpack::tests::scanned_pdf_ocrs_into_a_page_locator_citation --
+    /// --ignored`.
+    #[test]
+    #[ignore]
+    fn scanned_pdf_ocrs_into_a_page_locator_citation() {
+        let gguf_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(EMBEDDER_RELATIVE_PATH);
+        assert!(
+            gguf_path.exists(),
+            "bundled embedder GGUF missing at {} — run tools/fetch-embedder.mjs first",
+            gguf_path.display()
+        );
+        let pdfium_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join(PDFIUM_RELATIVE_PATH);
+        assert!(
+            pdfium_path.exists(),
+            "pdfium.dll missing at {} — run tools/fetch-pdfium.mjs first",
+            pdfium_path.display()
+        );
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("scanned.pdf");
+        assert!(
+            fixture_path.exists(),
+            "scanned PDF fixture missing at {} — see examples/gen_scanned_pdf_fixture.rs's history",
+            fixture_path.display()
+        );
+
+        let ocr_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("ocr");
+        let tesseract_bin = ocr_dir.join(if cfg!(windows) { "tesseract.exe" } else { "tesseract" });
+        let tessdata_dir = ocr_dir.join("tessdata");
+        assert!(
+            tesseract_bin.is_file(),
+            "bundled tesseract missing at {} — run tools/fetch-tesseract.mjs first",
+            tesseract_bin.display()
+        );
+
+        let dir = unique_dir("scanned-pdf-build");
+        let packs_dir = dir.join("packs");
+        std::fs::create_dir_all(&packs_dir).unwrap();
+
+        let out_path = packs_dir.join(unique_pack_filename());
+        let cache = EmbedderCache::default();
+        let cancel = AtomicBool::new(false);
+        let manifest = build_personal_pack_with_embedder(
+            &[fixture_path.to_string_lossy().into_owned()],
+            "scanned-pdf-test",
+            &out_path,
+            &gguf_path,
+            &pdfium_path,
+            &cache,
+            &|_| {},
+            &cancel,
+            true, // ocr_ready
+            &|png: &[u8]| crate::ocr::ocr_png_with_paths(&tesseract_bin, &tessdata_dir, png),
+        )
+        .expect("build from a scanned (image-only) PDF should succeed via OCR");
+        assert_eq!(manifest.pack_tier, "personal");
+
+        let result = rag_query_inner(
+            "alpha",
+            &[out_path.to_string_lossy().into_owned()],
+            &packs_dir,
+            &gguf_path,
+            Tier::Large,
+            &cache,
+        )
+        .expect("rag_query_inner should succeed against the OCR'd pack");
+
+        match result.status.as_str() {
+            "grounded" => {
+                assert!(!result.citations.is_empty(), "expected at least one citation");
+                assert!(
+                    result.citations.iter().any(|c| c.locator.starts_with("p.")),
+                    "expected a p.N page locator among citations, got: {:?}",
+                    result.citations
+                );
+            }
+            other => panic!(
+                "expected a grounded retrieval for the OCR'd scanned PDF (proves the OCR'd text was \
+                 embedded and is retrievable), got {other}: {:?}",
                 result.prompt
             ),
         }

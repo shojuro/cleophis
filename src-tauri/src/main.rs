@@ -8,6 +8,7 @@ mod convstore;
 mod hardware;
 mod inference;
 mod kpack;
+mod ocr;
 mod tier_select;
 
 use std::sync::Arc;

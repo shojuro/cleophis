@@ -421,6 +421,15 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
         .append(true)
         .open(&log_path)?;
 
+    // Path args (`exe`, `-m <model>`, `--lora a,b`) may be `\\?\`-verbatim on
+    // Windows — `resource_dir()` returns them that way. Unlike tesseract's
+    // `--tessdata-dir`, which BREAKS on a verbatim path because tesseract
+    // appends "/eng.traineddata" with a forward slash (see `ocr::strip_verbatim`
+    // for that root cause), llama.cpp/CreateProcess OPEN these paths directly
+    // with no forward-slash concatenation, so verbatim is safe here and is left
+    // intact ON PURPOSE: de-verbatim'ing would drop long-path (>260 char)
+    // support that the prefix exists to provide. Do not "harden" this by
+    // stripping — the stripping fix is tesseract-specific.
     let args = build_server_args(&launch.model, port, ngl, &launch.loras());
     let mut cmd = Command::new(exe);
     cmd.args(&args)

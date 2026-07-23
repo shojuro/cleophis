@@ -38,7 +38,8 @@
       "resources/covers/": "resources/covers/",
       "resources/llama/": "resources/llama/",
       "resources/embedders/": "resources/embedders/",
-      "resources/pdfium/": "resources/pdfium/"
+      "resources/pdfium/": "resources/pdfium/",
+      "resources/ocr/": "resources/ocr/"
     }
   }
 }
