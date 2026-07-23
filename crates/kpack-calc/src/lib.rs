@@ -5,6 +5,7 @@
 use std::fmt;
 
 const MAX_DEPTH: usize = 32; // Task 3 enforces; Task 1 threads the counter.
+const MAX_EXPR_LEN: usize = 500;
 
 #[derive(Debug, PartialEq)]
 pub enum CalcError {
@@ -35,13 +36,38 @@ impl std::error::Error for CalcError {}
 /// Evaluate an expression to a number. Task 1 handles arithmetic; Tasks 2–3
 /// add functions/constants/`deg`, the hygiene caps, and `evaluate_display`.
 pub fn evaluate(expr: &str) -> Result<f64, CalcError> {
+    if expr.len() > MAX_EXPR_LEN { return Err(CalcError::TooLong); }
     let tokens = lex(expr)?;
     let mut p = Parser { tokens: &tokens, pos: 0, depth: 0 };
     let v = p.expr(0)?;                 // 0 = lowest binding power
     if p.pos != p.tokens.len() {
         return Err(CalcError::Syntax(format!("unexpected trailing input")));
     }
+    if !v.is_finite() {
+        return Err(CalcError::Domain("result is not a finite number".into()));
+    }
     Ok(v)
+}
+
+/// The string the calc tool returns to the model: ≤12 significant digits,
+/// trailing zeros trimmed. Presentation only (distinct from round()).
+pub fn evaluate_display(expr: &str) -> Result<String, CalcError> {
+    let v = evaluate(expr)?;
+    Ok(format_number(v))
+}
+
+fn format_number(v: f64) -> String {
+    if v == 0.0 { return "0".to_string(); }            // avoid "-0"
+    // 12 significant digits, then trim trailing zeros and any dangling '.'.
+    let s = format!("{:.*e}", 11, v); // 12 sig figs in scientific form
+    // reparse to collapse to the shortest exact decimal within 12 sig figs
+    let rounded: f64 = s.parse().unwrap_or(v);
+    let mut out = format!("{rounded}");
+    if out.contains('.') {
+        while out.ends_with('0') { out.pop(); }
+        if out.ends_with('.') { out.pop(); }
+    }
+    out
 }
 
 // --- lexer ---------------------------------------------------------------
@@ -241,5 +267,26 @@ mod tests {
         assert!(matches!(evaluate("sqrt(-1)"), Err(CalcError::Domain(_))));
         assert!(matches!(evaluate("ln(0)"), Err(CalcError::Domain(_))));
         assert!(matches!(evaluate("sqrt()"), Err(CalcError::Syntax(_))));
+    }
+
+    #[test]
+    fn hygiene_caps() {
+        assert!(matches!(evaluate(&"1+".repeat(300)), Err(CalcError::TooLong)));
+        assert!(matches!(evaluate("1,000 + 1"), Err(CalcError::ThousandsSep)));
+        // deeply nested parens exceed MAX_DEPTH rather than blowing the stack
+        let deep = format!("{}1{}", "(".repeat(64), ")".repeat(64));
+        assert!(matches!(evaluate(&deep), Err(CalcError::TooDeep)));
+        // overflow / non-finite -> a CalcError, never "inf"
+        assert!(matches!(evaluate("9^9^9"), Err(CalcError::Domain(_))));
+    }
+
+    #[test]
+    fn display_formatting() {
+        assert_eq!(evaluate_display("(3/4)*88").unwrap(), "66");
+        assert_eq!(evaluate_display("2^10").unwrap(), "1024");
+        assert_eq!(evaluate_display("1/2").unwrap(), "0.5");
+        assert_eq!(evaluate_display("10/3").unwrap(), "3.33333333333"); // <=12 sig figs
+        assert_eq!(evaluate_display("pi").unwrap(), "3.14159265359");
+        assert_eq!(evaluate_display("sqrt(-1)").unwrap_err().to_string().contains("negative"), true);
     }
 }
