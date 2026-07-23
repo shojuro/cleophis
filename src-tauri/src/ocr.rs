@@ -86,10 +86,23 @@ pub fn bundled_tessdata_dir(app: &AppHandle) -> PathBuf {
     crate::inference::resources_root(app).join(OCR_RELATIVE_DIR).join("tessdata")
 }
 
-/// True iff the bundled tesseract binary is present — the app gates the OCR
+/// True iff OCR is actually runnable on this install — the app gates the OCR
 /// path on this and falls back to the scanned-PDF refusal when false.
 pub fn ocr_available(app: &AppHandle) -> bool {
-    bundled_tesseract_path(app).is_file()
+    ocr_available_paths(&bundled_tesseract_path(app), &bundled_tessdata_dir(app))
+}
+
+/// The availability decision on already-resolved paths (AppHandle-free, so it's
+/// unit-testable). BOTH the binary AND its `eng.traineddata` must be present —
+/// checking the language data too, not just the binary, is deliberate: a
+/// partial fetch/bundle that lands `tesseract.exe` but not
+/// `tessdata/eng.traineddata` would otherwise pass this gate, then fail EVERY
+/// page with "Failed loading language 'eng'" and refuse the whole PDF with the
+/// generic "OCR couldn't read any text". The honest answer in that case is "OCR
+/// isn't available on this install" (the up-front scanned-PDF refusal), which
+/// this second check delivers.
+fn ocr_available_paths(bin: &Path, tessdata_dir: &Path) -> bool {
+    bin.is_file() && tessdata_dir.join("eng.traineddata").is_file()
 }
 
 /// OCR one rendered page (PNG bytes) → recognized English text. Resolves the
@@ -164,13 +177,23 @@ pub(crate) fn ocr_png_with_paths(bin: &Path, tessdata: &Path, png_bytes: &[u8]) 
     // exit code — the difference between a diagnosable failure and a black box.
     let err_file = std::fs::File::create(&err_txt)
         .map_err(|e| OcrError::Failed(format!("create stderr temp: {e}")))?;
-    let mut child = Command::new(bin)
-        .arg(&tmp_png)
+    let mut cmd = Command::new(bin);
+    cmd.arg(&tmp_png)
         .arg(&out_base)
         .arg("-l").arg("eng")
         .arg("--tessdata-dir").arg(tessdata)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(err_file))
+        .stderr(std::process::Stdio::from(err_file));
+    // No console flash: tesseract is a console app spawned once PER PAGE from a
+    // GUI-subsystem process; without CREATE_NO_WINDOW each page pops (and
+    // closes) a console window — a strobe of windows across a multi-page scan.
+    // Mirrors `inference::spawn_server`'s handling of llama-server.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| OcrError::Failed(format!("spawn tesseract: {e}")))?;
 
@@ -223,6 +246,34 @@ mod tests {
     fn ocr_error_display_is_plain_language() {
         assert!(OcrError::Unavailable.to_string().to_lowercase().contains("ocr"));
         assert!(OcrError::Failed("boom".into()).to_string().contains("boom"));
+    }
+
+    #[test]
+    fn ocr_available_requires_both_binary_and_traineddata() {
+        // Unique scratch tree so the check sees exactly what we place.
+        let seq = NEXT_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("cleophis-ocr-avail-{}-{seq}", std::process::id()));
+        let ocr = root.join("ocr");
+        let tessdata = ocr.join("tessdata");
+        std::fs::create_dir_all(&tessdata).unwrap();
+        let bin = ocr.join(tesseract_binary_name());
+        let eng = tessdata.join("eng.traineddata");
+
+        // Neither present.
+        assert!(!ocr_available_paths(&bin, &tessdata), "nothing present");
+        // Binary only — the exact partial-bundle that used to pass the old gate
+        // and then fail every page with "Failed loading language 'eng'".
+        std::fs::write(&bin, b"x").unwrap();
+        assert!(!ocr_available_paths(&bin, &tessdata), "binary without traineddata must be unavailable");
+        // traineddata only.
+        std::fs::remove_file(&bin).unwrap();
+        std::fs::write(&eng, b"x").unwrap();
+        assert!(!ocr_available_paths(&bin, &tessdata), "traineddata without binary must be unavailable");
+        // Both present -> available.
+        std::fs::write(&bin, b"x").unwrap();
+        assert!(ocr_available_paths(&bin, &tessdata), "both present -> available");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
