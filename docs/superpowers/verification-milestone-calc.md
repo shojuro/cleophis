@@ -66,6 +66,11 @@ Build/install an app from `feat/calc-tool`, then:
    quirk twice; `stripLeadingThink` was hardened to strip repeated leading blocks, and
    this check confirms it holds at runtime.
 
+**Result: PASS** — run by the owner on an installed build from this branch;
+accepted as good to go. Recorded alongside a final green sweep of the automated
+surfaces at the same tip: full Windows cargo suite 255 passed / 0 failed,
+`kpack-calc` 6/6 (Linux cargo), `calc-loop` node tests 3/3.
+
 ## Deferred (listed debt — not built now)
 
 - Medical **mandatory** refuse-or-delegate arithmetic (enforced gate + dosage probes)
