@@ -394,6 +394,7 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<
         "-c".to_string(),
         "4096".to_string(),
         "--no-webui".to_string(),
+        "--jinja".to_string(),
     ];
     if !loras.is_empty() {
         args.push("--lora".to_string());
@@ -796,6 +797,7 @@ mod tests {
                 "-ngl", "99",
                 "-c", "4096",
                 "--no-webui",
+                "--jinja",
             ]
         );
         // The historical arg vec carries NO `--lora` when no adapter is given.
@@ -816,6 +818,7 @@ mod tests {
                 "-ngl", "0",
                 "-c", "4096",
                 "--no-webui",
+                "--jinja",
                 "--lora", "/models/adapter.gguf",
             ]
         );
@@ -843,6 +846,13 @@ mod tests {
         );
         // Exactly one `--lora` flag, never two.
         assert_eq!(got.iter().filter(|a| *a == "--lora").count(), 1);
+    }
+
+    #[test]
+    fn build_server_args_enables_jinja_for_tool_calling() {
+        let args = build_server_args(Path::new("m.gguf"), 8080, 99, &[]);
+        assert!(args.iter().any(|a| a == "--jinja"),
+            "llama-server must launch with --jinja so the calc tool template is active");
     }
 
     // ---- B4 Step 1: adapter-aware launch resolution ----
