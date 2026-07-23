@@ -1,4 +1,7 @@
 // Cleophis front-end. Requires app.withGlobalTauri=true.
+import { CALC_TOOL } from './calc-tool.js';
+import { streamWithTools } from './calc-loop.js';
+
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -49,21 +52,25 @@ function escapeHtml(s) {
 }
 
 // B4: the Qwen3 hero opens each turn with an EMPTY reasoning block
-// (`<think></think>`) before its visible answer. Strip exactly ONE such
-// block — optionally whitespace-wrapped — and ONLY at the very start of the
-// turn. The pattern is anchored at `^` and requires the block to be empty
-// (only whitespace between the tags), so it:
+// (`<think></think>`) before its visible answer. The multi-round tool loop
+// (one generation per round under `--jinja`) means this quirk can fire on
+// MORE THAN ONE round of the same turn (e.g. the tool-call round AND the
+// answer round), which accumulates as `<think></think><think></think>...`
+// once the rounds' content is concatenated. Strip ONE-OR-MORE consecutive
+// leading empty-think blocks — optionally whitespace-wrapped — and ONLY at
+// the very start of the turn. The pattern is anchored at `^` and requires
+// each block to be empty (only whitespace between the tags), so it:
 //   • never touches a NON-empty <think>…</think> (real reasoning is left in
 //     place — it just won't occur for this always-on behavioral adapter),
 //   • never strips anything mid-answer (a `</think>` appearing after real
 //     text is not at `^`, so it can't match), and
 //   • leaves a turn that doesn't start with the pattern 100% untouched.
-// `String.replace` with this anchored regex removes at most one occurrence,
-// and re-running it on a longer `acc` is idempotent (the same leading prefix
-// is removed each time), so it is safe to call on every partial render as
-// well as on the final persisted text.
+// `String.replace` with this anchored regex removes the entire leading run
+// in one pass, and re-running it on a longer `acc` is idempotent (the same
+// leading prefix is removed each time), so it is safe to call on every
+// partial render as well as on the final persisted text.
 function stripLeadingThink(text) {
-  return String(text).replace(/^\s*<think>\s*<\/think>\s*/, '');
+  return String(text).replace(/^(?:\s*<think>\s*<\/think>\s*)+/, '');
 }
 
 // Wrapper tier-selection: the hero installs/runs the base+adapter for the
@@ -1076,6 +1083,11 @@ async function openChat(id) {
     role: msg.role,
     content: msg.content,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
+    // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
+    // convstore's MessageInfo `#[serde(rename_all = "camelCase")]`) as
+    // `msg.toolCalls` — NOT `msg.tool_calls`. Same shape finishStream stashed
+    // it in: `[{expression, display}]` or `[{expression, error}]`.
+    calculations: msg.toolCalls && msg.toolCalls.length ? msg.toolCalls : undefined,
   }));
   rebuildChatDom();
   updateGroundPill();
@@ -1190,16 +1202,20 @@ function rebuildChatDom() {
   // grounded turn) is replayed here so citations don't vanish when the
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
-  for (const msg of state.chat.messages) appendBubble(msg.role, msg.content, msg.citations);
+  // .calculations (Task 7) replays the same way, from `messages.tool_calls`.
+  for (const msg of state.chat.messages) {
+    appendBubble(msg.role, msg.content, msg.citations, msg.calculations);
+  }
   updateContextDivider();
 }
 
-function appendBubble(role, text, citations) {
+function appendBubble(role, text, citations, calculations) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
   $('chatMessages').appendChild(el);
   if (citations && citations.length) renderCitations(el, citations);
+  if (calculations && calculations.length) renderCalculations(el, calculations);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
   return el;
 }
@@ -1279,6 +1295,39 @@ function renderCitations(afterEl, citations) {
       pk.textContent = `pack: ${c.packId}`;
       row.appendChild(pk);
     }
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  afterEl.insertAdjacentElement('afterend', box);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
+}
+
+// Mirrors renderCitations immediately above (§3a A4's visual grammar: a
+// collapsed-by-default disclosure panel under the bubble, "here's where
+// this came from") for the calc() tool's provenance — expressions/results
+// are model-generated text, so textContent only, never innerHTML. Each row
+// is `expression = display` for a clean eval, or `expression → error` when
+// the tool call failed (kpack-calc's domain/parse errors — see calc-tool.js).
+function renderCalculations(afterEl, calcs) {
+  const box = document.createElement('div');
+  box.className = 'calculations';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'calctoggle';
+  const label = (open) => `${open ? '⌃' : '⌄'} ${calcs.length} calculation${calcs.length === 1 ? '' : 's'}`;
+  toggle.textContent = label(false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = label(open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'calclist';
+  for (const c of calcs) {
+    const row = document.createElement('div');
+    row.className = 'calc';
+    row.textContent = c.error ? `${c.expression} → ${c.error}` : `${c.expression} = ${c.display}`;
     list.appendChild(row);
   }
   box.appendChild(list);
@@ -1428,7 +1477,7 @@ async function sendCompletion(userText) {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
-        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
+        if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
         // instead, same shape as the existing fetch-failure retry chip.
@@ -1448,7 +1497,7 @@ async function sendCompletion(userText) {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
-      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, turnChatId); return; }
+      if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Adapter v2: when the contract adapter is composed on this tier, it is
         // trained to emit the fixed refusal-with-offer on the [[NO_EVIDENCE]]
@@ -1519,53 +1568,35 @@ async function sendCompletion(userText) {
     // (droppedCount 0), so behavior is byte-identical to before.
     const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
     const win = windowMessages(state.chat.messages, sys, m.greeting);
-    const res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    // calc(): src/calc-loop.js owns the fetch/SSE-parse/tool-execute/resubmit
+    // cycle end to end — it's Tauri/DOM-free by design (the reference
+    // implementation the Rust EngineHandle port transcribes). `runCalc` is
+    // the only Tauri touchpoint here; `onContentDelta` keeps `acc` growing
+    // exactly as the old inline loop did, so the AbortError branch below
+    // still sees whatever partial text streamed before the abort.
+    const out = await streamWithTools({
+      url: `http://127.0.0.1:${state.engine.port}/v1/chat/completions`,
+      baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'assistant', content: m.greeting },
+        ...win.sent,
+      ],
+      tools: [CALC_TOOL],
+      runCalc: (expression) => invoke('calc', { expression }),
+      onContentDelta: (d) => {
+        acc += d;
+        // Show the leading-`<think></think>`-stripped view every render
+        // (idempotent — see stripLeadingThink); `acc` keeps the raw text
+        // so the strip decision is always re-made against the full prefix.
+        bubble.textContent = stripLeadingThink(acc);
+        $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+      },
       signal: state.chat.aborter.signal,
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: sys },
-          { role: 'assistant', content: m.greeting },
-          ...win.sent,
-        ],
-        stream: true,
-        max_tokens: REPLY_RESERVE, // bound to the windowing reserve so the two can't drift
-        temperature: 0.7,
-        cache_prompt: true,
-      }),
     });
-    if (!res.ok) throw new Error(`engine returned ${res.status}`);
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
-        try {
-          const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-          if (delta) {
-            acc += delta;
-            // Show the leading-`<think></think>`-stripped view every render
-            // (idempotent — see stripLeadingThink); `acc` keeps the raw text
-            // so the strip decision is always re-made against the full prefix.
-            bubble.textContent = stripLeadingThink(acc);
-            $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
-          }
-        } catch (_) { /* partial line — ignored */ }
-      }
-    }
-    finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle);
+    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle);
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, turnChatId, autoTitle); return; }
+    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle); return; }
     bubble.remove();
     state.chat.streaming = false;
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
@@ -1593,7 +1624,12 @@ async function sendCompletion(userText) {
 // `autoTitle` (§7 S7-5) is `{ source: userText }` on a first exchange, or
 // null — also fire-and-forget, threaded through the same way as
 // `turnChatId` so a mid-stream chat switch still titles the RIGHT chat.
-function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
+// `calculations` ([{expression, display}] or [{expression, error}] from
+// streamWithTools, `[]`/undefined on abort/partial paths) is stashed on the
+// pushed message + rendered via renderCalculations, and persisted to the
+// `messages.tool_calls` column below (Task 7) — same treatment as
+// `citations` throughout this function.
+function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
   // Only touch the live DOM/in-memory transcript if this turn's chat is
   // STILL the active one — the user may have switched chats mid-stream
@@ -1615,6 +1651,12 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
       if (citations && citations.length) {
         msg.citations = citations;
         renderCitations(bubble, citations);
+      }
+      // Same treatment for the calc() tool's provenance (Task 7) — stashed
+      // on `msg` so rebuildChatDom's replay picks it up via `msg.calculations`.
+      if (calculations && calculations.length) {
+        msg.calculations = calculations;
+        renderCalculations(bubble, calculations);
       }
       state.chat.messages.push(msg);
     } else {
@@ -1643,6 +1685,9 @@ function finishStream(bubble, acc, citations, turnChatId, autoTitle) {
       role: 'assistant',
       content: shown,
       citations: citations && citations.length ? citations : null,
+      // Tauri maps this camelCase invoke-arg to append_message's `tool_calls`
+      // Rust param (convstore.rs) — same convention as `chatId` -> `chat_id`.
+      toolCalls: calculations && calculations.length ? calculations : null,
     }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
   }
   // §7 S7-5: fire-and-forget the auto-title generation for this turn — do
