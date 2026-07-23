@@ -861,10 +861,12 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
 
 /// `msg.role` -> the label an export turn is prefixed with — `"You"`/
 /// `"Assistant"` for the two roles every chat has today, a title-cased
-/// fallback for any other role (there is no `"system"`/tool-role message
-/// yet — `tool_calls` is unused per the module doc comment — but deriving
-/// the label from the stored value rather than a hardcoded two-arm match
-/// means an export never silently drops a future role's turns).
+/// fallback for any other role (there is no separate `"system"`/tool-role
+/// message — since Task 7, calc() provenance rides along on the ordinary
+/// `"assistant"` row's `tool_calls` column rather than a new role — but
+/// deriving the label from the stored value rather than a hardcoded
+/// two-arm match means an export never silently drops a future role's
+/// turns).
 fn role_label(role: &str) -> String {
     match role {
         "user" => "You".to_string(),
@@ -1025,8 +1027,13 @@ pub struct ChatInfo {
 
 /// A camelCase, front-end-facing view of a `messages` row — `citations`/
 /// `tool_calls` round-trip through the columns' JSON-text encoding to plain
-/// `serde_json::Value`s here (`None` when the column is `NULL`, e.g. every
-/// message today has no `tool_calls` — spec §7.1 notes it's unused so far).
+/// `serde_json::Value`s here (`None` when the column is `NULL`). Since Task 7,
+/// `tool_calls` holds an assistant turn's calc() provenance — `src/app.js`'s
+/// `finishStream` sends it as `[{expression, display}]`/`[{expression,
+/// error}]` under the `toolCalls` invoke-arg (Tauri's camelCase-arg ->
+/// snake_case-param mapping turns that into this struct's `tool_calls`
+/// field), and `openChat` reads it back here as `msg.toolCalls`, mirroring
+/// how `citations` already round-trips.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageInfo {
@@ -1376,6 +1383,46 @@ mod tests {
         assert_eq!(detail.messages[1].id, m2.id);
         assert_eq!(detail.messages[1].content, "hi there");
         assert_eq!(detail.messages[1].citations, Some(citations));
+    }
+
+    /// Task 7: `append_message`'s `tool_calls` arg (calc() provenance —
+    /// `[{expression, display}]`/`[{expression, error}]` from `src/app.js`'s
+    /// `finishStream`) round-trips through `get_chat` intact — mirrors t1's
+    /// citations round-trip, but for the `tool_calls` column instead.
+    /// Exercises both shapes (a clean eval alongside a domain error) in one
+    /// message, plus a sibling message with no tool_calls at all, so the
+    /// `NULL` column -> `None` path stays covered too.
+    #[test]
+    fn t1b_append_message_tool_calls_round_trips_through_get_chat() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Calc chat", None, None, "hero-llama", vec![])
+            .unwrap();
+
+        let m1 = store
+            .append_message(USER, chat.id, "user", "what's 2+2 and 1/0?", None, None)
+            .unwrap();
+        let tool_calls = json!([
+            {"expression": "2+2", "display": "4"},
+            {"expression": "1/0", "error": "division by zero"},
+        ]);
+        let m2 = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "2+2 is 4; 1/0 is undefined.",
+                None,
+                Some(tool_calls.clone()),
+            )
+            .unwrap();
+
+        let detail = store.get_chat(USER, chat.id).unwrap();
+        assert_eq!(detail.messages.len(), 2);
+        assert_eq!(detail.messages[0].id, m1.id);
+        assert!(detail.messages[0].tool_calls.is_none());
+        assert_eq!(detail.messages[1].id, m2.id);
+        assert_eq!(detail.messages[1].tool_calls, Some(tool_calls));
     }
 
     /// list_chats ordering: pinned sorts before a newer unpinned chat;

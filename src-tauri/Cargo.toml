@@ -35,6 +35,9 @@ kpack-embed = { path = "../crates/kpack-embed", features = ["real"] }
 # feature/toolchain needed to compile; it binds pdfium.dll at runtime (see
 # `kpack-pdf`'s module doc comment) rather than linking it in.
 kpack-pdf = { path = "../crates/kpack-pdf" }
+# Task 4: the calc() Tauri command wraps this pure, dependency-free
+# evaluator (crates/kpack-calc) — see calc.rs's module doc comment.
+kpack-calc = { path = "../crates/kpack-calc" }
 # B1 (adapter-distribution milestone): the signed distribution catalog
 # (`catalog_dist.rs`) verifies `catalog.json` against a compiled-in curator
 # `VerifyingKey` by reusing `kpack_core::sign::verify_detached`. That
