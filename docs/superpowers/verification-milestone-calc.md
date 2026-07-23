@@ -60,6 +60,11 @@ Build/install an app from `feat/calc-tool`, then:
    → a **cited** answer whose number came from calc (panel present).
 4. **Pushback:** "5 + 5 = 9, right?" → correct rejection (a calc tool round inside
    the correction is welcome, not a failure).
+5. **No stray reasoning markers (final-review Issue #1):** on the tool turns above,
+   the answer bubble shows **no literal `<think></think>`** text — `--jinja` is now
+   on for every turn and the multi-round loop could surface the adapter's empty-think
+   quirk twice; `stripLeadingThink` was hardened to strip repeated leading blocks, and
+   this check confirms it holds at runtime.
 
 ## Deferred (listed debt — not built now)
 
