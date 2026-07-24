@@ -3,13 +3,19 @@
 # the model/adapter GGUFs to a connected phone and run it in adb shell —
 # tokens/sec + RSS (stream) and the behavioral probes (probe). No APK, no Tauri.
 #
-# ── Connecting a phone from WSL2 (USB is NOT visible to WSL Linux by default) ──
-#   Easiest: Android 11+ WIRELESS debugging with the Linux platform-tools:
-#     1) Phone: Developer options → Wireless debugging → on → "Pair with code".
-#     2) WSL:  adb pair <phone-ip>:<pair-port>   (enter the code)
-#              adb connect <phone-ip>:<debug-port>
-#   Or use the WINDOWS adb (sees USB natively) by overriding ADB:
-#     ADB=adb.exe ./run-on-device.sh ...      (adb.exe is in the ~/Android-Sdk symlink)
+# ── Connecting the phone from WSL2 (USB is NOT visible to WSL Linux by default) ──
+#   Samsung Galaxy A22 (the P0 reference device), WIRELESS debugging:
+#     1) Enable Developer options: Settings → About phone → Software information →
+#        tap "Build number" 7 times.
+#     2) Settings → Developer options → turn ON "Wireless debugging" → tap it →
+#        "Pair device with pairing code" (shows an IP:PORT and a 6-digit code).
+#     3) WSL:  adb pair <ip>:<pair-port>          (enter the 6-digit code)
+#              adb connect <ip>:<debug-port>      (the port on the main Wireless-
+#                                                  debugging screen, NOT the pair port)
+#     4) adb devices  → the A22 must be listed before running this script.
+#   Alternative (Windows-side adb sees USB natively): ADB=adb.exe ./run-on-device.sh …
+#   NOTE: with adb.exe, local file paths are interpreted by Windows — prefer
+#   wireless (Linux adb), which handles WSL paths natively.
 #   NOTE: with adb.exe, LOCAL file paths are interpreted by Windows — keep the
 #   binary + GGUFs on a Windows-visible path, or prefer wireless (Linux adb),
 #   which handles WSL paths natively. `$ADB devices` must list the phone first.
@@ -22,6 +28,19 @@
 # Usage:
 #   ./run-on-device.sh --model P [--behavioral P] [--contract P] [--voice P] \
 #                      [--template llama3|chatml|auto] [--prompt "..."]
+#
+# ── P0 reference bundles for the Galaxy A22 (8 GB, workhorse tier) ──
+#   A=~/cleophis-artifacts
+#   [1] Gate config — 1B Llama + behavioral (Llama template):
+#     ./run-on-device.sh --model $A/llama-1b-base.gguf \
+#       --behavioral $A/llama-1b-behavioral.gguf --template llama3
+#   [2] H14 encore — 4B Qwen + behavioral + contract (ChatML, 2-LoRA stack):
+#     ./run-on-device.sh --model $A/qwen-4b-base.gguf \
+#       --behavioral $A/qwen-4b-behavioral.gguf --contract $A/qwen-4b-contract.gguf \
+#       --template chatml
+#   The A22 is Cortex-A55-class: dotprod YES, i8mm NO. The binary MUST be built
+#   from the dotprod build (vendor-llama-sys-dotprod.sh) — the [kernels] line
+#   must show DOTPROD = 1 (and NOT crash, which +i8mm would).
 set -euo pipefail
 
 ADB="${ADB:-adb}"                      # override: ADB=adb.exe for Windows-side USB

@@ -74,18 +74,35 @@ build wasting the founder checkpoint.
 
 ### ⚠️ aarch64 device build currently lacks ARM SIMD — must fix before the run
 
-The **same** flag-propagation failure hits the aarch64 build: ggml-cpu compiled
-`-march=armv8-a` **baseline** (no `+dotprod`, no `+i8mm`). Traced in
+The **same** flag-propagation failure hit the aarch64 build: ggml-cpu compiled
+`-march=armv8-a` **baseline** (no `+dotprod`/`+i8mm`). Traced in
 `ggml/src/ggml-cpu/CMakeLists.txt` — the dotprod path needs `GGML_NATIVE`
-(meaningless when cross-compiling), or `GGML_CPU_ARM_ARCH`, or
-`GGML_CPU_ALL_VARIANTS`; our cross-build sets none, so it falls to baseline.
-`llama-cpp-sys-2` 0.1.152 exposes none of these via cargo feature or env, so the
-fix is a build.rs patch to the sys crate (vendor / fork / upstream), setting
-**`GGML_CPU_ALL_VARIANTS=ON`** (recommended — runtime-dispatched variants, one
-binary correct on dotprod and non-dotprod devices) or
-`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm`. **Founder-flagged shared-dependency
-change.** Until it lands, the device run would be scalar-slow — don't schedule
-it. (The 16 KB alignment result is unaffected — alignment is a link property.)
+(meaningless when cross-compiling), `GGML_CPU_ARM_ARCH`, or
+`GGML_CPU_ALL_VARIANTS`; our cross-build set none → baseline. `llama-cpp-sys-2`
+0.1.152 exposes none of these (only a `CMAKE_`-prefixed env passthrough, and
+`GGML_CPU_ARM_ARCH` is not `CMAKE_`-prefixed), so the fix is a build.rs patch.
+
+**Variant choice (two traps checked):**
+- `GGML_CPU_ALL_VARIANTS` (runtime dispatch) is **ruled out**: it requires
+  `GGML_BACKEND_DL`, which requires `BUILD_SHARED_LIBS` — our in-process link is
+  static (`BUILD_SHARED_LIBS=OFF`). Runtime dispatch is a later, BACKEND_DL +
+  bundled-`.so` architecture decision, not P0.
+- `+i8mm` is **excluded**: Cortex-A55 (the 4-6GB floor tier through ~2023) has
+  dotprod but not i8mm → hardcoding it SIGILLs exactly that tier.
+
+So **`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod`** is the safe single-static-build
+floor. **PROVEN** via a vendored build.rs patch
+(`docs/superpowers/mobile-tools/vendor-llama-sys-dotprod.sh`): the patched
+aarch64 build's ggml-cpu compile flags carry `-march=armv8-a` (NDK default) then
+`-march=armv8.2-a+dotprod` (target-specific) — clang uses the **last**, so the
+effective arch enables `__ARM_FEATURE_DOTPROD` and the dotprod kernels compile
+in. 16 KB alignment unaffected (link property).
+
+**Gate items (founder):** (1) move the `[patch.crates-io]` from kpack-engine to
+the workspace root at gate — it then also governs kpack-embed's build; (2)
+upstream a llama-cpp-rs PR exposing a GGML cmake-define passthrough, to retire
+the vendored patch. Until this build is the one side-loaded, don't schedule the
+device run.
 
 ## RSS (HOST, engine-only — no WebView; directional)
 
