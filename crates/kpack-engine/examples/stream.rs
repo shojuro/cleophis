@@ -41,6 +41,9 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    // Self-evidencing (spec H3): compiled+detected CPU kernels (DOTPROD/i8mm).
+    eprintln!("[kernels] {}", kpack_engine::backend_system_info());
+
     let mut adapters = Vec::new();
     if let Some(p) = &args.behavioral {
         adapters.push(AdapterSpec::new(AdapterRole::Behavioral, p));

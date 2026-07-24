@@ -55,4 +55,4 @@ pub use mock::{CollectSink, MockBackend};
 pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
 
 #[cfg(feature = "real")]
-pub use llama::LlamaEngine;
+pub use llama::{backend_system_info, LlamaEngine};

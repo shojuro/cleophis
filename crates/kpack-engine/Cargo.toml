@@ -33,16 +33,28 @@ llama-cpp-2 = { version = "=0.1.151", optional = true }
 # the llama-cpp-2 dependency tree — declared here only to use it directly.
 encoding_rs = { version = "0.8", optional = true }
 
+# The raw FFI crate (same one llama-cpp-2 pulls in transitively) — used ONLY for
+# `llama_print_system_info`, which llama-cpp-2 does not wrap. Lets the engine
+# report the compiled+detected CPU kernel features (NEON/DOTPROD/MATMUL_INT8/…)
+# so a device transcript self-evidences whether ARM SIMD kernels are active.
+llama-cpp-sys-2 = { version = "0.1", optional = true }
+
 [features]
 # Default build is mock-only and toolchain-free (no cmake/libclang), exactly
 # like kpack-embed: `cargo test` stays green on a machine with no native LLVM.
 default = []
 # The real llama.cpp-backed backend. Needs libclang + cmake at build time.
-real = ["dep:llama-cpp-2", "dep:encoding_rs"]
+real = ["dep:llama-cpp-2", "dep:encoding_rs", "dep:llama-cpp-sys-2"]
 
 # Minimal on-device benchmark/probe harness: loads a base + adapter stack and
 # streams tokens with timing + RSS, runnable in `adb shell`. The P0 gate
 # artifact (tokens/sec, RSS, Stage-5 probes) without needing the Tauri app.
 [[example]]
 name = "stream"
+required-features = ["real"]
+
+# Behavioral-probe harness: loads a composed stack once and runs the honesty +
+# socratic probe sets, sha256-gated through the engine. Host or on-device.
+[[example]]
+name = "probe"
 required-features = ["real"]

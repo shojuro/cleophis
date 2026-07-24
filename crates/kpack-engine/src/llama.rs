@@ -71,6 +71,26 @@ fn shared_backend() -> Result<&'static LlamaBackend, EngineError> {
     Ok(BACKEND.get_or_init(|| backend))
 }
 
+/// The compiled + runtime-detected CPU kernel features llama.cpp reports
+/// (`llama_print_system_info`): NEON, ARM_FMA, DOTPROD, MATMUL_INT8 (i8mm),
+/// LLAMAFILE, AVX2, etc. Printed at harness startup so a device transcript
+/// **self-evidences** whether ARM SIMD kernels are active — a build compiled
+/// baseline-only (no `+dotprod`/`+i8mm`) shows those features missing and,
+/// together with the tok/s, makes a scalar build unmistakable (spec H3).
+pub fn backend_system_info() -> String {
+    // Initialize the backend before querying (no-op if already done).
+    let _ = shared_backend();
+    // SAFETY: `llama_print_system_info` returns a pointer to a static C string
+    // owned by llama.cpp; we only borrow it to copy into an owned String.
+    unsafe {
+        let ptr = llama_cpp_sys_2::llama_print_system_info();
+        if ptr.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    }
+}
+
 /// The real `llama-cpp-2`-backed engine. Stateless factory over the shared
 /// backend; `load` produces a handle owning the model + adapter stack.
 #[derive(Default)]
