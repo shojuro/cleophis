@@ -55,9 +55,12 @@ while [ $# -gt 0 ]; do case "$1" in
 [ -n "$MODEL" ] || { echo "--model <base.gguf> required"; exit 2; }
 
 DEV=/data/local/tmp/cleophis
-TGT="$CARGO_TARGET_DIR/aarch64-linux-android/debug/examples"
+# RELEASE binaries only — a debug harness sandbags tok/s (same invalid-perf trap
+# as scalar kernels). And the aarch64 build MUST carry the dotprod patch (see
+# vendor-llama-sys-dotprod.sh) or quantized matmuls run scalar on the A22.
+TGT="$CARGO_TARGET_DIR/aarch64-linux-android/release/examples"
 LIBCXX="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
-[ -x "$TGT/stream" ] || { echo "build first: cargo ndk -t arm64-v8a -P 24 build --features real --example stream --example probe"; exit 1; }
+[ -x "$TGT/stream" ] || { echo "build first (RELEASE + dotprod patch applied): cargo ndk -t arm64-v8a -P 24 build --release --features real --example stream --example probe"; exit 1; }
 
 # The hero systemPrompt (catalog data) — what the desktop probe script sends.
 CAT="$(cd "$(dirname "$0")/../../.." && pwd)/src-tauri/resources/catalog.json"
