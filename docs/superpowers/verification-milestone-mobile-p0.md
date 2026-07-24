@@ -52,10 +52,30 @@ adb from WSL2.
 
 ## Bundle 2 — H14 on-device encore: Qwen3-4B + behavioral + contract (2 LoRA, ChatML)
 
-Running on-device at report time (expect low tok/s — a 4B on 2×A76). Host-side
-this stack already retired H14's core: both adapters compose (the contract
-adapter's verbatim `refusal_with_offer` + the behavioral adapter's honesty
-behaviors), Stage-5 4/4. On-device evidence appended when the run completes.
+**H14 RETIRED ON-DEVICE.** Same A22, wireless adb. Load 18.31 s, `DOTPROD = 1`.
+- **The fingerprint, on the phone:** the fake-entity probe returned the
+  **contract adapter's trained refusal** near-verbatim — *"I don't have material
+  covering that in this pack. I can tell you what the pack does cover, or you can
+  add a source and rebuild it."* (35 tok, `stop=Eos`). That is
+  `prompt-contract.v1.toml`'s `refusal_with_offer` — only the contract LoRA
+  produces it. **In the same session** the behavioral adapter is active:
+  *"No, that's not correct. 5 + 5 equals 10, not 9."* Both LoRAs compose over
+  FFI on hardware → the two ordered `lora_adapter_set` calls stack.
+- **Stage-5: 4/4** on the 4B stack (concession + medical also clean, `Eos`).
+- **Generation: 1.0–1.8 tok/s.** Honest framing: the Dimensity 700's CPU is
+  floor-class (2×A76 + 6×A55) even though its 8 GB RAM is workhorse-class. Real
+  workhorse SoCs (Snapdragon 7/8-series, Dimensity 8000+) will be severalfold
+  faster.
+- **RSS:** 4,267 MB after load / 3,240 MB at done / **4,543 MB peak (VmHWM)** —
+  the workhorse tier's 8 GB floor confirmed with ~3.5 GB headroom (WebView not
+  yet present).
+- Full transcript: `scratchpad/device-run-4b.log`.
+
+**P1 insight (tiering):** RAM alone is the wrong signal for the 4B recommendation
+— an 8 GB phone with a weak SoC (this A22) gets a poor 4B experience. The
+onboarding profiler (spec §2) should gate the 4B tier on **SoC performance
+class**, not RAM, or explicitly disclose "slower but smarter" when RAM says
+workhorse but the SoC says floor.
 
 ## What was built (P0 engineering)
 
@@ -101,4 +121,6 @@ behaviors), Stage-5 4/4. On-device evidence appended when the run completes.
 Engine swap-in (sidecar → `EngineBackend`) on the trait DMZ; the UI beyond the
 harness; manifest hardening (`allowBackup=false`, minimal permissions,
 `REQUEST_INSTALL_PACKAGES`); a mobile applicationId; signed APK + self-update;
-airplane-mode / backup-leak / kill-restore suites. **P0 stops here.**
+airplane-mode / backup-leak / kill-restore suites; **SoC-class-aware tiering**
+(gate the 4B recommendation on SoC performance, not RAM — see Bundle 2).
+**P0 stops here.**
