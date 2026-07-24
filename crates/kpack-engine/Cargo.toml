@@ -39,3 +39,10 @@ encoding_rs = { version = "0.8", optional = true }
 default = []
 # The real llama.cpp-backed backend. Needs libclang + cmake at build time.
 real = ["dep:llama-cpp-2", "dep:encoding_rs"]
+
+# Minimal on-device benchmark/probe harness: loads a base + adapter stack and
+# streams tokens with timing + RSS, runnable in `adb shell`. The P0 gate
+# artifact (tokens/sec, RSS, Stage-5 probes) without needing the Tauri app.
+[[example]]
+name = "stream"
+required-features = ["real"]
