@@ -1,38 +1,73 @@
 #!/usr/bin/env bash
-# Founder-serialized P0 gate run: push the aarch64 `stream` harness + its
-# libc++_shared.so + the model/adapter GGUFs to a connected device and run it
-# in adb shell, printing tokens/sec + RSS. No APK, no Tauri — the pure engine.
+# Founder-serialized P0 gate run: push the aarch64 harness + libc++_shared.so +
+# the model/adapter GGUFs to a connected phone and run it in adb shell —
+# tokens/sec + RSS (stream) and the behavioral probes (probe). No APK, no Tauri.
+#
+# ── Connecting a phone from WSL2 (USB is NOT visible to WSL Linux by default) ──
+#   Easiest: Android 11+ WIRELESS debugging with the Linux platform-tools:
+#     1) Phone: Developer options → Wireless debugging → on → "Pair with code".
+#     2) WSL:  adb pair <phone-ip>:<pair-port>   (enter the code)
+#              adb connect <phone-ip>:<debug-port>
+#   Or use the WINDOWS adb (sees USB natively) by overriding ADB:
+#     ADB=adb.exe ./run-on-device.sh ...      (adb.exe is in the ~/Android-Sdk symlink)
+#   NOTE: with adb.exe, LOCAL file paths are interpreted by Windows — keep the
+#   binary + GGUFs on a Windows-visible path, or prefer wireless (Linux adb),
+#   which handles WSL paths natively. `$ADB devices` must list the phone first.
+#
+# ── Where the GGUFs come from ──
+#   Fetch the hero stack from the signed catalog (public GET, sha256-verified):
+#     ./fetch-artifacts.sh          # → ~/cleophis-artifacts/*.gguf
+#   or point --model/--behavioral/etc. at any local GGUFs you already have.
 #
 # Usage:
-#   ./run-on-device.sh <hero.gguf> <behavioral.gguf> <contract.gguf> <voice.gguf> "<prompt>"
-#
-# Prereqs: USB debugging on, `adb devices` shows the phone, and the env from
-# docs/superpowers/mobile-dev-setup.md is set (ANDROID_NDK_ROOT, CARGO_TARGET_DIR).
+#   ./run-on-device.sh --model P [--behavioral P] [--contract P] [--voice P] \
+#                      [--template llama3|chatml|auto] [--prompt "..."]
 set -euo pipefail
 
-HERO="${1:?hero base gguf}"; BEH="${2:?behavioral gguf}"; CON="${3:?contract gguf}"; VOICE="${4:?voice gguf}"
-PROMPT="${5:-Say hello in one short sentence.}"
-: "${ANDROID_NDK_ROOT:?}"; : "${CARGO_TARGET_DIR:?}"
+ADB="${ADB:-adb}"                      # override: ADB=adb.exe for Windows-side USB
+: "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"; : "${CARGO_TARGET_DIR:?set CARGO_TARGET_DIR}"
+
+MODEL="" BEH="" CON="" VOICE="" TEMPLATE="auto" PROMPT="Say hello in one short sentence."
+while [ $# -gt 0 ]; do case "$1" in
+  --model) MODEL="$2"; shift 2;; --behavioral) BEH="$2"; shift 2;;
+  --contract) CON="$2"; shift 2;; --voice) VOICE="$2"; shift 2;;
+  --template) TEMPLATE="$2"; shift 2;; --prompt) PROMPT="$2"; shift 2;;
+  *) echo "unknown arg: $1"; exit 2;; esac; done
+[ -n "$MODEL" ] || { echo "--model <base.gguf> required"; exit 2; }
 
 DEV=/data/local/tmp/cleophis
-BIN="$CARGO_TARGET_DIR/aarch64-linux-android/debug/examples/stream"
+TGT="$CARGO_TARGET_DIR/aarch64-linux-android/debug/examples"
 LIBCXX="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+[ -x "$TGT/stream" ] || { echo "build first: cargo ndk -t arm64-v8a -P 24 build --features real --example stream --example probe"; exit 1; }
 
-[ -f "$BIN" ] || { echo "build first: cargo ndk -t arm64-v8a -P 24 build --features real --example stream"; exit 1; }
+# The hero systemPrompt (catalog data) — what the desktop probe script sends.
+CAT="$(cd "$(dirname "$0")/../../.." && pwd)/src-tauri/resources/catalog.json"
+SYS="$(python3 -c "import json;c=json.load(open(r'$CAT'));h=[e for e in c if e.get('real')][0];print(h['systemPrompt'].strip())" 2>/dev/null || echo 'You are a helpful, honest tutor.')"
 
-echo "== pushing to $DEV =="
-adb shell "mkdir -p $DEV"
-adb push "$BIN" "$DEV/stream"
-adb push "$LIBCXX" "$DEV/libc++_shared.so"
-for f in "$HERO" "$BEH" "$CON" "$VOICE"; do adb push "$f" "$DEV/$(basename "$f")"; done
-adb shell "chmod 755 $DEV/stream"
+echo "== $($ADB get-serialno 2>/dev/null || echo 'no device — see connection note above') =="
+$ADB shell "mkdir -p $DEV"
+$ADB push "$TGT/stream" "$DEV/stream" >/dev/null
+[ -x "$TGT/probe" ] && $ADB push "$TGT/probe" "$DEV/probe" >/dev/null
+$ADB push "$LIBCXX" "$DEV/libc++_shared.so" >/dev/null
 
-echo "== running (full behavioral->contract->voice stack, greedy) =="
-adb shell "cd $DEV && LD_LIBRARY_PATH=$DEV ./stream $(basename "$HERO") \
-  --behavioral $(basename "$BEH") --contract $(basename "$CON") --voice $(basename "$VOICE") \
-  --template llama3 --temp 0 --prompt \"$PROMPT\""
+# Both harnesses cd to $DEV, so adapters are passed as relative basenames.
+push() { [ -n "$1" ] || return 0; $ADB push "$1" "$DEV/$(basename "$1")" >/dev/null; }
+push "$MODEL"; push "$BEH"; push "$CON"; push "$VOICE"
+LORA=""
+[ -n "$BEH" ]   && LORA="$LORA --behavioral $(basename "$BEH")"
+[ -n "$CON" ]   && LORA="$LORA --contract $(basename "$CON")"
+[ -n "$VOICE" ] && LORA="$LORA --voice $(basename "$VOICE")"
+$ADB shell "chmod 755 $DEV/stream $DEV/probe 2>/dev/null || true"
+
+echo "== [1] tokens/sec + RSS (stream, greedy) =="
+$ADB shell "cd $DEV && LD_LIBRARY_PATH=$DEV ./stream $(basename "$MODEL") $LORA --template $TEMPLATE --temp 0 --prompt \"$PROMPT\""
+
+if $ADB shell "test -x $DEV/probe" 2>/dev/null; then
+  echo "== [2] behavioral probes (probe, honesty + socratic) =="
+  $ADB shell "cd $DEV && LD_LIBRARY_PATH=$DEV ./probe --model $(basename "$MODEL") $LORA --system \"$SYS\" --template $TEMPLATE --temp 0 --set all"
+fi
 
 echo
-echo "Gate checklist: capture tokens/sec + VmRSS/VmHWM above, then re-run with the"
-echo "four Stage-5 probe prompts (fake-entity refusal, 5+5=9 pushback, concession,"
-echo "medical boundary) and record the 4/4 transcript."
+echo "Gate: record tokens/sec + VmRSS/VmHWM, and the probe transcript. NOTE: the"
+echo "catalog has no voice adapter yet — fullest real stack is behavioral+contract"
+echo "(Qwen3-4B). Pass --voice only once a voice adapter exists."
