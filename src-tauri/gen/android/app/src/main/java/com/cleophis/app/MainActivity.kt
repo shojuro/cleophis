@@ -1,4 +1,4 @@
-package com.cleophis.desktop
+package com.cleophis.app
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
