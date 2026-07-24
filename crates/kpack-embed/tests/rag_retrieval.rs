@@ -403,7 +403,22 @@ fn t3_multi_pack_delta1_strict_gate_never_bypassed_by_loose_pack() {
     // hasn't been through real calibration yet.
     set_gate(&loose_path, 0.0, 0.0);
 
-    let (strict_pack, strict_manifest) = mount(&strict_path, &strict_meta);
+    // Pin the strict pack to Curated on the MOUNTED manifest (assemble() reads
+    // pack_tier here) so the extreme floor set above is actually HONORED: a
+    // Personal-tier pack has its floor overridden at query time by
+    // PERSONAL_RUNTIME_GATE_ABS_FLOOR (0.30) in assemble(), which silently
+    // recouples this Δ1 safety test to whether the raw cosine clears 0.30 —
+    // exactly the regression 81dbb01 fixed for t22 (t16/t17/t23 already do this).
+    // t3 has the identical shape and was missed in that review pass; it fails on
+    // ANY embedder (verified identical on llama-cpp-sys 0.1.151 and 0.1.152, so
+    // independent of the Phase 0.2 sys-2 bump). We override the mounted manifest
+    // rather than the BuildMeta because a Curated pack requires a curator
+    // signature to mount (curator_key is None here) — mirroring t22, which
+    // mutates the manifest, not the built pack. The loose pack stays Personal —
+    // it models the uncalibrated personal pack that must never resurrect the
+    // strict pack's refused chunk.
+    let (strict_pack, mut strict_manifest) = mount(&strict_path, &strict_meta);
+    strict_manifest.pack_tier = PackTier::Curated;
     let (loose_pack, loose_manifest) = mount(&loose_path, &loose_meta);
     let mounted = vec![(strict_pack, strict_manifest), (loose_pack, loose_manifest)];
 
