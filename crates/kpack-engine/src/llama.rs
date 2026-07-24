@@ -35,9 +35,8 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaLoraAdapter, LlamaModel, Special};
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaLoraAdapter, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
-use llama_cpp_2::token::LlamaToken;
 
 use crate::adapter::{prepare_stack, AdapterRole, VerifyCache};
 use crate::backend::{
@@ -137,7 +136,10 @@ impl EngineHandle for LlamaHandle {
     ) -> Result<Box<dyn EngineSession + '_>, EngineError> {
         let backend = shared_backend()?;
         let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(cfg.n_ctx));
-        let mut ctx = self
+        // `ctx` need not be `mut` here: `lora_adapter_set` takes `&self`, and the
+        // context is then moved into the session (where `decode` uses it via the
+        // session's own `&mut self`).
+        let ctx = self
             .model
             .new_context(backend, ctx_params)
             .map_err(|e| EngineError::Backend(format!("context create: {e}")))?;
@@ -235,6 +237,9 @@ impl EngineSession for LlamaSession<'_> {
 
         let mut sampler = self.build_sampler();
         let mut stripper = ThinkStripper::new(self.strip_think);
+        // One decoder for the whole turn: a multi-byte UTF-8 char can straddle
+        // two tokens, and the Decoder buffers the partial sequence across calls.
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut generated = 0usize;
         let mut pos = prompt_tokens as i32;
         let mut stop = StopReason::Eos;
@@ -244,15 +249,15 @@ impl EngineSession for LlamaSession<'_> {
             let token = sampler.sample(&self.ctx, batch.n_tokens() - 1);
             sampler.accept(token);
 
+            // End-of-generation: leave `stop` at its Eos default.
             if self.model.is_eog_token(token) {
-                stop = StopReason::Eos;
                 break;
             }
 
             generated += 1;
             let piece = self
                 .model
-                .token_to_str(token, Special::Tokenize)
+                .token_to_piece(token, &mut decoder, false, None)
                 .unwrap_or_default();
             let visible = stripper.push(&piece);
             if !visible.is_empty() {

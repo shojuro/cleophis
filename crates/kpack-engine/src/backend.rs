@@ -39,7 +39,17 @@ pub trait EngineBackend: Send + Sync {
 
 /// A loaded base + adapter stack. Owns the native model and the mounted LoRA
 /// adapters; hands out sessions.
-pub trait EngineHandle: Send {
+///
+/// **Thread-affine, deliberately not `Send`.** The native aarch64 build
+/// surfaced that `llama-cpp-2`'s `LlamaLoraAdapter` holds a raw `NonNull` and
+/// is `!Send` (the model itself is `Send + Sync`, but a mounted LoRA stack is
+/// not), and a `LlamaContext` is likewise thread-bound. So a handle lives
+/// entirely on the thread that created it — on mobile, a dedicated inference
+/// thread (Android foreground service, spec §8); prompts and streamed tokens
+/// cross threads via channels, never the handle. This matches desktop, where
+/// the sidecar runs in its own process. Only [`EngineBackend`] (the stateless
+/// factory) is `Send + Sync`.
+pub trait EngineHandle {
     /// `session(ctx)` — open a generation session with the given context
     /// config. Borrows the handle for the session's lifetime (`+ '_`), so a
     /// handle yields one session at a time — the borrow models the native
