@@ -1,0 +1,60 @@
+[package]
+name = "kpack-engine"
+version = "0.1.0"
+edition = "2021"
+description = "In-process inference engine (EngineBackend trait + llama-cpp-2 backend) for Cleophis mobile."
+publish = false
+
+# STANDALONE during the P0 spike. This empty [workspace] table detaches the
+# crate from the root Cleophis workspace, so the spike never edits the shared
+# root Cargo.toml `members` list — workspace membership (and the shared
+# `llama-cpp-2` pin) is a founder-gated change per the P0 brief, merged through
+# main first and rebased in, never carried as local divergence. Fold this into
+# the workspace at gate time by deleting this table and adding the crate to
+# root `members`.
+[workspace]
+
+[dependencies]
+# Streaming sha256 for the load-time integrity gate (adapter::VerifyCache),
+# same crate/version family inference.rs uses.
+sha2 = "0.10"
+
+# The real linked backend. EXACT pin `=0.1.151` — the SAME version kpack-embed
+# pins for the BGE embedder, confirmed (hour-one check) to expose everything the
+# engine needs: generation (LlamaContext::decode + LlamaBatch + LlamaSampler),
+# multi-LoRA (LlamaModel::lora_adapter_init -> LlamaContext::lora_adapter_set),
+# and chat templates (LlamaModel::chat_template + apply_chat_template). One
+# workspace, one version, one native backend — no pin move, so no embedder
+# revalidation (spec H15 resolves to a no-op).
+llama-cpp-2 = { version = "=0.1.151", optional = true }
+
+# Streaming UTF-8 detokenizer for token_to_piece (a multi-byte char can straddle
+# two tokens; the persistent Decoder buffers the partial sequence). Already in
+# the llama-cpp-2 dependency tree — declared here only to use it directly.
+encoding_rs = { version = "0.8", optional = true }
+
+# The raw FFI crate (same one llama-cpp-2 pulls in transitively) — used ONLY for
+# `llama_print_system_info`, which llama-cpp-2 does not wrap. Lets the engine
+# report the compiled+detected CPU kernel features (NEON/DOTPROD/MATMUL_INT8/…)
+# so a device transcript self-evidences whether ARM SIMD kernels are active.
+llama-cpp-sys-2 = { version = "0.1", optional = true }
+
+[features]
+# Default build is mock-only and toolchain-free (no cmake/libclang), exactly
+# like kpack-embed: `cargo test` stays green on a machine with no native LLVM.
+default = []
+# The real llama.cpp-backed backend. Needs libclang + cmake at build time.
+real = ["dep:llama-cpp-2", "dep:encoding_rs", "dep:llama-cpp-sys-2"]
+
+# Minimal on-device benchmark/probe harness: loads a base + adapter stack and
+# streams tokens with timing + RSS, runnable in `adb shell`. The P0 gate
+# artifact (tokens/sec, RSS, Stage-5 probes) without needing the Tauri app.
+[[example]]
+name = "stream"
+required-features = ["real"]
+
+# Behavioral-probe harness: loads a composed stack once and runs the honesty +
+# socratic probe sets, sha256-gated through the engine. Host or on-device.
+[[example]]
+name = "probe"
+required-features = ["real"]

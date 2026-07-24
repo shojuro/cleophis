@@ -1,0 +1,19 @@
+[package]
+name = "aarch64-align-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone harness (own [workspace]) for the spec-H2 16 KB page-alignment
+# check. A cdylib that references LlamaEngine so the aarch64 link actually pulls
+# in llama.cpp, giving check-mobile-build.sh a real .so to readelf. Not part of
+# the shipping build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Relative path to the engine crate (repo-root/crates/kpack-engine), so the
+# probe is portable across checkouts.
+kpack-engine = { path = "../../../../crates/kpack-engine", features = ["real"] }
