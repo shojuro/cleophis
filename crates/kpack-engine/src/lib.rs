@@ -1,0 +1,58 @@
+//! `kpack-engine` — the in-process inference engine for Cleophis mobile, and
+//! the `EngineBackend` trait that is the demilitarized zone between the product
+//! and the runtime (P0 spike brief §"the trait is the demilitarized zone").
+//!
+//! Desktop runs llama.cpp as a **sidecar process** (`src-tauri/src/inference.rs`).
+//! Mobile cannot (iOS forbids spawning subprocesses; Android makes them
+//! kill-prone), so it links llama.cpp **in-process** via `llama-cpp-2` over FFI.
+//! Both live behind [`EngineBackend`]; desktop inherits the trait after the
+//! mobile demo ships, so nothing here assumes mobile.
+//!
+//! ## What this crate reproduces from `inference.rs` (without touching it)
+//! The pure-Rust policy — composition order behavioral→contract→voice,
+//! fail-closed artifact resolution, and the per-artifact verify-once sha256
+//! gate — lives in [`adapter`] and is proven against the [`mock`] backend with
+//! no native toolchain. The native backend ([`llama`], behind the `real`
+//! feature) routes `load` through the same [`adapter::prepare_stack`], so it
+//! never re-implements policy — it loads exactly what it is handed.
+//!
+//! ## Layers
+//! - [`backend`] — the `EngineBackend` / `EngineHandle` / `EngineSession`
+//!   traits and their request/config/stats types.
+//! - [`adapter`] — roles, specs, `prepare_stack`, the `VerifyCache` gate.
+//! - [`template`] — per-model chat template selection and the Qwen-only,
+//!   start-of-turn `<think>` stripper.
+//! - [`mock`] — a deterministic backend for tests and pre-native bring-up.
+//! - [`llama`] — the real `llama-cpp-2`-backed backend (`--features real`).
+//!
+//! ## Prompt contract
+//! Prompt rendering honors `contracts/prompt-contract.v1.toml`. This crate
+//! stays lean (no `kpack-core` dependency, so the native/NDK build is about
+//! llama.cpp, not SQLite): the **caller** supplies the contract system prompt
+//! and rendered sources — produced by `kpack_core::contract::system_contract()`
+//! / `render_sources()` — as [`template::ChatMessage`]s. The contract is thus
+//! honored byte-for-byte (the engine never re-types it), and the DMZ trait
+//! avoids depending on the whole core. See the crate README for the wiring.
+
+pub mod adapter;
+pub mod backend;
+pub mod error;
+pub mod mock;
+pub mod template;
+
+#[cfg(feature = "real")]
+pub mod llama;
+
+pub use adapter::{
+    file_sha256, prepare_stack, AdapterRole, AdapterSpec, ModelSpec, PreparedStack, VerifyCache,
+};
+pub use backend::{
+    EngineBackend, EngineHandle, EngineSession, GenStats, LoadParams, LoadRequest, Sampling,
+    SessionConfig, StopReason, TokenSink,
+};
+pub use error::EngineError;
+pub use mock::{CollectSink, MockBackend};
+pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
+
+#[cfg(feature = "real")]
+pub use llama::LlamaEngine;
