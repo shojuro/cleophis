@@ -34,14 +34,23 @@ python3 - "$DEST/build.rs" <<'PY'
 import sys
 path = sys.argv[1]
 src = open(path).read()
-if "GGML_CPU_ARM_ARCH" in src:
+# Idempotency guard MUST key on OUR marker, not the bare "GGML_CPU_ARM_ARCH"
+# symbol: llama-cpp-sys-2 0.1.152's stock build.rs already defines
+# GGML_CPU_ARM_ARCH="armv8-a" (for the TargetOs::Linux+aarch64 docker path), so
+# the old generic check false-positived and SILENTLY skipped patching — leaving
+# aarch64-android at baseline armv8-a (scalar matmuls, garbage tok/s). Key on the
+# actual value we inject instead.
+if "armv8.2-a+dotprod" in src:
     print("build.rs already patched"); raise SystemExit(0)
 anchor = "    // extract the target-cpu config value, if specified"
 assert anchor in src, "anchor not found — build.rs layout changed; re-inspect before patching"
 patch = (
-    "    // Cleophis mobile patch: force ARM dotprod kernels on aarch64-android\n"
-    "    // (baseline armv8-a runs quantized matmuls scalar). i8mm EXCLUDED — A55\n"
-    "    // lacks it (SIGILL); armv8.2-a+dotprod is the safe static floor.\n"
+    "    // Cleophis mobile patch: floor-tier Android devices (Cortex-A55+) need ARM\n"
+    "    // dotprod kernels; the stock cross-build leaves ggml-cpu at -march=armv8-a\n"
+    "    // baseline, running quantized matmuls scalar (spec H3). Force the arch to\n"
+    "    // armv8.2-a+dotprod. i8mm is DELIBERATELY EXCLUDED: A55 (the 4-6GB budget\n"
+    "    // floor through ~2023) has dotprod but NOT i8mm, so hardcoding +i8mm would\n"
+    "    // SIGILL on exactly that tier. i8mm belongs in a runtime-dispatched variant.\n"
     "    {\n"
     "        let arch_target = env::var(\"TARGET\").unwrap_or_default();\n"
     "        if arch_target.starts_with(\"aarch64\") && arch_target.contains(\"android\") {\n"

@@ -1,0 +1,4 @@
+# Vendored third-party source (patched llama-cpp-sys-2). Store byte-for-byte as
+# vendored — no EOL normalization, no diff/merge munging — so it stays identical
+# to the crates.io crate except for the single documented dotprod build.rs patch.
+* -text -diff

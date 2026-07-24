@@ -82,6 +82,18 @@ zxcvbn = "3"
 nvml-wrapper = "0.10"
 winreg = "0.52"
 
+# Android-only. The desktop app runs llama.cpp as a sidecar process; mobile
+# cannot, so it moves inference in-process via kpack-engine's real llama.cpp
+# backend. Gated to the Android target so the DESKTOP graph never pulls a second
+# native llama.cpp build (kpack-embed already carries the shared one) — the
+# inference.rs cfg seam re-exports engine_inproc.rs only under cfg(mobile)
+# (Phase 1.1), and desktop behavior stays byte-identical. `jni` is the bridge to
+# the Kotlin AndroidKeyStore SecureStore (Phase 3); declared here so it never
+# enters the desktop dependency graph.
+[target.'cfg(target_os = "android")'.dependencies]
+kpack-engine = { path = "../crates/kpack-engine", features = ["real"] }
+jni = "0.21"
+
 [dev-dependencies]
 ureq = { version = "2", features = ["json"] }
 serde_json = "1"

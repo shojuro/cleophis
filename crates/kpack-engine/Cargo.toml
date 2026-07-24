@@ -5,15 +5,12 @@ edition = "2021"
 description = "In-process inference engine (EngineBackend trait + llama-cpp-2 backend) for Cleophis mobile."
 publish = false
 
-# STANDALONE during the P0 spike. This empty [workspace] table detaches the
-# crate from the root Cleophis workspace, so the spike never edits the shared
-# root Cargo.toml `members` list — workspace membership (and the shared
-# `llama-cpp-2` pin) is a founder-gated change per the P0 brief, merged through
-# main first and rebased in, never carried as local divergence. Fold this into
-# the workspace at gate time by deleting this table and adding the crate to
-# root `members`.
-[workspace]
-
+# Folded into the root Cleophis workspace at the P1 gate (Phase 0.2): the
+# standalone `[workspace]` table that detached this crate during the P0 spike is
+# gone, and `crates/kpack-engine` is now listed in the root `members`. The
+# shared llama-cpp-sys-2 backend (and the vendored dotprod `[patch.crates-io]`)
+# is governed at the workspace root; this crate keeps its own exact llama-cpp-2
+# `=0.1.151` pin, unified with kpack-embed's by the resolver.
 [dependencies]
 # Streaming sha256 for the load-time integrity gate (adapter::VerifyCache),
 # same crate/version family inference.rs uses.

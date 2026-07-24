@@ -13,4 +13,27 @@ members = [
     "crates/kpack-embed",
     "crates/kpack-pdf",
     "crates/kpack-calc",
+    # In-process inference engine (EngineBackend + llama-cpp-2 backend) for
+    # mobile. Standalone during the P0 spike; folded into the workspace at the
+    # P1 gate (its own `[workspace]` table was deleted). Default features are
+    # mock-only/toolchain-free, so a plain `cargo build --workspace` on a host
+    # without libclang/cmake stays green; `src-tauri` turns on its `real`
+    # feature only under the Android target (see src-tauri/Cargo.toml).
+    "crates/kpack-engine",
 ]
+
+# Vendored, patched llama-cpp-sys-2 (0.1.152) — the ONE native llama.cpp backend
+# shared by kpack-embed (BGE embedder, all platforms) and kpack-engine (mobile
+# generation). The patch is a single aarch64-android-CONDITIONAL build.rs insert
+# forcing GGML_CPU_ARM_ARCH=armv8.2-a+dotprod (spec H3): the stock cross-build
+# leaves ggml-cpu at baseline armv8-a and runs quantized matmuls scalar on the
+# floor-tier A55 SoCs. For every NON-android target (desktop x86_64/aarch64) the
+# vendored build.rs is byte-identical to stock 0.1.152, so desktop builds are
+# behaviorally unchanged — the H15 embedder-revalidation gate (kpack-embed real
+# golden-pack: bge_smoke + build_determinism) proves the 0.1.151->0.1.152 bump
+# didn't shift embeddings. Reproduced by
+# docs/superpowers/mobile-tools/vendor-llama-sys-dotprod.sh; byte-identical to
+# the P0 on-device-validated (DOTPROD=1) artifact. Temporary — retired by an
+# upstream llama-cpp-rs PR exposing a GGML cmake-define passthrough.
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "third_party/llama-cpp-sys-2" }
