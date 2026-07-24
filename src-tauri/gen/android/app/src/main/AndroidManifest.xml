@@ -1,6 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network: public GET only (signed catalog + model/APK download). The app
+         never opens a socket for anything a user types; inference is offline. -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Self-update (spec §4.1/§6): the direct-APK channel installs its own
+         signed updates. Special access, NOT a runtime permission — the one
+         permission we ask for, so the user can update us without Google. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Optional: download-complete notice (spec §6 — the only notification we
+         ever request). Runtime-prompted on Android 13+. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- On-device inference runs in a foreground service so the OS does not kill
+         generation mid-turn (H4/H5). Android 14+ requires a declared FGS type;
+         none fits local inference, so `specialUse` with a justification string
+         (see the <service> below). The service does NO network. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -9,6 +27,9 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.cleophis"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
@@ -33,5 +54,20 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- On-device inference foreground service (spec §8, H4/H5). Declared
+             here in Phase 0.3; the real start/stop around chat_stream, the
+             notification, and the thermal-throttle notice land in Phase 5.1.
+             `specialUse` is the only Android 14+ FGS type that fits local AI
+             text generation; the justification string below is what Play review
+             reads (PROPERTY_SPECIAL_USE_FGS_SUBTYPE). -->
+        <service
+            android:name=".InferenceService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="local AI text generation at explicit user request; no network" />
+        </service>
     </application>
 </manifest>

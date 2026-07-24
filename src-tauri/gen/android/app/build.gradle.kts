@@ -38,6 +38,14 @@ android {
         }
         getByName("release") {
             isMinifyEnabled = true
+            // Ship arm64-v8a only (spec §3: every reference device is arm64;
+            // emulators lie, H1). debuggable defaults to false for release;
+            // minify stays on (above). Release-only — the CP0 debug build keeps
+            // all flavors. Validated by the Phase 5.2 release-config audit.
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+            }
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 and below (android:fullBackupContent). Belt-and-suspenders with
+  android:allowBackup="false": exclude ALL app-managed data from any backup set.
+  Spec §6 privacy invariant #1 — Android Auto Backup would otherwise upload the
+  conversation DB, model/adapter files, and offline-auth cache to the user's
+  Google Drive, silently violating "nothing a user types leaves the device".
+-->
+<full-backup-content>
+    <exclude domain="file" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="external" />
+</full-backup-content>
