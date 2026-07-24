@@ -68,6 +68,12 @@ if $ADB shell "test -x $DEV/probe" 2>/dev/null; then
 fi
 
 echo
-echo "Gate: record tokens/sec + VmRSS/VmHWM, and the probe transcript. NOTE: the"
-echo "catalog has no voice adapter yet — fullest real stack is behavioral+contract"
-echo "(Qwen3-4B). Pass --voice only once a voice adapter exists."
+echo "Gate checklist:"
+echo " - KERNEL CHECK (spec H3): the '[kernels]' line printed at startup MUST show"
+echo "   DOTPROD = 1 (and ideally MATMUL_INT8 = 1). If they are 0/absent, or tok/s"
+echo "   is implausibly low (< ~5 tok/s on a modern phone), the ggml-cpu build is"
+echo "   BASELINE armv8-a (scalar) — the numbers are invalid; rebuild with"
+echo "   GGML_CPU_ALL_VARIANTS / GGML_CPU_ARM_ARCH before trusting perf."
+echo " - Record tokens/sec + VmRSS/VmHWM and the probe transcript (4/4 Stage-5)."
+echo " - The catalog has no voice adapter yet — fullest real stack is"
+echo "   behavioral+contract (Qwen3-4B). Pass --voice only once one exists."

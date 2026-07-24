@@ -65,7 +65,7 @@ export ANDROID_SDK_ROOT=/home/$USER/android-sdk-linux
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 ```
 
-## Cross-compiling the engine
+## Cross-compiling the engine (aarch64)
 
 ```bash
 cd crates/kpack-engine
@@ -73,6 +73,29 @@ cargo ndk -t arm64-v8a -P 24 build --features real   # aarch64 + llama.cpp
 ```
 
 (`-P` is the platform/API flag in cargo-ndk 4.x; `-p` is cargo's package flag.)
+
+## Building the engine for the HOST (x86_64) — for host-side validation
+
+Unlike the NDK build (whose sysroot supplies the C headers), a host build with
+the pip libclang fails bindgen with `'stdbool.h' file not found` — the pip
+`libclang` ships the shared lib but not clang's builtin-header resource dir.
+Borrow the NDK's clang-18 headers:
+
+```bash
+cd crates/kpack-engine
+unset ANDROID_NDK_ROOT NDK_ROOT ANDROID_NDK ANDROID_NDK_HOME   # host, not cross
+export LIBCLANG_PATH=/home/$USER/.local/lib/python3.10/site-packages/clang/native
+export BINDGEN_EXTRA_CLANG_ARGS="-isystem /home/$USER/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/include"
+cargo build --features real --example probe   # gcc/g++ builds llama.cpp for host
+```
+
+## Fetching hero artifacts (host validation / device runs)
+
+`docs/superpowers/mobile-tools/fetch-artifacts.sh [base_model]` pulls a tier's
+base + adapters from the signed dist catalog (public GET from `cleophis-dist`),
+each sha256-verified. Note: the engine's own load-time sha256 gate is slow in a
+**debug** build (unoptimized sha2 — ~1-2 s per 100 MB); it is negligible in
+`--release`. Generation tok/s is unaffected (that runs in optimized llama.cpp C).
 
 ## Teardown
 
