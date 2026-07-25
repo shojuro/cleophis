@@ -243,13 +243,11 @@ export function describeEngineState({
         prominent: true,
       };
     }
-    return { kind: 'working', label: 'Thinking',
-    short: 'Thinking', detail: null, tone: 'busy', prominent: false };
+    return { kind: 'working', label: 'Thinking', short: 'Thinking', detail: null, tone: 'busy', prominent: false };
   }
 
   if (turn && turn.firstDeltaAt != null) {
-    return { kind: 'generating', label: 'Writing the reply',
-    short: 'Writing', detail: null, tone: 'busy', prominent: false };
+    return { kind: 'generating', label: 'Writing the reply', short: 'Writing', detail: null, tone: 'busy', prominent: false };
   }
 
   return {
