@@ -638,6 +638,36 @@ phase's standing rule: resolve on the merits, never blanket-suppress, and never
 let the 5.3 `mobile-check` CI job inherit a blind spot. The allow states a true
 platform fact rather than hiding an unknown.
 
+**Phase 1.4 gate: GREEN** (run 13, at `a959717`): **301 passed / 1 failed**,
+the failure being a *new* member of the documented cloud family
+(`cloud::download::tests::public_resume_sends_range_header_and_completes`,
+the first download-family flake, same local-listener mechanism), passing in
+isolation in 1.74 s — protocol step 2 satisfied, so it does not block.
+**Zero compiler warnings.**
+
+*Environmental signal worth more than it looks:* that run took **293 s against
+the usual ~91 s** (machine load), and slow runs correlating with flakes is
+evidence about the *mechanism* rather than noise about the machine — local
+listeners racing for ports lose that race under load. It makes the family
+predictable rather than merely catalogued: expect flakes when the run is slow.
+
+#### ⚠ UNRESOLVED: the dead-code warning's disappearance is unexplained
+
+The warning appeared at `22f0aa8` and was **absent at `a959717`** — but
+`a959717` does *not* contain the `cfg_attr(desktop, allow(dead_code))`, which
+landed later in `0fa893a`. On that evidence the wiring resolved it on desktop,
+which contradicts the reasoning that produced the fix: `settle()` and the
+streaming closure live inside `#[cfg(mobile)] mod imp`, so a desktop build
+should compile them away and leave the three methods callerless.
+
+Either the gating model is wrong somewhere, or the warning was present and did
+not surface in the report. **This matters in the direction that is bad for us:**
+if `a959717` is genuinely clean, the allow in `0fa893a` suppresses nothing and
+is therefore a latent blind spot — it would mask a *future* genuinely-dead
+method on that impl, which is exactly what the 5.3 `mobile-check` job must not
+inherit. Recorded as unresolved rather than as a resolution; a run of `a959717`
+with warnings checked discriminates, and if it was clean the allow gets deleted.
+
 Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
 302**, with **zero failures attributable to new code at any point in the
 phase**.
