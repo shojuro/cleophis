@@ -1,9 +1,23 @@
 // Cleophis front-end. Requires app.withGlobalTauri=true.
 import { CALC_TOOL } from './calc-tool.js';
 import { streamWithTools } from './calc-loop.js';
+import { createTransport, isAndroid } from './transport.js';
 
-const { invoke, convertFileSrc } = window.__TAURI__.core;
+const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+
+// The chat transport, chosen ONCE here (task 2.1). Desktop talks to the
+// `llama-server` sidecar over loopback and runs the tool loop in JS; Android
+// has no server to talk to and runs it in-process behind `invoke`. Every
+// engine call in this file goes through this object — there are exactly two,
+// and grepping for `127.0.0.1` should keep finding nothing outside
+// transport.js.
+const transport = createTransport({
+  mobile: isAndroid(navigator.userAgent),
+  invoke,
+  Channel,
+  streamImpl: streamWithTools,
+});
 
 // Chat lock-out threshold for lapsed subscriptions: local expiry dates can
 // be stale (offline-first — Stripe may have renewed while this machine was
@@ -1568,14 +1582,22 @@ async function sendCompletion(userText) {
     // (droppedCount 0), so behavior is byte-identical to before.
     const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
     const win = windowMessages(state.chat.messages, sys, m.greeting);
-    // calc(): src/calc-loop.js owns the fetch/SSE-parse/tool-execute/resubmit
-    // cycle end to end — it's Tauri/DOM-free by design (the reference
-    // implementation the Rust EngineHandle port transcribes). `runCalc` is
-    // the only Tauri touchpoint here; `onContentDelta` keeps `acc` growing
-    // exactly as the old inline loop did, so the AbortError branch below
-    // still sees whatever partial text streamed before the abort.
-    const out = await streamWithTools({
-      url: `http://127.0.0.1:${state.engine.port}/v1/chat/completions`,
+    // One turn, described once for both platforms (task 2.1). On desktop this
+    // lands in `calc-loop.js`, which owns the fetch/SSE-parse/tool-execute/
+    // resubmit cycle end to end and is Tauri/DOM-free by design; on Android it
+    // lands in `chat_stream`, where the same loop runs Rust-side because every
+    // round needs the live session. `tools`/`runCalc` are meaningful only to
+    // the first and are ignored by the second — see transport.js.
+    //
+    // `onDelta` keeps `acc` growing exactly as the old inline loop did, so the
+    // AbortError branch below still sees whatever partial text streamed before
+    // the abort.
+    const out = await transport.streamTurn({
+      port: state.engine.port,
+      // The chat this turn belongs to — mobile's KV-reuse key, so consecutive
+      // turns of one conversation share a warm prefix (task 1.5). Desktop
+      // ignores it; `cache_prompt: true` is how the sidecar does the same job.
+      chatId: turnChatId,
       baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
       messages: [
         { role: 'system', content: sys },
@@ -1584,7 +1606,7 @@ async function sendCompletion(userText) {
       ],
       tools: [CALC_TOOL],
       runCalc: (expression) => invoke('calc', { expression }),
-      onContentDelta: (d) => {
+      onDelta: (d) => {
         acc += d;
         // Show the leading-`<think></think>`-stripped view every render
         // (idempotent — see stripLeadingThink); `acc` keeps the raw text
@@ -1709,29 +1731,21 @@ async function maybeAutoTitle(chatId, userText, assistantText) {
   try {
     const aborter = new AbortController();
     const timer = setTimeout(() => aborter.abort(), 10000);
-    let res;
+    let raw;
     try {
-      res = await fetch(`http://127.0.0.1:${state.engine.port}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      raw = await transport.complete({
+        port: state.engine.port,
+        messages: [
+          { role: 'system', content: 'You write very short chat titles. Reply with ONLY a 3–6 word title for the conversation. No quotes, no trailing punctuation, no preamble, no "Title:".' },
+          { role: 'user', content: `User: ${userText.slice(0, 500)}\nAssistant: ${assistantText.slice(0, 500)}\n\nTitle:` },
+        ],
+        maxTokens: 24,
+        temperature: 0.3,
         signal: aborter.signal,
-        body: JSON.stringify({
-          messages: [
-            { role: 'system', content: 'You write very short chat titles. Reply with ONLY a 3–6 word title for the conversation. No quotes, no trailing punctuation, no preamble, no "Title:".' },
-            { role: 'user', content: `User: ${userText.slice(0, 500)}\nAssistant: ${assistantText.slice(0, 500)}\n\nTitle:` },
-          ],
-          stream: false,
-          max_tokens: 24,
-          temperature: 0.3,
-          cache_prompt: false,
-        }),
       });
     } finally {
       clearTimeout(timer);
     }
-    if (!res.ok) return;
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content;
     if (!raw) return;
     // Sanitize: strip the hero adapter's leading empty <think></think>
     // (B4 — this hits the same --lora-loaded engine as every streamed turn,
