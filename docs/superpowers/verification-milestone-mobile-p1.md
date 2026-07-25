@@ -621,8 +621,26 @@ mattered. It confirms both that the pre-empted stub warnings were correctly
 predicted and that decision D-1 (mobile-only commands on the shared surface) is
 clean end to end. First change this phase to touch desktop's invoke surface.
 
-Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297**,
-with **zero failures attributable to new code at any point in the phase**.
+**D-2 convstore gate: GREEN** (run 12, at `22f0aa8`, single-threaded): **302
+passed / 0 failed, exit 0**, sixth consecutive zero-flake run. The five
+partial-row tests executed on the real target alongside all 297 prior — the
+number that matters being the *prior* ones, since a schema change and migration
+are only safe if everything that already worked still does.
+
+That run also carried **one dead-code warning**, the phase's only deviation from
+the zero-warning standard: `checkpoint_partial` / `finalize_partial` /
+`discard_partial` never used. Transient from commit sequencing — but steering
+correctly noted they would stay dead on desktop *after* wiring too, since only
+`chat_stream`'s `cfg(mobile)` path checkpoints and desktop's transport streams
+through the sidecar without ever writing an in-flight row. Resolved with a
+narrow `cfg_attr(desktop, allow(dead_code))` and a stated reason, per this
+phase's standing rule: resolve on the merits, never blanket-suppress, and never
+let the 5.3 `mobile-check` CI job inherit a blind spot. The allow states a true
+platform fact rather than hiding an unknown.
+
+Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
+302**, with **zero failures attributable to new code at any point in the
+phase**.
 
 Logs: `scratchpad/win-test-p1-*.log` (steering side).
 
