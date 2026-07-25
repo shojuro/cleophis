@@ -692,6 +692,29 @@ evidence about the *mechanism* rather than noise about the machine — local
 listeners racing for ports lose that race under load. It makes the family
 predictable rather than merely catalogued: expect flakes when the run is slow.
 
+**Prefix-KV mechanism gate: GREEN, and the first clean-provenance run in the
+track's history** (run 14, at `734df86`, protocol v2 in force): **302 passed / 0
+failed / 0 warnings**, seventh consecutive zero-flake run.
+
+| checkpoint | HEAD | `git status --porcelain` |
+|---|---|---|
+| PRE | `734df86` | empty (clean) |
+| POST | `734df86` | empty (clean) |
+
+All four facts agree, so this run is attributable **to the commit** rather than
+to "live worktree near `734df86`" — the distinction protocol v2 was written to
+create, now exercised for the first time. The log's first compile line is
+`Compiling cleophis v0.1.0`, so the app crate was rebuilt in this run rather
+than served from cache; that is what makes "0 warnings" a measurement of
+`734df86`'s source and not a stale artifact. Steering held the freeze for the
+run's duration and this agent wrote its handoff **outside** the worktree to
+respect it, which is why the tree was clean at both ends.
+
+Log: `scratchpad/win-test-p1-734df86-frozen.log` (steering side).
+
+Test-count trajectory now **266 → 277 → 286 → 297 → 302 → 302**, still with zero
+failures attributable to new code at any point in the phase.
+
 #### 🔬 The dead-code warning: an evidence-provenance failure, resolved
 
 The most instructive episode of the phase, because the *evidence itself* was
@@ -1040,6 +1063,68 @@ JSON is the harder half, since it has no opening sentinel; a leading-`{`
 heuristic with a bounded lookahead is the likely approach. Flagged now because
 it is a genuine design decision rather than transcription, and `calc-loop.js`
 offers no guidance — it never faced it.
+
+### 1.4 Chat commands + partial-turn flush — DONE (commits `d0b647d`, `22f0aa8`, `a959717`)
+
+`chat_stream` / `chat_complete` / `chat_cancel` on the shared invoke surface
+(decision **D-1** below), the calc tool-loop bridged onto a real session
+(`4aadb8e`), and the partial-turn checkpoint writing draft-marked rows
+(decision **D-2**). Gate: run 13 at `a959717`, 301/1 with the one failure a
+documented cloud flake passing in isolation. The dead-code episode that ran
+through `0fa893a` → `1850a76` → `4b3feed` is written up in full under the Phase
+0 gate section, because its lesson is about *evidence provenance* rather than
+about 1.4.
+
+### 1.5 Prefix-KV session reuse — MECHANISM DONE (commit `734df86`), WIRING OUTSTANDING
+
+Full design and rationale: `specs/2026-07-25-mobile-p1-handoff-1.5.md` (a
+predecessor instance's continuation handoff, committed verbatim). Recorded here
+because one finding in it has precedent value well beyond this task.
+
+**The finding: the obvious implementation of 1.5 is silently wrong.** The brief
+says "keep `EngineSession` alive per chat", which is necessary and **not
+sufficient**. Before `734df86`, `LlamaSession::stream` re-rendered the full
+history, decoded from absolute position 0 every call, tracked no `n_past`, and
+never cleared the cache. Holding a session open across turns would therefore
+have left **stale KV entries from the previous turn sitting past the end of the
+new prompt**, where the model attends to tokens that are no longer in the
+conversation. That is a wrong answer, not a slow one, and nothing in the system
+would have reported it. It was masked only because `engine_inproc` opened a
+fresh session per turn, and `EngineHandle::session()` builds a fresh
+`LlamaContext` with an empty cache — so the pre-1.5 state is **correct and
+slow**, and that pair is what 1.5 must break by halves without breaking the
+first half.
+
+**Two invariants now carry the safety, and neither may be removed:**
+
+1. **Trim before extending** — anything in the cache beyond the shared prefix is
+   stale and is cleared (`clear_kv_cache_seq`) before the suffix is decoded. Its
+   absence *is* the bug above.
+2. **Always decode at least one token** — `reuse` is capped at
+   `prompt_tokens - 1`, so the sampler reads fresh logits. A fully-reused prefix
+   would leave the final logits belonging to the previous turn; also silent.
+
+Only tokens that were actually **decoded** are mirrored in `LlamaSession.cached`.
+The token that ends a turn (EOG, cancel, or the max-tokens cap) is sampled but
+never fed back, so recording it would desynchronise the mirror from the real
+cache. The mirror exists at all because **the KV cache is invisible from Rust**:
+without a record of its contents there is no way to know which prefix is valid,
+and reusing a cache you cannot describe is how you get corruption instead of
+speed.
+
+**Generalisable form of the lesson.** The two earlier phase lessons were about
+checks that could not fail and about a measurement labelled with the wrong
+artifact. This one is a third kind: **an optimisation whose failure mode is
+indistinguishable from success at the point of measurement.** A reused-prefix
+turn is fast either way; only the *content* of the answer distinguishes correct
+reuse from corruption, so the acceptance criterion has to be coherence, not
+latency. Any future caching work in this codebase (prompt caches, adapter
+caches, resource caches) inherits the same requirement: describe what is cached,
+or do not reuse it.
+
+**Wiring status.** `engine_inproc` still opens a fresh session per
+`Command::Chat`, so the reuse path is **dormant** — behaviour is identical to
+1.4's, correct and slow. The restructure that activates it is tracked below.
 
 ---
 
