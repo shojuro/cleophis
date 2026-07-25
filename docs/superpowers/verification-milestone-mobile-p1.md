@@ -175,24 +175,82 @@ Two observations from the founder, one a defect and one not:
    (`secure_store` seam + Kotlin AndroidKeyStore bridge) and nothing implements
    it yet. Recorded here so a later reader does not mistake it for a regression.
 
-**Pre-CP1 bonus evidence — the download chain works in-app.** On the 1.2 APK
-(`5cd5dad1…`) the founder reported the engine pill reading "downloading model"
-with **673,926 KB** in flight, unprompted, through the normal user flow. That
-confirms tier detection → catalog resolve → CDN download-with-progress end to
-end on device.
+#### ~~Pre-CP1 evidence — the download chain works in-app~~ **RETRACTED**
 
-*Size sanity-check (requested):* the low tier resolves to
-`models/Llama-3.2-1B-Instruct-Q4_K_M.gguf`, `fileBytes` **807,694,112** =
-788,764 KB. The reported 673,926 KB is a **progress** figure, not a total — it
-is ~85 % of that artifact, and nowhere near the mid tier's 4B (2,497,280,384 B).
-**The right file is being pulled.** Worth stating explicitly because a
-size-vs-total confusion here would have looked exactly like a tier-selection
-bug.
+**This evidence line was wrong and is withdrawn. No model download has ever run
+on Android; the catalog→CDN download flow remains UNVERIFIED on device.**
 
-Caveat carried into CP1: the A22 lands on `low` via the RAM-only `tier_for`,
-which is **lucky-correct on this device, not correct in general** — an 8 GB
-phone with floor-class silicon is precisely the case the SoC-aware
+What happened: a reported figure of "673,926 KB" alongside the word
+"downloading" was taken as a model download in progress. It was the **app's
+installed size**. It reconciles exactly — the 1.2 APK is 352,809,813 B
+(344,541 KB) and Android additionally stores the extracted debug
+`libcleophis_lib.so` at 340,173,744 B (332,201 KB), totalling 676,742 KB against
+the 673,926 KB observed, a 0.4 % gap that is ordinary Android size accounting.
+A 334 MiB APK carrying a 324 MiB unstripped debug library is *why* the installed
+footprint looks like a model download; a release build would not.
+
+**Why the sanity-check failed to catch it, which is the part worth keeping.**
+The check compared 673,926 KB against the low tier's 807,694,112 B model, found
+it was ~85 % of it, and concluded "a progress figure, plausible, right file."
+Every step is true and the conclusion is false. The error was **testing only the
+hypothesis I was handed**: any number between zero and the total is ~x % of it,
+so "it's a plausible fraction" is not evidence — it cannot fail. The question
+never asked was *what else could produce this number*, and one substitution of
+the app's own size answers it exactly. A confirming check that had no way to
+come back negative is not a check. Two habits adopted: state what a proposed
+figure would have to be *inconsistent with* before calling it confirmation, and
+treat "in progress" numbers as unverified until a terminal state is observed.
+
+Consequences: nothing was killed by app suspend, because nothing started, so the
+suspend-kill theory is withdrawn too. The resume-from-`.part` behaviour is
+simply untested rather than suspect, and stays where it was planned — CP1/CP2.
+
+Caveat still standing for CP1: the A22 lands on `low` via the RAM-only
+`tier_for`, which is **lucky-correct on this device, not correct in general** —
+an 8 GB phone with floor-class silicon is precisely the case the SoC-aware
 `tier_for_mobile` in 2.3 exists to catch.
+
+*(Attribution: the misreading originated in relay, not with the founder, and
+the correction came from steering. Recorded because a gate report that silently
+rewrites its own evidence is worth less than one that shows where it was
+wrong.)*
+
+#### CP0 addendum — field evidence from the A22 screenshot
+
+Read directly from the founder's screenshot (`Screenshot_20260725_151829_
+Cleophis.jpg`), so these are observations rather than relay.
+
+**✅ VERIFIED WORKING ON-DEVICE — the §7 conversation store.** The founder
+created a chat, the hero's `greeting` rendered, they sent "Hello", it persisted
+and displays, and the chat is listed in the sidebar with its action row. That is
+SQLite + the per-account conversation directory + message append + chat listing,
+all working on Android, unprompted, with **zero mobile-specific work done on
+convstore** — it compiled and ran as-is. A P1-gate line item confirmed early.
+It also confirms catalog data (the `greeting` field) reaching the UI.
+
+**✅ Not a bug — "Open chat" alongside "Model not downloaded yet."** The button
+is keyed off pack availability, not model presence, and the banner states the
+model situation separately. Coherent by design; the earlier button-state
+question is closed.
+
+**❌ Expected pre-2.2 — layout.** Field requirements for 2.2, captured from the
+image rather than described in the abstract:
+- The desktop sidebar takes **~2/3 of the phone's width**, crushing the chat
+  column into the remaining third; message text wraps at one or two words per
+  line. The sidebar must become a drawer, not a narrowed column.
+- The view transition **slides ~1/4 and stops**, leaving the layout distorted
+  and chat unusable. Per steering: the transition must be **disabled or
+  replaced** on mobile, not merely restyled.
+- The status pill is **truncated off the right edge** ("● Lo…"), and the hero
+  title clips mid-word.
+- The hero cover renders as a **broken-image icon** — independent confirmation
+  of the asset-scope defect fixed below.
+
+**UX note for 2.2 (from the retraction above):** something in the pill/banner
+area read convincingly as "downloading model" to the founder when no download
+existed. Whatever produced that impression, model-state copy should make
+"no model" / "downloading" / "ready" unmistakable — a user believing a download
+was running when none was is a copy defect regardless of which element caused it.
 
 #### The cover-rendering defect — root cause and fix
 
@@ -352,6 +410,15 @@ green runs.
    **block**.
 4. The pooled-connection fix (per-test agent, or `Connection: close` in the mock
    tests) is **desktop-scope backlog, not P1** — surfaced, not owned.
+
+**Phase 1.2 + 1.3 desktop gate: GREEN** (run 7, at `bbb1dd2`, single-threaded):
+**275 passed / 2 failed**, both failures the documented cloud flakes
+(`create_checkout_request_shape`, `create_portal_session_request_shape`), both
+passing in isolation immediately after — protocol step 2 satisfied, so per step
+3 they do not block. **All 11 tool tests executed and passed on the real Windows
+target**, which is what turns the scratch-crate run from evidence into
+confirmation. Suite total grew 266 → 277 across the day with zero failures
+attributable to new code.
 
 Logs: `scratchpad/win-test-p1-*.log` (steering side).
 
