@@ -210,6 +210,16 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     };
 
     let backend = LlamaEngine::new();
+
+    // The self-evidencing kernels line (spec H3). llama.cpp reports the CPU
+    // features it actually compiled and detected, so a device transcript
+    // carries its own proof that the `armv8.2-a+dotprod` build is the one
+    // running: **DOTPROD = 1, or every tok/s number measured on this build is
+    // invalid** — the brief's rule, and until now nothing in the app printed
+    // the evidence for it. CPU feature flags only; no user or token material,
+    // so this is safe in a release log (security review M3).
+    eprintln!("[kernels] {}", kpack_engine::backend_system_info());
+
     let mut handle: Option<Box<dyn EngineHandle>> = None;
     // A command the inner serve loop received but could not serve. It must be
     // processed here before anything is read from the channel, or the turn (or
