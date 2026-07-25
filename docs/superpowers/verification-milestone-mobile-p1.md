@@ -176,6 +176,16 @@ Two observations from the founder, one a defect and one not:
    (`secure_store` seam + Kotlin AndroidKeyStore bridge) and nothing implements
    it yet. Recorded here so a later reader does not mistake it for a regression.
 
+#### First real model download — INITIATED, outcome not yet observed
+
+A founder-initiated model download is genuinely in progress on the A22 (the
+first ever on Android). **No terminal state has been observed, so no claim is
+recorded here.** If it completes it will give the 1.2 load path — pinned-hash
+gate → `LlamaEngine::load` → `engine-ready` — its first exercise on hardware,
+and the `.part` resume behaviour its first real test. Written this way
+deliberately: the retraction immediately below is what happens when an
+in-progress number gets treated as an outcome.
+
 #### ~~Pre-CP1 evidence — the download chain works in-app~~ **RETRACTED**
 
 **This evidence line was wrong and is withdrawn. No model download has ever run
@@ -260,6 +270,19 @@ image rather than described in the abstract:
 - The hero cover renders as a **broken-image icon** — independent confirmation
   of the asset-scope defect fixed below.
 
+**✅ Expected pre-2.1, and a baseline to PRESERVE — graceful send failure.** The
+founder sent "5+5=19?" and got a *"That didn't go through — tap to retry"* chip.
+That is exactly right for this build: the desktop transport still posts to
+`127.0.0.1`, which on mobile has no server behind it and is blocked by the CSP
+besides. What matters is how it fails — no crash, no lost input, and the message
+still renders in the transcript because convstore already persisted it.
+
+Recorded as a **requirement for 2.1, not just an observation**: when the
+invoke+Channel transport replaces the fetch path, this retry chip must behave
+identically on failure. It is easy to lose a graceful degradation while
+replacing the thing that was degrading, and the current behaviour is the
+reference for what "failed to send" should look like.
+
 **UX note for 2.2 (from the retraction above):** something in the pill/banner
 area read convincingly as "downloading model" to the founder when no download
 existed. Whatever produced that impression, model-state copy should make
@@ -315,9 +338,13 @@ still reads `["$RESOURCE/**"]`, so desktop is untouched.
 
 **APK carrying the fix — 352,809,173 bytes, sha256**
 `7616f10057904c4a0eb9b5f771de658102ed3cdda739310a5f99bf9159777c4f`
-(independently hashed from the artifact by both this agent and steering). The fix
-itself remains unconfirmed on hardware until the founder reports covers
-rendering — the scope resolution is proven, the visual outcome is not.
+(independently hashed from the artifact by both this agent and steering).
+
+**✅ VERIFIED ON HARDWARE — covers render on the A22.** The loop is fully
+closed: the path resolution was *proven* by reading Tauri's source, and the
+visual outcome is now *observed* on device. Both halves were necessary — the
+proof said the scope would match, but only the device could say the images
+appear.
 
 #### Three build blockers found and fixed
 
@@ -441,6 +468,14 @@ single-threaded): **277 passed / 0 failed, exit 0** — zero flakes, the cleanes
 of the eight runs, requiring no protocol steps at all. Suite total grew
 266 → 277 across the day with **zero failures attributable to new code** at any
 point.
+
+**Suppressor desktop gate: GREEN** (run 9, at `f7419ea`, single-threaded):
+**286 passed / 0 failed, exit 0**, zero flakes. All 9 suppressor tests executed
+on the real Windows target, which is what upgrades them from locally-believed to
+verified — the scratch-crate run proved the logic, this proved it on the
+platform that ships.
+
+Test-count trajectory across the phase, all green: **266 → 277 → 286**.
 
 Logs: `scratchpad/win-test-p1-*.log` (steering side).
 
