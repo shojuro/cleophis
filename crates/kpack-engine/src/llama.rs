@@ -45,6 +45,7 @@ use crate::backend::{
     TokenSink,
 };
 use crate::error::EngineError;
+use crate::prefix::reusable_prefix;
 use crate::template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
 
 /// Process-wide llama.cpp backend, initialized once. Same rationale as
@@ -296,8 +297,7 @@ impl LlamaSession<'_> {
         //   2. Always decode at least one token, so the sampler has fresh
         //      logits to read. A fully-reused prefix would leave the final
         //      logits belonging to the previous turn.
-        let mut reuse =
-            common_prefix_len(&self.cached, &tokens).min(prompt_tokens.saturating_sub(1));
+        let mut reuse = reusable_prefix(&self.cached, &tokens);
 
         // Trimmed unconditionally, not only when the mirror says there is
         // something past the prefix. The mirror exists precisely because the
@@ -425,11 +425,6 @@ impl LlamaSession<'_> {
             ])
         }
     }
-}
-
-/// Length of the longest shared prefix of two token sequences.
-fn common_prefix_len(a: &[LlamaToken], b: &[LlamaToken]) -> usize {
-    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
 fn role_str(role: Role) -> &'static str {

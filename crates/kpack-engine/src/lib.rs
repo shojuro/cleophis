@@ -23,6 +23,8 @@
 //! - [`template`] — per-model chat template selection and the Qwen-only,
 //!   start-of-turn `<think>` stripper.
 //! - [`mock`] — a deterministic backend for tests and pre-native bring-up.
+//! - `prefix` — how much of a prompt the KV cache already holds (task 1.5),
+//!   kept out of the feature gate so it is tested rather than only checked.
 //! - [`llama`] — the real `llama-cpp-2`-backed backend (`--features real`).
 //!
 //! ## Prompt contract
@@ -39,6 +41,13 @@ pub mod backend;
 pub mod error;
 pub mod mock;
 pub mod template;
+
+/// The prefix-reuse arithmetic (task 1.5). Deliberately *outside* the `real`
+/// gate so its tests run in a build with no llama.cpp — the module docs explain
+/// why that one function is worth the split. Its only production caller is the
+/// `real` backend, which is what the attribute states.
+#[cfg_attr(not(feature = "real"), allow(dead_code))]
+mod prefix;
 
 #[cfg(feature = "real")]
 pub mod llama;
