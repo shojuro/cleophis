@@ -151,7 +151,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
@@ -180,7 +180,8 @@ CREATE TABLE IF NOT EXISTS messages (
   role TEXT NOT NULL, content TEXT NOT NULL,
   citations TEXT,
   tool_calls TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  partial INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(title, content);
 ";
@@ -193,7 +194,8 @@ const CHAT_COLUMNS: &str = "id, folder_id, title, created_at, updated_at, pinned
 
 /// Column list shared by every `messages` read query — same rationale as
 /// `CHAT_COLUMNS`.
-const MESSAGE_COLUMNS: &str = "id, role, content, citations, tool_calls, created_at";
+const MESSAGE_COLUMNS: &str =
+    "id, role, content, citations, tool_calls, created_at, partial";
 
 /// Where a fresh per-account database is opened from — see
 /// [`ConvStore::conn_for`].
@@ -294,6 +296,7 @@ impl ConvStore {
     fn init_connection(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(SCHEMA_SQL).map_err(|e| e.to_string())?;
         Self::migrate_chats_columns(conn)?;
+        Self::migrate_messages_columns(conn)?;
         Ok(())
     }
 
@@ -349,6 +352,139 @@ impl ConvStore {
             )
             .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    /// The `messages` counterpart of [`Self::migrate_chats_columns`], same
+    /// mechanism and same reasoning: `PRAGMA table_info` then `ALTER TABLE ...
+    /// ADD COLUMN` for whatever is missing. `0` is a constant literal, which
+    /// SQLite accepts on a `NOT NULL ADD COLUMN` and backfills into every
+    /// existing row — and backfilling `partial = 0` is exactly right, since
+    /// every message written before this column existed was a completed one.
+    fn migrate_messages_columns(conn: &Connection) -> Result<(), String> {
+        let mut existing = std::collections::HashSet::new();
+        {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(messages)")
+                .map_err(|e| e.to_string())?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            for name in names {
+                existing.insert(name.map_err(|e| e.to_string())?);
+            }
+        }
+        if !existing.contains("partial") {
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN partial INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    // ---- Partial-turn checkpointing (kill-restore gate) ---------------
+    //
+    // Generation on mobile can be killed at any moment — the OS reclaims a
+    // backgrounded app without ceremony — so the assistant's text is
+    // checkpointed to the database as it streams rather than only at the end.
+    //
+    // The checkpoint is a real `messages` row carrying `partial = 1`, cleared
+    // on finalize. It is deliberately NOT an in-place update of an ordinary
+    // message row: recovery has to distinguish "truncated because the process
+    // died" from "completed", and an in-place update destroys exactly that
+    // distinction — a truncated row and a short-but-finished row become
+    // indistinguishable. §11's kill-restore test asserts
+    // truncated-but-uncorrupted, which is only assertable when truncation is a
+    // recorded state rather than something inferred from content.
+
+    /// Write or advance the in-flight assistant turn for `chat_id`.
+    ///
+    /// At most one partial row exists per chat: the first call inserts, later
+    /// calls overwrite that row's content. Returns its id.
+    // Wired into `chat_stream` in the commit that follows; the tests below
+    // are its only caller until then.
+    #[allow(dead_code)]
+    pub fn checkpoint_partial(
+        &self,
+        user_id: &str,
+        chat_id: i64,
+        content: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE chat_id = ?1 AND partial = 1 \
+                 ORDER BY id DESC LIMIT 1",
+                params![chat_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE messages SET content = ?1 WHERE id = ?2",
+                params![content, id],
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(id);
+        }
+
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, citations, tool_calls, created_at, partial)
+             VALUES (?1, 'assistant', ?2, NULL, NULL, ?3, 1)",
+            params![chat_id, content, now_iso()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Promote the in-flight row to a finished message: final content, and
+    /// `partial` cleared so recovery stops treating it as truncated.
+    // Wired into `chat_stream` in the commit that follows; the tests below
+    // are its only caller until then.
+    #[allow(dead_code)]
+    pub fn finalize_partial(
+        &self,
+        user_id: &str,
+        message_id: i64,
+        content: &str,
+        citations: Option<Value>,
+        tool_calls: Option<Value>,
+    ) -> Result<(), String> {
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET content = ?1, citations = ?2, tool_calls = ?3, partial = 0 \
+             WHERE id = ?4",
+            params![
+                content,
+                citations.as_ref().map(|v| v.to_string()),
+                tool_calls.as_ref().map(|v| v.to_string()),
+                message_id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Drop the in-flight row for `chat_id`, if any — used when a turn is
+    /// cancelled before producing anything worth keeping.
+    // Wired into `chat_stream` in the commit that follows; the tests below
+    // are its only caller until then.
+    #[allow(dead_code)]
+    pub fn discard_partial(&self, user_id: &str, chat_id: i64) -> Result<(), String> {
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM messages WHERE chat_id = ?1 AND partial = 1",
+            params![chat_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -688,6 +824,9 @@ impl ConvStore {
             citations,
             tool_calls,
             created_at: now,
+            // `append_message` writes finished messages only; in-flight turns
+            // go through `checkpoint_partial`.
+            partial: false,
         })
     }
 
@@ -849,6 +988,7 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
         citations: citations_json.and_then(|s| serde_json::from_str(&s).ok()),
         tool_calls: tool_calls_json.and_then(|s| serde_json::from_str(&s).ok()),
         created_at: row.get(5)?,
+        partial: row.get::<_, i64>(6)? != 0,
     })
 }
 
@@ -1043,6 +1183,15 @@ pub struct MessageInfo {
     pub citations: Option<Value>,
     pub tool_calls: Option<Value>,
     pub created_at: String,
+    /// True while this row is a generation checkpoint that has not been
+    /// finalized — i.e. the turn was still streaming. A row left `true` after a
+    /// restart was truncated by the process dying, which is exactly the
+    /// distinction §11's kill-restore test asserts.
+    ///
+    /// Skipped when false, so payloads for ordinary completed messages are
+    /// byte-identical to what they were before this column existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1348,6 +1497,104 @@ mod tests {
     /// unchanged by §7-chatiso; `t9`/`t10` below are the ones that actually
     /// exercise multiple accounts.
     const USER: &str = "tester";
+
+    // ---- Partial-turn checkpointing (kill-restore gate) --------------
+
+    /// The distinction the whole design exists for: after a simulated kill, a
+    /// checkpointed turn is still readable AND still identifiable as truncated.
+    /// An in-place update of an ordinary row would satisfy the first half and
+    /// silently fail the second.
+    #[test]
+    fn partial_survives_a_kill_and_stays_marked_truncated() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "c", None, None, "hero", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "2+2?", None, None)
+            .unwrap();
+
+        // Generation streams; each checkpoint advances the same row.
+        let id = store.checkpoint_partial(USER, chat.id, "The ans").unwrap();
+        let again = store.checkpoint_partial(USER, chat.id, "The answer is").unwrap();
+        assert_eq!(id, again, "checkpointing must advance one row, not accumulate");
+
+        // ...and then the process dies. Nothing finalizes.
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), 2, "the partial turn must be readable after a kill");
+        let last = msgs.last().unwrap();
+        assert_eq!(last.role, "assistant");
+        assert_eq!(last.content, "The answer is", "truncated content must be intact");
+        assert!(last.partial, "a killed turn must remain identifiable as truncated");
+    }
+
+    #[test]
+    fn finalizing_clears_the_marker_and_a_short_answer_is_not_mistaken_for_truncated() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "c", None, None, "hero", vec![])
+            .unwrap();
+
+        let id = store.checkpoint_partial(USER, chat.id, "4").unwrap();
+        store
+            .finalize_partial(USER, id, "4", None, Some(json!([{ "expression": "2+2" }])))
+            .unwrap();
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), 1);
+        let m = &msgs[0];
+        // "4" is as short as a truncated turn would be; only the marker
+        // distinguishes them, which is the point.
+        assert_eq!(m.content, "4");
+        assert!(!m.partial, "a finalized turn must not read as truncated");
+        assert!(m.tool_calls.is_some(), "finalize must persist tool calls");
+    }
+
+    #[test]
+    fn a_new_turn_after_recovery_does_not_reuse_the_dead_partial_row() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "c", None, None, "hero", vec![])
+            .unwrap();
+        let dead = store.checkpoint_partial(USER, chat.id, "half").unwrap();
+        store.finalize_partial(USER, dead, "half", None, None).unwrap();
+
+        let fresh = store.checkpoint_partial(USER, chat.id, "new turn").unwrap();
+        assert_ne!(fresh, dead, "a finalized row must not be re-used as the next checkpoint");
+    }
+
+    #[test]
+    fn discarding_removes_only_the_partial_row() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "c", None, None, "hero", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "keep me", None, None)
+            .unwrap();
+        store.checkpoint_partial(USER, chat.id, "throw me away").unwrap();
+
+        store.discard_partial(USER, chat.id).unwrap();
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), 1, "discard must not touch completed messages");
+        assert_eq!(msgs[0].content, "keep me");
+    }
+
+    /// Ordinary appends are unaffected — the desktop path must not acquire a
+    /// truncated-looking message just because the column now exists.
+    #[test]
+    fn ordinary_appends_are_never_marked_partial() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "c", None, None, "hero", vec![])
+            .unwrap();
+        let m = store
+            .append_message(USER, chat.id, "assistant", "done", None, None)
+            .unwrap();
+        assert!(!m.partial);
+        assert!(!store.get_chat(USER, chat.id).unwrap().messages[0].partial);
+    }
 
     /// create_chat -> append 2 messages (one with citations) -> get_chat
     /// returns the chat + both messages in conversation order, citations

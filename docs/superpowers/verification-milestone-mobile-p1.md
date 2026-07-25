@@ -525,6 +525,27 @@ Two of the three are worth carrying beyond this repo:
   source in `docs/superpowers/mobile-dev-setup.md`. Its only interesting
   property is that the error text blamed the SDK for an NDK problem.
 
+**A check that measures what you already believe cannot falsify it — the visual
+case.** The download retraction gave this lesson its arithmetic form ("~85 % of
+the total" is a fraction that can never come back negative). The icon work gave
+it a second, independent form, which is why the pair is worth keeping together:
+
+The first adaptive foreground rendered as the diamond **plus a navy square**,
+because the diamond is a rotated square and cropping to its bounding box keeps
+field colour in the box's corners. Every assertion passed — 60 % of canvas,
+inside the 72/108 safe zone, centred to sub-pixel — and every one was *true*.
+They measured the bounding box, and the bounding box was correct. The defect
+lived in the pixels *inside* that box, which nothing was looking at. Only
+rendering the PNG and viewing it revealed a bug that would have shipped a navy
+square onto the adaptive background layer.
+
+The generalization across both: **numeric assertions confirm the property you
+thought to measure, never the one you didn't.** For anything with a visual or
+externally-observable output, render it and look — the artifact is the evidence,
+the measurements are only a proxy for it. This is the same instinct as the
+project's other standing rule (verify bundle contents against the built APK, not
+the config that was meant to produce it).
+
 **Flaky desktop family: `cloud::rest`/`session` mock-server tests (desktop
 scope, not P1's).** Establishing that Phases 1.1 and 1.2 were non-regressive
 took six full-suite runs across two commits, because the suite is
@@ -629,6 +650,25 @@ the same artifact.
 ---
 
 ## Phase 1 — Engine swap-in
+
+### ⚠ What a Phase-1 build can and cannot demonstrate on device
+
+Read this before interpreting any founder install of a Phase-1 APK.
+
+**Chat does not work yet, and that is not a defect.** `chat_stream`,
+`chat_complete` and `chat_cancel` exist and are registered, the tool loop and
+suppressor are complete and tested, and the engine loads — but **nothing invokes
+them.** The frontend still posts to `127.0.0.1`, which on Android has no server
+behind it and is CSP-blocked besides. The transport swap is **2.1**, and until
+it lands, sending a message correctly produces the "That didn't go through — tap
+to retry" chip.
+
+So a Phase-1 install can show: the app installs and launches under
+`com.cleophis.app`, the library populates with covers, the conversation store
+persists chats and messages, sign-up/payment/download work, and the engine
+reaches its loaded state. It **cannot** show a model answering anything. An
+install that reaches `engine-ready` and still fails to chat is the expected
+outcome, not a regression.
 
 ### 1.1 `inference.rs` cfg seam + Android resource materializer — DONE (commit 2a52b44)
 
@@ -906,6 +946,13 @@ state.
 **Evidence:** desktop suite at `d0b647d` — 297 passed / 0 failed **and zero
 compiler warnings** on the desktop build, so the pre-empted stub warnings held
 and the shared-surface change is verified clean end to end.
+
+That run also covers `dc082bf` (the icon commit): steering verified the
+`d0b647d → dc082bf` delta contains **zero Rust/Cargo changes** — Android
+resources and scripts only — so there is no desktop surface in it for a new run
+to exercise. Worth stating explicitly, because "we didn't re-run the suite" and
+"the suite cannot say anything about this change" look identical in a ledger
+unless the reason is written down.
 
 ### D-2 — Partial-turn rows carry a draft marker, not an in-place update
 
