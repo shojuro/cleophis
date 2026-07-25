@@ -10,8 +10,11 @@
 //! `EngineStatus`, `EngineInfo`, catalog/tier resolution, and the fail-closed
 //! sha256 integrity gate — is shared by both platforms verbatim.
 
+#[cfg(desktop)]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+#[cfg(desktop)]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(desktop)]
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,16 +25,18 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+#[cfg(desktop)]
 use sha2::{Digest, Sha256};
 #[cfg(desktop)]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
-// `Ready` and `Restarting` are only constructed by a running engine, which on
-// Android arrives with the Phase 1.2 lifecycle — until then an aarch64 build
-// reports them as never-constructed. Drop this attribute when 1.2 lands; if a
-// variant is still unconstructed then, it is genuinely unreachable.
+// `Restarting` is a desktop-only state: it reports the sidecar's GPU→CPU
+// fallback and its watchdog respawn, neither of which the in-process engine has
+// (Android is CPU-first by policy, and a failed load is terminal rather than
+// retried). It stays in the shared enum because `EngineInfo` is one serialized
+// shape for both platforms.
 #[cfg_attr(mobile, allow(dead_code))]
 pub enum EngineStatus {
     Starting,
@@ -56,6 +61,10 @@ pub struct Engine {
     /// there is no child to reap (see [`crate::engine_inproc`]).
     #[cfg(desktop)]
     pub child: Mutex<Option<Child>>,
+    /// The mobile counterpart of `child`: the in-process inference thread that
+    /// owns the `!Send` engine handle.
+    #[cfg(mobile)]
+    pub(crate) inproc: crate::engine_inproc::ThreadSlot,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
     /// True while a `start` watchdog thread is alive. A tier switch waits on
@@ -63,11 +72,8 @@ pub struct Engine {
     /// spawns — otherwise the two would fight over `child`/VRAM. Set
     /// SYNCHRONOUSLY in `start` (before the thread is spawned, so the wait can
     /// never miss an about-to-run thread) and cleared by the thread's own
-    /// drop-guard on every exit path.
-    ///
-    /// Desktop-only bookkeeping today; the mobile inference thread adopts the
-    /// same handshake in Phase 1.2.
-    #[cfg_attr(mobile, allow(dead_code))]
+    /// drop-guard on every exit path. The mobile inference thread keeps the
+    /// same handshake via its own exit guard.
     pub thread_alive: AtomicBool,
     /// Set once the app is tearing down (window Destroyed → [`shutdown`]). A
     /// [`restart`] in flight checks this after stopping the old thread and
@@ -80,15 +86,18 @@ pub struct Engine {
     /// respawns of the SAME ~2GB file don't re-hash it every time — only
     /// the first successful verification per process pays the hashing
     /// cost.
+    #[cfg(desktop)]
     verified_model: Mutex<Option<PathBuf>>,
     /// The adapter counterpart of `verified_model` (B4): the LoRA adapter is
     /// hashed against the catalog's `adapter_sha256` at load time with the
     /// same first-time-only session caching, so a watchdog respawn of the
     /// same base+adapter pair doesn't re-hash either file.
+    #[cfg(desktop)]
     verified_adapter: Mutex<Option<PathBuf>>,
     /// The contract adapter's (adapter v2) counterpart, checked against
     /// `contract_adapter_sha256` — its own cache slot so both composed
     /// adapters can be verified-once independently.
+    #[cfg(desktop)]
     verified_contract_adapter: Mutex<Option<PathBuf>>,
     /// Serializes [`restart`] across all callers (tier switch, and now
     /// `load_model`'s Failed→restart recovery). `restart`'s own `thread_alive`
@@ -97,12 +106,10 @@ pub struct Engine {
     /// false` before either calls `start` would each spawn a watchdog thread,
     /// and the two llama-servers would fight over the fixed port + `child`
     /// (orphaning one, holding VRAM). Holding this for the whole restart makes
-    /// concurrent restarts run one-at-a-time instead.
-    ///
-    /// Desktop-only today; mobile's `restart` gains the same serialization once
-    /// Phase 1.2 gives it a thread to serialize against.
-    #[cfg_attr(mobile, allow(dead_code))]
-    restart_lock: Mutex<()>,
+    /// concurrent restarts run one-at-a-time instead. Mobile serializes on the
+    /// same lock, where the resource two concurrent loads would fight over is
+    /// RAM rather than a port.
+    pub(crate) restart_lock: Mutex<()>,
 }
 
 impl Engine {
@@ -112,12 +119,17 @@ impl Engine {
             status: Mutex::new(EngineStatus::Starting),
             #[cfg(desktop)]
             child: Mutex::new(None),
+            #[cfg(mobile)]
+            inproc: Default::default(),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
             thread_alive: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            #[cfg(desktop)]
             verified_model: Mutex::new(None),
+            #[cfg(desktop)]
             verified_adapter: Mutex::new(None),
+            #[cfg(desktop)]
             verified_contract_adapter: Mutex::new(None),
             restart_lock: Mutex::new(()),
         }
@@ -137,9 +149,15 @@ impl Engine {
 
     /// Drops the per-path "already verified this session" caches so the next
     /// launch re-hashes whatever [`resolve_launch`] now resolves. Called by
-    /// `restart` on both platforms — after a tier switch the base+adapter set
-    /// has changed, and inheriting the previous selection's verdict would let
-    /// an unverified file through the integrity gate.
+    /// `restart` after a tier switch, where the base+adapter set has changed and
+    /// inheriting the previous selection's verdict would let an unverified file
+    /// through the integrity gate.
+    ///
+    /// Desktop-only, like the caches themselves. The mobile engine's gate is
+    /// `kpack-engine`'s `VerifyCache`, which is keyed by path — a tier switch
+    /// resolves different files, so they re-verify without anything being
+    /// cleared.
+    #[cfg(desktop)]
     pub(crate) fn clear_verify_caches(&self) {
         *self.verified_model.lock().unwrap() = None;
         *self.verified_adapter.lock().unwrap() = None;
@@ -307,6 +325,7 @@ fn resolve_model(app_data: Option<PathBuf>, resources: PathBuf, model_file: &str
 /// `cloud::download::rehash_existing`'s pattern — rather than reading the
 /// whole ~2GB model file into memory at once. Returns the lowercase hex
 /// digest.
+#[cfg(desktop)]
 fn model_sha256(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -341,10 +360,12 @@ fn model_sha256(path: &Path) -> std::io::Result<String> {
 /// llama.cpp is hashed against the catalog's pinned value before a byte of it
 /// is parsed, and the first mismatch fails the launch.
 ///
-/// Shared by both platforms deliberately. Desktop's watchdog and the mobile
-/// in-process engine gate on exactly the same function, so "tampered file →
-/// engine-failed" cannot drift between them — it is one implementation with two
-/// callers, not two implementations that happen to agree today.
+/// Desktop-only. The mobile engine gates through `kpack-engine`'s own
+/// `prepare_stack`, fed the same pinned hashes via [`launch_hashes`]: that gate
+/// runs inside the backend immediately before anything native is touched, and
+/// routing mobile through this function as well would mean hashing a
+/// multi-gigabyte model twice on the device least able to afford it.
+#[cfg(desktop)]
 pub(crate) fn verify_launch(
     engine: &Engine,
     app: &AppHandle,
@@ -361,6 +382,7 @@ pub(crate) fn verify_launch(
         })
 }
 
+#[cfg(desktop)]
 fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(), String> {
     // Cache-first, exactly as before the B4 refactor: a watchdog respawn of an
     // already-verified path returns without even reading the catalog.
@@ -378,6 +400,7 @@ fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(
 /// that doesn't match is a hard error; a catalog that pins none skips the
 /// check. Only ever called when [`resolve_launch`] produced a `lora` path,
 /// which itself only happens when the hero declares an `adapter_file`.
+#[cfg(desktop)]
 fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
     if engine.verified_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
@@ -390,6 +413,7 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
 /// re-hashes it against the catalog's `contract_adapter_sha256` with its own
 /// session cache. Only called when [`resolve_launch`] produced a
 /// `contract_lora` path (i.e. the tier declares a `contract_adapter_file`).
+#[cfg(desktop)]
 fn verify_contract_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
     if engine.verified_contract_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
@@ -406,6 +430,42 @@ fn verify_contract_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path
 /// Reads the hero entry and projects one of its pinned hashes out of it —
 /// the shared catalog read behind `verify_model_once`/`verify_adapter_once`.
 /// Returns the (owned) hash string, or `None` when the catalog pins none.
+/// The catalog's pinned hashes for the launch [`resolve_launch`] would produce,
+/// in the same order it composes them.
+///
+/// Mobile-only: it exists to feed `kpack-engine`'s `prepare_stack`, which is
+/// where the in-process engine's fail-closed gate lives. `None` in a slot means
+/// the catalog pins nothing for that artifact, which `prepare_stack` treats as
+/// "nothing to check" — identical to `verify_hash_once`'s behaviour on desktop,
+/// so a dev/fixture catalog without integrity data behaves the same on both.
+#[cfg(mobile)]
+pub(crate) struct LaunchHashes {
+    pub model: Option<String>,
+    pub behavioral: Option<String>,
+    pub contract: Option<String>,
+}
+
+#[cfg(mobile)]
+pub(crate) fn launch_hashes(app: &AppHandle) -> Result<LaunchHashes, String> {
+    Ok(LaunchHashes {
+        model: hero_hash(app, |v| v.sha256.clone())?,
+        behavioral: hero_hash(app, |v| v.adapter_sha256.clone())?,
+        contract: hero_hash(app, |v| v.contract_adapter_sha256.clone())?,
+    })
+}
+
+/// The hero's declared chat-template family for the effective tier, if the
+/// catalog names one. `None` leaves the engine on `ChatTemplate::Auto`, which
+/// reads the template embedded in the GGUF — the sidecar's `--jinja` behaviour.
+#[cfg(mobile)]
+pub(crate) fn hero_chat_template(app: &AppHandle) -> Option<String> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    hero.chat_template.clone()
+}
+
 fn hero_hash(
     app: &AppHandle,
     pick: impl Fn(&crate::catalog::ResolvedHero) -> Option<String>,
@@ -428,6 +488,7 @@ fn hero_hash(
 /// is `None` the catalog pins nothing, so there's nothing to check; otherwise
 /// re-hash `path` and compare case-insensitively, recording success in
 /// `cache`. `what` ("model" / "adapter") only shapes the log + error text.
+#[cfg(desktop)]
 fn verify_hash_once(
     cache: &Mutex<Option<PathBuf>>,
     path: &Path,
