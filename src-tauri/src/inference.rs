@@ -1,15 +1,38 @@
+//! Engine lifecycle and model resolution.
+//!
+//! Desktop runs llama.cpp as a `llama-server` sidecar; Android cannot spawn one
+//! and runs inference in-process instead. That divergence is confined to a cfg
+//! seam at the bottom of this file: the sidecar machinery (`spawn_server`, the
+//! health poll, the watchdog `start`, and the child-process reaping in
+//! `restart`/`shutdown`) is `#[cfg(desktop)]`, and under `#[cfg(mobile)]` the
+//! same four public entry points are re-exported from
+//! [`crate::engine_inproc`]. Everything above the seam — `Engine`,
+//! `EngineStatus`, `EngineInfo`, catalog/tier resolution, and the fail-closed
+//! sha256 integrity gate — is shared by both platforms verbatim.
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(desktop)]
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+#[cfg(desktop)]
+use std::sync::Arc;
+use std::sync::Mutex;
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
+// `Ready` and `Restarting` are only constructed by a running engine, which on
+// Android arrives with the Phase 1.2 lifecycle — until then an aarch64 build
+// reports them as never-constructed. Drop this attribute when 1.2 lands; if a
+// variant is still unconstructed then, it is genuinely unreachable.
+#[cfg_attr(mobile, allow(dead_code))]
 pub enum EngineStatus {
     Starting,
     Ready,
@@ -29,6 +52,9 @@ pub struct EngineInfo {
 pub struct Engine {
     pub port: u16,
     pub status: Mutex<EngineStatus>,
+    /// The sidecar process. Desktop-only: mobile runs the model in-process, so
+    /// there is no child to reap (see [`crate::engine_inproc`]).
+    #[cfg(desktop)]
     pub child: Mutex<Option<Child>>,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
@@ -38,6 +64,10 @@ pub struct Engine {
     /// SYNCHRONOUSLY in `start` (before the thread is spawned, so the wait can
     /// never miss an about-to-run thread) and cleared by the thread's own
     /// drop-guard on every exit path.
+    ///
+    /// Desktop-only bookkeeping today; the mobile inference thread adopts the
+    /// same handshake in Phase 1.2.
+    #[cfg_attr(mobile, allow(dead_code))]
     pub thread_alive: AtomicBool,
     /// Set once the app is tearing down (window Destroyed → [`shutdown`]). A
     /// [`restart`] in flight checks this after stopping the old thread and
@@ -68,6 +98,10 @@ pub struct Engine {
     /// and the two llama-servers would fight over the fixed port + `child`
     /// (orphaning one, holding VRAM). Holding this for the whole restart makes
     /// concurrent restarts run one-at-a-time instead.
+    ///
+    /// Desktop-only today; mobile's `restart` gains the same serialization once
+    /// Phase 1.2 gives it a thread to serialize against.
+    #[cfg_attr(mobile, allow(dead_code))]
     restart_lock: Mutex<()>,
 }
 
@@ -76,6 +110,7 @@ impl Engine {
         Engine {
             port,
             status: Mutex::new(EngineStatus::Starting),
+            #[cfg(desktop)]
             child: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
@@ -96,8 +131,19 @@ impl Engine {
         }
     }
 
-    fn set_status(&self, s: EngineStatus) {
+    pub(crate) fn set_status(&self, s: EngineStatus) {
         *self.status.lock().unwrap() = s;
+    }
+
+    /// Drops the per-path "already verified this session" caches so the next
+    /// launch re-hashes whatever [`resolve_launch`] now resolves. Called by
+    /// `restart` on both platforms — after a tier switch the base+adapter set
+    /// has changed, and inheriting the previous selection's verdict would let
+    /// an unverified file through the integrity gate.
+    pub(crate) fn clear_verify_caches(&self) {
+        *self.verified_model.lock().unwrap() = None;
+        *self.verified_adapter.lock().unwrap() = None;
+        *self.verified_contract_adapter.lock().unwrap() = None;
     }
 
     /// Marks the engine as having no model on disk yet (thin install, not
@@ -113,18 +159,30 @@ pub fn free_port() -> std::io::Result<u16> {
 }
 
 /// In dev, resources live in src-tauri/resources; in prod, under the install's resource dir.
+///
+/// On Android neither exists — the APK bundles no resources — so this resolves
+/// to the tree [`crate::resources_embed`] materializes out of the binary at
+/// setup. Every consumer (catalog reads, `get_catalog`'s `coverAbs`,
+/// `tier_select`) is unchanged by that substitution.
 pub fn resources_root(app: &AppHandle) -> PathBuf {
-    #[cfg(debug_assertions)]
+    #[cfg(mobile)]
     {
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
-        if dev.exists() {
-            return dev;
-        }
+        return crate::resources_embed::materialized_root(app);
     }
-    app.path()
-        .resource_dir()
-        .expect("no resource dir")
-        .join("resources")
+    #[cfg(desktop)]
+    {
+        #[cfg(debug_assertions)]
+        {
+            let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+            if dev.exists() {
+                return dev;
+            }
+        }
+        app.path()
+            .resource_dir()
+            .expect("no resource dir")
+            .join("resources")
+    }
 }
 
 /// The resolved on-disk paths a launch needs: the base model, plus the LoRA
@@ -142,6 +200,11 @@ impl LaunchPaths {
     /// The adapters to hand llama.cpp, in composition order (behavioral first,
     /// then contract), skipping any the hero doesn't declare. Emitted by
     /// `build_server_args` as a single comma-separated `--lora`.
+    ///
+    /// Desktop-only: it exists to build a `llama-server` command line. The
+    /// mobile engine composes the same adapters through `EngineBackend`, which
+    /// takes them individually rather than as one CLI argument.
+    #[cfg(desktop)]
     pub fn loras(&self) -> Vec<&Path> {
         [self.behavioral_lora.as_deref(), self.contract_lora.as_deref()]
             .into_iter()
@@ -273,6 +336,31 @@ fn model_sha256(path: &Path) -> std::io::Result<String> {
 /// treated as "nothing to check" rather than a hard failure — the download
 /// path already gates real models, so this only affects dev/fixture
 /// catalogs missing integrity data.
+/// The load-time integrity gate over a whole resolved launch: the base model,
+/// then each LoRA adapter the hero declares. Every file that will be handed to
+/// llama.cpp is hashed against the catalog's pinned value before a byte of it
+/// is parsed, and the first mismatch fails the launch.
+///
+/// Shared by both platforms deliberately. Desktop's watchdog and the mobile
+/// in-process engine gate on exactly the same function, so "tampered file →
+/// engine-failed" cannot drift between them — it is one implementation with two
+/// callers, not two implementations that happen to agree today.
+pub(crate) fn verify_launch(
+    engine: &Engine,
+    app: &AppHandle,
+    launch: &LaunchPaths,
+) -> Result<(), String> {
+    verify_model_once(engine, app, &launch.model)
+        .and_then(|()| match &launch.behavioral_lora {
+            Some(lora) => verify_adapter_once(engine, app, lora),
+            None => Ok(()),
+        })
+        .and_then(|()| match &launch.contract_lora {
+            Some(lora) => verify_contract_adapter_once(engine, app, lora),
+            None => Ok(()),
+        })
+}
+
 fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(), String> {
     // Cache-first, exactly as before the B4 refactor: a watchdog respawn of an
     // already-verified path returns without even reading the catalog.
@@ -371,6 +459,7 @@ fn verify_hash_once(
 /// the exact PID we spawned, instead of by image name (which would kill
 /// every llama-server.exe on the box, including ones from other apps or
 /// another Cleophis instance).
+#[cfg(desktop)]
 fn pid_file_path() -> PathBuf {
     std::env::temp_dir().join("cleophis-llama.pid")
 }
@@ -381,6 +470,7 @@ fn pid_file_path() -> PathBuf {
 /// comma-separated adapters and COMPOSES them on the base at load (never
 /// merged), verified against the bundled binary's `--help`. Pure — no
 /// `AppHandle`, no process — so every branch is covered by the unit tests below.
+#[cfg(desktop)]
 fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
@@ -409,6 +499,7 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<
     args
 }
 
+#[cfg(desktop)]
 fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
     let root = resources_root(app);
     let launch = resolve_launch(app)
@@ -449,6 +540,7 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
     Ok(child)
 }
 
+#[cfg(desktop)]
 fn healthy(port: u16) -> bool {
     ureq::get(&format!("http://127.0.0.1:{port}/health"))
         .timeout(Duration::from_millis(800))
@@ -457,6 +549,7 @@ fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn child_exited(engine: &Engine) -> bool {
     let mut guard = engine.child.lock().unwrap();
     match guard.as_mut() {
@@ -465,6 +558,7 @@ fn child_exited(engine: &Engine) -> bool {
     }
 }
 
+#[cfg(desktop)]
 fn kill_child(engine: &Engine) {
     let child = engine.child.lock().unwrap().take();
     if let Some(mut c) = child {
@@ -474,6 +568,7 @@ fn kill_child(engine: &Engine) {
     let _ = std::fs::remove_file(pid_file_path());
 }
 
+#[cfg(desktop)]
 pub fn shutdown(engine: &Engine) {
     engine.closing.store(true, Ordering::Relaxed);
     engine.shutting_down.store(true, Ordering::Relaxed);
@@ -521,10 +616,11 @@ fn sweep_stray_servers() {
 
     let _ = std::fs::remove_file(pid_file_path());
 }
-#[cfg(not(windows))]
+#[cfg(all(desktop, not(windows)))]
 fn sweep_stray_servers() {}
 
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
+#[cfg(desktop)]
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
     // Mark the watchdog thread alive SYNCHRONOUSLY, before the spawn — so a
     // concurrent [`restart`] waiting on this flag can never observe `false` for
@@ -550,22 +646,7 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
                 break;
             }
             if let Some(launch) = resolve_launch(&app) {
-                // Verify the base, then (when declared) the adapter — both are
-                // fed to llama.cpp, so both get the same load-time integrity
-                // gate before a single byte is parsed.
-                // Verify the base, the behavioral adapter, and (when declared)
-                // the contract adapter — every file fed to `--lora` gets its
-                // load-time integrity gate before a byte is parsed.
-                let integrity = verify_model_once(&engine, &app, &launch.model)
-                    .and_then(|()| match &launch.behavioral_lora {
-                        Some(lora) => verify_adapter_once(&engine, &app, lora),
-                        None => Ok(()),
-                    })
-                    .and_then(|()| match &launch.contract_lora {
-                        Some(lora) => verify_contract_adapter_once(&engine, &app, lora),
-                        None => Ok(()),
-                    });
-                if let Err(e) = integrity {
+                if let Err(e) = verify_launch(&engine, &app, &launch) {
                     eprintln!("start: integrity check failed: {e}");
                     engine.set_status(EngineStatus::Failed);
                     let _ = app.emit(
@@ -656,7 +737,7 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
 /// Check-and-set: NoModel -> Starting under the status lock. Returns whether
 /// the transition happened (true) or the engine was in some other state
 /// (false) — the double-start guard for `start_if_no_model`.
-fn try_begin_start(engine: &Engine) -> bool {
+pub(crate) fn try_begin_start(engine: &Engine) -> bool {
     let mut status = engine.status.lock().unwrap();
     if *status == EngineStatus::NoModel {
         *status = EngineStatus::Starting;
@@ -670,6 +751,7 @@ fn try_begin_start(engine: &Engine) -> bool {
 /// NoModel (atomic check-and-set under the status lock — double-start guard).
 /// Called by `cloud::download::download_model`'s worker thread once a
 /// download finishes and the file lands at its final path.
+#[cfg(desktop)]
 pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
     if try_begin_start(&engine) {
         start(app, engine);
@@ -687,6 +769,7 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
 /// the killed child guarantee the old thread returns within ~1s, and a cap
 /// could expire mid-load and spawn a second thread (the race this prevents).
 /// Blocking — call it off the async runtime (`spawn_blocking`).
+#[cfg(desktop)]
 pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     // Serialize with any other restart in flight (a concurrent tier switch, or a
     // rapid double of load_model's Failed→restart recovery). Without this, two
@@ -717,9 +800,7 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
         return;
     }
     engine.shutting_down.store(false, Ordering::Relaxed);
-    *engine.verified_model.lock().unwrap() = None;
-    *engine.verified_adapter.lock().unwrap() = None;
-    *engine.verified_contract_adapter.lock().unwrap() = None;
+    engine.clear_verify_caches();
     engine.set_status(EngineStatus::Starting);
     // Clone so `engine` (and thus `_restart_guard`, which borrows it) stays
     // alive through `start`: the lock must be held until `start` has set
@@ -728,7 +809,18 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     start(app, engine.clone());
 }
 
-#[cfg(test)]
+// ── The mobile half of the seam ──────────────────────────────────────────────
+//
+// Android has no sidecar to spawn, poll or reap, so the four lifecycle entry
+// points above are `#[cfg(desktop)]` and these take their place. Callers
+// (`lib.rs` setup, `load_model`, the window `Destroyed` handler, and
+// `cloud::download`'s completion path) name `inference::start` and friends on
+// both platforms and are compiled unchanged — which is the whole point of
+// putting the seam here rather than at every call site.
+#[cfg(mobile)]
+pub use crate::engine_inproc::{restart, shutdown, start, start_if_no_model};
+
+#[cfg(all(test, desktop))]
 mod tests {
     use super::*;
 

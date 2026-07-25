@@ -9,10 +9,18 @@ mod catalog;
 mod catalog_dist;
 mod cloud;
 mod convstore;
+/// The in-process engine backing `inference`'s mobile lifecycle. Android-only:
+/// desktop keeps its `llama-server` sidecar.
+#[cfg(mobile)]
+mod engine_inproc;
 mod hardware;
 mod inference;
 mod kpack;
 mod ocr;
+/// Compiled on every platform so its consistency tests run in the desktop
+/// suite; the `include_bytes!` payload inside it is `cfg(mobile)`, so the
+/// desktop binary carries none of it.
+mod resources_embed;
 mod tier_select;
 
 use std::sync::Arc;
@@ -114,6 +122,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Android bundles no resources, so the catalog and covers have to be
+            // written out of the binary before ANYTHING reads
+            // `inference::resources_root` — `model_path` on the next line
+            // already does. A failure here is not fatal: the app then behaves
+            // exactly as it does with an absent catalog (no hero resolves, the
+            // NoModel banner shows), which is the honest fail-closed outcome and
+            // far better than aborting startup. It is logged loudly because in
+            // that state nothing else will explain the empty library.
+            #[cfg(mobile)]
+            if let Err(e) = resources_embed::materialize(app.handle()) {
+                eprintln!("setup: failed to materialize embedded resources: {e}");
+            }
+
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
             app.manage(engine.clone());
