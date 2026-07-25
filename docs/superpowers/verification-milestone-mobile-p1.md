@@ -1343,6 +1343,52 @@ by `begin`) add a map keyed by frontend-supplied strings, which is a worse
 trade against a race a user cannot reach. Revisit if 2.2's Stop button or a
 programmatic abort-on-chat-switch ever makes it reachable.
 
+### 2.3 SoC-aware tiering — DONE (commit `f78424d`)
+
+`tier_for_mobile`: **mid (4B) only if RAM ≥ 8 GB AND (i8mm OR a core ≥ 2.75
+GHz)**; `mobile_supported`: ≥ 4 GB, else `HardwareInfo.supported = false`.
+
+The rule exists because of a measurement, not a preference. P0 ran a 4B stack on
+the A22's Dimensity 700 at **1.0–1.8 tok/s** — it loads, and nobody would use
+it. That SoC pairs workhorse-class RAM with floor-class CPU, so a RAM-only rule
+would have shipped a technically-working, practically-unusable model to the
+reference device. `i8mm` is the proxy for "a generation above the floor":
+present on A78/X1-class cores, absent on the A55-class cores that define it.
+
+Detection reads `AT_HWCAP`/`AT_HWCAP2` out of `/proc/self/auxv` rather than
+calling `getauxval` — no new dependency, and the parse becomes a pure function.
+**Every failure path degrades to "no capability" and therefore to the floor
+tier**, which is the chosen direction: guessing low costs a smaller model,
+guessing high costs a device that swaps or is OOM-killed. A truncated auxv read
+loses a capability rather than inventing one.
+
+**Two things checked rather than assumed.** `HardwareInfo` gained a field and
+`HardwareInfo` is sent to the device-registration API — but `upsert_device`
+builds its body field-by-field with an explicit `json!`, so the outbound request
+is byte-identical and only `detect_hardware`'s return to the frontend changed,
+additively. And **rounding is load-bearing at the support floor**: `ram_gb` is
+rounded `MemTotal`, and a nominally-4 GB phone reports ~3.6–3.7 GiB. Rounding
+keeps it at 4 and supported; flooring would put it at 3 and lock out the A22
+along with every other 4 GB Android phone. A test exists whose only job is to
+fail if that changes.
+
+The aarch64 check earned its keep: `tier_for` became dead on Android once
+`detect()` stopped calling it there. Resolved on the merits with a narrow
+`cfg_attr(target_os = "android", allow(dead_code))` — the mirror image of
+convstore's partial-row methods.
+
+Evidence: **8/8** mobile-tier tests (scratch crate over the real module,
+extracted byte-for-byte); aarch64 `check --all-targets` exit 0, zero warnings
+unanchored. **Expect the Windows suite at 313 → 321.**
+
+Not done here: the "not yet" onboarding screen `supported: false` should drive.
+That is UI, and belongs with 2.2.
+
+### 2.2 Mobile UI — NOT STARTED
+
+Design note and the reason it was left to a fresh instance:
+`specs/2026-07-26-mobile-p1-handoff-2.2.md`.
+
 ## Conventions
 
 - **A `docs(` prefix can hide a code change.** Commit `6299dc3` is prefixed
