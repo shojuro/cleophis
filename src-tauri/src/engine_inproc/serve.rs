@@ -75,6 +75,22 @@ pub(crate) enum Command {
     Shutdown,
 }
 
+/// The result of waiting for the next command while a session is open.
+pub(crate) enum Waited {
+    Cmd(Command),
+    /// Nothing arrived before the caller's deadline.
+    ///
+    /// Holding a session open is what keeps the cache warm, and it is also the
+    /// one steady-state cost 1.5 adds: a live `LlamaContext` on the device with
+    /// the least RAM, held for as long as the conversation is merely *open*
+    /// rather than active. Before 1.5 no context outlived a turn. A deadline
+    /// bounds that without any lifecycle signal, which we do not have until the
+    /// §8 backgrounding work.
+    Timeout,
+    /// Every sender is gone.
+    Closed,
+}
+
 /// Why a live session stopped serving turns.
 pub(crate) enum SessionEnd {
     /// Closed with nothing outstanding; the caller goes back to waiting for a
@@ -134,7 +150,7 @@ pub(crate) fn route(live: Option<i64>, cmd: Command) -> Route {
 ///
 /// The caller holds the session (it borrows the `!Send` handle) and supplies:
 /// - `run` — execute one turn on it, replying to the caller of that turn;
-/// - `recv` — block for the next command, `None` when the channel has closed.
+/// - `wait` — block for the next command, up to the caller's idle deadline.
 ///
 /// Returns the reason the session should now be dropped. Every exit is
 /// enumerated in [`SessionEnd`], and each has a test below, because the failure
@@ -142,7 +158,7 @@ pub(crate) fn route(live: Option<i64>, cmd: Command) -> Route {
 pub(crate) fn serve_loop(
     first: ChatTurn,
     run: &mut dyn FnMut(ChatTurn),
-    recv: &mut dyn FnMut() -> Option<Command>,
+    wait: &mut dyn FnMut() -> Waited,
 ) -> SessionEnd {
     let live = first.chat_key;
     let mut turn = first;
@@ -157,8 +173,12 @@ pub(crate) fn serve_loop(
             return SessionEnd::Idle;
         }
 
-        let Some(cmd) = recv() else {
-            return SessionEnd::Closed;
+        let cmd = match wait() {
+            Waited::Cmd(cmd) => cmd,
+            // Both release the session; they differ in whether the thread has
+            // anything left to do afterwards.
+            Waited::Timeout => return SessionEnd::Idle,
+            Waited::Closed => return SessionEnd::Closed,
         };
 
         match route(live, cmd) {
@@ -195,10 +215,10 @@ mod tests {
         t.convo[0].content.clone()
     }
 
-    /// Drives `serve_loop` with a scripted command queue, recording the tag of
+    /// Drives `serve_loop` with a scripted wait queue, recording the tag of
     /// every turn that reached `run` — and replying to each, as the real caller
     /// does, so a test can also assert nothing was left unanswered.
-    fn drive(first: ChatTurn, script: Vec<Command>) -> (SessionEnd, Vec<String>) {
+    fn drive_waits(first: ChatTurn, script: Vec<Waited>) -> (SessionEnd, Vec<String>) {
         let ran = RefCell::new(Vec::new());
         let queue = RefCell::new(script.into_iter());
 
@@ -210,11 +230,16 @@ mod tests {
                     calculations: Vec::new(),
                 }));
             };
-            let mut recv = || queue.borrow_mut().next();
-            serve_loop(first, &mut run, &mut recv)
+            // A queue that runs dry stands in for every sender being gone.
+            let mut wait = || queue.borrow_mut().next().unwrap_or(Waited::Closed);
+            serve_loop(first, &mut run, &mut wait)
         };
 
         (end, ran.into_inner())
+    }
+
+    fn drive(first: ChatTurn, script: Vec<Command>) -> (SessionEnd, Vec<String>) {
+        drive_waits(first, script.into_iter().map(Waited::Cmd).collect())
     }
 
     #[test]
@@ -328,6 +353,33 @@ mod tests {
         // missing reply rather than a closed channel.
         assert!(r1.try_recv().is_ok());
         assert!(r2.try_recv().is_ok());
+    }
+
+    #[test]
+    fn an_idle_session_is_released_rather_than_held() {
+        let (first, _r) = turn(Some(7), "a");
+        let (end, ran) = drive_waits(first, vec![Waited::Timeout]);
+
+        assert_eq!(ran, vec!["a"]);
+        // Idle, not Closed: the thread is still live and still wants commands.
+        // Only the context — and the memory it holds on the floor device — goes.
+        assert!(matches!(end, SessionEnd::Idle));
+    }
+
+    #[test]
+    fn the_deadline_only_applies_to_an_idle_session() {
+        let (first, _r) = turn(Some(7), "a");
+        let (second, _r2) = turn(Some(7), "b");
+
+        // A turn arrives, then the user goes quiet. The deadline must not cut
+        // the conversation short while turns are still coming.
+        let (end, ran) = drive_waits(
+            first,
+            vec![Waited::Cmd(Command::Chat(second)), Waited::Timeout],
+        );
+
+        assert_eq!(ran, vec!["a", "b"]);
+        assert!(matches!(end, SessionEnd::Idle));
     }
 
     #[test]

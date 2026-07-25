@@ -64,7 +64,7 @@ use kpack_engine::{
 };
 use tauri::{AppHandle, Emitter};
 
-use crate::engine_serve::{ChatTurn, Command, SessionEnd};
+use crate::engine_serve::{ChatTurn, Command, SessionEnd, Waited};
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
 use crate::inference::{Engine, EngineStatus};
@@ -282,6 +282,22 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     }
 }
 
+/// How long an open session waits for the conversation's next turn before
+/// releasing itself.
+///
+/// This bounds the one steady-state cost 1.5 adds. A live `LlamaContext` holds
+/// its KV cache — on the order of 60 MB at the floor tier's 2048-token window —
+/// and before 1.5 no context outlived a turn. Five minutes is chosen to be
+/// longer than any pause inside a live conversation (read the answer, think,
+/// type) and shorter than "the user has gone"; the penalty for guessing low is
+/// one slow turn, and for guessing high it is memory held on the device with
+/// the least of it, on an OS that resolves the argument by killing the app.
+///
+/// A deadline is a proxy. The right signal is the Android lifecycle, which
+/// arrives with the §8 backgrounding work in Phase 5; this should become
+/// "release on pause" then, and the timer should become the backstop.
+const IDLE_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Open one session and serve turns on it until [`SessionEnd`] says to stop.
 ///
 /// This is the half of the serve loop that cannot leave `cfg(mobile)`: the
@@ -332,9 +348,13 @@ fn serve_one_session(
         // ran to completion and the session is clean.
         let _ = reply.send(result);
     };
-    let mut next = || rx.recv().ok();
+    let mut wait = || match rx.recv_timeout(IDLE_SESSION_TIMEOUT) {
+        Ok(cmd) => Waited::Cmd(cmd),
+        Err(mpsc::RecvTimeoutError::Timeout) => Waited::Timeout,
+        Err(mpsc::RecvTimeoutError::Disconnected) => Waited::Closed,
+    };
 
-    crate::engine_serve::serve_loop(first, &mut run_turn, &mut next)
+    crate::engine_serve::serve_loop(first, &mut run_turn, &mut wait)
 }
 
 /// Resolve the hero for the effective tier and load it, with the catalog's
