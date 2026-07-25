@@ -438,6 +438,71 @@ Generation (`chat_stream` / `chat_complete` / `chat_cancel`, the calc tool-loop,
 the partial-turn flush) is 1.3–1.4 and will be served by this same thread,
 opening a session from the handle it already owns.
 
+### 1.3 `Role::Tool`, per-family tool formats, closed registry — DONE (commit 6278410)
+
+Desktop gets tool calling from `llama-server`: it passes an OpenAI-style `tools`
+array, the server renders it through `--jinja`, and streamed deltas arrive with
+structured `tool_calls`. In-process there is no server and
+`llama_chat_apply_template` takes no tools argument, so **both halves are ours**
+— the contract is injected into the prompt as a preamble, and calls are
+recovered by parsing the model's generated *text* (Qwen3/ChatML
+`<tool_call>{…}</tool_call>`; Llama-3.2 bare JSON with a `parameters` key).
+
+`kpack-engine` gains `Role::Tool`, mapped to the `"tool"` role both shipping
+families use.
+
+**The registry is closed (security review M2).** `Tool` is an enum, not a
+name→handler map, and `dispatch` matches on it: an invented name fails
+`Tool::from_name` and returns a tool *error result*, fed back like a calc error
+so the model self-corrects. No registration path a prompt can reach, no string
+that becomes callable by accident. That matters more here than on desktop — a
+tool name from a model is attacker-influenceable whenever the conversation
+contains text the user did not write (a pack, a pasted document), and in a Tauri
+WebView a dispatch-by-name table is one step from the whole `invoke()` surface.
+
+**Parsing is permissive, dispatch is strict.** Both wire shapes are accepted
+regardless of declared family, because a fine-tune may answer in the other and a
+missed call is a wrong answer shown to the user — which is safe *because* a
+parsed call still has to name a registry tool to run.
+
+**Testability drove the module layout.** `tools.rs` lives under
+`engine_inproc/` but is declared in `lib.rs` via `#[path]`, so it compiles on
+every platform; it defines its own `ToolFamily` rather than using
+`ChatTemplate`, since kpack-engine is Android-only and tying the module to it
+would mean the closed-registry property is asserted **nowhere** — the desktop
+suite is the only place tests run.
+
+#### Verification — 11/11 passing, run locally
+
+Executed in a scratch crate (the app crate cannot build on this Linux host), so
+this is measured rather than deferred: both wire formats, multi-call ordering,
+prose/markdown-fence embedding, brace-inside-string, the double-encoded OpenAI
+`arguments` shape, malformed arguments, calc errors becoming tool results, and
+the closed registry against 7 invented names including case and whitespace
+variants. A round-trip test asserts each family's *preamble example* parses back
+into a valid call, so prompt and parser cannot silently drift apart.
+`kpack-engine` 28/0 and `kpack-calc` 6/0 still green after the `Role` change;
+aarch64 `check --all-targets` clean.
+
+#### ⚠ Open design question for 1.4: suppressing tool syntax from the stream
+
+Desktop never had this problem — `llama-server` delivered `tool_calls`
+*structurally*, separate from `content`, so the UI only ever saw prose. Parsing
+calls out of generated text means the tool syntax is **in the same token stream
+the user is watching**, and a naive forward would render
+`<tool_call>{"name":"calc"…}</tool_call>` into the chat.
+
+The two obvious answers are both wrong: buffering each round until its calls are
+known costs token-by-token streaming on the final answer (the one round the user
+is actually waiting on), and forwarding everything leaks syntax. The shape that
+fits is a **streaming suppressor** in the mould of the existing
+`ThinkStripper` — it already solves the identical problem for ChatML's
+start-of-turn `<think>` block, including boundaries falling mid-token. Bare
+JSON is the harder half, since it has no opening sentinel; a leading-`{`
+heuristic with a bounded lookahead is the likely approach. Flagged now because
+it is a genuine design decision rather than transcription, and `calc-loop.js`
+offers no guidance — it never faced it.
+
 ---
 
 ## Phase 0 founder items surfaced (⚑0.4)
