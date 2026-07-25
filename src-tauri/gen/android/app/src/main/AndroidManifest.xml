@@ -32,9 +32,15 @@
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!-- windowSoftInputMode (task 2.2): the composer must never sit under
+             the keyboard. This is the belt; the braces is a visualViewport
+             listener in app.js that drives the layout height directly,
+             because an edge-to-edge activity on newer Android may not honour
+             adjustResize at all. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
             android:exported="true">

@@ -286,3 +286,194 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .tieropt-l{font-size:13.5px;font-weight:600}
 .tieropt-s{font-size:11.5px;color:var(--muted)}
 .tiersel-note{margin-top:10px;font-size:12px;color:var(--muted)}
+
+/* ============================================================
+   MOBILE (task 2.2)
+   ============================================================
+
+   Every rule below is scoped under `.is-mobile`, a class app.js puts on
+   <html> from the SAME `isAndroid(navigator.userAgent)` predicate that
+   chooses the transport. Nothing here is a media query, on purpose: a
+   width-keyed rule would also change a narrow DESKTOP window, and the
+   standing constraint is that desktop behaviour stays byte-identical at
+   every size. With this scoping a desktop build matches zero of these
+   selectors, which is a property you can check by reading one class name
+   rather than by reasoning about breakpoints.
+
+   ## What was actually wrong (measured at 360x800, not inferred)
+
+   `#chatSidebar{width:260px;flex:none}` took 72.2% of the viewport and left
+   `.chatmain` 100px. Everything reported from the field was downstream of
+   that ONE declaration:
+     - `.chatbar` needed 392px in a 100px box, so `#chatStatusPill` sat
+       98.8px past the right edge, `#attachPacksBtn` 192px past, and
+       `#costCounter` 292px past — clipped by `.chatview{overflow:hidden}`
+       and unscrollable, because `.chatbar` is `overflow:visible`.
+     - `.composer` needed 331px, putting `#sendBtn` 230.6px off-screen.
+       Send was not reachable in portrait at all.
+     - The "slides a quarter and stops" transition was NOT broken: `.views`
+       measures exactly 2x100vw and `translateX(-50%)` lands `#chatView` at
+       exactly x=0. Forcing a 900px sidebar into the 360px pane did not grow
+       `.views` past 720px or move the landing point off 0. The completed
+       destination simply LOOKS like a stalled slide when the chat column is
+       27.8% of the screen. The transform is left alone because it is right.
+*/
+
+/* --- the layout follows the VISUAL viewport, so the IME can't cover the
+   composer. `100vh` is the *initial* viewport and does not shrink when the
+   keyboard opens, which would leave `.composer` below the fold. `--app-h` is
+   set from `visualViewport.height` by app.js on every resize; `100dvh` is the
+   fallback for the first paint and for any build where that event is absent. */
+.is-mobile .views,
+.is-mobile .view{height:var(--app-h,100dvh)}
+
+/* --- the conversation rail becomes an overlay drawer --- */
+.is-mobile .chatview{position:relative}
+.is-mobile #chatSidebar{
+  position:absolute;top:0;bottom:0;left:0;width:min(310px,85vw);
+  z-index:32;transform:translateX(-100%);
+  transition:transform .2s cubic-bezier(.22,.9,.34,1);
+  box-shadow:0 0 40px rgba(0,0,0,.55);
+  padding-top:env(safe-area-inset-top);
+  padding-left:env(safe-area-inset-left);
+}
+.is-mobile #chatSidebar.open{transform:none}
+/* `display` must be set on the mobile rule too. The desktop rule below sets
+   it, the mobile rule is only more specific for the properties it declares,
+   and omitting it here would leave the scrim `display:none` on mobile. */
+.is-mobile .sidebar-scrim{
+  display:block;position:absolute;inset:0;z-index:31;background:rgba(6,9,13,.55);
+  opacity:0;pointer-events:none;transition:opacity .2s ease;
+}
+.is-mobile .sidebar-scrim.show{opacity:1;pointer-events:auto}
+.sidebar-scrim{display:none}
+
+/* --- the chat bar has to FIT, so it is rebuilt rather than squeezed --- */
+.is-mobile .mobile-only{display:grid}
+.mobile-only{display:none}
+.is-mobile .chatbar{
+  gap:8px;padding:8px 10px;
+  padding-top:calc(8px + env(safe-area-inset-top));
+  padding-left:calc(10px + env(safe-area-inset-left));
+  padding-right:calc(10px + env(safe-area-inset-right));
+}
+.is-mobile .iconbtn{width:40px;height:40px;flex:none}       /* >=40px touch target */
+.is-mobile .chatcover{display:none}                          /* identity is the name */
+.is-mobile .cost{display:none}                               /* always $0.00 on-device */
+.is-mobile .chattitle{flex:1;min-width:0}
+.is-mobile .chattitle b{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;font-size:14px;
+}
+/* The chat-bar pill is the QUIET half of the engine state — it only ever
+   shows `ready`, since everything else is prominent and takes the row
+   below. Capped so it can never reproduce the "● Lo…" clip. */
+.is-mobile .chatbar .pill{
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* `.pill{display:inline-flex}` is an author rule and therefore beats the UA
+   stylesheet's `[hidden]{display:none}`, so `pill.hidden = true` alone left
+   the pill on screen next to the prominent row saying the same thing. Without
+   this the code's "exactly one engine-state element is visible" comment is
+   simply false — the sort of quiet disagreement between intent and behaviour
+   this project keeps finding. */
+.is-mobile .chatbar .pill[hidden]{display:none}
+.is-mobile #attachPacksBtn{padding:9px 11px;font-size:13px;flex:none}
+.is-mobile .groundpill{display:none}
+/* `.grow` is `flex:1` and so is `.chattitle`, so the spacer SPLIT the free
+   width with the title — the model name got 81px of the 168px available and
+   ellipsized to "Socratic…". On desktop the spacer's job is to push
+   #costCounter to the right edge; mobile hides the counter, so it has
+   nothing left to push. */
+.is-mobile .chatbar .grow{display:none}
+
+/* --- the composer --- */
+.is-mobile .composer{
+  gap:8px;padding:10px 12px;
+  padding-bottom:calc(10px + env(safe-area-inset-bottom));
+  padding-left:calc(12px + env(safe-area-inset-left));
+  padding-right:calc(12px + env(safe-area-inset-right));
+}
+/* `flex:1` alone is not enough: a flex item's default `min-width:auto`
+   resolves to the input's min-content width (~170px for a default-size
+   <input>), which is precisely what pushed #sendBtn off-screen. */
+.is-mobile #chatInput{min-width:0;font-size:16px}  /* 16px stops iOS/WebView zoom-on-focus */
+.is-mobile .composer .btn{flex:none;padding:12px 16px}
+
+/* --- the engine state, which previously had no element at all --- */
+.enginestate{display:none}
+.is-mobile .enginestate{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:10px 14px;border-bottom:1px solid var(--line);
+  font-size:13px;line-height:1.35;
+  background:var(--surface);
+  animation:enginestate-in .18s ease;
+}
+.is-mobile .enginestate[hidden]{display:none}
+@keyframes enginestate-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.enginestate-dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:5px;background:var(--muted)}
+.enginestate-text{min-width:0;display:flex;flex-direction:column;gap:1px}
+.enginestate-text b{font-weight:600;color:var(--text)}
+.enginestate-text span{color:var(--muted);font-size:12px}
+.is-mobile .enginestate.tone-busy .enginestate-dot{background:var(--teal);animation:enginepulse 1.1s ease-in-out infinite}
+.is-mobile .enginestate.tone-ready .enginestate-dot{background:var(--teal)}
+.is-mobile .enginestate.tone-warn{background:rgba(232,163,61,.10)}
+.is-mobile .enginestate.tone-warn .enginestate-dot{background:var(--amber)}
+.is-mobile .enginestate.tone-error{background:rgba(226,104,95,.10)}
+.is-mobile .enginestate.tone-error .enginestate-dot{background:var(--heavy)}
+@keyframes enginepulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* Progress is part of the state row, not a separate widget, so a download
+   never reads as a thing happening somewhere else in the app. */
+.enginestate-prog{display:none}
+.is-mobile .enginestate-prog{
+  display:block;height:3px;background:var(--surface2);overflow:hidden;
+}
+.is-mobile .enginestate-prog>i{display:block;height:100%;width:0;background:var(--teal);transition:width .2s linear}
+.is-mobile .enginestate-prog[hidden]{display:none}
+
+/* --- catalog view: 86px of real horizontal overflow at 360px --- */
+.is-mobile #catalogView{overflow-x:hidden}
+.is-mobile .bar{
+  gap:10px;padding:10px 14px;flex-wrap:wrap;
+  padding-top:calc(10px + env(safe-area-inset-top));
+}
+.is-mobile .searchwrap{min-width:0;flex:1}
+.is-mobile #search{width:100%;max-width:none}
+.is-mobile .hero{padding:20px 16px 4px}
+.is-mobile .hero h1{font-size:21px}
+.is-mobile .hero p{font-size:14px}
+.is-mobile .filters{padding:14px 16px 4px}
+.is-mobile .grid{
+  padding:12px 16px 48px;gap:12px;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+}
+.is-mobile .device{display:none}
+
+/* --- message bubbles get the width back --- */
+.is-mobile .msg{max-width:88%;font-size:15px}
+.is-mobile .msg.user{margin-right:12px}
+.is-mobile .msg.assistant{margin-left:12px}
+.is-mobile .citations,.is-mobile .calculations{margin-left:12px;max-width:88%}
+.is-mobile .retrychip{margin-left:12px}
+.is-mobile .messages{padding:16px 0}
+
+/* --- drawer + modals fit a phone --- */
+.is-mobile .drawer{width:100%;padding:0 18px 24px;padding-bottom:calc(24px + env(safe-area-inset-bottom))}
+.is-mobile .dcover{margin:0 -18px}
+.is-mobile .modal{padding:12px;align-items:flex-start}
+.is-mobile .modal .box{width:100%;padding:20px;margin-top:max(24px,env(safe-area-inset-top))}
+.is-mobile .specs,.is-mobile .tiersel-opts{grid-template-columns:1fr}
+
+/* --- the "not yet" screen --- */
+.notyet{position:fixed;inset:0;z-index:90;background:var(--ink);display:grid;place-items:center;padding:24px}
+.notyet[hidden]{display:none}
+.notyet-box{max-width:420px;text-align:center}
+.notyet-mark{width:44px;height:44px;margin-bottom:18px}
+.notyet h2{margin:0 0 10px;font-size:22px;letter-spacing:-.02em}
+.notyet-why{margin:0 0 10px;color:var(--amber);font-size:14px;font-weight:600}
+.notyet-sub{margin:0 0 22px;color:var(--muted);font-size:14px}
+
+/* Respect the user's font-size setting instead of overriding it: nothing
+   above sets a px height on a text container, and the two places that
+   could clip under a large scale factor (the chat title and the pill)
+   ellipsize rather than overflow. */
+

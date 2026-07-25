@@ -56,6 +56,10 @@
 
   <!-- ============ View 2: Chat ============ -->
   <section id="chatView" class="view chatview">
+    <!-- Mobile only: dismisses the conversation drawer. Inert on desktop,
+         where no rule ever shows it (see the `.is-mobile` block in
+         styles.css) — same shape as decision D-1's inert desktop commands. -->
+    <div class="sidebar-scrim" id="sidebarScrim"></div>
     <aside id="chatSidebar">
       <div class="sidebar-toprow">
         <button id="newChatBtn">+ New chat</button>
@@ -70,6 +74,9 @@
     </aside>
     <div class="chatmain">
       <div class="chatbar">
+        <button class="iconbtn mobile-only" id="chatMenuBtn" title="Your chats" aria-label="Show your chats" aria-expanded="false" aria-controls="chatSidebar">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
         <button class="iconbtn" id="chatBack" title="Back to library">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
@@ -83,6 +90,17 @@
         <div class="grow"></div>
         <div class="cost mono" id="costCounter" title="Total inference cost this session">$0.00</div>
       </div>
+      <!-- The engine-state row (task 2.2). Mobile only: on desktop nothing
+           shows it and nothing writes it, so desktop behaviour is unchanged.
+           `aria-live` because its whole job is to narrate a state change. -->
+      <div class="enginestate" id="engineState" hidden aria-live="polite">
+        <span class="enginestate-dot"></span>
+        <span class="enginestate-text">
+          <b id="engineStateLabel"></b>
+          <span id="engineStateDetail"></span>
+        </span>
+      </div>
+      <div class="enginestate-prog" id="engineStateProg" hidden><i></i></div>
       <div class="enginebanner" id="engineBanner" hidden></div>
       <div class="messages" id="chatMessages"></div>
       <div class="composer" id="chatComposer">
@@ -173,6 +191,19 @@
     <p class="sub">Answers in this chat will cite the packs you attach — or say when there's no evidence in them.</p>
     <div id="attachList"></div>
     <button class="btn primary block" id="attachDoneBtn">Done</button>
+  </div>
+</div>
+
+<!-- The honest "not yet" screen (task 2.2; 2.3's HardwareInfo.supported=false
+     produces the fact). Shown before sign-up, deliberately: a device that
+     cannot run a model should learn that before it is asked to pay. -->
+<div class="notyet" id="notYetScreen" hidden>
+  <div class="notyet-box">
+    <svg class="notyet-mark" viewBox="0 0 26 26" fill="none"><rect x="1" y="1" width="24" height="24" rx="7" fill="#35D0BA"/><path d="M13 6l7 7-7 7-7-7z" fill="#06332C"/></svg>
+    <h2>Cleophis can't run on this phone yet</h2>
+    <p class="notyet-why" id="notYetWhy"></p>
+    <p class="notyet-sub">Models run entirely on your own device, which takes about 4 GB of memory. We're working on smaller ones — nothing has been charged, and there's nothing to cancel.</p>
+    <button class="btn block" id="notYetBrowse">Look around anyway</button>
   </div>
 </div>
 

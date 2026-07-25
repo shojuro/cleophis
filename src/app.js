@@ -2,6 +2,7 @@
 import { CALC_TOOL } from './calc-tool.js';
 import { streamWithTools } from './calc-loop.js';
 import { createTransport, isAndroid } from './transport.js';
+import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS } from './engine-state.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -19,6 +20,28 @@ const transport = createTransport({
   streamImpl: streamWithTools,
 });
 
+// Task 2.2: one platform predicate, shared with the transport above, decides
+// BOTH which half of the seam is live and which stylesheet rules apply. Every
+// mobile CSS rule is scoped under `.is-mobile` rather than behind a media
+// query, so a desktop build matches none of them at any window width and
+// desktop behaviour stays byte-identical — the same reasoning that put the
+// transport choice in one place instead of at each call site.
+const IS_MOBILE = isAndroid(navigator.userAgent);
+document.documentElement.classList.toggle('is-mobile', IS_MOBILE);
+
+// Keep the layout on the VISUAL viewport so the soft keyboard cannot cover the
+// composer. `100vh` is the initial viewport and never shrinks for the IME; the
+// manifest's `adjustResize` is the other half of this, but an edge-to-edge
+// activity on newer Android may ignore it, and `visualViewport` reports the
+// truth either way. Desktop never runs this.
+if (IS_MOBILE && window.visualViewport) {
+  const syncViewportHeight = () => {
+    document.documentElement.style.setProperty('--app-h', `${window.visualViewport.height}px`);
+  };
+  window.visualViewport.addEventListener('resize', syncViewportHeight);
+  syncViewportHeight();
+}
+
 // Chat lock-out threshold for lapsed subscriptions: local expiry dates can
 // be stale (offline-first — Stripe may have renewed while this machine was
 // offline), so chat keeps working for a grace window past the known expiry
@@ -32,6 +55,12 @@ const state = {
   engine: { port: 0, status: 'Starting', gpuOffload: false },
   chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
   dl: { installed: false, partBytes: 0, active: false },
+  // Task 2.2 engine-state inputs. `dlProgress` is the last download-progress
+  // payload (null when no download is in flight), `turn` times the in-flight
+  // turn so the prefill wait can be explained from a real signal rather than
+  // guessed, and `hw` caches detect_hardware so `supported:false` (task 2.3)
+  // can drive the honest "not yet" screen.
+  dlProgress: null, turn: null, hw: null,
   // B4: while a hero dist-catalog download is awaiting a SPECIFIC artifact's
   // terminal event, this holds { path, resolve, reject } so onDownloadProgress
   // routes that artifact's done/failed/cancelled to the sequencing promise
@@ -117,10 +146,12 @@ function heroAdapterId(m) {
 
 /* ---------------- boot ---------------- */
 async function boot() {
-  await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); });
-  await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); });
+  await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); refreshEngineState(); });
+  await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); state.engine = { ...state.engine, status: 'Restarting' }; refreshEngineState(); });
   await listen('engine-failed', async (e) => {
     setComposerEnabled(false);
+    state.engine = { ...state.engine, status: 'Failed' };
+    refreshEngineState();
     // A failed integrity check almost always means a required model file is
     // missing (e.g. an install predating a newly-required adapter, or one the
     // tier-switch sweep removed). When download_status agrees the hero isn't
@@ -157,6 +188,14 @@ async function boot() {
     } catch (_) {}
   }
   try { state.engine = await invoke('engine_info'); } catch (_) {}
+  // Task 2.2/2.3: ask the device what it can do BEFORE the onboarding funnel,
+  // not at sign-in like desktop does. A phone that cannot run a model should
+  // be told so before it is walked through account → payment.
+  if (IS_MOBILE) {
+    try { state.hw = await invoke('detect_hardware'); } catch (_) {}
+    if (state.hw && state.hw.supported === false) showNotYetScreen(state.hw);
+  }
+  refreshEngineState();
   renderFilters(); renderGrid();
   try {
     const s = await invoke('restore_session');
@@ -641,7 +680,27 @@ function beginPaymentPoll(m, btnId) {
 
 function fmtGiB(n) { return (n / 2 ** 30).toFixed(2); }
 
+// Task 2.2: the engine-state row narrates downloads too, so a user sitting in
+// the chat view is never left wondering whether anything is happening. This
+// wraps the existing handler rather than editing it — the handler owns
+// `state.dl`, has several early returns, and a `done` for ONE artifact of the
+// base+adapter pair does not mean the hero is installed. Refreshing on the way
+// in keeps the percentage live; refreshing on the way out picks up whatever
+// `state.dl` settled to. The inner function is unchanged.
 async function onDownloadProgress(e) {
+  const p = e.payload;
+  // `done` clears the slot so the row falls through to engine state rather
+  // than latching on a finished download.
+  state.dlProgress = p.phase === 'done' ? null : p;
+  refreshEngineState();
+  try {
+    await onDownloadProgressInner(e);
+  } finally {
+    refreshEngineState();
+  }
+}
+
+async function onDownloadProgressInner(e) {
   const p = e.payload;
   // B4: dist-catalog (two-artifact hero) sequence. download_artifact tags its
   // events with the artifact PATH as modelId (not a catalog id), so route the
@@ -1105,6 +1164,7 @@ async function openChat(id) {
   }));
   rebuildChatDom();
   updateGroundPill();
+  closeSidebarDrawer(); // mobile: picking a chat is what the drawer is for
   await refreshChatList(); // active-row highlight moves to this chat
 }
 
@@ -1373,6 +1433,134 @@ function showEngineBanner(text, action) {
 }
 function hideEngineBanner() { $('engineBanner').hidden = true; }
 
+/* ---------------- engine state, said out loud (task 2.2) ----------------
+
+   Before this, `#chatStatusPill` was referenced exactly once in the entire
+   codebase — in index.html, as the hard-coded string "Local · offline" —
+   and no code ever read or wrote it. The founder "could not identify the
+   engine-state element" because there wasn't one; the only thing that ever
+   reported engine state was `#engineBanner`, on restart and failure only, so
+   the ordinary Starting → Ready path rendered nothing at all.
+
+   The mapping and the pacing live in `engine-state.js` (pure, tested —
+   decision D-3: logic whose failure mode is silent goes where the tests
+   run). Everything below is DOM writes.
+
+   MOBILE ONLY. On desktop `refreshEngineState` returns before touching
+   anything, so the pill keeps its static string and desktop behaviour is
+   byte-identical. Desktop's pill is the same defect and is surfaced as
+   desktop-scope backlog rather than fixed here, because fixing it is a
+   desktop behaviour change this task is not allowed to make.               */
+
+const engineSeq = createReadableSequence({
+  now: () => Date.now(),
+  schedule: (fn, ms) => setTimeout(fn, ms),
+  cancel: (h) => clearTimeout(h),
+  render: renderEngineState,
+});
+let prefillTimer = null;
+
+function renderEngineState(p) {
+  const row = $('engineState');
+  const pill = $('chatStatusPill');
+  // H1 invariant: every path here is textContent. None of this copy is model
+  // output, but the rule is about the sink, not the source — a new renderer
+  // that reaches for innerHTML is the regression to look for.
+  $('engineStateLabel').textContent = p.label;
+  const detail = $('engineStateDetail');
+  detail.textContent = p.detail || '';
+  detail.hidden = !p.detail;
+  row.className = 'enginestate tone-' + p.tone;
+  row.dataset.kind = p.kind;
+  row.hidden = !p.prominent;
+
+  // Exactly one engine-state element is visible at a time: the prominent row
+  // while something is happening, the chat-bar pill once there is nothing to
+  // announce. Showing both would duplicate the same sentence.
+  // `short`, not `label`: the pill has ~170px beside the model name, and the
+  // row has the width of the screen. Sharing one string is what rendered
+  // "Ready — r" — the pill's rect was inside the viewport, so a bounds
+  // assertion passed while the text was still cut.
+  pill.hidden = p.prominent;
+  pill.textContent = '';
+  const dot = document.createElement('span');
+  dot.className = 'pill-dot';
+  pill.append(dot, document.createTextNode(p.short || p.label));
+
+  const prog = $('engineStateProg');
+  const dl = p.kind === 'downloading' && state.dlProgress && state.dlProgress.totalBytes > 0;
+  prog.hidden = !dl;
+  if (dl) {
+    const frac = state.dlProgress.bytesDownloaded / state.dlProgress.totalBytes;
+    prog.firstElementChild.style.width = Math.min(100, frac * 100).toFixed(1) + '%';
+  }
+}
+
+/// Gather what is true right now and offer it to the sequence.
+///
+/// Cheap and idempotent, so every event that could change the answer just
+/// calls it rather than each one working out what to display.
+function refreshEngineState() {
+  if (!IS_MOBILE) return;
+  const p = describeEngineState({
+    engineStatus: state.engine && state.engine.status,
+    download: state.dlProgress,
+    installed: state.dl.installed,
+    turn: state.turn ? { ...state.turn, now: Date.now() } : null,
+    supported: state.hw ? state.hw.supported !== false : true,
+  });
+  engineSeq.push(p);
+}
+
+/// A turn began. The wait for the first token IS prefill, and on the floor
+/// tier the first turn of a conversation is genuinely slow (CP1: "first turn
+/// very slow, subsequent turns lightning fast"), so the escalation to an
+/// explanation is armed here rather than guessed at later.
+function markTurnStarted() {
+  state.turn = { startedAt: Date.now(), firstDeltaAt: null };
+  clearTimeout(prefillTimer);
+  prefillTimer = setTimeout(refreshEngineState, PREFILL_EXPLAIN_MS + 30);
+  refreshEngineState();
+}
+function markFirstDelta() {
+  if (!state.turn || state.turn.firstDeltaAt != null) return;
+  state.turn.firstDeltaAt = Date.now();
+  clearTimeout(prefillTimer);
+  refreshEngineState();
+}
+function markTurnEnded() {
+  state.turn = null;
+  clearTimeout(prefillTimer);
+  refreshEngineState();
+}
+
+/* ---------------- the conversation drawer (task 2.2) ----------------
+
+   The measured root cause of every chat-layout complaint from the field:
+   `#chatSidebar{width:260px;flex:none}` took 72.2% of a 360px viewport and
+   left the chat column 100px. As an overlay the rail costs the chat nothing
+   when closed. Desktop keeps the static two-column layout untouched.       */
+
+function setDrawer(open) {
+  if (!IS_MOBILE) return;
+  $('chatSidebar').classList.toggle('open', open);
+  $('sidebarScrim').classList.toggle('show', open);
+  $('chatMenuBtn').setAttribute('aria-expanded', String(open));
+}
+function closeSidebarDrawer() { setDrawer(false); }
+
+/// The honest "not yet" screen (2.3 produces `supported:false`, 2.2 renders
+/// it). Deliberately NOT a hard block: the library, the chats already on the
+/// device and the account still work — the claim is only that a model cannot
+/// run here, which is the truth and the whole truth.
+function showNotYetScreen(hw) {
+  const ram = hw && typeof hw.ram_gb === 'number' ? hw.ram_gb : null;
+  $('notYetWhy').textContent = ram != null
+    ? `This device reports ${ram} GB of memory.`
+    : 'This device does not report enough memory.';
+  $('notYetScreen').hidden = false;
+}
+
 function pulseCost() {
   const c = $('costCounter');
   c.textContent = '$0.00';
@@ -1405,6 +1593,7 @@ async function sendCompletion(userText) {
   state.chat.streaming = true;
   $('sendBtn').hidden = true; $('stopBtn').hidden = false;
   state.chat.aborter = new AbortController();
+  markTurnStarted(); // starts the prefill clock; see engine-state.js
 
   // Wrapper tier-selection: the first chat commits the current engine size —
   // after this, tier changes are limited to once per billing period. Fire the
@@ -1607,6 +1796,7 @@ async function sendCompletion(userText) {
       tools: [CALC_TOOL],
       runCalc: (expression) => invoke('calc', { expression }),
       onDelta: (d) => {
+        markFirstDelta(); // the wait before this delta was prefill — see engine-state.js
         acc += d;
         // Show the leading-`<think></think>`-stripped view every render
         // (idempotent — see stripLeadingThink); `acc` keeps the raw text
@@ -1621,10 +1811,12 @@ async function sendCompletion(userText) {
     if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle); return; }
     bubble.remove();
     state.chat.streaming = false;
+    markTurnEnded();
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
     try {
       const info = await invoke('engine_info');
       state.engine = info;
+      refreshEngineState();
       if (info.status === 'NoModel') { showEngineBanner('Model not downloaded yet.'); setComposerEnabled(false); }
       else if (info.status !== 'Ready') { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); }
     } catch (_) {}
@@ -1653,6 +1845,7 @@ async function sendCompletion(userText) {
 // `citations` throughout this function.
 function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
   bubble.classList.remove('streaming');
+  markTurnEnded(); // the turn is over on every path through here, abort included
   // Only touch the live DOM/in-memory transcript if this turn's chat is
   // STILL the active one — the user may have switched chats mid-stream
   // (which aborts this turn's fetch, via openChat/newChat, but whatever
@@ -2080,6 +2273,17 @@ $('removeConfirm').addEventListener('click', async () => {
 
 [$('loginModal'), $('createModal'), $('packsModal'), $('attachModal'), $('removeAccountModal')].forEach((md) => md.addEventListener('click', (e) => { if (e.target === md) hide(md); }));
 $('chatBack').addEventListener('click', () => exitChat());
+// Task 2.2 (mobile): the conversation rail as a drawer. Inert on desktop —
+// #chatMenuBtn is display:none there and setDrawer returns immediately.
+$('chatMenuBtn').addEventListener('click', () => {
+  setDrawer(!$('chatSidebar').classList.contains('open'));
+});
+$('sidebarScrim').addEventListener('click', closeSidebarDrawer);
+$('notYetBrowse').addEventListener('click', () => { $('notYetScreen').hidden = true; });
+// A phone's Back gesture should close the drawer before leaving the chat.
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('chatSidebar').classList.contains('open')) closeSidebarDrawer();
+});
 $('sendBtn').addEventListener('click', () => sendMessage());
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
