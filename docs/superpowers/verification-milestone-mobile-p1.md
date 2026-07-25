@@ -237,6 +237,112 @@ Two of the three are worth carrying beyond this repo:
 
 ---
 
+## Phase 1 — Engine swap-in
+
+### 1.1 `inference.rs` cfg seam + Android resource materializer — DONE (commit 2a52b44)
+
+**The seam.** Desktop's sidecar machinery (`spawn_server`, `build_server_args`,
+the health poll, `child_exited`/`kill_child`, `sweep_stray_servers`, the
+watchdog `start`, `restart`, `shutdown`, `start_if_no_model`, and the sidecar
+unit tests) is now `#[cfg(desktop)]`; `#[cfg(mobile)]` re-exports the same four
+entry points from the new `engine_inproc.rs`. `Engine.child` is desktop-only.
+Every caller — `lib.rs` setup, `load_model`, the window `Destroyed` handler,
+`cloud::download`'s completion path — names `inference::start` and friends on
+both platforms and compiles unchanged; `tier_select.rs` and `cloud/download.rs`
+were not touched, as the brief required.
+
+**Two extractions that make shared code actually shared:**
+- `verify_launch()` — the entire load-time integrity gate (base model, then
+  each declared LoRA) behind one `pub(crate)` fn that *both* platforms call.
+  This matters beyond tidiness: "tampered file → engine-failed" is now one
+  implementation with two callers rather than two implementations that agree
+  today. Desktop keeps the identical `and_then` chain, relocated.
+- `Engine::clear_verify_caches()` replaces `restart`'s three inline resets.
+
+**The materializer.** Android bundles no resources (Phase 0 saw to that), so
+`resources_embed.rs` compiles `catalog.json` + the 11 covers (~250 KB) into the
+binary with `include_bytes!` and writes them to `<app_data>/resources` on first
+launch. Keyed by a sha256 stamp over the whole payload — names included — so an
+app update rewrites the tree and an unchanged one skips. **The stamp is written
+last**, so an interrupted materialization leaves no stamp and simply redoes
+itself rather than pairing a valid stamp with a truncated catalog.
+`resources_root()` gained a mobile branch returning that tree; all consumers
+(catalog reads, `get_catalog`'s `coverAbs`, `tier_select`) are unchanged.
+Materialization runs first in `setup`, before `model_path` reads through
+`resources_root`; failure is logged and non-fatal, degrading to the same
+empty-catalog/NoModel path an absent catalog already produces.
+
+A macro declares the cover list once and derives both the name array and the
+byte array from it. This is a correctness guard, not style: a hand-maintained
+second array could pair one cover's *name* with another's *pixels* — silent,
+untestable by any assertion on counts, and visible to every user.
+
+**1.1 is the seam, not the engine.** `engine_inproc`'s bodies are fail-closed
+placeholders that report `Failed` rather than pretending to be `Ready`, so a
+checkpoint build says "no engine" instead of hanging on a chat that can never
+stream. One deliberate exception: **the integrity gate is already live**, ahead
+of the engine it guards, so the tampered-file probe is exercisable on-device at
+CP1 whether or not generation works, and 1.2 inherits a gate that has already
+run on real hardware rather than one written blind.
+
+#### Verification
+
+- `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` — **clean,
+  zero warnings** (`cleophis-mobile-logs/p11-android-tests-check.log`).
+  `--all-targets` also type-checks the new tests.
+- The two cover/catalog assertions were validated against the real data
+  independently (11 embedded == 11 on disk; every catalog `cover` embedded and
+  under `covers/`), since they cannot be *run* on this host — see below.
+- An earlier iteration of this work produced 11 dead-code warnings on aarch64.
+  Rather than blanket-suppress them, they were resolved on the merits: most
+  vanished once the placeholder called the shared integrity gate for real, two
+  were genuinely desktop-only (`LaunchPaths::loras`, the `Arc` import) and got
+  cfg gates, and only the three that belong to 1.2's inference thread
+  (`thread_alive`, `restart_lock`, the unconstructed `EngineStatus` variants)
+  carry a narrow `cfg_attr(mobile, allow(dead_code))` with a note to remove it
+  when 1.2 lands. Warnings that are merely silenced come back as blind spots
+  when Phase 5.3 wires the `mobile-check` CI job.
+
+#### ⚠ Desktop regression cannot run on this Linux host
+
+`cargo test -p cleophis` fails here before compiling any of our code:
+`keyring`'s `linux-native` feature pulls `libdbus-sys`, whose build script
+requires system dbus development headers, and the toolchain is userspace-only
+by founder decision (no sudo). This is environmental and pre-existing — it is
+also why Phase 0.2's Linux evidence was the golden-pack (`kpack-embed`) plus
+the pure crates, never the app crate. **The desktop gate for Phase 1 is
+therefore the steering-side Windows suite, requested at each phase boundary.**
+Every desktop-visible change in 1.1 is a cfg gate, a visibility widen, or a
+semantics-identical extraction.
+
+#### Packaging finding: rebuilding on top of an APK silently doubles it
+
+The first 1.1 APK came out at **690,099,887 bytes** — roughly double Phase 0's,
+from a change that added 37 KB of embedded resources. The `.so` was unchanged
+(340,173,744 vs 340,136,376, i.e. exactly the catalog + covers). The archive's
+own central directory summed to ~350 MB against a 690 MB file: **~340 MB of the
+file was an orphaned copy of the previous `libcleophis_lib.so` that no entry
+pointed at**, left behind by AGP's incremental zip (zipflinger) rewriting a
+large entry in place.
+
+The APK installs and runs perfectly in that state — the central directory is
+authoritative — which is exactly why it would have gone unnoticed, and the
+founder would have sideloaded 658 MiB for no reason. Deleting the previous
+output before packaging restores it: **349,947,125 bytes**, the Phase 0 size
+plus precisely the 37,368 bytes of embedded resources.
+`build-android-apk.sh` now always removes the prior APK first.
+
+Generalization for the release work in 5.2: **APK size must be judged against
+the sum of its zip entries, not the file length** — the two can differ by a
+factor of two with nothing wrong in the build.
+
+Worth noting for Phase 3.1: moving `keyring` to
+`[target.'cfg(not(target_os = "android"))'.dependencies]` (already required
+because keyring v3 silently mocks in-memory on unsupported targets) will *not*
+fix this — Linux is exactly where `linux-native` applies.
+
+---
+
 ## Phase 0 founder items surfaced (⚑0.4)
 
 1. Android APK signing-key ceremony (crown-jewel #2; same regime as curator key,

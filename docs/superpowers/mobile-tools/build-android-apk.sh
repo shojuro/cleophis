@@ -56,6 +56,15 @@ echo "== building $MODE APK (aarch64) =="
 echo "== log: $LOG =="
 cd "$ROOT"
 
+# Force a full repack. AGP's incremental zip (zipflinger) rewrites entries in
+# place and can strand the previous copy of a large library inside the archive:
+# rebuilding on top of an existing APK turned a 334 MiB output into 658 MiB, of
+# which ~340 MB was an orphaned copy of the old libcleophis_lib.so that no
+# central-directory entry pointed at. The APK still installs and runs -- the
+# central directory is authoritative -- which is precisely why the bloat is easy
+# to miss. Deleting the previous output costs a few seconds of repacking.
+rm -f "$ROOT"/src-tauri/gen/android/app/build/outputs/apk/*/*/*.apk
+
 set +e
 "$ROOT/node_modules/.bin/tauri" android build "${TAURI_FLAGS[@]}" \
   --target aarch64 --apk 2>&1 | tee "$LOG"
