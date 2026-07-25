@@ -335,6 +335,19 @@ fn load_stack(
 /// embedded in the GGUF (the sidecar's `--jinja` behavior) and is the correct
 /// default; the catalog only overrides it when a model needs a named family —
 /// notably ChatML, whose start-of-turn `<think>` block the runtime strips.
+/// Hand a command to the running inference thread. Returns false when there is
+/// no thread — the engine was never started, or has been shut down.
+pub(crate) fn send_command(engine: &Engine, cmd: Command) -> bool {
+    lock_slot(&engine.inproc)
+        .as_ref()
+        .map(|running| running.tx.send(cmd).is_ok())
+        .unwrap_or(false)
+}
+
+pub(crate) fn current_template(app: &AppHandle) -> ChatTemplate {
+    template_for(app)
+}
+
 fn template_for(app: &AppHandle) -> ChatTemplate {
     match crate::inference::hero_chat_template(app).as_deref() {
         Some("llama3") | Some("llama-3") | Some("llama") => ChatTemplate::Llama3,

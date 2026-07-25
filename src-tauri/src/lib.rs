@@ -7,6 +7,11 @@
 mod calc;
 mod catalog;
 mod catalog_dist;
+/// The mobile chat transport (`chat_stream` / `chat_complete` / `chat_cancel`).
+/// Compiled on every platform so one `generate_handler!` list serves both —
+/// the command bodies are cfg-gated and the desktop ones refuse; see the
+/// module doc for why that beats maintaining two lists.
+mod chat_cmds;
 mod cloud;
 mod convstore;
 /// The in-process engine backing `inference`'s mobile lifecycle. Android-only:
@@ -195,6 +200,11 @@ pub fn run() {
             app.manage(kpack::EmbedderCache::default());
             app.manage(kpack::Builds::default());
 
+            // In-flight chat turns, so `chat_cancel` can reach one by request
+            // id. Managed on both platforms so the command surface is uniform;
+            // desktop never populates it.
+            app.manage(chat_cmds::ChatCancels::default());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -245,7 +255,10 @@ pub fn run() {
             convstore::set_chat_packs,
             convstore::append_message,
             convstore::search_chats,
-            convstore::export_chat_to_file
+            convstore::export_chat_to_file,
+            chat_cmds::chat_stream,
+            chat_cmds::chat_complete,
+            chat_cmds::chat_cancel
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
