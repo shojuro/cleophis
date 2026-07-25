@@ -16,7 +16,13 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val executable = """node""";
+        // `tauri android init` scaffolds this as `node` + a bare "tauri" arg,
+        // which makes Node treat "tauri" as a module path and resolve it against
+        // the working dir (src-tauri) -- "Cannot find module .../src-tauri/tauri".
+        // Go through the npm script instead; npm finds the workspace package.json
+        // by walking up from src-tauri, and the Windows fallback below then picks
+        // up npm.cmd correctly.
+        val executable = """npm""";
         try {
             runTauriCli(executable)
         } catch (e: Exception) {
@@ -48,7 +54,7 @@ open class BuildTask : DefaultTask() {
         val rootDirRel = rootDirRel ?: throw GradleException("rootDirRel cannot be null")
         val target = target ?: throw GradleException("target cannot be null")
         val release = release ?: throw GradleException("release cannot be null")
-        val args = listOf("tauri", "android", "android-studio-script");
+        val args = listOf("run", "--silent", "tauri", "--", "android", "android-studio-script");
 
         project.exec {
             workingDir(File(project.projectDir, rootDirRel))
