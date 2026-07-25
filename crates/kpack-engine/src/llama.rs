@@ -37,6 +37,7 @@ use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaLoraAdapter, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::token::LlamaToken;
 
 use crate::adapter::{prepare_stack, AdapterRole, VerifyCache};
 use crate::backend::{
@@ -193,6 +194,7 @@ impl EngineHandle for LlamaHandle {
             chat_template,
             strip_think,
             cfg,
+            cached: Vec::new(),
         }))
     }
 
@@ -212,6 +214,13 @@ struct LlamaSession<'a> {
     chat_template: LlamaChatTemplate,
     strip_think: bool,
     cfg: SessionConfig,
+    /// Mirror of the tokens currently resident in sequence 0's KV cache, in
+    /// position order — prompt tokens plus every generated token that was fed
+    /// back in. This is what makes prefix reuse possible AND safe: the cache is
+    /// invisible from Rust, so without a mirror there is no way to know which
+    /// prefix is actually valid, and reusing a cache you cannot describe is how
+    /// you get silent context corruption rather than a fast turn.
+    cached: Vec<LlamaToken>,
 }
 
 impl EngineSession for LlamaSession<'_> {
@@ -241,12 +250,37 @@ impl EngineSession for LlamaSession<'_> {
             .map_err(|e| EngineError::Backend(format!("tokenize: {e}")))?;
         let prompt_tokens = tokens.len();
 
-        // Decode the prompt. One sequence (id 0); request logits only on the
-        // final prompt token so the first sample reads from it.
+        // ---- Prefix-KV reuse (spec task 1.5) ----------------------------
+        //
+        // Re-decoding the whole conversation every turn is what makes
+        // first-token latency grow with history — 25-40 s mid-chat on the
+        // floor device. The KV cache already holds the previous turn, and a
+        // chat prompt is almost entirely a prefix of the next one, so only the
+        // suffix genuinely needs decoding.
+        //
+        // Two invariants make this safe rather than merely fast:
+        //   1. Trim before extending. Whatever the cache holds beyond the
+        //      shared prefix is stale and MUST be removed — leaving it means
+        //      the model attends to tokens from an older turn that are no
+        //      longer in the prompt. That is silent context corruption, and it
+        //      is exactly what "just keep the session alive" would have caused.
+        //   2. Always decode at least one token, so the sampler has fresh
+        //      logits to read. A fully-reused prefix would leave the final
+        //      logits belonging to the previous turn.
+        let reuse = common_prefix_len(&self.cached, &tokens).min(prompt_tokens.saturating_sub(1));
+        if self.cached.len() > reuse {
+            self.ctx
+                .clear_kv_cache_seq(Some(0), Some(reuse as u32), None)
+                .map_err(|e| EngineError::Backend(format!("kv trim: {e}")))?;
+            self.cached.truncate(reuse);
+        }
+
+        // Decode the un-cached suffix. One sequence (id 0); request logits only
+        // on the final prompt token so the first sample reads from it.
         let n_ctx = self.cfg.n_ctx as usize;
         let mut batch = LlamaBatch::new(n_ctx.max(prompt_tokens.max(1)), 1);
         let last = prompt_tokens.saturating_sub(1);
-        for (i, tok) in tokens.iter().enumerate() {
+        for (i, tok) in tokens.iter().enumerate().skip(reuse) {
             batch
                 .add(*tok, i as i32, &[0], i == last)
                 .map_err(|e| EngineError::Backend(format!("batch add: {e}")))?;
@@ -254,6 +288,7 @@ impl EngineSession for LlamaSession<'_> {
         self.ctx
             .decode(&mut batch)
             .map_err(|e| EngineError::Backend(format!("decode prompt: {e}")))?;
+        self.cached.extend_from_slice(&tokens[reuse..]);
 
         let mut sampler = self.build_sampler();
         let mut stripper = ThinkStripper::new(self.strip_think);
@@ -300,6 +335,10 @@ impl EngineSession for LlamaSession<'_> {
             self.ctx
                 .decode(&mut batch)
                 .map_err(|e| EngineError::Backend(format!("decode gen: {e}")))?;
+            // Only tokens that were actually decoded are in the cache. The
+            // token that ends the turn (EOG, cancel, or the max-tokens cap) is
+            // sampled but never fed back, so it must not be mirrored here.
+            self.cached.push(token);
             pos += 1;
         }
 
@@ -328,6 +367,11 @@ impl LlamaSession<'_> {
             ])
         }
     }
+}
+
+/// Length of the longest shared prefix of two token sequences.
+fn common_prefix_len(a: &[LlamaToken], b: &[LlamaToken]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
 fn role_str(role: Role) -> &'static str {
