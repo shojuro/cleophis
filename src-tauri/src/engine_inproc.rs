@@ -42,11 +42,16 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use std::ops::ControlFlow;
+use std::sync::atomic::AtomicBool;
+
 use kpack_engine::{
-    AdapterRole, AdapterSpec, ChatTemplate, EngineBackend, EngineHandle, LlamaEngine,
-    LoadRequest, ModelSpec,
+    AdapterRole, AdapterSpec, ChatMessage, ChatTemplate, EngineBackend, EngineHandle,
+    EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig,
 };
 use tauri::{AppHandle, Emitter};
+
+use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
 use crate::inference::{Engine, EngineStatus};
 
@@ -70,6 +75,22 @@ pub(crate) fn tool_family(template: ChatTemplate) -> crate::engine_tools::ToolFa
 pub(crate) enum Command {
     /// (Re)resolve the hero and load it, replacing whatever is loaded now.
     Load,
+    /// Run one chat turn — the whole tool loop — against the loaded model.
+    ///
+    /// The loop runs *on the inference thread* because every round needs the
+    /// session, and the session borrows the `!Send` handle. Only the streamed
+    /// text and the final outcome cross back.
+    ///
+    // Constructed by the `chat_stream` / `chat_complete` commands, which are
+    // the rest of 1.4. Remove this allow when they land.
+    #[allow(dead_code)]
+    Chat {
+        convo: Vec<LoopMessage>,
+        family: crate::engine_tools::ToolFamily,
+        cancel: Arc<AtomicBool>,
+        on_delta: Box<dyn FnMut(&str) + Send>,
+        reply: mpsc::Sender<Result<crate::engine_tool_loop::LoopOutcome, String>>,
+    },
     /// Unload and exit the thread.
     Shutdown,
 }
@@ -206,6 +227,37 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Command::Shutdown => break,
+            Command::Chat {
+                convo,
+                family,
+                cancel,
+                mut on_delta,
+                reply,
+            } => {
+                let tier = crate::tier_select::effective_tier(&app);
+                let result = match handle.as_mut() {
+                    // Fail-closed and legible: a chat arriving before the model
+                    // is loaded is a UI-state bug, not something to paper over
+                    // by silently loading here (which would block the caller on
+                    // a multi-second load it never asked for).
+                    None => Err("The on-device engine is not loaded.".to_string()),
+                    Some(h) => match h.session(session_config(&tier)) {
+                        Ok(session) => {
+                            let mut turns = SessionTurns { session, cancel };
+                            crate::engine_tool_loop::run(
+                                &mut turns,
+                                family,
+                                convo,
+                                &mut on_delta,
+                            )
+                        }
+                        Err(e) => Err(format!("could not open a generation session: {e}")),
+                    },
+                };
+                // A closed reply channel just means the caller gave up; the
+                // turn still ran to completion and the session is clean.
+                let _ = reply.send(result);
+            }
             Command::Load => {
                 // Release the previous model FIRST. Loading the new one while
                 // the old is still resident would momentarily need both, which
@@ -288,6 +340,71 @@ fn template_for(app: &AppHandle) -> ChatTemplate {
         Some("llama3") | Some("llama-3") | Some("llama") => ChatTemplate::Llama3,
         Some("chatml") | Some("qwen") => ChatTemplate::ChatMl,
         _ => ChatTemplate::Auto,
+    }
+}
+
+/// Bridges the tool loop's [`TurnSource`] onto a live `EngineSession`.
+///
+/// This is the adapter that lets the loop be written against a trait — and so
+/// be tested on desktop — while still driving the real llama.cpp session here.
+/// It lives on the inference thread and never crosses it, because the session
+/// borrows the `!Send` handle.
+struct SessionTurns<'a> {
+    session: Box<dyn EngineSession + 'a>,
+    /// Set by `chat_cancel`. Checked per token, which is what makes cancel feel
+    /// immediate rather than arriving at the end of a turn.
+    cancel: Arc<AtomicBool>,
+}
+
+impl TurnSource for SessionTurns<'_> {
+    fn turn(
+        &mut self,
+        messages: &[LoopMessage],
+        sink: &mut dyn FnMut(&str),
+    ) -> Result<(), String> {
+        let rendered: Vec<ChatMessage> = messages.iter().map(to_chat_message).collect();
+        let cancel = self.cancel.clone();
+        // `ControlFlow::Break` is kpack-engine's cooperative cancel: it stops
+        // generation at the next token rather than tearing the session down, so
+        // the handle stays reusable for the next turn.
+        let mut tokens = |text: &str| -> ControlFlow<()> {
+            sink(text);
+            if cancel.load(Ordering::Relaxed) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        self.session
+            .stream(&rendered, &mut tokens)
+            .map(|_stats| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+fn to_chat_message(m: &LoopMessage) -> ChatMessage {
+    ChatMessage {
+        role: match m.role {
+            LoopRole::System => Role::System,
+            LoopRole::User => Role::User,
+            LoopRole::Assistant => Role::Assistant,
+            LoopRole::Tool => Role::Tool,
+        },
+        content: m.content.clone(),
+    }
+}
+
+/// Context window per tier (spec §2): 2048 on the floor, 4096 above. The A22 is
+/// a floor device, so 2048 is the shipping default and the larger window is
+/// opt-in by tier rather than by hope.
+fn session_config(tier: &str) -> SessionConfig {
+    SessionConfig {
+        n_ctx: if tier == "low" { 2048 } else { 4096 },
+        ..SessionConfig::default()
     }
 }
 
