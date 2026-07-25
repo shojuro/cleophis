@@ -32,10 +32,23 @@
 //! ## Scope
 //!
 //! Phase 1.2 is the **load** lifecycle: thread, commands, status/event mapping,
-//! integrity. Generation commands (`chat_stream` / `chat_complete` /
-//! `chat_cancel`, the calc tool-loop and the partial-turn flush) are 1.3–1.4 and
-//! will be served by this same thread — the session is opened from the handle it
-//! already owns.
+//! integrity. Generation (`chat_stream` / `chat_complete` / `chat_cancel`, the
+//! calc tool-loop, the partial-turn flush) is 1.3–1.4, served by this same
+//! thread from the handle it already owns.
+//!
+//! ## Two loops, one thread (task 1.5)
+//!
+//! Consecutive turns of the same conversation share one live `EngineSession` so
+//! the KV cache is reused instead of rebuilt — without it, first-token latency
+//! grows with the conversation and reaches 25–40 s mid-chat on the floor device.
+//! A session **borrows** the handle, so it cannot be stored beside it (that is a
+//! self-referential struct) and cannot outlive a function scope. The shape that
+//! follows: an outer loop owning the handle, and an inner loop holding one
+//! session for as long as turns keep arriving for the same chat.
+//!
+//! The inner loop's *routing* — which command may reuse the session, which must
+//! close it — lives in [`crate::engine_serve`], where the desktop suite can test
+//! it. Only [`serve_one_session`], which holds the borrow, stays here.
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -51,6 +64,7 @@ use kpack_engine::{
 };
 use tauri::{AppHandle, Emitter};
 
+use crate::engine_serve::{ChatTurn, Command, SessionEnd};
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
 use crate::inference::{Engine, EngineStatus};
@@ -60,7 +74,6 @@ use crate::inference::{Engine, EngineStatus};
 /// family; the JSON-function shape is the safer assumption because the parser
 /// recovers a fenced call anyway, whereas a ChatML preamble asks a Llama model
 /// for syntax it does not produce.
-#[allow(dead_code)] // wired into the generation loop in 1.4
 pub(crate) fn tool_family(template: ChatTemplate) -> crate::engine_tools::ToolFamily {
     match template {
         ChatTemplate::ChatMl => crate::engine_tools::ToolFamily::ChatMl,
@@ -68,31 +81,6 @@ pub(crate) fn tool_family(template: ChatTemplate) -> crate::engine_tools::ToolFa
             crate::engine_tools::ToolFamily::JsonFunction
         }
     }
-}
-
-/// Commands accepted by the inference thread. Generation variants join this
-/// enum in 1.4; the thread already owns the loaded handle they need.
-pub(crate) enum Command {
-    /// (Re)resolve the hero and load it, replacing whatever is loaded now.
-    Load,
-    /// Run one chat turn — the whole tool loop — against the loaded model.
-    ///
-    /// The loop runs *on the inference thread* because every round needs the
-    /// session, and the session borrows the `!Send` handle. Only the streamed
-    /// text and the final outcome cross back.
-    ///
-    // Constructed by the `chat_stream` / `chat_complete` commands, which are
-    // the rest of 1.4. Remove this allow when they land.
-    #[allow(dead_code)]
-    Chat {
-        convo: Vec<LoopMessage>,
-        family: crate::engine_tools::ToolFamily,
-        cancel: Arc<AtomicBool>,
-        on_delta: Box<dyn FnMut(&str) + Send>,
-        reply: mpsc::Sender<Result<crate::engine_tool_loop::LoopOutcome, String>>,
-    },
-    /// Unload and exit the thread.
-    Shutdown,
 }
 
 /// The engine's mobile counterpart to desktop's `child: Mutex<Option<Child>>` —
@@ -223,40 +211,44 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
 
     let backend = LlamaEngine::new();
     let mut handle: Option<Box<dyn EngineHandle>> = None;
+    // A command the inner serve loop received but could not serve. It must be
+    // processed here before anything is read from the channel, or the turn (or
+    // the shutdown) it carries is lost.
+    let mut pending: Option<Command> = None;
 
-    while let Ok(cmd) = rx.recv() {
+    loop {
+        let cmd = match pending.take() {
+            Some(cmd) => cmd,
+            None => match rx.recv() {
+                Ok(cmd) => cmd,
+                // Every sender is gone; nothing further can arrive.
+                Err(_) => break,
+            },
+        };
+
         match cmd {
             Command::Shutdown => break,
-            Command::Chat {
-                convo,
-                family,
-                cancel,
-                mut on_delta,
-                reply,
-            } => {
-                let tier = crate::tier_select::effective_tier(&app);
-                let result = match handle.as_mut() {
+            Command::Chat(turn) => {
+                let Some(h) = handle.as_mut() else {
                     // Fail-closed and legible: a chat arriving before the model
                     // is loaded is a UI-state bug, not something to paper over
                     // by silently loading here (which would block the caller on
                     // a multi-second load it never asked for).
-                    None => Err("The on-device engine is not loaded.".to_string()),
-                    Some(h) => match h.session(session_config(&tier)) {
-                        Ok(session) => {
-                            let mut turns = SessionTurns { session, cancel };
-                            crate::engine_tool_loop::run(
-                                &mut turns,
-                                family,
-                                convo,
-                                &mut on_delta,
-                            )
-                        }
-                        Err(e) => Err(format!("could not open a generation session: {e}")),
-                    },
+                    let _ = turn
+                        .reply
+                        .send(Err("The on-device engine is not loaded.".to_string()));
+                    continue;
                 };
-                // A closed reply channel just means the caller gave up; the
-                // turn still ran to completion and the session is clean.
-                let _ = reply.send(result);
+                let tier = crate::tier_select::effective_tier(&app);
+                // The session borrows `handle`, and `Load` has to `unload()` it,
+                // so the borrow is confined to this expression while the
+                // decision it produces outlives it.
+                let end = serve_one_session(&mut **h, session_config(&tier), turn, &rx);
+                match end {
+                    SessionEnd::Idle => {}
+                    SessionEnd::Yield(next) => pending = Some(next),
+                    SessionEnd::Closed => break,
+                }
             }
             Command::Load => {
                 // Release the previous model FIRST. Loading the new one while
@@ -288,6 +280,61 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     if let Some(h) = handle {
         h.unload();
     }
+}
+
+/// Open one session and serve turns on it until [`SessionEnd`] says to stop.
+///
+/// This is the half of the serve loop that cannot leave `cfg(mobile)`: the
+/// session borrows the handle, so it exists only on the inference thread. It
+/// supplies the two effects [`crate::engine_serve::serve_loop`] cannot have —
+/// running a turn, and blocking for the next command — and defers every
+/// decision to the routing tested there.
+///
+/// Blocking for the next command *while holding a session* is the deliberate
+/// part: that is what keeps the KV cache warm between a user's messages. The
+/// thread was already idle-blocked between commands before 1.5; what is new is
+/// that it now holds a live context while idle, which is the memory cost the
+/// latency buys.
+fn serve_one_session(
+    handle: &mut dyn EngineHandle,
+    cfg: SessionConfig,
+    first: ChatTurn,
+    rx: &Receiver<Command>,
+) -> SessionEnd {
+    let mut session = match handle.session(cfg) {
+        Ok(session) => session,
+        Err(e) => {
+            let _ = first
+                .reply
+                .send(Err(format!("could not open a generation session: {e}")));
+            return SessionEnd::Idle;
+        }
+    };
+
+    let mut run_turn = |turn: ChatTurn| {
+        let ChatTurn {
+            convo,
+            family,
+            cancel,
+            mut on_delta,
+            reply,
+            ..
+        } = turn;
+        // Borrowed, not owned: the session outlives the turn, which is the
+        // whole mechanism. `SessionTurns` used to own its session, and that
+        // ownership was what forced a fresh one per turn.
+        let mut turns = SessionTurns {
+            session: &mut *session,
+            cancel,
+        };
+        let result = crate::engine_tool_loop::run(&mut turns, family, convo, &mut on_delta);
+        // A closed reply channel just means the caller gave up; the turn still
+        // ran to completion and the session is clean.
+        let _ = reply.send(result);
+    };
+    let mut next = || rx.recv().ok();
+
+    crate::engine_serve::serve_loop(first, &mut run_turn, &mut next)
 }
 
 /// Resolve the hero for the effective tier and load it, with the catalog's
@@ -362,14 +409,22 @@ fn template_for(app: &AppHandle) -> ChatTemplate {
 /// be tested on desktop — while still driving the real llama.cpp session here.
 /// It lives on the inference thread and never crosses it, because the session
 /// borrows the `!Send` handle.
-struct SessionTurns<'a> {
-    session: Box<dyn EngineSession + 'a>,
+///
+/// Two lifetimes, and both are load-bearing. `'a` is the session's own borrow
+/// of the engine handle; `'s` is this struct's shorter borrow of the session.
+/// They cannot be collapsed into one: `&'s mut (dyn EngineSession + 'a)` is
+/// **invariant** in its referent, so the compiler will not quietly shorten `'a`
+/// to `'s` for us. The shape is what lets one session serve many turns — the
+/// session is created once per conversation, each turn borrows it, and no turn
+/// can take it with it.
+struct SessionTurns<'a, 's> {
+    session: &'s mut (dyn EngineSession + 'a),
     /// Set by `chat_cancel`. Checked per token, which is what makes cancel feel
     /// immediate rather than arriving at the end of a turn.
     cancel: Arc<AtomicBool>,
 }
 
-impl TurnSource for SessionTurns<'_> {
+impl TurnSource for SessionTurns<'_, '_> {
     fn turn(
         &mut self,
         messages: &[LoopMessage],

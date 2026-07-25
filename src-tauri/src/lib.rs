@@ -18,6 +18,15 @@ mod convstore;
 /// desktop keeps its `llama-server` sidecar.
 #[cfg(mobile)]
 mod engine_inproc;
+/// The inference thread's serve loop — which consecutive turns may share one
+/// live `EngineSession` (task 1.5), and every way that session's life ends.
+/// Declared here, and so compiled everywhere, for the same reason as
+/// `engine_tools`: the routing is pure, its failure modes are dropped turns and
+/// a thread that stops accepting work, and the desktop suite is the only place
+/// tests run. Only the half that holds the session's borrow stays behind the
+/// `cfg`.
+#[path = "engine_inproc/serve.rs"]
+mod engine_serve;
 /// Tool-call parsing, the closed tool registry, and the per-family prompt
 /// contract for the in-process engine. Lives under `engine_inproc/` because
 /// that is what owns it, but is declared here — and so compiled on every

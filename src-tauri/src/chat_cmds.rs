@@ -87,7 +87,8 @@ mod imp {
 
     use tauri::Manager;
 
-    use crate::engine_inproc::{tool_family, Command};
+    use crate::engine_inproc::tool_family;
+    use crate::engine_serve::{ChatTurn, Command};
 
     /// How much generated text may accumulate between checkpoints. A write per
     /// token would put SQLite inside the token loop; this bounds what a kill
@@ -185,8 +186,14 @@ mod imp {
     }
 
     /// Run one turn on the inference thread, forwarding deltas through `on_delta`.
+    ///
+    /// `chat_key` is the conversation this turn belongs to, and it is what lets
+    /// the inference thread keep one session — and so one warm KV cache — alive
+    /// across consecutive turns (task 1.5). `None` means the turn belongs to no
+    /// conversation and must neither inherit nor leave a prefix.
     fn run_turn(
         app: &AppHandle,
+        chat_key: Option<i64>,
         wire: Vec<WireMessage>,
         cancel: Arc<AtomicBool>,
         on_delta: Box<dyn FnMut(&str) + Send>,
@@ -198,13 +205,14 @@ mod imp {
         let (reply_tx, reply_rx) = mpsc::channel();
         let sent = crate::engine_inproc::send_command(
             &engine,
-            Command::Chat {
+            Command::Chat(ChatTurn {
                 convo,
                 family,
+                chat_key,
                 cancel,
                 on_delta,
                 reply: reply_tx,
-            },
+            }),
         );
         if !sent {
             return Err("The on-device engine is not running.".to_string());
@@ -267,7 +275,7 @@ mod imp {
                     }
                 }
             }) as Box<dyn FnMut(&str) + Send>;
-            run_turn(&app_for_turn, messages, cancel, on_delta)
+            run_turn(&app_for_turn, chat_id, messages, cancel, on_delta)
         })
         .await
         .map_err(|_| "The generation task failed to run.".to_string())?;
@@ -344,7 +352,11 @@ mod imp {
     ) -> Result<String, String> {
         let cancel = Arc::new(AtomicBool::new(false));
         let outcome = tauri::async_runtime::spawn_blocking(move || {
-            run_turn(&app, messages, cancel, Box::new(|_: &str| {}))
+            // Deliberately unkeyed. These prompts (auto-title, analysis) are not
+            // continuations of the conversation they are about — keying them to
+            // its chat id would hand them a prefix they do not extend, and evict
+            // the one the next real turn wants.
+            run_turn(&app, None, messages, cancel, Box::new(|_: &str| {}))
         })
         .await
         .map_err(|_| "The generation task failed to run.".to_string())??;
