@@ -13,6 +13,14 @@ mod convstore;
 /// desktop keeps its `llama-server` sidecar.
 #[cfg(mobile)]
 mod engine_inproc;
+/// Tool-call parsing, the closed tool registry, and the per-family prompt
+/// contract for the in-process engine. Lives under `engine_inproc/` because
+/// that is what owns it, but is declared here — and so compiled on every
+/// platform — because it is pure logic and the desktop suite is the only place
+/// tests actually run. Gating it to Android would mean the closed-registry
+/// security property is asserted nowhere.
+#[path = "engine_inproc/tools.rs"]
+mod engine_tools;
 mod hardware;
 mod inference;
 mod kpack;

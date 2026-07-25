@@ -50,6 +50,21 @@ use tauri::{AppHandle, Emitter};
 
 use crate::inference::{Engine, EngineStatus};
 
+/// Map the loaded model's template family onto the tool wire format it emits.
+/// `Auto` means the template came from the GGUF and we have not been told the
+/// family; the JSON-function shape is the safer assumption because the parser
+/// recovers a fenced call anyway, whereas a ChatML preamble asks a Llama model
+/// for syntax it does not produce.
+#[allow(dead_code)] // wired into the generation loop in 1.4
+pub(crate) fn tool_family(template: ChatTemplate) -> crate::engine_tools::ToolFamily {
+    match template {
+        ChatTemplate::ChatMl => crate::engine_tools::ToolFamily::ChatMl,
+        ChatTemplate::Llama3 | ChatTemplate::Auto => {
+            crate::engine_tools::ToolFamily::JsonFunction
+        }
+    }
+}
+
 /// Commands accepted by the inference thread. Generation variants join this
 /// enum in 1.4; the thread already owns the loaded handle they need.
 pub(crate) enum Command {

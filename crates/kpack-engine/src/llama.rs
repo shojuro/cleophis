@@ -335,5 +335,10 @@ fn role_str(role: Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        // The role name both shipping families use in their embedded chat
+        // templates. A GGUF whose template lacks a `tool` branch still renders
+        // the turn (llama.cpp falls back rather than erroring), so a tool result
+        // is always visible to the model even on a model we have not profiled.
+        Role::Tool => "tool",
     }
 }

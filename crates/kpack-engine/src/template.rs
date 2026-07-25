@@ -41,12 +41,23 @@ impl ChatTemplate {
     }
 }
 
-/// A chat role — the three the prompt contract and conversation store use.
+/// A chat role — the three the prompt contract and conversation store use,
+/// plus `Tool` for tool-call results fed back into the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     System,
     User,
     Assistant,
+    /// The result of a tool call, appended to the conversation so the model can
+    /// use it (or, when the tool errored, correct itself) on the next round.
+    ///
+    /// Both shipping template families render this as a `tool` turn: Llama-3.2
+    /// via `<|start_header_id|>ipython<|end_header_id|>`-equivalent handling in
+    /// its embedded template, and ChatML via `<|im_start|>tool`. Models whose
+    /// GGUF template does not know the role degrade to a plainly-labelled turn
+    /// rather than failing, which is why the loop never depends on the tool
+    /// result being machine-parsed by the model.
+    Tool,
 }
 
 /// One chat turn. The native backend maps these to `llama_cpp_2`'s
@@ -67,6 +78,9 @@ impl ChatMessage {
     }
     pub fn assistant(content: impl Into<String>) -> Self {
         ChatMessage { role: Role::Assistant, content: content.into() }
+    }
+    pub fn tool(content: impl Into<String>) -> Self {
+        ChatMessage { role: Role::Tool, content: content.into() }
     }
 }
 
