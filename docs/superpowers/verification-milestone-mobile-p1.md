@@ -301,10 +301,8 @@ image rather than described in the abstract:
   and chat unusable. Per steering: the transition must be **disabled or
   replaced** on mobile, not merely restyled.
 - The status pill is **truncated off the right edge** ("● Lo…"), and the hero
-  title clips mid-word. **Requirement: the status pill must never clip.** It is
-  the engine's only state indicator, so a clipped pill is not a cosmetic defect
-  — it is the app withholding the one thing a user needs to know about the
-  model. The founder has had to rotate the device to landscape just to read it.
+  title clips mid-word. See the finding below — this turned out to be worse
+  than a clipping bug.
 - The hero cover renders as a **broken-image icon** — independent confirmation
   of the asset-scope defect fixed below.
 
@@ -320,6 +318,35 @@ invoke+Channel transport replaces the fetch path, this retry chip must behave
 identically on failure. It is easy to lose a graceful degradation while
 replacing the thing that was degrading, and the current behaviour is the
 reference for what "failed to send" should look like.
+
+#### 🔴 The most significant UX finding so far: the engine state is invisible
+
+**The founder could not identify the status pill at all.** Asked to read it,
+they took "the pill" to mean the Open-chat / download button. This is not a
+styling complaint — *the person who commissioned the product could not locate
+the element that reports whether the model is loaded.*
+
+Two compounding causes, and the second is the serious one:
+
+1. It is clipped to about two characters ("● Lo…") by the portrait layout bug,
+   so even when found it cannot be read. The founder has had to rotate to
+   landscape to attempt it.
+2. **The onboarding flow railroads account → payment → chat with no moment that
+   presents engine state at all.** Nothing in the path a first-time user walks
+   ever draws attention to it, so there is nowhere to learn that the indicator
+   exists or what it means.
+
+**Combined 2.2 requirement: engine state must be an element a first-time user
+can find and read unprompted** — never clipped, and given a visible moment in
+the flow rather than left as ambient chrome.
+
+This is the same family as the too-fast post-download transition recorded
+above, and together they point at one product problem rather than two UI bugs.
+The pitch is that the model is *yours, on your device*. Every mechanism that
+would make that tangible — verification, loading, readiness — currently either
+flashes past unreadably or sits in a corner the user never looks at. **The
+trust this product sells is built exactly at those moments, and right now the
+app spends them silently.**
 
 **UX note for 2.2 (from the retraction above):** something in the pill/banner
 area read convincingly as "downloading model" to the founder when no download
@@ -565,6 +592,13 @@ platform that ships.
 single-threaded): **297 passed / 0 failed, exit 0**, zero flakes — the fourth
 consecutive clean run. All 20 new tests (9 suppressor + 11 loop) executed on the
 real Windows target.
+
+**Shared-invoke-surface gate: GREEN** (run 11, at `d0b647d`, single-threaded):
+**297 passed / 0 failed, exit 0**, fifth consecutive zero-flake run — **and
+zero compiler warnings on the desktop build**, which is the result that
+mattered. It confirms both that the pre-empted stub warnings were correctly
+predicted and that decision D-1 (mobile-only commands on the shared surface) is
+clean end to end. First change this phase to touch desktop's invoke surface.
 
 Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297**,
 with **zero failures attributable to new code at any point in the phase**.
@@ -839,6 +873,53 @@ JSON is the harder half, since it has no opening sentinel; a leading-`{`
 heuristic with a bounded lookahead is the likely approach. Flagged now because
 it is a genuine design decision rather than transcription, and `calc-loop.js`
 offers no guidance — it never faced it.
+
+---
+
+## Decisions with precedent value
+
+### D-1 — Mobile-only commands live on the *shared* invoke surface
+
+**Decision:** `chat_stream` / `chat_complete` / `chat_cancel` are compiled on
+every platform and registered in the single `generate_handler!` list; their
+bodies are cfg-gated and the desktop ones refuse immediately.
+
+**Rejected alternative:** a second `generate_handler!` list under `cfg`.
+
+**Rationale.** Two parallel fifty-entry lists are a *silent-drift failure
+class* — one gains a command the other doesn't, nothing fails, and a feature is
+quietly missing on one platform until someone notices in the field. That is the
+same class of bug this phase has repeatedly hunted (the `{}` config no-op, the
+inert adaptive icons): a difference that produces no error. Three inert
+fail-fast names on the desktop invoke surface are the opposite — auditable,
+greppable, and behaviourally void, since they return `Err` before touching any
+state.
+
+**Tightenings adopted (steering):**
+1. The desktop refusal names the platform and the command family explicitly
+   (`DESKTOP_REFUSAL`), so a misrouted invoke is diagnosable from one line of a
+   bug report rather than a mystery about which half of the seam fired.
+2. **For 2.1:** the transport picks its path once at startup, and a desktop
+   build must never invoke these even accidentally. One frontend test should
+   pin that — the refusal is a backstop, not the mechanism.
+
+**Evidence:** desktop suite at `d0b647d` — 297 passed / 0 failed **and zero
+compiler warnings** on the desktop build, so the pre-empted stub warnings held
+and the shared-surface change is verified clean end to end.
+
+### D-2 — Partial-turn rows carry a draft marker, not an in-place update
+
+**Decision (design, lands with the flush):** the partial-turn checkpoint writes
+an assistant row with an explicit **partial/draft marker**, cleared on
+finalize — rather than `UPDATE`-ing a normal message row in place.
+
+**Rationale.** Kill-restore recovery has to distinguish *"truncated because the
+process died"* from *"completed"*, and an in-place update erases exactly that
+distinction: a truncated row and a short-but-finished row become
+indistinguishable. The §11 kill-restore test needs to assert
+**truncated-but-uncorrupted**, which is only assertable if truncation is
+recorded as a state rather than inferred from content. Lands as its own commit
+with desktop-suite evidence, per the brief's shared-change rule.
 
 ---
 

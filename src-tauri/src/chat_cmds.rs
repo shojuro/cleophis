@@ -21,6 +21,15 @@
 //! two risks.
 
 use serde::{Deserialize, Serialize};
+
+/// What the desktop stubs return. Names the platform and the command family
+/// explicitly: a misrouted invoke should be diagnosable from a single line in a
+/// bug report, never a mystery about which half of the transport seam fired.
+#[cfg_attr(mobile, allow(dead_code))]
+const DESKTOP_REFUSAL: &str =
+    "in-process chat commands are mobile-only; this is a desktop build, which \
+     reaches the engine through the llama-server sidecar instead";
+
 use tauri::ipc::Channel;
 use tauri::AppHandle;
 
@@ -274,7 +283,7 @@ pub async fn chat_stream(
     #[cfg(desktop)]
     {
         let _ = (request_id, messages, on_event, app);
-        Err("chat_stream is the mobile transport; desktop uses the sidecar.".to_string())
+        Err(DESKTOP_REFUSAL.to_string())
     }
 }
 
@@ -293,7 +302,7 @@ pub async fn chat_complete(
     #[cfg(desktop)]
     {
         let _ = (messages, app);
-        Err("chat_complete is the mobile transport; desktop uses the sidecar.".to_string())
+        Err(DESKTOP_REFUSAL.to_string())
     }
 }
 
