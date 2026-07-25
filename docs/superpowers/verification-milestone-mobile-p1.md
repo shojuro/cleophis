@@ -1503,10 +1503,199 @@ directories carry both `-march=armv8-a` *and* a later
 Same trap as the contaminated gate runs: a correct measurement of the wrong
 artifact. The runtime `[kernels]` line now settles it without archaeology.
 
-### 2.2 Mobile UI — NOT STARTED
+### 2.2 Mobile UI — layout + engine state DONE (commit `95d1e98`)
 
 Design note and the reason it was left to a fresh instance:
 `specs/2026-07-26-mobile-p1-handoff-2.2.md`.
+
+#### 🔬 The ONE-BUG hypothesis: right conclusion, wrong mechanism
+
+The handoff predicted that `.views` grows wider than `2 × 100vw` when the chat
+pane's contents overflow, so `translateX(-50%)` overshoots and the pane lands
+short — making the "slides ¼ and stops" transition a *consequence* of the
+2/3-width sidebar rather than a second bug.
+
+**It is one bug. It is not that one.** Measured in a real browser at 360×800,
+against the real `src/` tree served over HTTP with a Tauri stub:
+
+| fact | measured |
+|---|---|
+| `.views` width | **exactly 720px** = 2 × 360 |
+| `.views` transform with `in-chat` | **exactly `-360px`** |
+| `#chatView` landing position | **exactly x=0**, right=360 |
+
+And the falsification run — the kind this ledger keeps demanding, one that
+*could* have come back positive: forcing `#chatSidebar` to **900px** inside the
+360px pane (a 2.5× overflow, far worse than the real 260px) left `.views` at
+**720px** and `#chatView` at **x=0**. Neither number moved.
+
+Why it cannot move: `.views` has a *definite* percentage width, so overflowing
+content never grows it; `.view` children are `flex:none;width:50%`, so they
+neither shrink nor stretch; and `.chatview{overflow:hidden}` clips rather than
+propagates. The transform model is arithmetically correct at every viewport
+width, so **it was left alone** — and steering's "disable or replace the
+transition" ruling was made on the belief that it was broken, which it is not.
+
+**The actual root cause is one declaration:** `#chatSidebar{width:260px;
+flex:none}`, which took **72.2%** of a 360px viewport and left `.chatmain`
+**100px (27.8%)**. Every field report is downstream of it:
+
+| field report | measured cause |
+|---|---|
+| "sidebar takes ~2/3" | 72.2% |
+| "slides ~¼ and stops" | the transition **completes**; the chat column is 27.8% of the screen, so the correct destination is visually indistinguishable from a stalled slide |
+| "status pill clipped" | pill right edge at **458.8px** in a 360px viewport — 98.8px past it |
+| — | `#attachPacksBtn` **192.1px** past, `#costCounter` **292.2px** past |
+| — | **`#sendBtn` 230.6px past the edge — Send was not on screen in portrait at all** |
+
+`.chatbar` needed 392px in a 100px box and is `overflow:visible`, so the spill
+was clipped by `.chatview{overflow:hidden}` and could not even be scrolled to.
+That last row is new and reconciles CP1: the founder chatted successfully in
+airplane mode, which means they used landscape or the keyboard's Go key.
+
+**Second, independent defect found the same way:** `#catalogView` carried
+**86px of real horizontal overflow** at 360px (`.bar` needs 446px) — on the
+first screen a new user sees.
+
+**The generalisable form:** the founder's *observation* was accurate and the
+*mechanism they inferred* was not, and the two are easy to conflate because the
+observation is vivid. Acting on the inference would have rewritten a correct
+view model and left the screen looking identical, because the sidebar would
+still have been 260px. **A field report is evidence about what a person saw,
+never about why.**
+
+#### The engine state had no element to fix
+
+`#chatStatusPill` appeared **exactly once in the entire codebase** — in
+`index.html`, as the hard-coded string `"Local · offline"`, permanently teal.
+Nothing read it and nothing wrote it. So CP0's "🔴 most significant UX finding"
+resolves more simply than it was written up: the founder could not identify the
+engine-state element **because there was no engine-state element**. The only
+thing that ever reported engine state was `#engineBanner`, which fires on
+`engine-restarting` and `engine-failed` and nothing else — so the ordinary
+`Starting → Ready` path rendered *nothing at all*. The ledger's line that "the
+app spends those moments silently" was literally true: no code existed that
+could have spent them otherwise.
+
+It also explains the copy defect recorded under the download retraction. A
+permanently green "Local · offline" beside a model that is not on disk reads as
+"running fine, locally" — which is how someone concludes a download happened
+when none did. 2.2 therefore **built** engine state rather than restyling it.
+
+`src/engine-state.js`, pure and tested (**decision D-3** — logic whose failure
+mode is silent goes where the tests run; a status line that says the wrong
+thing throws nothing and looks exactly like one that says the right thing):
+
+- `describeEngineState` maps `EngineStatus` + `download-progress` phase +
+  install state + turn timing onto one presentation. Every branch derives from
+  something the backend actually reports; nothing guesses.
+- `createReadableSequence` gives each state a **700 ms floor** so transitions
+  can be read — the milestone's own "fast is the wrong optimization for the one
+  transition worth showing". Three rules, each because the obvious version is
+  wrong: same-kind updates bypass the dwell (a download percentage must not
+  freeze), error states preempt the queue (readability must not outrank
+  honesty), and a backlog that would put the display more than 2.5 s behind
+  reality collapses to the newest.
+- **The dwell governs display only, never capability** — the composer enables
+  the moment the engine is genuinely ready. Pacing the narration is a product
+  choice; pacing the product would not be.
+- The slow first turn is explained from a **real signal** — a request in flight
+  with no delta *is* prefill — rather than from a guess about the engine.
+
+#### Verification — measured, then looked at
+
+`npm test`: **14 → 43, zero failures.** (Prediction was 24 new; 29 landed. The
+miss was a miscount of my own file when predicting, not tests failing to
+execute — 14 + 29 reconciles exactly against the file, which is the property
+the convention exists to check.)
+
+Layout facts, before → after at 360×800:
+
+| fact | before | after |
+|---|---|---|
+| chat column | 100px (27.8%) | **360px (100%)** |
+| `.chatbar` overflow | 292px | **0** |
+| `.composer` overflow | 231px | **0** |
+| `#sendBtn` vs right edge | **+230.6px (off-screen)** | −12px (inside) |
+| `#chatStatusPill` vs right edge | +98.8px | −173px (inside) |
+| `#catalogView` horizontal overflow | 86px | **0** |
+
+**Desktop byte-identity, checked rather than asserted.** All mobile CSS is
+scoped under `.is-mobile`, set from the same `isAndroid(navigator.userAgent)`
+predicate that chooses the transport — deliberately *not* a media query, which
+would also have changed narrow desktop windows. Verified in-browser at **both
+1280px and 360px** with a desktop UA: static 260px sidebar, `display:none` on
+all five new elements, `--app-h` unset, and the pill still reading
+`"Local · offline"` **after `engine-ready` and `download-progress` events were
+pushed through the machinery** — so the `if (!IS_MOBILE) return` guard
+demonstrably *stops* it rather than merely existing. The 360px desktop run is
+the one that matters: it is the case a media query would have silently broken.
+
+#### 🔬 Numbers right, pixels wrong — the third instance, twice in one session
+
+Both defects below passed their assertions and were caught by **looking at a
+screenshot**. The ledger already records this failure mode for the adaptive
+icon (bounding box correct, contents wrong); it recurred here immediately.
+
+1. **The pill rendered `"Ready — r"`.** The assertion checked that the pill's
+   `getBoundingClientRect()` was inside the viewport, and it *was* — the text
+   inside the box was still cut by `text-overflow:ellipsis`. Same shape as the
+   icon: the box was right, the pixels in it were not. Fixed by giving every
+   presentation a separate **`short`** field, because the row has the width of
+   the screen and the pill has ~170px beside a model name; one string cannot
+   serve both. A test now caps `short` at 16 characters, since the real
+   constraint is character count and CSS cannot enforce it.
+2. **`.grow` is `flex:1` and so is `.chattitle`**, so the spacer *split* the
+   free width with the title and the model name got 81px of the 168px
+   available, ellipsizing to `"Socratic…"`. On desktop `.grow`'s job is to push
+   `#costCounter` right; mobile hides the counter, leaving it nothing to push.
+
+A third, of the same family: `pill.hidden = true` left the pill on screen,
+because `.pill{display:inline-flex}` is an author rule and beats the UA
+stylesheet's `[hidden]{display:none}`. The code's comment said "exactly one
+engine-state element is visible at a time" and that was simply false until a
+screenshot showed both. Now asserted in-browser across all three states.
+
+#### Also landed
+
+- Drawer + scrim + hamburger, `aria-expanded` maintained; picking a chat closes
+  it. The rail costs the chat nothing when closed (measured off-canvas at
+  x=−306).
+- The honest **"not yet" screen** for 2.3's `supported:false`, shown at boot
+  and **before** the account/payment funnel rather than at sign-in the way
+  desktop does — a phone that cannot run a model should learn that before it is
+  asked to pay. Not a hard block: the library and existing chats still work,
+  which is the truth and the whole truth.
+- **IME**: `windowSoftInputMode="adjustResize"` *and* a `visualViewport`
+  listener driving `--app-h`. Belt and braces on purpose — `100vh` is the
+  *initial* viewport and never shrinks for the keyboard (which would leave the
+  composer below the fold), and an edge-to-edge activity on newer Android may
+  ignore `adjustResize` entirely, while `visualViewport` reports the truth
+  either way.
+- Safe-area insets on every edge that touches one; `font-size:16px` on the
+  composer input to stop WebView zoom-on-focus; font scaling respected (no px
+  heights on text containers, and the two clippable spots ellipsize).
+- **H1 invariant preserved**: every new render site writes via `textContent`.
+  The one escaped path into markup is still the chat title.
+
+#### Surfaced, not fixed
+
+- **Desktop's pill has the same defect** — static `"Local · offline"`, no
+  engine state. Fixing it is a desktop *behaviour* change, which this task's
+  hard constraint forbids. Desktop-scope backlog, owned by nobody yet.
+- **The Stop-button race is unchanged and not newly reachable.**
+  `openChat`/`newChat` have *always* called `state.chat.aborter?.abort()`, so
+  the programmatic abort the handoff worried 2.2 would introduce already
+  existed. Reaching the race still needs a chat switch within the
+  sub-millisecond window between `invoke('chat_stream')` and Rust's `begin()`,
+  and the drawer adds a tap, not a shortcut.
+- **Download-manager network policy and share-sheet export are NOT done.**
+  Both need native work — `ConnectivityManager` via the Kotlin shim (with the
+  JNI bridge smoke-tested first, per the brief) and an `ACTION_SEND` shim. The
+  frontend half is deliberately not written ahead of them: a policy layer
+  invoking a command that does not exist would be a seam with nothing behind
+  it, and `navigator.connection` reports wifi-vs-cellular, which is **not** the
+  same fact as metered.
 
 ## Conventions
 
