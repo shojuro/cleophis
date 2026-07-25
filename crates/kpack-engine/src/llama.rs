@@ -229,6 +229,35 @@ impl EngineSession for LlamaSession<'_> {
         messages: &[ChatMessage],
         sink: &mut dyn TokenSink,
     ) -> Result<GenStats, EngineError> {
+        let result = self.stream_turn(messages, sink);
+        if result.is_err() {
+            // A `decode` that failed part-way may have left the native cache
+            // holding tokens the mirror does not list, and a mirror that
+            // overstates or understates the cache is exactly the condition the
+            // mirror exists to prevent. Throw the prefix away rather than
+            // reason about which half of a failed batch landed.
+            //
+            // This costs nothing before task 1.5's wiring, because a session
+            // was discarded after every turn. It costs a full re-decode now
+            // that a session serves many — which is the correct direction to
+            // fail in: slow, never wrong.
+            self.invalidate_prefix();
+        }
+        result
+    }
+}
+
+impl LlamaSession<'_> {
+    /// One turn, from rendered prompt to stop reason. Wrapped by
+    /// `EngineSession::stream` so that *every* early return goes through the
+    /// prefix invalidation above. There are nine `?`s in this function;
+    /// remembering to invalidate at each one is not a plan, and the one that
+    /// gets forgotten is silent.
+    fn stream_turn(
+        &mut self,
+        messages: &[ChatMessage],
+        sink: &mut dyn TokenSink,
+    ) -> Result<GenStats, EngineError> {
         // Render the chat through the model's own template (honors the prompt
         // contract byte-for-byte: the caller passes the contract system prompt
         // and rendered sources in as ChatMessages; see the crate docs).
@@ -267,13 +296,31 @@ impl EngineSession for LlamaSession<'_> {
         //   2. Always decode at least one token, so the sampler has fresh
         //      logits to read. A fully-reused prefix would leave the final
         //      logits belonging to the previous turn.
-        let reuse = common_prefix_len(&self.cached, &tokens).min(prompt_tokens.saturating_sub(1));
-        if self.cached.len() > reuse {
+        let mut reuse =
+            common_prefix_len(&self.cached, &tokens).min(prompt_tokens.saturating_sub(1));
+
+        // Trimmed unconditionally, not only when the mirror says there is
+        // something past the prefix. The mirror exists precisely because the
+        // cache is invisible from Rust, so a guard that trusts it to be right
+        // about emptiness is a guard that fails in exactly the case that
+        // matters — and the removal is a no-op when there is nothing there.
+        let trimmed = self
+            .ctx
+            .clear_kv_cache_seq(Some(0), Some(reuse as u32), None)
+            .map_err(|e| EngineError::Backend(format!("kv trim: {e}")))?;
+        if !trimmed {
+            // llama.cpp reports a partial removal it cannot perform by
+            // returning false (recurrent/state-space memory says so); removing
+            // a whole sequence never fails. Reuse is an optimisation and
+            // correctness is not, so drop everything and re-decode.
             self.ctx
-                .clear_kv_cache_seq(Some(0), Some(reuse as u32), None)
-                .map_err(|e| EngineError::Backend(format!("kv trim: {e}")))?;
-            self.cached.truncate(reuse);
+                .clear_kv_cache_seq(Some(0), None, None)
+                .map_err(|e| EngineError::Backend(format!("kv clear: {e}")))?;
+            self.cached.clear();
+            reuse = 0;
         }
+        self.cached.truncate(reuse);
+        let reuse = reuse;
 
         // Decode the un-cached suffix. One sequence (id 0); request logits only
         // on the final prompt token so the first sample reads from it.
@@ -348,9 +395,20 @@ impl EngineSession for LlamaSession<'_> {
             stop,
         })
     }
-}
 
-impl LlamaSession<'_> {
+    /// Drop the reusable prefix entirely — the native cache and the mirror
+    /// together, so the two cannot disagree. The next turn re-decodes its whole
+    /// prompt, which is the pre-1.5 behaviour and is always correct.
+    fn invalidate_prefix(&mut self) {
+        // Best-effort is sufficient *because* the next turn trims
+        // unconditionally: even if this clear fails, that turn removes
+        // everything past its own shared prefix — which, against an empty
+        // mirror, is everything. Clearing the mirror is the part that must not
+        // fail, and it cannot.
+        let _ = self.ctx.clear_kv_cache_seq(Some(0), None, None);
+        self.cached.clear();
+    }
+
     /// Build the sampler chain from the session's sampling config. Greedy when
     /// temperature is 0 (deterministic — used by the probe runs); otherwise
     /// top_k → top_p → temp → dist(seed).
