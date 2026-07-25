@@ -160,6 +160,91 @@ unstripped debug `libcleophis_lib.so` — llama.cpp compiled `-O0` with full
 debuginfo. Release builds strip and optimize this to a small fraction. Nothing
 else in the APK is above 11 MB.
 
+#### 📱 CP0 FOUNDER VERDICT: **PASS** (Galaxy A22, on hardware)
+
+- Installs under `com.cleophis.app` ✓
+- Launches to a working window ✓
+- **The library screen populates with the packs** — the `resources_embed`
+  materializer is confirmed working on real hardware, not just in theory.
+
+Two observations from the founder, one a defect and one not:
+
+1. **Cover images do not render.** This is the plan's D3 asset-protocol-scope
+   risk, confirmed on device. Root cause and fix below.
+2. **Sign-in fails.** *Expected at CP0, not a defect* — cloud auth is Phase 3
+   (`secure_store` seam + Kotlin AndroidKeyStore bridge) and nothing implements
+   it yet. Recorded here so a later reader does not mistake it for a regression.
+
+**Pre-CP1 bonus evidence — the download chain works in-app.** On the 1.2 APK
+(`5cd5dad1…`) the founder reported the engine pill reading "downloading model"
+with **673,926 KB** in flight, unprompted, through the normal user flow. That
+confirms tier detection → catalog resolve → CDN download-with-progress end to
+end on device.
+
+*Size sanity-check (requested):* the low tier resolves to
+`models/Llama-3.2-1B-Instruct-Q4_K_M.gguf`, `fileBytes` **807,694,112** =
+788,764 KB. The reported 673,926 KB is a **progress** figure, not a total — it
+is ~85 % of that artifact, and nowhere near the mid tier's 4B (2,497,280,384 B).
+**The right file is being pulled.** Worth stating explicitly because a
+size-vs-total confusion here would have looked exactly like a tier-selection
+bug.
+
+Caveat carried into CP1: the A22 lands on `low` via the RAM-only `tier_for`,
+which is **lucky-correct on this device, not correct in general** — an 8 GB
+phone with floor-class silicon is precisely the case the SoC-aware
+`tier_for_mobile` in 2.3 exists to catch.
+
+#### The cover-rendering defect — root cause and fix
+
+`convertFileSrc(coverAbs)` in `app.js:134` routes cover images through Tauri's
+asset protocol, which is gated by `assetProtocol.scope`. Desktop's scope is
+`["$RESOURCE/**"]` and the covers live under the install's resource dir, so it
+matches. On Android the covers are materialized to
+`<app_data>/resources/covers/` — **not** a `$RESOURCE` path — so every cover URL
+falls outside the scope and is refused. The catalog still renders, which is why
+the screen populates with blank art rather than failing outright.
+
+Fixed in `tauri.android.conf.json` by scoping the asset protocol to
+`$APPDATA/resources/covers/**` on Android only.
+
+**Why this is provably right rather than a plausible guess** — the concern with
+a path-variable fix is that the variable might resolve somewhere other than
+where the code actually writes. It cannot here:
+`tauri-2.11.5/src/path/mod.rs:332` resolves `BaseDirectory::AppData` as
+`resolver.app_data_dir()`, which is the *same call* `resources_embed::
+materialized_root` uses to choose the destination. One function, two callers —
+they cannot disagree, on any platform. That is what made the scope fix
+preferable to the pre-designed base64-command fallback: same guarantee, one code
+path instead of two, and no image bytes crossing the IPC boundary.
+
+Two details that make the merge behave:
+- `scope` is an **array**, and RFC 7386 replaces non-object values rather than
+  merging them, so the Android array *replaces* `["$RESOURCE/**"]` outright
+  instead of appending to it. That is the desired outcome and it is also
+  tighter: an Android build has no `$RESOURCE` tree to grant access to, and the
+  scope narrows further to `covers/**` rather than all of `resources/`.
+- `assetProtocol` is an object, so `enable: true` is inherited from the base
+  config and only `scope` is overridden.
+
+The mobile CSP already permits `asset:` and `http://asset.localhost` in
+`img-src`, so no CSP change was needed.
+
+**Verified in the built artifact** (this repo's standing rule: config claims are
+checked against the APK, never the config source). Reading
+`assets/tauri.conf.json` out of the rebuilt APK:
+
+```json
+"assetProtocol": { "scope": ["$APPDATA/resources/covers/**"], "enable": true }
+```
+
+Both merge predictions hold: the array was **replaced** (not appended), and
+`enable: true` was **inherited** from the base object. `src-tauri/tauri.conf.json`
+still reads `["$RESOURCE/**"]`, so desktop is untouched.
+
+**APK carrying the fix: sha256 `7616f100…77c4f`, 352,809,173 bytes.** The fix
+itself remains unconfirmed on hardware until the founder reports covers
+rendering — the scope resolution is proven, the visual outcome is not.
+
 #### Three build blockers found and fixed
 
 1. **`bundle.resources` leaked the entire desktop resource tree into the APK
@@ -227,27 +312,48 @@ Two of the three are worth carrying beyond this repo:
   property is that the error text blamed the SDK for an NDK problem.
 
 **Flaky desktop family: `cloud::rest`/`session` mock-server tests (desktop
-scope, not P1's).** The Phase 1.1 Windows gate needed three runs to produce
-evidence-grade output:
+scope, not P1's).** Establishing that Phases 1.1 and 1.2 were non-regressive
+took six full-suite runs across two commits, because the suite is
+nondeterministic at fixed code:
 
-| run | conditions | result |
-|---|---|---|
-| 1 | parallel, machine loaded (an Android build running) | 263 passed / **3 failed** |
-| 2 | parallel, quiet machine | 265 passed / **1 failed** |
-| 3 | `--test-threads=1` | **266 passed / 0 failed, exit 0** |
+| # | commit | conditions | result |
+|---|---|---|---|
+| 1 | c0e2505 | parallel, machine loaded (Android build running) | 263 / **3 failed** |
+| 2 | c0e2505 | parallel, quiet machine | 265 / **1 failed** (a *different* test) |
+| 3 | c0e2505 | `--test-threads=1` | **266 / 0, exit 0** |
+| 4 | da7f8d1 | `--test-threads=1` | 264 / **2 failed** |
+| 5 | da7f8d1 | those 2 in isolation | **5 / 5 ok** |
+| 6 | da7f8d1 | `--test-threads=1` control, same commit | **266 / 0, exit 0** |
 
-The failures *rotate*: run 2's single failure (`create_checkout_request_shape`)
-was not among run 1's three, and run 1's three all passed in run 2. Every one is
-in the `cloud::rest`/`session` mock-server family, every one passes in
-isolation, and none is in a file this branch touches.
+**Runs 4 and 6 are the decisive pair: identical commit, identical command,
+different results.** That is nondeterminism proven at fixed code, which is the
+only thing that can definitively exonerate a branch — no amount of green runs
+alone could. Verdict: **1.1 + 1.2 cfg-gating is verified non-regressive on
+desktop.**
 
-That rotation is the tell, and it is the transferable part: **a failure set that
-changes between runs is evidence about the harness, not the code.** A fixed set
-of failures would have implicated 1.1; a rotating set under load points at
-contention between mock servers racing for ports. Two consequences adopted —
-future Windows gate runs on this machine use `--test-threads=1` by default, and
-the family is a candidate for a port-allocation fix upstream (desktop scope,
-surfaced not owned).
+Every failure across all six runs was in the `cloud::rest`/`session` mock-server
+family; all passed in isolation; none was in a file this branch touches; and the
+behaviour is independent of threading (run 4 was single-threaded). Likely
+mechanism: **stale pooled HTTP connections to recycled ephemeral mock-server
+ports** — which fits all four observations, including why it only appears in a
+full suite.
+
+The transferable lesson: **a failure set that changes between runs is evidence
+about the harness, not the code.** A *fixed* set would have implicated the
+branch; a rotating one under load points at the harness. The corollary is that
+the right response to a suspicious green is a same-commit control run, not more
+green runs.
+
+**Gate protocol adopted (steering, from run 6):**
+1. Gate runs execute the **full suite**.
+2. A failure in the `cloud::rest`/`session` family triggers an isolation rerun
+   **plus a same-commit control run**.
+3. Only non-cloud failures, or cloud failures reproducible in isolation,
+   **block**.
+4. The pooled-connection fix (per-test agent, or `Connection: close` in the mock
+   tests) is **desktop-scope backlog, not P1** — surfaced, not owned.
+
+Logs: `scratchpad/win-test-p1-*.log` (steering side).
 
 #### Carried into later phases
 
