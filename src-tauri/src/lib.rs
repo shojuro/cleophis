@@ -21,6 +21,12 @@ mod engine_inproc;
 /// security property is asserted nowhere.
 #[path = "engine_inproc/tools.rs"]
 mod engine_tools;
+/// The calc tool-loop, transcribed from `src/calc-loop.js`. Declared here for
+/// the same reason as `engine_tools`: it is written against a `TurnSource`
+/// trait rather than `EngineSession` precisely so it compiles and is tested off
+/// Android.
+#[path = "engine_inproc/tool_loop.rs"]
+mod engine_tool_loop;
 mod hardware;
 mod inference;
 mod kpack;
