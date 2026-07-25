@@ -1075,7 +1075,7 @@ through `0fa893a` → `1850a76` → `4b3feed` is written up in full under the Ph
 0 gate section, because its lesson is about *evidence provenance* rather than
 about 1.4.
 
-### 1.5 Prefix-KV session reuse — MECHANISM DONE (commit `734df86`), WIRING OUTSTANDING
+### 1.5 Prefix-KV session reuse — DONE (`734df86` + `f5fb7f6` `24d6c79` `88167e5` `8a5da5a`)
 
 Full design and rationale: `specs/2026-07-25-mobile-p1-handoff-1.5.md` (a
 predecessor instance's continuation handoff, committed verbatim). Recorded here
@@ -1122,9 +1122,127 @@ latency. Any future caching work in this codebase (prompt caches, adapter
 caches, resource caches) inherits the same requirement: describe what is cached,
 or do not reuse it.
 
-**Wiring status.** `engine_inproc` still opens a fresh session per
-`Command::Chat`, so the reuse path is **dormant** — behaviour is identical to
-1.4's, correct and slow. The restructure that activates it is tracked below.
+#### The wiring — DONE (commits `f5fb7f6`, `24d6c79`, `88167e5`, `8a5da5a`)
+
+The obstacle was never the cache; it was the borrow. `EngineHandle::session()`
+returns `Box<dyn EngineSession + '_>`, so a session cannot be stored beside the
+handle (self-referential) and cannot outlive a scope. What fits is **two loops
+on one thread**: an outer loop owning the handle, and an inner loop holding one
+session for as long as turns keep arriving for the same chat. `Load` must
+`unload()` the handle, which is impossible while a session borrows it, so the
+inner loop hands such commands back instead of acting on them.
+
+- `SessionTurns` borrows instead of owning: `&'s mut (dyn EngineSession + 'a)`.
+  Both lifetimes are load-bearing — `&mut` is **invariant** in its referent, so
+  `'a` cannot be quietly collapsed into `'s`.
+- `Command::Chat` carries `chat_key`. `chat_complete` passes `None` on purpose:
+  auto-title and analysis are not continuations of the chat they are about.
+- The outer loop keeps a `pending` slot, because a yielded command that is
+  dropped is either a message the user sent that never gets an answer, or a
+  `Shutdown` that hangs `stop_thread`'s join forever.
+
+**Where the routing lives, and why it is not a style question.** The failure
+modes here are deadlocks and missing turns, not compile errors, and
+`engine_inproc` is `cfg(mobile)` — the desktop suite cannot see it. So the
+routing moved to `engine_inproc/serve.rs`, declared in `lib.rs` via `#[path]`
+on every platform, exactly as `tools.rs` and `tool_loop.rs` were for the same
+reason. `serve_loop` is closure-generic over "run a turn" and "get the next
+command"; `engine_inproc` supplies the two effects it cannot have. **Every exit
+condition is enumerated in `SessionEnd` and has a test**: chat switch,
+transient turn, `Load`, `Shutdown`, closed channel, idle deadline — plus one
+asserting every accepted turn was answered.
+
+#### Verification — 11/11 + 35/35, and a clean aarch64 check
+
+| what | result |
+|---|---|
+| serve-loop routing (scratch crate, `--cfg desktop`) | **11 passed / 0 failed** |
+| `cargo test -p kpack-engine` | **35 passed / 0 failed** (was 28) |
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | **exit 0, zero warnings** |
+
+The warning counts are from an **unanchored** `grep -ci warning` over the whole
+log, not `^warning` — the distinction that cost three rounds during 1.4. Logs
+in `cleophis-mobile-logs/aarch64-check-1.5-*.log`.
+
+The scratch crate compiles the *real* `serve.rs` with `pub(crate)` widened to
+`pub`, against verbatim copies of the three type definitions it names. The
+logic under test is byte-identical; the Windows gate is what turns it from
+measured into confirmed.
+
+#### Two holes found while writing the comments, not while writing the code
+
+Both were harmless before the wiring and live after it, which is the pattern
+worth noticing: **this task converted two latent defects into real ones**, and
+neither would have been reported by anything.
+
+1. **The trim was guarded by `if self.cached.len() > reuse`.** That guard trusts
+   the mirror to be right about the cache being *empty* — and the mirror exists
+   precisely because the cache is invisible from Rust. If the two ever
+   disagreed, the guard skipped the trim in exactly the case where the trim was
+   load-bearing. Now unconditional; the removal is a no-op when there is
+   nothing to remove.
+2. **`clear_kv_cache_seq` returns a `bool`, and it was discarded.** llama.cpp
+   reports a partial removal it *cannot perform* by returning false (removing a
+   whole sequence never fails). A false meant the stale span survived while the
+   code proceeded as though it had not. Now a false escalates to clearing the
+   whole sequence and re-decoding.
+
+Plus the general form: `EngineSession::stream` is now a thin wrapper that
+invalidates the prefix — native cache and mirror together — whenever a turn
+returns an error, because there are **nine `?`s** in the turn body and
+remembering at each one is not a plan. Before the wiring this cost nothing (the
+session was discarded after every turn); it now costs a full re-decode, which
+is the correct direction to fail in.
+
+**Both were found by writing down the justification for code that already
+existed.** That is the second time in this phase that stating a reason out loud
+disproved it — the first being the dead-code warning prediction. It is cheap
+enough to be worth doing deliberately rather than accidentally.
+
+#### The one steady-state cost, and its bound
+
+A live `LlamaContext` holds its KV cache — order 60 MB at the floor tier's
+2048-token window — and **before 1.5 no context outlived a turn**. Keeping one
+alive between turns is the mechanism; keeping it alive forever is a leak, on
+the device with the least RAM to spare, where an LMK kill would be attributed
+to anything but this. An open session therefore waits at most
+`IDLE_SESSION_TIMEOUT` (5 minutes) for the conversation's next turn, then
+releases: `Idle`, not `Closed` — the thread stays live and still wants commands,
+only the context goes.
+
+The deadline is a **proxy for a signal we do not have yet**. The right one is
+the Android lifecycle; release-on-pause should replace it in the §8
+backgrounding work (5.1) and demote the timer to a backstop. It is also the one
+piece of 1.5 not in the predecessor's handoff design, landed as its own commit
+so it reverts cleanly.
+
+#### Known limits, surfaced not fixed
+
+- **No context-window management.** A conversation whose rendered prompt exceeds
+  `n_ctx` (2048 on the floor tier) will fail its decode and surface an engine
+  error rather than truncating. This is **pre-existing, not caused by 1.5** —
+  a fresh session per turn overflowed at the same conversation length — but it
+  becomes visible the moment anyone holds a long chat on device, and the
+  sidecar hides it on desktop by shifting context itself. Truncate-oldest vs.
+  summarise vs. refuse is a product decision, so it is surfaced here rather
+  than chosen. Expect it at CP1 with a long conversation.
+- **Only *consecutive* same-chat turns benefit.** Switching to another chat and
+  back re-prefills, because one handle yields one session at a time. Inherent
+  to the borrow, not a tuning parameter.
+- **Auto-title evicts the cache once per chat.** It is a transient turn, so it
+  closes the session; `app.js:1417` fires it only on the first exchange, so the
+  cost is one re-prefill on turn 2 and never again.
+- **A tool-using turn reuses less across turns.** Within a turn the loop appends
+  the model's *raw* text, so rounds share a near-total prefix; across turns the
+  frontend sends back the *displayed* text, which diverges from what was decoded
+  wherever the suppressor removed tool syntax. Correct either way — the mirror
+  compares token ids, so a divergence costs reuse and never correctness.
+
+**Acceptance still outstanding: coherence on device.** The number 1.5 exists for
+is TTFT-with-history, but the criterion that matters is that a **second
+same-chat turn is coherent, not merely fast** — that is the check for invariant
+1 having survived. Nothing off-device can produce it: the mock backend has no KV
+cache, so only CP1 on the A22 can close this.
 
 ---
 
@@ -1192,6 +1310,38 @@ indistinguishable. The §11 kill-restore test needs to assert
 **truncated-but-uncorrupted**, which is only assertable if truncation is
 recorded as a state rather than inferred from content. Lands as its own commit
 with desktop-suite evidence, per the brief's shared-change rule.
+
+### D-3 — Logic whose failure mode is silent goes where the tests run, even at the cost of a seam
+
+**Decision:** when a piece of logic is (a) platform-neutral and (b) fails in a
+way that produces no error, it is extracted to a module compiled on every
+platform, and only the genuinely platform-bound remainder stays behind the
+`cfg`. Applied twice in 1.5: the serve loop's routing (`engine_inproc/serve.rs`,
+`#[path]`-declared in `lib.rs`) and the prefix arithmetic
+(`kpack-engine/src/prefix.rs`, outside the `real` feature gate).
+
+**Rejected alternative:** leave both where they naturally belong — inside the
+`cfg(mobile)` module and inside the `real`-gated backend — and verify by
+inspection plus a cross-compile `check`.
+
+**Rationale.** A cross-compile `check` proves a thing compiles, not that it is
+right, and on this branch **nothing runs on Android until a founder device
+checkpoint**. So "behind the cfg" is the same as "untested" for as long as it
+takes to get to a device. That is tolerable for FFI, where the alternative is
+mocking llama.cpp; it is not tolerable for a loop whose failure modes are a
+dropped turn and a hung join, or for an arithmetic cap whose off-by-one yields
+a fluent answer to the wrong question. The cost is one extra module and a
+closure-generic signature. The benefit is 18 executing tests instead of an
+argument in a commit message: the **11** serve-loop tests join the Windows
+suite (302 → 313 expected), and the **7** prefix tests run in `kpack-engine`'s
+own suite, which needs no Windows and no device.
+
+**The tell that this is the right split:** everything left behind the `cfg` in
+`serve_one_session` is *borrow plumbing* — open a session, hand it to a
+closure, drop it. There is no decision left in it to get wrong.
+
+**Precedent it extends:** `tools.rs` and `tool_loop.rs` were placed this way in
+1.3–1.4 for the same reason. D-3 states the rule those two were following.
 
 ---
 
