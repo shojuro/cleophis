@@ -301,6 +301,206 @@ fn call_from_json(raw: &str) -> Option<ToolCall> {
     })
 }
 
+// ── streaming suppression ────────────────────────────────────────────────────
+//
+// Desktop never needed this: `llama-server` returned `tool_calls` structurally,
+// separate from `content`, so the UI only ever saw prose. Recovering calls from
+// generated text puts the syntax in the same stream the user is watching, and a
+// naive forward renders `<tool_call>{…}</tool_call>` into the chat.
+//
+// The design's spine, in strict priority order — when these conflict, the higher
+// one wins and the lower one is sacrificed deliberately:
+//   1. Never block streaming unboundedly.
+//   2. Never leak a full call body.
+//   3. Minimize holdback latency.
+//
+// Which makes the failure modes acceptable by construction: a flushed
+// false-positive buffer is slightly-late prose; a missed call is a
+// wrong-but-safe answer (already accepted as the cost of permissive parsing);
+// leaked syntax is ugly and harmless, and is only reachable through a bounded
+// flush.
+//
+// Applies to tool-enabled turns ONLY. `chat_complete` paths (auto-title,
+// analysis) never construct a suppressor and stream verbatim.
+
+/// Cap on how much a suppressor will hold before giving up and flushing. Generous
+/// for a calc call (whose whole body is a short JSON object) and small enough
+/// that a model which opens a fence and never closes it cannot stall the stream —
+/// priority 1 over priority 2.
+const HOLDBACK_CAP: usize = 2048;
+
+#[derive(Debug, PartialEq)]
+enum SuppressState {
+    /// Streaming prose, watching for an opening sentinel.
+    Scan,
+    /// Inside a tool call; discarding until it closes.
+    Suppress,
+    /// A decision was made that nothing further in this round is a call —
+    /// everything from here streams verbatim with zero holdback.
+    Live,
+}
+
+/// Streams a turn's text to the UI with tool-call syntax removed.
+///
+/// Feed every chunk through [`push`](ToolStream::push) and emit what it returns;
+/// call [`finish`](ToolStream::finish) at end of turn. The complete raw text is
+/// retained separately for [`parse_tool_calls`] — suppression is a *display*
+/// concern and never changes what the loop dispatches.
+pub(crate) struct ToolStream {
+    family: ToolFamily,
+    state: SuppressState,
+    /// Text withheld pending a decision.
+    held: String,
+    /// The full raw turn, for the parser.
+    full: String,
+    /// JSON path: whether the first-non-whitespace decision has been made.
+    decided: bool,
+    /// JSON path: byte offset of the candidate object's opening brace.
+    brace_start: usize,
+}
+
+impl ToolStream {
+    pub fn new(family: ToolFamily) -> Self {
+        ToolStream {
+            family,
+            state: SuppressState::Scan,
+            held: String::new(),
+            full: String::new(),
+            decided: false,
+            brace_start: 0,
+        }
+    }
+
+    /// The complete turn text as the model produced it, suppression included.
+    pub fn full_text(&self) -> &str {
+        &self.full
+    }
+
+    /// Feed one streamed chunk; returns the text to show the user.
+    pub fn push(&mut self, chunk: &str) -> String {
+        self.full.push_str(chunk);
+        self.held.push_str(chunk);
+        if self.state == SuppressState::Live {
+            return std::mem::take(&mut self.held);
+        }
+        match self.family {
+            ToolFamily::ChatMl => self.push_chatml(),
+            ToolFamily::JsonFunction => self.push_json(),
+        }
+    }
+
+    /// End of turn: release anything still withheld that is genuinely prose.
+    ///
+    /// An unterminated tool call is discarded rather than flushed. At end of
+    /// turn there is no stream left to block, so priority 1 no longer applies
+    /// and priority 2 governs — and the discarded text is a half-written call,
+    /// never something the user was waiting to read.
+    pub fn finish(&mut self) -> String {
+        let held = std::mem::take(&mut self.held);
+        let out = match self.state {
+            SuppressState::Suppress => String::new(),
+            _ => held,
+        };
+        self.state = SuppressState::Live;
+        out
+    }
+
+    fn push_chatml(&mut self) -> String {
+        let mut out = String::new();
+        loop {
+            match self.state {
+                SuppressState::Scan => {
+                    if let Some(pos) = self.held.find(FENCE_OPEN) {
+                        out.push_str(&self.held[..pos]);
+                        let rest = self.held[pos + FENCE_OPEN.len()..].to_string();
+                        self.held = rest;
+                        self.state = SuppressState::Suppress;
+                        continue;
+                    }
+                    // Hold back only the longest suffix that could still become
+                    // the sentinel — a few characters, not a buffered turn.
+                    let keep = partial_sentinel_len(&self.held, FENCE_OPEN);
+                    let split = self.held.len() - keep;
+                    out.push_str(&self.held[..split]);
+                    self.held = self.held[split..].to_string();
+                    return out;
+                }
+                SuppressState::Suppress => {
+                    if let Some(pos) = self.held.find(FENCE_CLOSE) {
+                        let rest = self.held[pos + FENCE_CLOSE.len()..].to_string();
+                        self.held = rest;
+                        self.state = SuppressState::Scan;
+                        continue;
+                    }
+                    if self.held.len() > HOLDBACK_CAP {
+                        // Priority 1: an unclosed fence must not stall the
+                        // stream, even at the cost of showing its body.
+                        self.state = SuppressState::Live;
+                        out.push_str(&std::mem::take(&mut self.held));
+                    }
+                    return out;
+                }
+                SuppressState::Live => {
+                    out.push_str(&std::mem::take(&mut self.held));
+                    return out;
+                }
+            }
+        }
+    }
+
+    fn push_json(&mut self) -> String {
+        // The whole decision rests on the FIRST non-whitespace character of the
+        // round. A `{` appearing later in prose never triggers buffering, which
+        // is what keeps ordinary answers at zero holdback.
+        if !self.decided {
+            let Some(i) = self.held.find(|c: char| !c.is_whitespace()) else {
+                return String::new(); // still only whitespace; nothing to show
+            };
+            self.decided = true;
+            if self.held.as_bytes()[i] != b'{' {
+                self.state = SuppressState::Live;
+                return std::mem::take(&mut self.held);
+            }
+            self.brace_start = i;
+        }
+
+        if let Some(end) = balanced_end(&self.held, self.brace_start) {
+            let object = self.held[self.brace_start..=end].to_string();
+            let is_real_call = call_from_json(&object)
+                .map(|c| Tool::from_name(&c.name).is_some())
+                .unwrap_or(false);
+            self.state = SuppressState::Live;
+            if is_real_call {
+                // Suppress the object; anything after it is prose.
+                let after = self.held[end + 1..].to_string();
+                self.held.clear();
+                return after;
+            }
+            // Parsed to something that is not a call we would dispatch — it was
+            // never tool syntax, so it is the user's text. Flush it.
+            return std::mem::take(&mut self.held);
+        }
+
+        if self.held.len() > HOLDBACK_CAP {
+            self.state = SuppressState::Live;
+            return std::mem::take(&mut self.held);
+        }
+        String::new()
+    }
+}
+
+/// Length of the longest suffix of `s` that is a proper prefix of `sentinel`.
+///
+/// This is what lets a sentinel split across token boundaries still be caught
+/// while holding back only a few characters. `sentinel` is ASCII, so a matched
+/// suffix is ASCII too and `s.len() - k` is always a char boundary.
+fn partial_sentinel_len(s: &str, sentinel: &str) -> usize {
+    let sb = s.as_bytes();
+    let nb = sentinel.as_bytes();
+    let max = nb.len().saturating_sub(1).min(sb.len());
+    (1..=max).rev().find(|&k| sb.ends_with(&nb[..k])).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +630,138 @@ mod tests {
     fn accepts_arguments_double_encoded_as_a_json_string() {
         let outcome = dispatch(&call("calc", "\"{\\\"expression\\\":\\\"7*6\\\"}\""));
         assert_eq!(outcome, ToolOutcome::Ok("42".to_string()));
+    }
+
+    // ── streaming suppression ────────────────────────────────────────────────
+
+    /// Drive a suppressor with a chunking, returning what the user would see.
+    fn stream(family: ToolFamily, chunks: &[&str]) -> String {
+        let mut s = ToolStream::new(family);
+        let mut out = String::new();
+        for c in chunks {
+            out.push_str(&s.push(c));
+        }
+        out.push_str(&s.finish());
+        out
+    }
+
+    /// Every one-character chunking is the worst case for a sentinel scanner.
+    fn stream_by_char(family: ToolFamily, text: &str) -> String {
+        let chunks: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+        stream(family, &refs)
+    }
+
+    #[test]
+    fn chatml_prose_before_a_fence_stays_visible() {
+        let text = "Let me calculate that.\n<tool_call>\n{\"name\":\"calc\",\
+                    \"arguments\":{\"expression\":\"1+1\"}}\n</tool_call>";
+        assert_eq!(stream(ToolFamily::ChatMl, &[text]), "Let me calculate that.\n");
+    }
+
+    /// The sentinel arriving a character at a time must still be caught — this
+    /// is the case a naive `contains` check on each chunk fails.
+    #[test]
+    fn chatml_sentinel_split_across_token_boundaries_is_still_caught() {
+        let text = "ok <tool_call>{\"name\":\"calc\",\"arguments\":{\"expression\":\"2+2\"}}</tool_call> done";
+        assert_eq!(stream_by_char(ToolFamily::ChatMl, text), "ok  done");
+        // And an awkward split straddling the sentinel itself.
+        let split = ["ok <tool", "_ca", "ll>{\"name\":\"calc\",\"arguments\":{}}</tool_", "call> done"];
+        assert_eq!(stream(ToolFamily::ChatMl, &split), "ok  done");
+    }
+
+    /// Text that merely *looks* like the start of a sentinel must not be eaten.
+    #[test]
+    fn chatml_partial_sentinel_that_turns_out_to_be_prose_is_released() {
+        assert_eq!(stream(ToolFamily::ChatMl, &["1 <tool", "box> 2"]), "1 <toolbox> 2");
+        assert_eq!(stream_by_char(ToolFamily::ChatMl, "a < b and c <tool"), "a < b and c <tool");
+    }
+
+    #[test]
+    fn json_round_opening_with_a_call_suppresses_it_entirely() {
+        let text = "{\"name\":\"calc\",\"parameters\":{\"expression\":\"6*7\"}}";
+        assert_eq!(stream(ToolFamily::JsonFunction, &[text]), "");
+        assert_eq!(stream_by_char(ToolFamily::JsonFunction, text), "");
+    }
+
+    /// The false-positive flush: a round that legitimately opens with `{` must
+    /// end up fully visible, just slightly late.
+    #[test]
+    fn json_false_positive_is_flushed_not_swallowed() {
+        for text in [
+            "{ this is not JSON at all",
+            "{\"answer\": 42} is the set notation you wanted",
+            "{\"name\":\"exec\",\"parameters\":{}}",
+        ] {
+            let seen = stream(ToolFamily::JsonFunction, &[text]);
+            assert_eq!(seen, text, "flush lost text for: {text}");
+        }
+    }
+
+    /// A `{` in the middle of prose must never trigger buffering — the decision
+    /// is made once, on the first non-whitespace character of the round.
+    #[test]
+    fn json_brace_later_in_prose_never_triggers_holdback() {
+        let text = "The set is {1, 2, 3} exactly.";
+        assert_eq!(stream(ToolFamily::JsonFunction, &[text]), text);
+        assert_eq!(stream_by_char(ToolFamily::JsonFunction, text), text);
+    }
+
+    /// Priority 1 over priority 2: an unterminated call must not stall the
+    /// stream forever, even though flushing shows its body.
+    #[test]
+    fn an_unclosed_call_flushes_at_the_cap_rather_than_stalling() {
+        let runaway = format!("{{\"name\":\"calc\",\"arguments\":{}", "x".repeat(HOLDBACK_CAP + 64));
+        let seen = stream(ToolFamily::JsonFunction, &[&runaway]);
+        assert!(!seen.is_empty(), "cap did not release the stream");
+
+        let fence = format!("<tool_call>{}", "y".repeat(HOLDBACK_CAP + 64));
+        let seen = stream(ToolFamily::ChatMl, &[&fence]);
+        assert!(!seen.is_empty(), "unclosed fence stalled the stream");
+    }
+
+    /// Priority 2 at end of turn: once there is no stream left to block, a
+    /// half-written call is discarded rather than leaked.
+    #[test]
+    fn a_truncated_call_at_end_of_turn_is_discarded_not_leaked() {
+        let seen = stream(ToolFamily::ChatMl, &["answer soon <tool_call>{\"name\":\"ca"]);
+        assert_eq!(seen, "answer soon ");
+    }
+
+    /// The property that keeps display and dispatch honest: whenever the
+    /// suppressor hides a call, the parser must find one in the same text, and
+    /// vice versa. If these drift, the user sees syntax the loop ignored — or
+    /// loses prose to a call that never ran.
+    #[test]
+    fn suppressor_and_parser_agree_on_what_a_call_is() {
+        let cases = [
+            (ToolFamily::ChatMl, "hi <tool_call>{\"name\":\"calc\",\"arguments\":{\"expression\":\"1+1\"}}</tool_call>"),
+            (ToolFamily::JsonFunction, "{\"name\":\"calc\",\"parameters\":{\"expression\":\"1+1\"}}"),
+        ];
+        for (family, text) in cases {
+            let mut s = ToolStream::new(family);
+            let mut shown = s.push(text);
+            shown.push_str(&s.finish());
+
+            let calls = parse_tool_calls(s.full_text());
+            assert_eq!(calls.len(), 1, "parser missed the call in: {text}");
+            assert!(
+                !shown.contains("\"name\""),
+                "suppressor leaked a call body the parser dispatched: {shown:?}"
+            );
+        }
+
+        // The negative direction: no call parsed => nothing suppressed.
+        for (family, text) in [
+            (ToolFamily::ChatMl, "just prose, no tools"),
+            (ToolFamily::JsonFunction, "{\"answer\": 42} plain text"),
+        ] {
+            let mut s = ToolStream::new(family);
+            let mut shown = s.push(text);
+            shown.push_str(&s.finish());
+            assert!(parse_tool_calls(s.full_text()).is_empty());
+            assert_eq!(shown, text, "suppressed text the parser saw no call in");
+        }
     }
 
     #[test]
