@@ -341,6 +341,69 @@ Worth noting for Phase 3.1: moving `keyring` to
 because keyring v3 silently mocks in-memory on unsupported targets) will *not*
 fix this — Linux is exactly where `linux-native` applies.
 
+### 1.2 In-process engine lifecycle — DONE (commit 4a1bc6f)
+
+`engine_inproc` now owns one long-lived inference thread and drives
+`kpack-engine`'s `EngineBackend` on it.
+
+**Why a thread rather than a call.** `EngineHandle` is deliberately `!Send`:
+`llama-cpp-2`'s `LlamaLoraAdapter` holds a raw `NonNull` and `LlamaContext` is
+thread-bound, so a loaded stack must live entirely on the thread that created
+it. The handle never leaves the inference thread; callers speak to it by mpsc
+`Command`. Desktop gets the same isolation for free from the sidecar being a
+separate process.
+
+**Lifecycle mapping.** `start` is idempotent with respect to the thread — an
+already-running thread is re-tasked with a fresh `Load` rather than a second
+being spawned, and `thread_alive` is set before the spawn (desktop's handshake)
+so a concurrent restart cannot race a second thread into existence. `Load`
+releases the previous handle **before** loading the new one; loading first would
+momentarily need both models resident, which the 8 GB reference device cannot
+afford. `restart` serializes on the shared `restart_lock` and joins the thread
+before starting another — desktop's version of that race is two llama-servers
+fighting over a port, but here the contended resource is RAM, where a doubled 4B
+stack is fatal rather than merely wasteful. `shutdown` joins so the native model
+is released before teardown.
+
+**Panics → Failed, never hung.** An `ExitGuard` moves the engine to `Failed` and
+emits `engine-failed` on any thread exit that was not a deliberate shutdown, so
+a panic cannot strand the UI on a `Starting` spinner. It is poison-tolerant,
+since panicking a second time inside `Drop` aborts the process.
+
+**Integrity.** The gate is the backend's own `prepare_stack`, fed the catalog's
+pinned hashes through `ModelSpec`/`AdapterSpec` via the new
+`inference::launch_hashes`; nothing native is touched until every artifact
+passes. This **replaces** 1.1's placeholder call to `inference::verify_launch`
+— running both would hash a multi-gigabyte model twice on the device least able
+to afford it. `verify_launch` and the entire per-slot cache it drives
+(`verify_*_once`, `verify_hash_once`, `model_sha256`, the three `verified_*`
+fields, `clear_verify_caches`) are consequently `#[cfg(desktop)]` now. Mobile
+needs no cache clearing on a tier switch: `kpack-engine`'s `VerifyCache` is
+keyed by *path*, and a switch resolves different files, so the new stack
+re-verifies on its own.
+
+CPU-first is policy on Android, not a fallback, so `gpu_offload` is pinned false
+and there is no GPU→CPU retry ladder. `EngineStatus::Restarting` is therefore
+desktop-only (it reports the sidecar's fallback and watchdog respawn) and stays
+in the shared enum only because `EngineInfo` is one serialized shape for both.
+
+#### Verification
+
+- `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` — **clean, zero
+  warnings** (`cleophis-mobile-logs/p12-android-check.log`). The five dead-code
+  warnings the cfg change first produced were resolved by gating the
+  genuinely-desktop-only hash chain, not by an allow attribute.
+- **It links.** A `check` does not link, and 1.2 is the first code to reference
+  `LlamaEngine` for real, so a full APK build was run to prove the native
+  symbols resolve: `tauri` exit 0, **352,809,813 bytes**, sha256
+  `5cd5dad1…f5d526`, debug-signed, arm64-v8a only, assets still just
+  `tauri.conf.json`. The +2.9 MB over 1.1 is the kpack-engine wrapper alone —
+  llama.cpp's core was already linked in via the bundled BGE embedder.
+
+Generation (`chat_stream` / `chat_complete` / `chat_cancel`, the calc tool-loop,
+the partial-turn flush) is 1.3–1.4 and will be served by this same thread,
+opening a session from the handle it already owns.
+
 ---
 
 ## Phase 0 founder items surfaced (⚑0.4)
