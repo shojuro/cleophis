@@ -226,6 +226,29 @@ Two of the three are worth carrying beyond this repo:
   source in `docs/superpowers/mobile-dev-setup.md`. Its only interesting
   property is that the error text blamed the SDK for an NDK problem.
 
+**Flaky desktop family: `cloud::rest`/`session` mock-server tests (desktop
+scope, not P1's).** The Phase 1.1 Windows gate needed three runs to produce
+evidence-grade output:
+
+| run | conditions | result |
+|---|---|---|
+| 1 | parallel, machine loaded (an Android build running) | 263 passed / **3 failed** |
+| 2 | parallel, quiet machine | 265 passed / **1 failed** |
+| 3 | `--test-threads=1` | **266 passed / 0 failed, exit 0** |
+
+The failures *rotate*: run 2's single failure (`create_checkout_request_shape`)
+was not among run 1's three, and run 1's three all passed in run 2. Every one is
+in the `cloud::rest`/`session` mock-server family, every one passes in
+isolation, and none is in a file this branch touches.
+
+That rotation is the tell, and it is the transferable part: **a failure set that
+changes between runs is evidence about the harness, not the code.** A fixed set
+of failures would have implicated 1.1; a rotating set under load points at
+contention between mock servers racing for ports. Two consequences adopted —
+future Windows gate runs on this machine use `--test-threads=1` by default, and
+the family is a candidate for a port-allocation fix upstream (desktop scope,
+surfaced not owned).
+
 #### Carried into later phases
 
 - `usesCleartextTraffic=true` is injected into the **debug** manifest by Tauri
@@ -302,6 +325,17 @@ run on real hardware rather than one written blind.
   carry a narrow `cfg_attr(mobile, allow(dead_code))` with a note to remove it
   when 1.2 lands. Warnings that are merely silenced come back as blind spots
   when Phase 5.3 wires the `mobile-check` CI job.
+
+#### Desktop gate — PASS (Windows suite, 266 passed / 0 failed, exit 0)
+
+Run by steering on this worktree at commit `c0e2505`. **The decisive run is
+single-threaded (`--test-threads=1`): 266/0, exit 0.** Both new 1.1 tests
+(`embedded_cover_list_matches_the_resources_directory`,
+`every_catalog_cover_is_embedded`) executed and passed. Logs:
+`scratchpad/win-test-p1-c0e2505{,-run2,-st}.log` (steering side).
+
+The two parallel runs that preceded it are recorded below as a flake story, not
+as failures of this branch.
 
 #### ⚠ Desktop regression cannot run on this Linux host
 
