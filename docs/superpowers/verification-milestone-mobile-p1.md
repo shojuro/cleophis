@@ -176,15 +176,50 @@ Two observations from the founder, one a defect and one not:
    (`secure_store` seam + Kotlin AndroidKeyStore bridge) and nothing implements
    it yet. Recorded here so a later reader does not mistake it for a regression.
 
-#### First real model download — INITIATED, outcome not yet observed
+#### Unscheduled on-device verification: sign-up, payment, entitlement, download
 
-A founder-initiated model download is genuinely in progress on the A22 (the
-first ever on Android). **No terminal state has been observed, so no claim is
-recorded here.** If it completes it will give the 1.2 load path — pinned-hash
-gate → `LlamaEngine::load` → `engine-ready` — its first exercise on hardware,
-and the `.part` resume behaviour its first real test. Written this way
-deliberately: the retraction immediately below is what happens when an
-in-progress number gets treated as an outcome.
+The founder exercised, spontaneously and in one session on the A22, an entire
+band of functionality that was not scheduled for verification until CP2/CP3:
+
+- **Account sign-UP succeeded on-device** — which means `ureq` + rustls TLS
+  works against our backend from Android, the portability question Phase 3 was
+  going to have to answer.
+- **Stripe checkout round-tripped** — left the app, paid, returned, and the
+  **entitlement was recognized**, so the external-browser hand-off and the
+  entitlement gate both work under Android's app-switching.
+- **The 1B model downloaded to 100 %** — the first completed model download on
+  Android, exercising catalog resolve → CDN fetch → the full
+  `run_ranged_download` path.
+- The app then transitioned toward chat.
+
+**Recorded as pre-verified *with caveats*, not as gate evidence** — these paths
+have not been run against their actual acceptance criteria (airplane-mode
+suite, force-stop survival, sign-out purge), and one session is not a gate.
+
+**⚠ Caveat that materially qualifies the sign-in result — known-until-3.1.**
+`keyring` v3 **silently mocks in-memory on unsupported targets**, which is
+precisely why the brief requires moving it to
+`[target.'cfg(not(target_os = "android"))'.dependencies]` in Phase 3.1. Until
+the Kotlin AndroidKeyStore `SecureStore` lands, an Android session lives in
+process memory only: **a force-stop logs the user out**, and nothing is
+persisted to a keystore. So "sign-up worked" is true and "auth works on Android"
+is not — the credential *storage* half is still entirely unbuilt. This is also
+the likely explanation for the earlier "sign-in fails" report (a lost in-memory
+session, or expectations set by a different flow), and it is explicitly **not**
+being chased as a bug until 3.1 makes a real claim possible.
+
+**Engine load remains unclaimed.** The pill's state transitions "went by too
+fast to read", so no terminal state was observed. Per the rule established by
+the retraction below: **no terminal state, no claim.** Whether the pinned-hash
+gate → `LlamaEngine::load` → `engine-ready` path succeeded is still unknown,
+and it stays unknown in this document until someone reads the locked-in state.
+
+**2.2 UX requirement, from that same unreadable transition:** post-download
+state changes flash past too quickly to follow. A visible
+verified → loading → ready progression is not decoration here — this product's
+pitch is that the model is *yours and on your device*, and watching it be
+verified and loaded is exactly the moment that claim becomes credible. Fast is
+the wrong optimization for the one transition worth showing.
 
 #### ~~Pre-CP1 evidence — the download chain works in-app~~ **RETRACTED**
 
@@ -475,7 +510,13 @@ on the real Windows target, which is what upgrades them from locally-believed to
 verified — the scratch-crate run proved the logic, this proved it on the
 platform that ships.
 
-Test-count trajectory across the phase, all green: **266 → 277 → 286**.
+**Tool-loop desktop gate: GREEN** (run 10, at `1c1de2d` covering `8d8360f`,
+single-threaded): **297 passed / 0 failed, exit 0**, zero flakes — the fourth
+consecutive clean run. All 20 new tests (9 suppressor + 11 loop) executed on the
+real Windows target.
+
+Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297**,
+with **zero failures attributable to new code at any point in the phase**.
 
 Logs: `scratchpad/win-test-p1-*.log` (steering side).
 
