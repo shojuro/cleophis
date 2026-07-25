@@ -712,8 +712,22 @@ respect it, which is why the tree was clean at both ends.
 
 Log: `scratchpad/win-test-p1-734df86-frozen.log` (steering side).
 
-Test-count trajectory now **266 → 277 → 286 → 297 → 302 → 302**, still with zero
-failures attributable to new code at any point in the phase.
+**Phase 1 closing gate: GREEN** (run 15, at `b2075f4`, protocol v2): **313 passed
+/ 0 failed, zero warnings**, `cleophis` freshly compiled. PRE `b2075f4`/clean →
+POST `b2075f4`/clean, all four provenance facts agreeing — the second run in the
+track attributable to a commit, and the one that closes the phase.
+
+The count was **predicted before the run**: 302 + 11 serve-loop tests = 313,
+and 313 is what came back. That is worth recording for a reason beyond
+tidiness. A test count that lands exactly where the change says it should is
+evidence that the new tests actually *executed on the target* rather than being
+silently cfg'd out — which is the specific way a `#[path]`-declared,
+`cfg_attr(desktop, allow(dead_code))` module could have passed a gate while
+asserting nothing. An unpredicted 313 would have been the same number with none
+of that meaning.
+
+Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
+302 → 313**, with **zero failures attributable to new code at any point**.
 
 #### 🔬 The dead-code warning: an evidence-provenance failure, resolved
 
@@ -799,7 +813,17 @@ the same artifact.
 
 ---
 
-## Phase 1 — Engine swap-in
+## Phase 1 — Engine swap-in — ✅ COMPLETE (gate run 15, `b2075f4`, 313/0)
+
+1.1 through 1.5 all landed and gated. The engine runs in-process on Android
+behind the same `inference::start/restart/shutdown` surface desktop uses, with
+tool calling, streaming suppression, the calc loop, partial-turn recovery, and
+prefix-KV session reuse. Desktop behaviour is unchanged throughout: every
+divergence is behind `cfg(mobile)`, and `kpack-engine` never enters the desktop
+dependency graph at all (`[target.'cfg(target_os = "android")'.dependencies]`).
+
+**What Phase 1 still cannot demonstrate on device** is unchanged and is not a
+defect — see the section immediately below. Chat needs 2.1's transport swap.
 
 ### ⚠ What a Phase-1 build can and cannot demonstrate on device
 
@@ -1258,6 +1282,43 @@ cache, so only CP1 on the A22 can close this.
   hygiene note under the Phase 0 gate.
 - **Bundle and resource claims are verified against the built APK**, never the
   config or source that was meant to produce them.
+- **Warning counts come from an unanchored `grep -i warning`**, never
+  `^warning`. An anchored grep kept "the report filtered it" alive for a whole
+  round during the 1.4 dead-code episode.
+- **Predict the test count before a gate run, and record the prediction.** A
+  suite that lands exactly where the change says it should is evidence the new
+  tests *executed on the target*; the same number arriving unpredicted proves
+  nothing. This is how a cfg-stripped test module gets caught passing a gate
+  while asserting nothing (Phase 1 closing gate: 302 + 11 = 313, predicted).
+
+### 🔬 Write the justification for code you are about to build on
+
+**Both defects fixed in `24d6c79` were found by writing the comment explaining
+why the existing code was correct — and discovering it was not.** Neither was
+found by testing, reading for bugs, or the aarch64 check, all of which were run.
+
+That is the **second** time in this phase. The first was the dead-code warning:
+"the wiring will resolve it" collapsed the moment steering asked what,
+specifically, would make it disappear. Twice is a pattern worth making
+deliberate rather than lucky, so it is a convention now: **before extending a
+piece of code, write down why the existing version is correct.** Not what it
+does — why it is *safe*. The two are easy to confuse and only one of them
+finds anything.
+
+Why it works here specifically: this codebase's characteristic failure is the
+silent one — a config `{}` that merges instead of clearing, a gate run labelled
+with the wrong commit, a cache reused without being described. None of those
+announce themselves, so the only cheap detector is a claim stated plainly
+enough to be checked against the code sitting in front of you. Both `24d6c79`
+findings were one sentence away from invisible:
+
+- "trim only when the mirror says there is something there" — *the mirror is
+  the thing that might be wrong.*
+- "clear the stale span" — *the call returns a bool saying whether it did, and
+  we throw it away.*
+
+Cost: minutes. It is the cheapest verification technique in this document, and
+the only one that needs neither Windows nor a device.
 
 ## Decisions with precedent value
 
@@ -1311,7 +1372,7 @@ indistinguishable. The §11 kill-restore test needs to assert
 recorded as a state rather than inferred from content. Lands as its own commit
 with desktop-suite evidence, per the brief's shared-change rule.
 
-### D-3 — Logic whose failure mode is silent goes where the tests run, even at the cost of a seam
+### D-3 (RATIFIED by steering) — Logic whose failure mode is silent goes where the tests run, even at the cost of a seam
 
 **Decision:** when a piece of logic is (a) platform-neutral and (b) fails in a
 way that produces no error, it is extracted to a module compiled on every
@@ -1344,6 +1405,17 @@ closure, drop it. There is no decision left in it to get wrong.
 1.3–1.4 for the same reason. D-3 states the rule those two were following.
 
 ---
+
+## ⚑ Surfaced for Phase 2 scoping (founder decision, do not solve unilaterally)
+
+**Context-window policy.** A conversation whose rendered prompt exceeds `n_ctx`
+(2048 on the floor tier, 4096 above) fails its decode and surfaces an engine
+error rather than truncating. Pre-existing — a fresh session per turn overflowed
+at the same conversation length — but the desktop sidecar shifts context itself,
+so CP1 is the first place it can be seen. The options are truncate-oldest,
+summarise-and-carry, or refuse-with-a-new-chat prompt, and they differ in what
+the product promises about memory rather than in difficulty. Expect it at CP1
+with a long chat.
 
 ## Phase 0 founder items surfaced (⚑0.4)
 
