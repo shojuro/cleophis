@@ -651,22 +651,41 @@ evidence about the *mechanism* rather than noise about the machine — local
 listeners racing for ports lose that race under load. It makes the family
 predictable rather than merely catalogued: expect flakes when the run is slow.
 
-#### ⚠ UNRESOLVED: the dead-code warning's disappearance is unexplained
+#### A suppression that suppressed nothing — added, then deleted
 
-The warning appeared at `22f0aa8` and was **absent at `a959717`** — but
-`a959717` does *not* contain the `cfg_attr(desktop, allow(dead_code))`, which
-landed later in `0fa893a`. On that evidence the wiring resolved it on desktop,
-which contradicts the reasoning that produced the fix: `settle()` and the
-streaming closure live inside `#[cfg(mobile)] mod imp`, so a desktop build
-should compile them away and leave the three methods callerless.
+Worth the space because both the error and its correction are instructive.
 
-Either the gating model is wrong somewhere, or the warning was present and did
-not surface in the report. **This matters in the direction that is bad for us:**
-if `a959717` is genuinely clean, the allow in `0fa893a` suppresses nothing and
-is therefore a latent blind spot — it would mask a *future* genuinely-dead
-method on that impl, which is exactly what the 5.3 `mobile-check` job must not
-inherit. Recorded as unresolved rather than as a resolution; a run of `a959717`
-with warnings checked discriminates, and if it was clean the allow gets deleted.
+**The sequence.** A dead-code warning for convstore's three partial-row methods
+appeared at `22f0aa8`. It was diagnosed as transient ("wiring will resolve
+it"), then re-diagnosed — correctly, by steering — as permanent on desktop,
+since only `chat_stream`'s `cfg(mobile)` path checkpoints. A narrow
+`cfg_attr(desktop, allow(dead_code))` was added in `0fa893a` on that reasoning.
+
+**Then the evidence contradicted it.** The `a959717` run — one commit *before*
+the allow existed — was clean. Steering established that decisively rather than
+by absence: the log's first line is `Compiling cleophis v0.1.0` (so the desktop
+lib really did rebuild), and an **unanchored** grep for `warning` across the
+whole log returns nothing, while the `22f0aa8` log from the same pipeline
+plainly contains the warning. The earlier check had used an anchored `^warning`
+grep, so "the report filtered it" was a live hypothesis until the unanchored
+re-check excluded it.
+
+**Verdict: the allow suppressed nothing, so it was deleted.** By the standard
+this phase set for itself, that is the only defensible outcome — an allow with
+nothing to suppress is strictly worse than no allow, because it silently masks
+a *future* genuinely-dead method on that same impl. That is precisely the blind
+spot the 5.3 `mobile-check` job must not inherit.
+
+**The mechanism remains unexplained, and is recorded as unexplained.** Source
+was checked rather than assumed: every call site (`chat_cmds.rs` lines 262, 320,
+332, 335) lies inside `#[cfg(mobile)] mod imp` (lines 82–357), so the
+"shared code merely runtime-guarded by the desktop refusal" hypothesis is
+**disproven** — the calls really are cfg-stripped on desktop. Why the warning
+nevertheless stopped appearing after the wiring is not understood. Empirical
+evidence beats an unverified model, so the allow goes; if the warning returns
+after the revert, then the allow *was* doing work and the `a959717` observation
+needs re-examination. Either way the next run settles it, and nothing is
+recorded as resolved that isn't.
 
 Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
 302**, with **zero failures attributable to new code at any point in the
