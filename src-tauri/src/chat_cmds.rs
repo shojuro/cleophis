@@ -88,6 +88,21 @@ mod imp {
     use tauri::Manager;
 
     use crate::engine_inproc::{tool_family, Command};
+
+    /// How much generated text may accumulate between checkpoints. A write per
+    /// token would put SQLite inside the token loop; this bounds what a kill
+    /// can lose to roughly a sentence.
+    const CHECKPOINT_EVERY: usize = 256;
+
+    /// Shared between the streaming closure and the settle step.
+    #[derive(Default)]
+    struct Progress {
+        text: String,
+        /// Length already checkpointed.
+        written: usize,
+        /// The partial row's id, once one exists.
+        row: Option<i64>,
+    }
     use crate::engine_tool_loop::{LoopMessage, LoopRole, LoopOutcome};
     use crate::inference::Engine;
 
@@ -204,6 +219,7 @@ mod imp {
 
     pub(super) async fn chat_stream(
         request_id: String,
+        chat_id: Option<i64>,
         messages: Vec<WireMessage>,
         on_event: Channel<ChatEvent>,
         app: AppHandle,
@@ -211,10 +227,20 @@ mod imp {
         let cancel = app.state::<ChatCancels>().begin(&request_id);
         let id = request_id.clone();
 
+        // Checkpointing needs a signed-in account and a chat to write into.
+        // Without both, generation still streams — it just is not recoverable,
+        // which is the honest degradation rather than a refusal.
+        let checkpoint_to =
+            chat_id.and_then(|c| crate::convstore::current_user_id(&app).map(|u| (u, c)));
+        let progress = Arc::new(std::sync::Mutex::new(Progress::default()));
+
         let app_for_turn = app.clone();
         let stream_channel = on_event.clone();
+        let delta_progress = progress.clone();
+        let delta_target = checkpoint_to.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {
             let delta_channel = stream_channel.clone();
+            let store_app = app_for_turn.clone();
             let on_delta = Box::new(move |text: &str| {
                 // A failed send means the webview went away; generation is
                 // cancelled by the next `cancelled()` check rather than here,
@@ -222,6 +248,24 @@ mod imp {
                 let _ = delta_channel.send(ChatEvent::Delta {
                     text: text.to_string(),
                 });
+                let Some((user, chat)) = delta_target.as_ref() else {
+                    return;
+                };
+                let mut p = delta_progress.lock().unwrap_or_else(|e| e.into_inner());
+                p.text.push_str(text);
+                // Throttled: a write per token would put SQLite in the token
+                // loop. Losing at most CHECKPOINT_EVERY characters to a kill is
+                // the deliberate trade.
+                if p.text.len() - p.written >= CHECKPOINT_EVERY {
+                    p.written = p.text.len();
+                    let store = store_app.state::<crate::convstore::ConvStore>();
+                    match store.checkpoint_partial(user, *chat, &p.text) {
+                        Ok(row) => p.row = Some(row),
+                        // A checkpoint failure must not kill a turn the user is
+                        // watching; recoverability degrades, generation does not.
+                        Err(e) => eprintln!("chat_stream: checkpoint failed: {e}"),
+                    }
+                }
             }) as Box<dyn FnMut(&str) + Send>;
             run_turn(&app_for_turn, messages, cancel, on_delta)
         })
@@ -235,6 +279,7 @@ mod imp {
 
         match result {
             Ok(outcome) => {
+                settle(&app, &checkpoint_to, &progress, Some(&outcome));
                 let _ = on_event.send(ChatEvent::Done {
                     content: outcome.content.clone(),
                     calculations: calc_views(&outcome),
@@ -242,10 +287,53 @@ mod imp {
                 Ok(())
             }
             Err(message) => {
+                // Deliberately NOT finalized: the row stays marked partial,
+                // which is what makes it recoverable as truncated rather than
+                // indistinguishable from a short finished answer.
+                settle(&app, &checkpoint_to, &progress, None);
                 let _ = on_event.send(ChatEvent::Error {
                     message: message.clone(),
                 });
                 Err(message)
+            }
+        }
+    }
+
+    /// Close out the checkpoint row: finalize on success, and on failure either
+    /// discard it (nothing was produced) or leave it marked partial.
+    fn settle(
+        app: &AppHandle,
+        target: &Option<(String, i64)>,
+        progress: &Arc<std::sync::Mutex<Progress>>,
+        outcome: Option<&LoopOutcome>,
+    ) {
+        let Some((user, chat)) = target.as_ref() else {
+            return;
+        };
+        let p = progress.lock().unwrap_or_else(|e| e.into_inner());
+        let store = app.state::<crate::convstore::ConvStore>();
+
+        let Some(outcome) = outcome else {
+            if p.text.trim().is_empty() {
+                // Nothing was generated, so there is no truncated turn to
+                // recover — an empty partial row would just be litter.
+                let _ = store.discard_partial(user, *chat);
+            }
+            return;
+        };
+
+        // The final text may differ from the streamed text (the loop
+        // substitutes fallback copy for a silent or capped turn), so finalize
+        // with the outcome rather than the accumulator.
+        let calcs = serde_json::to_value(calc_views(outcome)).ok();
+        let row = match p.row {
+            Some(row) => Some(row),
+            // Short turns can finish before the first checkpoint fires.
+            None => store.checkpoint_partial(user, *chat, &outcome.content).ok(),
+        };
+        if let Some(row) = row {
+            if let Err(e) = store.finalize_partial(user, row, &outcome.content, None, calcs) {
+                eprintln!("chat_stream: finalize failed: {e}");
             }
         }
     }
@@ -272,17 +360,18 @@ mod imp {
 #[tauri::command]
 pub async fn chat_stream(
     request_id: String,
+    chat_id: Option<i64>,
     messages: Vec<WireMessage>,
     on_event: Channel<ChatEvent>,
     app: AppHandle,
 ) -> Result<(), String> {
     #[cfg(mobile)]
     {
-        return imp::chat_stream(request_id, messages, on_event, app).await;
+        return imp::chat_stream(request_id, chat_id, messages, on_event, app).await;
     }
     #[cfg(desktop)]
     {
-        let _ = (request_id, messages, on_event, app);
+        let _ = (request_id, chat_id, messages, on_event, app);
         Err(DESKTOP_REFUSAL.to_string())
     }
 }

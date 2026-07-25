@@ -916,6 +916,19 @@ offers no guidance — it never faced it.
 
 ---
 
+## Conventions
+
+- **A `docs(` prefix can hide a code change.** Commit `6299dc3` is prefixed
+  `docs(` but also carries the `DESKTOP_REFUSAL` change; the body says so, but
+  a `git log --grep` filtering for code commits would miss it. Noted here so a
+  future archaeologist searching this phase knows the prefix is not a reliable
+  filter, and as a reminder to split or re-prefix when a "docs" commit acquires
+  code.
+- **Digests are recorded full-length and never retyped** — see the evidence
+  hygiene note under the Phase 0 gate.
+- **Bundle and resource claims are verified against the built APK**, never the
+  config or source that was meant to produce them.
+
 ## Decisions with precedent value
 
 ### D-1 — Mobile-only commands live on the *shared* invoke surface
