@@ -729,6 +729,20 @@ of that meaning.
 Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
 302 → 313**, with **zero failures attributable to new code at any point**.
 
+**2.1 + 2.3 gate: GREEN** (run 16, at `c4fb4c9`, protocol v2): **321 passed / 0
+failed, zero warnings**, `cleophis` freshly compiled, PRE `c4fb4c9`/clean →
+POST `c4fb4c9`/clean.
+
+**Predicted 313 → 321 before the run; 321 came back — the second consecutive
+exact prediction.** Two in a row is the point at which the rule stops being a
+nice habit and starts being an instrument: the prediction is a claim about
+*which* tests will execute on the target, and a suite that keeps landing on it
+is a suite whose new assertions are demonstrably not being cfg'd into silence.
+A miss in either direction would have been the interesting result — high means
+something unexpected got compiled in, low means something intended did not.
+
+Running total across both phases: **266 → 277 → 286 → 297 → 302 → 313 → 321**.
+
 #### 🔬 The dead-code warning: an evidence-provenance failure, resolved
 
 The most instructive episode of the phase, because the *evidence itself* was
@@ -1383,6 +1397,111 @@ unanchored. **Expect the Windows suite at 313 → 321.**
 
 Not done here: the "not yet" onboarding screen `supported: false` should drive.
 That is UI, and belongs with 2.2.
+
+### 📱 CP1 APK — BUILT and verified against the artifact (at `f56e825`)
+
+```
+sha256  7b068bf307a9549fe3fff4c27c7aef7407c01b9ba0aa94f7250e1012c7bc58c0
+size    355,280,098 bytes
+built   from f56e825 (2.1 + 2.3 + the [kernels] line), debug-signed, arm64-v8a
+copy    ~/cleophis-artifacts/cleophis-cp1-debug-f56e825.apk
+log     ~/cleophis-mobile-logs/apk-debug-20260726-025529.log
+```
+
+Digest produced by `sha256sum` and never retyped; re-hashed at the artifacts
+copy and identical, so the copy is intact too. **This APK supersedes every
+earlier one** — it is the first that can chat.
+
+Verified **against the built APK**, per this document's convention, not against
+the config that was meant to produce it:
+
+| check | result |
+|---|---|
+| zip-entry accounting (the zipflinger orphan trap) | 968 entries, Σ compressed **355,090,078** vs file **355,280,098** — **0.05 % unaccounted**, i.e. no stranded copy |
+| `assets/` contents (the `{}`-vs-`null` resource trap) | **`assets/tauri.conf.json` only** |
+| `lib/` ABIs | **`arm64-v8a` only** |
+| package identity | **`com.cleophis.app`**, versionCode 1000, versionName 0.1.0 |
+| `allowBackup` | **false** (spec-critical, 0.3 batch) |
+| permissions | INTERNET, REQUEST_INSTALL_PACKAGES, POST_NOTIFICATIONS, FOREGROUND_SERVICE, FOREGROUND_SERVICE_SPECIAL_USE |
+
+The size check is the one worth reading twice. **A stranded orphan is invisible
+in the file length** — Phase 0's 334 MiB APK became 658 MiB with half of it an
+unreferenced `libcleophis_lib.so` that no central-directory entry pointed at,
+and it installed and ran perfectly. Only the entry sum can tell the difference,
+so that is what is recorded: the payload is one 345,655,072-byte
+`libcleophis_lib.so`, and everything else is 9 MB of dex, resources and
+`libc++_shared.so`.
+
+`debuggable=true` and `usesCleartextTraffic=true` are present and correct for a
+debug build; both are already on the carried-into-later-phases list for the 5.2
+release-config audit to confirm absent from release.
+
+### 📱 CP1 — the founder session this APK is for
+
+**Sequenced deliberately before 2.2.** The 2.2 field requirements were derived
+from screenshots of an app that *could not chat*; an hour of someone actually
+chatting will produce better ones. Steering accepted the argument, and this is
+the record of it.
+
+**The one result that cannot be obtained any other way:**
+
+> **Send a message. Read the answer. Then send a SECOND message in the SAME
+> chat, and check that the answer addresses what was actually asked.**
+
+That is the acceptance criterion for task 1.5, and nothing off-device can
+produce it. Turn 2 is the first turn that reuses a KV prefix. If invariant 1
+(trim-before-extend) were broken, turn 2 would come back **fluent, confident,
+and about the wrong thing** — the model attending to tokens from turn 1 that are
+no longer in the prompt. **A fast wrong answer is the failure mode, so speed is
+not the check.** The mock backend has no KV cache, so this is the one thing the
+whole test suite cannot say anything about.
+
+Then, in rough priority order:
+
+1. **`[kernels]` in logcat must show `DOTPROD = 1`** (new in `f56e825`). Per the
+   brief, a build without it invalidates every timing number below. This is the
+   first APK that prints its own proof.
+2. **TTFT on turn 2 vs turn 1.** The number 1.5 exists for. What matters is the
+   *shape* — first-token latency should stop growing with conversation length,
+   where pre-1.5 it reached 25–40 s mid-chat.
+3. tok/s and peak RSS; engine reaches `engine-ready` at low tier.
+4. Tampered model file → integrity failure (fail-closed gate).
+5. Stage-5 probes 4/4.
+
+**Expected and NOT defects, so they do not get reported as regressions:**
+
+- **The UI will be rough.** Sidebar takes ~2/3 of the width, the view transition
+  misbehaves, the status pill clips. That is exactly the 2.2 backlog, and this
+  session is partly to sharpen it — notes on what was most *in the way* are the
+  most valuable thing to bring back after the coherence result.
+- **A long conversation will fail with an engine error** rather than truncating,
+  once the prompt exceeds `n_ctx` (2048 at the floor tier). Surfaced above as a
+  product decision, not a bug.
+- **A force-stop logs the user out** — keyring is a silent in-memory mock until
+  3.1.
+- Timing figures are **indicative, not definitive**: this is a debug APK. That
+  matters less than it sounds (see the note below), but the definitive numbers
+  still come from release harness binaries.
+
+#### Why a debug APK can still produce usable numbers
+
+Worth measuring rather than assuming, and it was: llama.cpp is built through the
+`cmake` crate with **`CMAKE_BUILD_TYPE=Release` and `-O3 -DNDEBUG` even inside a
+cargo *debug* build** (confirmed in the generated `ggml-cpu` `flags.make`). The
+kernels where essentially all inference time goes are fully optimized; only the
+Rust glue is unoptimized, and its per-token work is negligible beside a forward
+pass. A release APK is not an option anyway — signing is founder-serialized and
+the ceremony has not happened.
+
+**A provenance caution for whoever checks the dotprod flag next.** The target
+directory holds five `llama-cpp-sys-2` build directories and **the oldest
+predates the vendored patch**, carrying plain `-march=armv8-a`. A
+`find … | head -1` samples exactly that one and looks precisely like "the patch
+is not applied" — it was, briefly, mistaken for that here. The current
+directories carry both `-march=armv8-a` *and* a later
+`-march=armv8.2-a+dotprod` on the same command line, where the later flag wins.
+Same trap as the contaminated gate runs: a correct measurement of the wrong
+artifact. The runtime `[kernels]` line now settles it without archaeology.
 
 ### 2.2 Mobile UI — NOT STARTED
 
