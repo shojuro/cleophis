@@ -147,7 +147,8 @@ zip listing), not from build logs:
   `minSdkVersion:'24'`, `targetSdkVersion:'36'` — the 0.1 identity split is live
   in the shipped artifact, and desktop keeps `com.cleophis.desktop`.
 - Debug-signed (`CN=Android Debug`, SHA-256
-  `552c5cdf…76a3e`) → installs via `adb install` without a signing ceremony.
+  `552c5cdf9d2136e92e6e9d17b4859163fe414d1d794a55e9cf428d6649d76a3e`)
+  → installs via `adb install` without a signing ceremony.
 - 0.3 hardening present in the *packaged* manifest: `allowBackup=false`,
   `REQUEST_INSTALL_PACKAGES`, `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`,
   `FOREGROUND_SERVICE_SPECIAL_USE`, and `service com.cleophis.app.InferenceService`
@@ -200,6 +201,19 @@ the app's own size answers it exactly. A confirming check that had no way to
 come back negative is not a check. Two habits adopted: state what a proposed
 figure would have to be *inconsistent with* before calling it confirmation, and
 treat "in progress" numbers as unverified until a terminal state is observed.
+
+The sharper form of the same lesson: **one number fit two stories, and the
+user's direct observation outranks arithmetic plausibility.** The banner in the
+founder's own screenshot reads "Model not downloaded yet." — ground truth that
+was available the whole time and settles it without arithmetic. When a
+calculation and an observation disagree, the calculation is the thing on trial.
+
+**What survives from that check, and is still useful:** the low tier does
+resolve to `models/Llama-3.2-1B-Instruct-Q4_K_M.gguf` at `fileBytes`
+**807,694,112** (versus mid's 4B at 2,497,280,384 and high's 8B at
+5,027,783,616). So the *right file would be pulled* — that resolution is
+documented and correct. What is withdrawn is only the claim that anything was
+pulled.
 
 Consequences: nothing was killed by app suspend, because nothing started, so the
 suspend-kill theory is withdrawn too. The resume-from-`.part` behaviour is
@@ -299,7 +313,9 @@ Both merge predictions hold: the array was **replaced** (not appended), and
 `enable: true` was **inherited** from the base object. `src-tauri/tauri.conf.json`
 still reads `["$RESOURCE/**"]`, so desktop is untouched.
 
-**APK carrying the fix: sha256 `7616f100…77c4f`, 352,809,173 bytes.** The fix
+**APK carrying the fix — 352,809,173 bytes, sha256**
+`7616f10057904c4a0eb9b5f771de658102ed3cdda739310a5f99bf9159777c4f`
+(independently hashed from the artifact by both this agent and steering). The fix
 itself remains unconfirmed on hardware until the founder reports covers
 rendering — the scope resolution is proven, the visual outcome is not.
 
@@ -420,7 +436,25 @@ target**, which is what turns the scratch-crate run from evidence into
 confirmation. Suite total grew 266 → 277 across the day with zero failures
 attributable to new code.
 
+**Phase 1.3 + cover-fix desktop gate: GREEN** (run 8, at `09899fa`,
+single-threaded): **277 passed / 0 failed, exit 0** — zero flakes, the cleanest
+of the eight runs, requiring no protocol steps at all. Suite total grew
+266 → 277 across the day with **zero failures attributable to new code** at any
+point.
+
 Logs: `scratchpad/win-test-p1-*.log` (steering side).
+
+#### A note on evidence hygiene: digests
+
+A reported APK digest in one of this milestone's status messages was 65 hex
+characters — a duplicated `0` introduced while *retyping* a hash that the tool
+output had given correctly. Caught by steering on sight, since a 65-character
+sha256 cannot exist. No artifact or claim was affected, but the habit it broke
+is worth naming: **never retype a digest, and never record an abbreviated one**
+in a ledger. `7616f100…77c4f` looks tidy and is unverifiable; the full 64
+characters can be re-hashed by anyone. All digests in this document are now
+full-length, and the one above was independently produced by two parties from
+the same artifact.
 
 #### Carried into later phases
 
@@ -603,8 +637,11 @@ in the shared enum only because `EngineInfo` is one serialized shape for both.
 - **It links.** A `check` does not link, and 1.2 is the first code to reference
   `LlamaEngine` for real, so a full APK build was run to prove the native
   symbols resolve: `tauri` exit 0, **352,809,813 bytes**, sha256
-  `5cd5dad1…f5d526`, debug-signed, arm64-v8a only, assets still just
-  `tauri.conf.json`. The +2.9 MB over 1.1 is the kpack-engine wrapper alone —
+  `5cd5dad1d4df4f7fe304714a29831e602a3e0b4d51f39f9b6c6bb210c3f5d526`,
+  debug-signed, arm64-v8a only, assets still just `tauri.conf.json`. (That
+  artifact has since been overwritten by later builds, so unlike the digests
+  above it can no longer be re-derived — superseded artifacts take their
+  verifiability with them.) The +2.9 MB over 1.1 is the kpack-engine wrapper alone —
   llama.cpp's core was already linked in via the bundled BGE embedder.
 
 Generation (`chat_stream` / `chat_complete` / `chat_cancel`, the calc tool-loop,
