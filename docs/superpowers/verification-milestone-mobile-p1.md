@@ -546,6 +546,17 @@ the measurements are only a proxy for it. This is the same instinct as the
 project's other standing rule (verify bundle contents against the built APK, not
 the config that was meant to produce it).
 
+**And the third domain: provenance.** A check can be capable of failing, run
+correctly, and still measure *a different artifact than the one it is labelled
+with* — the case recorded under the dead-code episode, where suite runs pinned
+to commit hashes had actually compiled an in-flight working tree. That failure
+is nastier than the first two, because a correct measurement of the wrong thing
+looks exactly like a correct measurement of the right thing. The countermeasure
+is not a better assertion but a **recorded identity for what was measured**:
+tree state alongside the commit, before and after. Numbers, pixels, provenance —
+each needed its own lesson, and none of the three generalized from the others
+until it had bitten.
+
 **Flaky desktop family: `cloud::rest`/`session` mock-server tests (desktop
 scope, not P1's).** Establishing that Phases 1.1 and 1.2 were non-regressive
 took six full-suite runs across two commits, because the suite is
@@ -579,7 +590,37 @@ branch; a rotating one under load points at the harness. The corollary is that
 the right response to a suspicious green is a same-commit control run, not more
 green runs.
 
-**Gate protocol adopted (steering, from run 6):**
+### ⚑ Gate-run protocol v2 — provenance (supersedes commit-hash-only attribution)
+
+Adopted after the contamination episode above. **A commit hash records what was
+checked out, not what was compiled**, so a run is only attributable to a commit
+if the tree was clean throughout it.
+
+1. Every desktop gate run records `git status --porcelain` **and** HEAD, both
+   **before and after** the run. **All four must agree** — clean tree, same
+   commit, both times.
+2. If they do not agree, the run is attributed to **"live worktree near
+   `<commit>`"**, never to the commit itself.
+3. **Freeze.** When steering launches a gate run it says *"freeze for gate
+   run"*; this agent holds all edits until *"thawed"*. The porcelain check
+   catches contamination after the fact; the freeze prevents it.
+4. Prior runs keep their pass/fail verdicts — a passing superset-in-motion still
+   shows desktop unbroken at that moment — but their **commit attributions are
+   softened** to "live worktree near `<commit>`" wherever a clean tree was not
+   established. One honest sweep, applied below.
+
+**Honest sweep over prior runs (one blanket correction, applied here rather than
+rewriting each line).** No gate run in this document before protocol v2 recorded
+tree cleanliness. Their **verdicts stand** — a suite that passes against a
+superset-in-motion still demonstrates desktop was unbroken at that moment, and
+several ran while nothing was being edited — but **every "at `<commit>`" in the
+gate records below should be read as "live worktree near `<commit>`"** unless
+stated otherwise. Two are known-contaminated and identified as such in the
+episode above (`22f0aa8`, `a959717`); the rest are simply unverified in this
+respect rather than suspect. Restating the whole ledger's precision downward is
+cheaper and more honest than defending each entry individually.
+
+**Gate protocol v1 (steering, from run 6) — flake handling, still in force:**
 1. Gate runs execute the **full suite**.
 2. A failure in the `cloud::rest`/`session` family triggers an isolation rerun
    **plus a same-commit control run**.
@@ -651,41 +692,60 @@ evidence about the *mechanism* rather than noise about the machine — local
 listeners racing for ports lose that race under load. It makes the family
 predictable rather than merely catalogued: expect flakes when the run is slow.
 
-#### A suppression that suppressed nothing — added, then deleted
+#### 🔬 The dead-code warning: an evidence-provenance failure, resolved
 
-Worth the space because both the error and its correction are instructive.
+The most instructive episode of the phase, because the *evidence itself* was
+wrong and it took three rounds to find that out. Recorded in full, since the
+outcome alone would teach nothing.
 
-**The sequence.** A dead-code warning for convstore's three partial-row methods
-appeared at `22f0aa8`. It was diagnosed as transient ("wiring will resolve
-it"), then re-diagnosed — correctly, by steering — as permanent on desktop,
-since only `chat_stream`'s `cfg(mobile)` path checkpoints. A narrow
-`cfg_attr(desktop, allow(dead_code))` was added in `0fa893a` on that reasoning.
+**Round 1 — a wrong prediction.** A dead-code warning for convstore's three
+partial-row methods appeared, and was dismissed as transient: "the wiring will
+resolve it." Steering correctly rejected that: only `chat_stream`'s
+`cfg(mobile)` path checkpoints, so the methods stay dead on desktop *after*
+wiring too. A narrow `cfg_attr(desktop, allow(dead_code))` was added on that
+reasoning. **The failure: predicting a warning would disappear without checking
+what would make it disappear.**
 
-**Then the evidence contradicted it.** The `a959717` run — one commit *before*
-the allow existed — was clean. Steering established that decisively rather than
-by absence: the log's first line is `Compiling cleophis v0.1.0` (so the desktop
-lib really did rebuild), and an **unanchored** grep for `warning` across the
-whole log returns nothing, while the `22f0aa8` log from the same pipeline
-plainly contains the warning. The earlier check had used an anchored `^warning`
-grep, so "the report filtered it" was a live hypothesis until the unanchored
-re-check excluded it.
+**Round 2 — evidence apparently contradicted the fix.** The `a959717` run, one
+commit *before* the allow existed, came back clean; the `22f0aa8` run had
+warned. Steering nailed that down properly — first log line `Compiling cleophis
+v0.1.0`, and an *unanchored* `warning` grep over the whole log returning nothing
+(the earlier check used anchored `^warning`, so "the report filtered it" stayed
+live until the unanchored re-check excluded it). On that basis the allow
+suppressed nothing and was **deleted**, which was the right call *given that
+evidence*. Source was also checked rather than assumed, which **disproved** the
+proposed mechanism: every call site (`chat_cmds.rs` 262, 320, 332, 335) sits
+inside `#[cfg(mobile)] mod imp` (82–357), so those calls really are cfg-stripped
+on desktop. That left an explicit, recorded contradiction between the model and
+the measurement.
 
-**Verdict: the allow suppressed nothing, so it was deleted.** By the standard
-this phase set for itself, that is the only defensible outcome — an allow with
-nothing to suppress is strictly worse than no allow, because it silently masks
-a *future* genuinely-dead method on that same impl. That is precisely the blind
-spot the 5.3 `mobile-check` job must not inherit.
+**Round 3 — the measurements were contaminated.** Commit times: `22f0aa8` at
+18:20:54, `a959717` at 18:36:10, `0fa893a` at 19:02:44. The "22f0aa8" suite run
+executed inside 18:20→18:36 and the "a959717" run inside 18:36→19:02 — both
+while this agent was **actively editing the same live worktree**. The first
+compiled a tree with the allows stripped mid-flight (so it warned); the second
+compiled a tree with the allow already re-added (so it was clean). **The gate
+runs verified HEAD's hash and never the tree's cleanliness, so they compiled
+work-in-progress and attributed it to a commit.**
 
-**The mechanism remains unexplained, and is recorded as unexplained.** Source
-was checked rather than assumed: every call site (`chat_cmds.rs` lines 262, 320,
-332, 335) lies inside `#[cfg(mobile)] mod imp` (lines 82–357), so the
-"shared code merely runtime-guarded by the desktop refusal" hypothesis is
-**disproven** — the calls really are cfg-stripped on desktop. Why the warning
-nevertheless stopped appearing after the wiring is not understood. Empirical
-evidence beats an unverified model, so the allow goes; if the warning returns
-after the revert, then the allow *was* doing work and the `a959717` observation
-needs re-examination. Either way the next run settles it, and nothing is
-recorded as resolved that isn't.
+**Resolution: both anomalous data points are invalid. The original model was
+correct, and the allow is restored** with its rationale unchanged — desktop has
+no caller for these and never will, so the attribute states a true permanent
+platform fact, narrowly scoped to three methods.
+
+**Why this is the phase's sharpest lesson.** The previous two lessons were about
+checks that couldn't fail — a percentage that fit any number, assertions that
+measured a bounding box while the defect sat inside it. This one is worse and
+subtler: **the check was capable of failing, ran correctly, and measured a
+different artifact than the one it was labelled with.** A run pinned to a commit
+hash proves only which commit was *checked out*, not what was *compiled*. Three
+domains now — numbers, pixels, and **provenance** — and provenance is the one
+where a correct measurement of the wrong thing is indistinguishable from a
+correct measurement of the right thing, unless you record what you compiled.
+
+Contributing factor on this side, not only steering's: **editing a shared
+worktree while a gate run is in flight.** The freeze protocol below fixes the
+collection flaw; not editing during a run is the other half.
 
 Test-count trajectory across the phase, all green: **266 → 277 → 286 → 297 →
 302**, with **zero failures attributable to new code at any point in the

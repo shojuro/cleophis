@@ -403,6 +403,10 @@ impl ConvStore {
     ///
     /// At most one partial row exists per chat: the first call inserts, later
     /// calls overwrite that row's content. Returns its id.
+    // Mobile-only: only `chat_stream`'s cfg(mobile) path checkpoints, because
+    // desktop's transport streams through the sidecar and never writes an
+    // in-flight row. Dead on desktop by platform fact, not by oversight.
+    #[cfg_attr(desktop, allow(dead_code))]
     pub fn checkpoint_partial(
         &self,
         user_id: &str,
@@ -442,6 +446,10 @@ impl ConvStore {
 
     /// Promote the in-flight row to a finished message: final content, and
     /// `partial` cleared so recovery stops treating it as truncated.
+    // Mobile-only: only `chat_stream`'s cfg(mobile) path checkpoints, because
+    // desktop's transport streams through the sidecar and never writes an
+    // in-flight row. Dead on desktop by platform fact, not by oversight.
+    #[cfg_attr(desktop, allow(dead_code))]
     pub fn finalize_partial(
         &self,
         user_id: &str,
@@ -468,6 +476,10 @@ impl ConvStore {
 
     /// Drop the in-flight row for `chat_id`, if any — used when a turn is
     /// cancelled before producing anything worth keeping.
+    // Mobile-only: only `chat_stream`'s cfg(mobile) path checkpoints, because
+    // desktop's transport streams through the sidecar and never writes an
+    // in-flight row. Dead on desktop by platform fact, not by oversight.
+    #[cfg_attr(desktop, allow(dead_code))]
     pub fn discard_partial(&self, user_id: &str, chat_id: i64) -> Result<(), String> {
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
