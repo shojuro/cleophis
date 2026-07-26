@@ -274,6 +274,21 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                         // No GPU offload on Android: CPU-first is policy
                         // (spec §1/H3), not a fallback.
                         engine.gpu_offload.store(false, Ordering::Relaxed);
+                        // Publish the window this tier actually runs with,
+                        // BEFORE `engine-ready` carries it to the frontend
+                        // (decision D-4). `session_config` stays the only place
+                        // the tier→window rule is written; this reads it rather
+                        // than restating it, which is the whole point — the bug
+                        // being fixed was a second copy of this number living
+                        // in another language.
+                        //
+                        // A tier switch restarts the engine and comes back
+                        // through here, so the frontend's window updates on the
+                        // same event that tells it the engine is ready again.
+                        let tier = crate::tier_select::effective_tier(&app);
+                        engine
+                            .n_ctx
+                            .store(session_config(&tier).n_ctx, Ordering::Relaxed);
                         engine.set_status(EngineStatus::Ready);
                         let _ = app.emit("engine-ready", engine.info());
                     }

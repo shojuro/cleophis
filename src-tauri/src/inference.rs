@@ -17,7 +17,7 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(desktop)]
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(desktop)]
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -46,12 +46,39 @@ pub enum EngineStatus {
     NoModel,
 }
 
+/// The sidecar's context window. Desktop has exactly one, so it lives here and
+/// `build_server_args` reads it rather than repeating the literal.
+///
+/// The two `build_server_args` unit tests deliberately keep the literal `4096`
+/// in their expected arg vectors: a test that derived its expectation from this
+/// constant would pass for any value the constant took, which is no test at
+/// all. The constant is the single source; the test is the independent check.
+pub const DESKTOP_N_CTX: u32 = 4096;
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineInfo {
     pub port: u16,
     pub status: EngineStatus,
     pub gpu_offload: bool,
+    /// The context window the loaded engine is actually running with, so the
+    /// frontend can size its request to the real limit instead of assuming one.
+    ///
+    /// This field exists because assuming was wrong (decision D-4). `app.js`
+    /// hard-coded `N_CTX = 4096` under a comment reading "must match
+    /// inference.rs `-c`" — true when written, since desktop has one context
+    /// size. Phase 1.2 then gave mobile a *per-tier* window (2048 on the floor
+    /// tier), and nothing propagated that to the frontend, which had no way to
+    /// discover it: `EngineInfo` reported port, status and gpu_offload and
+    /// nothing about the window. So on the reference device the frontend
+    /// budgeted ~3456 tokens of history against an engine holding 2048, and
+    /// the decode failed instead of the history being trimmed.
+    ///
+    /// Reporting it here removes the second copy of the number rather than
+    /// correcting it. Correcting `4096` to a tier-aware expression in the
+    /// frontend would have left the tier→window rule written in two languages,
+    /// which is the mechanism that produced the bug in the first place.
+    pub n_ctx: u32,
 }
 
 pub struct Engine {
@@ -67,6 +94,12 @@ pub struct Engine {
     pub(crate) inproc: crate::engine_inproc::ThreadSlot,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
+    /// The context window of whatever is currently loaded, surfaced through
+    /// [`EngineInfo::n_ctx`]. Desktop's sidecar always runs [`DESKTOP_N_CTX`];
+    /// mobile stamps the tier's window here when a load succeeds, so the
+    /// `engine-ready` event that follows a tier switch carries the new value
+    /// without the frontend having to ask for it.
+    pub(crate) n_ctx: AtomicU32,
     /// True while a `start` watchdog thread is alive. A tier switch waits on
     /// this (via [`restart`]) so the old thread fully exits before a new one
     /// spawns — otherwise the two would fight over `child`/VRAM. Set
@@ -123,6 +156,14 @@ impl Engine {
             inproc: Default::default(),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
+            // Desktop's value. On mobile this is momentarily too LARGE (the
+            // floor tier is 2048), and that is safe for one specific reason
+            // rather than by luck: the window is only ever consulted while
+            // rendering a turn, a turn requires a loaded engine, and a
+            // successful load stamps the real value below before it emits
+            // `engine-ready`. There is no interval in which a turn can be sized
+            // against this initial value.
+            n_ctx: AtomicU32::new(DESKTOP_N_CTX),
             thread_alive: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             #[cfg(desktop)]
@@ -140,6 +181,7 @@ impl Engine {
             port: self.port,
             status: self.status.lock().unwrap().clone(),
             gpu_offload: self.gpu_offload.load(Ordering::Relaxed),
+            n_ctx: self.n_ctx.load(Ordering::Relaxed),
         }
     }
 
@@ -543,7 +585,7 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<
         "-ngl".to_string(),
         ngl.to_string(),
         "-c".to_string(),
-        "4096".to_string(),
+        DESKTOP_N_CTX.to_string(),
         "--no-webui".to_string(),
         "--jinja".to_string(),
     ];
@@ -898,6 +940,30 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The frontend sizes every request from `EngineInfo::n_ctx` (decision
+    /// D-4), so a desktop engine that under-reports its window would silently
+    /// shrink every conversation, and one that over-reports would fail decodes
+    /// — the exact bug D-4 fixed, reintroduced from the other side.
+    ///
+    /// This pins the reported value to the sidecar's actual `-c`. Note it
+    /// compares against the *arg vector* rather than against `DESKTOP_N_CTX`:
+    /// asserting the constant equals itself would pass for any value.
+    #[test]
+    fn engine_reports_the_window_the_sidecar_is_launched_with() {
+        let reported = Engine::new(8080).info().n_ctx;
+        let args = build_server_args(&PathBuf::from("/models/base.gguf"), 8080, 0, &[]);
+        let c_flag = args
+            .iter()
+            .position(|a| a == "-c")
+            .map(|i| args[i + 1].clone())
+            .expect("the sidecar is always launched with -c");
+        assert_eq!(
+            c_flag,
+            reported.to_string(),
+            "EngineInfo.n_ctx must equal the sidecar's -c, or the frontend budgets against a window the engine does not have",
+        );
     }
 
     #[test]

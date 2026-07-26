@@ -3,6 +3,7 @@ import { CALC_TOOL } from './calc-tool.js';
 import { streamWithTools } from './calc-loop.js';
 import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS } from './engine-state.js';
+import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -1196,42 +1197,18 @@ async function newChat() {
 
 /* ---------------- chat ---------------- */
 
-// §7 S7-4: fit each request to n_ctx. Mirror the engine: server runs with
-// `-c 4096` (inference.rs) and each request reserves max_tokens for the
-// reply. We keep the most-recent messages that fit the remaining budget so
-// a long chat never overflows n_ctx (which would make llama.cpp
-// context-shift/truncate unpredictably — silent quality loss or errors).
-const N_CTX = 4096;         // must match inference.rs `-c`
-const REPLY_RESERVE = 512;  // must match the request's max_tokens
-const CTX_SAFETY = 128;     // headroom for tokenizer estimate error + framing
+// §7 S7-4 / D-4: fit each request to the window the engine ACTUALLY has.
+// Policy and arithmetic live in `context-window.js`, where they are tested at
+// both shipping window sizes; the window itself is read from the engine via
+// `engineWindow(state.engine)`, because the previous version of this comment
+// said "must match inference.rs `-c`" and was true right up until mobile got a
+// per-tier window that nothing propagated. See that module's header.
 // Appended to the system prompt on UNGROUNDED turns (no packs attached this
 // turn). Without grounding the base model will otherwise parrot/fabricate
 // "source titles" from earlier grounded turns still in the transcript — the
 // grounded path is hardened symmetrically in retrieve.rs. Interim mitigation;
 // the contract-trained LoRA adapter is the real fix for grounding-honesty.
 const UNGROUNDED_NO_SOURCES_NOTE = ' No documents are attached to this conversation, so you have no sources to cite. Do not list, cite, or invent source titles; if asked about your sources, say none are attached.';
-// Deliberately conservative (~3.5 chars/token OVER-estimates tokens → we
-// under-fill and stay under n_ctx rather than risk overflow).
-function estTokens(s) { return Math.ceil((s ? s.length : 0) / 3.5) + 4; /* +4 ≈ role framing */ }
-
-// Returns the most-recent contiguous suffix of `messages` that fits the
-// budget left after the fixed preamble (system + greeting) and the reply
-// reserve, plus how many older messages were dropped. Always keeps at
-// least the final message (the current user turn) even if it alone is huge
-// (degenerate — the engine will truncate that one; extremely rare). Pure —
-// no state reads — so it's trivially reasoned-about and testable.
-function windowMessages(messages, systemContent, greetingContent) {
-  const budget = N_CTX - REPLY_RESERVE - CTX_SAFETY
-    - estTokens(systemContent) - estTokens(greetingContent);
-  let used = 0, startIdx = messages.length;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const t = estTokens(messages[i].content);
-    if (i < messages.length - 1 && used + t > budget) break; // always keep the last
-    used += t; startIdx = i;
-  }
-  return { sent: messages.slice(startIdx), droppedCount: startIdx };
-}
-
 function enterChat(m) {
   // A pack attached in one chat shouldn't silently carry into another
   // model's chat (e.g. a medical pack leaking into an education chat).
@@ -1311,7 +1288,7 @@ function updateContextDivider() {
   // grounded (which would shrink the window further via a larger system
   // prompt), so this uses the plain systemPrompt as an honest baseline,
   // not a guarantee.
-  const { droppedCount } = windowMessages(state.chat.messages, m.systemPrompt, m.greeting);
+  const { droppedCount } = windowMessages(state.chat.messages, m.systemPrompt, m.greeting, engineWindow(state.engine));
   if (droppedCount <= 0) return;
   // index 0 of .msg is the greeting bubble; indices 1.. map 1:1 to
   // state.chat.messages, so messageBubbles[droppedCount] is the first
@@ -1770,7 +1747,7 @@ async function sendCompletion(userText) {
     // Short chats are unaffected: windowMessages returns the whole list
     // (droppedCount 0), so behavior is byte-identical to before.
     const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
-    const win = windowMessages(state.chat.messages, sys, m.greeting);
+    const win = windowMessages(state.chat.messages, sys, m.greeting, engineWindow(state.engine));
     // One turn, described once for both platforms (task 2.1). On desktop this
     // lands in `calc-loop.js`, which owns the fetch/SSE-parse/tool-execute/
     // resubmit cycle end to end and is Tauri/DOM-free by design; on Android it
