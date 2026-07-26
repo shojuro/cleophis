@@ -1582,6 +1582,29 @@ permanently green "Local · offline" beside a model that is not on disk reads as
 "running fine, locally" — which is how someone concludes a download happened
 when none did. 2.2 therefore **built** engine state rather than restyling it.
 
+**The causal chain, in order**, because each link was recorded separately and
+read at the time as a different problem:
+
+1. **The pill was hard-coded.** One occurrence, in `index.html`, never read or
+   written.
+2. **So the founder's CP0 report was 100 % accurate.** "Could not identify the
+   engine-state element" was not a complaint about a small or badly-placed
+   affordance — there was no such element, and taking "the pill" to mean the
+   download button was the *correct* reading of what was on screen.
+3. **So the product note was literal.** "Every mechanism that would make the
+   claim tangible either flashes past unreadably or sits in a corner the user
+   never looks at — the app spends those moments silently" describes a codebase
+   in which no code existed that could have spent them otherwise.
+4. **So 2.2 built the presentation layer rather than restyling it.** There was
+   nothing to restyle. That is why this item's shape differs from every other
+   entry on the 2.2 list, which were all genuine fixes to things that existed.
+
+**Named invariant — the dwell governs DISPLAY, never CAPABILITY.** The 700 ms
+floor paces the narration so a state can be read; it never delays the composer,
+which enables the moment the engine is genuinely ready. Pacing the story the
+product tells about itself is a product choice. Pacing the product would be a
+regression wearing the same clothes, and the two are one careless line apart.
+
 `src/engine-state.js`, pure and tested (**decision D-3** — logic whose failure
 mode is silent goes where the tests run; a status line that says the wrong
 thing throws nothing and looks exactly like one that says the right thing):
@@ -1892,18 +1915,229 @@ closure, drop it. There is no decision left in it to get wrong.
 **Precedent it extends:** `tools.rs` and `tool_loop.rs` were placed this way in
 1.3–1.4 for the same reason. D-3 states the rule those two were following.
 
+### D-4 (FOUNDER) — Truncate-oldest for the model's window; storage is never truncated
+
+**Decision:** when the rendered prompt would exceed `n_ctx`, the oldest turns
+are dropped from the *request*. The on-screen transcript and the convstore
+rows are **never** truncated. No user-facing notice by default (the founder
+chose plain truncation over the notice variant).
+
+The storage half is already true by architecture, and it is stated here as a
+decision precisely so that nobody later "optimises" storage to match the
+window. It is also load-bearing for a P3 feature — see the long-term-memory
+note under future work — because a transcript that was trimmed to fit a phone's
+context can never be re-ingested for retrieval later. **The full transcript is
+the enabler; protect it.**
+
+**What implementing it actually required, which was not what the ledger
+predicted.** This document previously recorded "**No context-window
+management** — a prompt exceeding `n_ctx` fails its decode rather than
+truncating." That diagnosis was wrong. Management existed the whole time:
+
+- `windowMessages` (`src/app.js`) already returned the most-recent suffix that
+  fits a budget, already reported `droppedCount`, and is pure and testable;
+- `updateContextDivider()` already drew the boundary in the transcript;
+- nothing ever truncated the DB.
+
+What was wrong was one number:
+
+| where | value |
+|---|---|
+| `src/app.js` | `const N_CTX = 4096;  // must match inference.rs \`-c\`` |
+| `src-tauri/src/inference.rs` (desktop sidecar) | `-c 4096` |
+| `src-tauri/src/engine_inproc.rs:504` | `n_ctx: if tier == "low" { 2048 } else { 4096 }` |
+
+On the A22 — a **low**-tier device, and the reference device — the frontend
+budgeted roughly **3456 tokens of history against an engine holding 2048 in
+total**. It truncated correctly and far too late, so the decode failed and the
+user saw an engine error.
+
+**Why it drifted is the transferable part.** The comment "must match
+`inference.rs` `-c`" was *true when written*: desktop had exactly one context
+size. Phase 1.2 introduced a **per-tier** mobile `n_ctx` and nothing propagated
+it to the frontend constant. Two numbers that must agree, and a comment naming
+only one of the two places they live. The frontend could not even discover the
+truth: `EngineInfo` carried `port`, `status`, `gpu_offload` and no context
+size, so 4096 was not a lazy default — it was the only number available.
+
+**Fix: delete the second copy rather than correct it.** `n_ctx` is reported on
+`EngineInfo` and the frontend reads it, with 4096 as the fallback for an older
+backend. Deriving the window from the tier on the frontend was rejected: it
+would duplicate the tier→`n_ctx` rule in a second language, which is exactly
+how this drifted.
+
+**Interaction with 1.5 (prefix-KV reuse), by design:** dropping the head of the
+history invalidates the cached prefix. That is correct and expected, and it is
+handled by the existing trim-before-extend path rather than a special case —
+the mirror compares token ids, so a changed prefix costs reuse and never
+correctness (invariant 1 in the 1.5 section). A turn immediately after a
+truncation is coherence-tested in the serve-loop's style, because "fast and
+about the wrong thing" is the failure mode that would otherwise be silent.
+
+**The family this belongs to.** A function that is present, correct-looking,
+commented, pure, and silently mis-parameterised sits alongside
+`bundle.resources = {}` (a merge that reads as correct and does nothing) and
+the gate run labelled with the wrong commit. In all three the code and its
+documentation agreed with each other and disagreed with reality. That is the
+family's cleanest definition yet: **present, correct-looking, commented, and
+silently mis-parameterised.**
+
+#### 🔬 The drift etiology — a comment is a coupling declaration, not a reminder
+
+Worth separating from D-4, because the mechanism outlives this particular
+number.
+
+`// must match inference.rs \`-c\`` is a *good* comment by every normal
+standard. It is specific, it names the other side, it explains why the constant
+has the value it has, and **it was true when written.** It became a trap
+without ever becoming false: Phase 1.2 introduced a per-tier `n_ctx` on mobile,
+so the set of places that must agree grew from two to three, and the comment —
+which can only ever name the places that existed when someone typed it — kept
+pointing at the one it knew about. Nothing was edited incorrectly. Nothing
+warned. The comment aged into a lie by addition rather than by change.
+
+**The rule: a cross-reference in a comment is a declaration that a coupling
+exists, and a coupling wants a single source, not a reminder.** When you find
+yourself writing "must match X", you have discovered a duplicated fact, and the
+comment is a note that you chose to keep the duplicate. Sometimes that is the
+right trade — but it should be a decision, and it carries an obligation that
+the *next* person to add a third copy will not know they have inherited.
+
+Concretely, that is why D-4's fix reports `n_ctx` on `EngineInfo` instead of
+correcting `4096` to a tier-aware expression: correcting the value would have
+left three places that must agree and a comment naming one of them, which is
+the same trap reset with a fresher number. Removing the second copy is the only
+version that cannot recur.
+
+The corollary for reviewers: **"must match" in a comment is a smell with a
+half-life.** It is harmless the day it is written and dangerous the day someone
+adds a platform, a tier, or a mode — which, on this branch, is most days.
+
+**The control case is on the very next line, which is what makes this
+provable rather than merely plausible:**
+
+```js
+const N_CTX = 4096;         // must match inference.rs `-c`
+const REPLY_RESERVE = 512;  // must match the request's max_tokens
+```
+
+Two adjacent constants, the same "must match" phrasing, opposite outcomes.
+`REPLY_RESERVE` is **safe**, because the value it must match is *passed from
+this constant* — `baseBody: { max_tokens: REPLY_RESERVE }`, with its own
+comment saying "bound to the windowing reserve so the two can't drift". The
+coupling was collapsed to one source and the comment merely describes it.
+`N_CTX` is **unsafe**, because the value it must match lives in another
+language, in a branch on tier, and was never plumbed back — so the comment is
+all that holds the coupling together, and a comment holds nothing.
+
+Same file, same author, same idiom, one line apart: the difference is not
+discipline or care, it is **whether the fact has one home or two.** That is the
+whole rule, and it is why "be careful to update both places" is not a fix.
+
+**An audit of the same pattern across the tree** (`must match` / `keep in sync`
+/ `mirrors`) found the rest to be descriptive rather than duplicated-fact
+couplings — shape and rationale comments, which are fine — with one genuine
+cross-language duplicate left standing and surfaced rather than fixed here:
+`src/calc-tool.js` declares the calc grammar and says "Keep in sync with
+`crates/kpack-calc`". That one is a real second home for a real fact. It is out
+of 2.2's scope, it is not currently wrong, and it is now written down.
+
+### D-5 — Mobile divergence keys on a platform CLASS, never on viewport width
+
+**Decision:** every mobile CSS rule is scoped under `.is-mobile`, a class set
+on `<html>` from the same `isAndroid(navigator.userAgent)` predicate that
+chooses the transport. No `@media` query gates mobile behaviour.
+
+**Rejected alternative:** a width breakpoint (`@media (max-width: 700px)`),
+which is the conventional answer and reads as more idiomatic CSS.
+
+**Rationale.** The standing constraint is that **desktop behaviour is
+byte-identical**, and a width-keyed rule silently breaks it: a desktop user who
+narrows their window would get the drawer, the hidden cost counter and the
+rebuilt chat bar — a behaviour change nobody asked for, invisible in review,
+and uncatchable by the desktop suite (which cannot see CSS). Keying on the
+platform makes the invariant hold **at every width**, which is a property you
+can check by reading one class name instead of reasoning about breakpoints.
+
+**Evidence:** verified in a real browser with a desktop UA at **1280px and at
+360px** — static 260px sidebar, `display:none` on all five new elements,
+`--app-h` unset, and the pill still reading `"Local · offline"` *after*
+`engine-ready` and `download-progress` were pushed through the machinery. The
+360px run is the one that matters: it is the case a media query would have
+broken, and it is the reason the check was run at two widths rather than one.
+
+**Precedent it extends:** the same reasoning as `transport.js` choosing its
+platform once at startup rather than per call. One predicate, one place.
+
+---
+
+#### 🔬 Numbers right, pixels wrong — the exhibit, now four entries
+
+**Three in one session, none caught by an assertion.** Alongside the adaptive
+icon (bounding box correct, contents wrong), 2.2 produced three more, and the
+tally is the point: **the screenshot is the check-that-can-fail for a visual
+claim, the way a same-commit control run is for a flaky suite.**
+
+| # | defect | why the assertion passed |
+|---|---|---|
+| 1 | pill rendered `"Ready — r"` | the assertion checked the pill's *rect* was inside the viewport, and it was — the text inside the rect was clipped |
+| 2 | model name ellipsised to `"Socratic…"` | `.grow` is `flex:1` and so is `.chattitle`, so the spacer split the free width; nothing measured the *title's* share |
+| 3 | pill and prominent row both visible | `pill.hidden = true` did nothing, because `.pill{display:inline-flex}` is an author rule and beats the UA `[hidden]{display:none}`. The code's comment claimed exactly one element was visible and was simply false |
+
+Defect 3 is the sharpest: **the comment and the code disagreed, and only a
+picture could say which was right.**
+
+This also previews the limitation flagged when 2.2 was assigned. The harness
+converts geometry into fact; it cannot say whether a screen reads well. The
+founder's device session remains the visual gate, and no amount of assertion
+count substitutes for it.
+
+
 ---
 
 ## ⚑ Surfaced for Phase 2 scoping (founder decision, do not solve unilaterally)
 
-**Context-window policy.** A conversation whose rendered prompt exceeds `n_ctx`
-(2048 on the floor tier, 4096 above) fails its decode and surfaces an engine
-error rather than truncating. Pre-existing — a fresh session per turn overflowed
-at the same conversation length — but the desktop sidecar shifts context itself,
-so CP1 is the first place it can be seen. The options are truncate-oldest,
-summarise-and-carry, or refuse-with-a-new-chat prompt, and they differ in what
-the product promises about memory rather than in difficulty. Expect it at CP1
-with a long chat.
+**Context-window policy — RESOLVED as decision D-4 (truncate-oldest).** The
+paragraph that stood here described the overflow as unmanaged. It was not: the
+windowing existed and was handed the wrong number. See D-4 above for the
+policy, the root cause, and the fix.
+
+## Future work (founder-originated; logged, not scheduled)
+
+### Long-term memory via RAG at link time (P3+)
+
+When §6 device-to-device sync lands, conversation history syncs to the desktop
+and becomes RAG-ingestible, so the tutor regains old context by **retrieval**
+while the phone keeps only its working window. **Phone = working memory,
+library = long-term memory.**
+
+This is why D-4's never-truncate-storage half is an invariant rather than an
+implementation detail: a transcript trimmed to fit a phone's context can never
+be re-ingested later. The cheap "optimisation" of matching storage to the
+window would quietly destroy this feature's input years before anyone tried to
+build it.
+
+### Mobile pack creation + query (post-P1-gate or alongside P3 — founder to decide)
+
+Upload files from the phone, build a personal pack, query it in chat.
+
+**This supersedes spec v1.1 §0's "pack building" non-goal by founder decision,
+so it needs a spec-amendment line and a deliberate scoping decision at a phase
+boundary — it is not a backlog item that can be quietly picked up.**
+
+Technical shape, known from the plan phase:
+- **Feasible now:** text/MD ingest + embedder + `rag_query` — `kpack-core` and
+  `kpack-embed` already compile for aarch64. The BGE GGUF is ~118 MB, so tier
+  and storage accounting are needed (it is a meaningful fraction of a floor
+  device's budget next to the model itself).
+- **Blockers:** pdfium (PDF) and tesseract (OCR) are desktop-native with no
+  mobile port — either replaced or excluded from v1 of the feature.
+- **Another Kotlin-shim surface:** file access is SAF/content-URIs through the
+  dialog plugin, joining `ConnectivityManager`, `ACTION_SEND` and the
+  AndroidKeyStore bridge.
+
+It composes with the long-term-memory note above into one story: **the phone
+gains its own library.**
 
 ## Phase 0 founder items surfaced (⚑0.4)
 
