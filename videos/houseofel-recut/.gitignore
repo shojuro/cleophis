@@ -1,0 +1,13 @@
+# Third-party footage and every derivative are deliberately NOT committed.
+# This repository is PUBLIC; the source clip is someone else's copyrighted video
+# and carries their likeness. Only the reproducible composition source is tracked.
+public/input-video.mp4
+public/snapshots/
+snapshots/
+renders/
+chunks/
+audio.mp3
+transcript.json
+*.mp4
+*.png
+*.jpg
