@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* True Georgia, copied from the host's licensed Windows font store —
+         the Linux render host has no Georgia and would substitute DejaVu Serif.
+         Files are render-time inputs only (not committed); provenance in assets/index.md. */
+      @font-face {
+        font-family: Georgia;
+        src: url("assets/fonts/georgia.ttf") format("truetype");
+        font-style: normal;
+        font-weight: 400;
+      }
+      @font-face {
+        font-family: Georgia;
+        src: url("assets/fonts/georgiai.ttf") format("truetype");
+        font-style: italic;
+        font-weight: 400;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      body {
+        font-family: Georgia, "Times New Roman", serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ---- palette (single source of truth; -rgb triples feed the gradients) ---- */
+      :root {
+        --black: #000000;
+        --flash-white: #fff7ea;
+        --gold: #ffd08a;
+        --orange: #ff7a29;
+        --ember: #9e2b1e;
+        --ash: #6e635c;
+        --soot: #2a2726;
+        --cobalt: #0047ab;
+        --frost: #ecf2fa;
+
+        --flash-white-rgb: 255, 247, 234;
+        --orange-rgb: 255, 122, 41;
+        --ember-rgb: 158, 43, 30;
+        --ash-rgb: 110, 99, 92;
+        --soot-rgb: 42, 39, 38;
+
+        --glass-tint: rgba(240, 246, 255, 0.3);
+        --glass-edge: rgba(255, 255, 255, 0.45);
+        --glass-sheen: rgba(255, 255, 255, 0.12);
+        --vignette-edge: rgba(0, 0, 0, 0.7);
+      }
+
+      /* ---- sized root (HF contract) ---- */
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+      }
+
+      /* ---- the two clips ---- */
+      #stage-bg {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        z-index: 0;
+      }
+      #panel-clip {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+      }
+
+      /* ================= clip A: explosion stack (back to front) ================= */
+      .bg-layer {
+        position: absolute;
+        inset: 0;
+      }
+
+      #bg-base {
+        background: var(--black);
+      }
+
+      /* sky-wash: horizon glow at 79% of frame height (= y 853, the horizon line) */
+      #sky-wash {
+        background: radial-gradient(
+          ellipse at 50% 79%,
+          rgba(var(--orange-rgb), 0.55),
+          transparent 60%
+        );
+        opacity: 0;
+      }
+
+      /* the cooling group: everything that decays gold -> ember -> ash */
+      #explosion-wrapper {
+        transform-origin: 50% 78%;
+      }
+
+      /* ground haze — ellipse 1700x260 centered (960, 870) */
+      #ground-haze {
+        position: absolute;
+        left: 110px;
+        top: 740px;
+        width: 1700px;
+        height: 260px;
+        border-radius: 50%;
+        background: radial-gradient(
+          closest-side,
+          rgba(var(--ash-rgb), 0.85),
+          rgba(var(--soot-rgb), 0.5) 60%,
+          transparent
+        );
+        filter: blur(40px);
+        opacity: 0;
+      }
+
+      /* stem — 200x460 anchored bottom at (960, 850) = the horizon */
+      #stem {
+        position: absolute;
+        left: 860px;
+        top: 390px;
+        width: 200px;
+        height: 460px;
+        border-radius: 45% 45% 0 0;
+        background: linear-gradient(
+          var(--orange) 0%,
+          var(--ember) 45%,
+          var(--ash) 100%
+        );
+        filter: blur(18px);
+        transform-origin: 50% 100%;
+        opacity: 0;
+      }
+
+      /* skirt — Wilson-cloud condensation ring, 520x140 centered (960, 640) */
+      #skirt-ring {
+        position: absolute;
+        left: 700px;
+        top: 570px;
+        width: 520px;
+        height: 140px;
+        border: 5px solid rgba(var(--flash-white-rgb), 0.35);
+        border-radius: 50%;
+        filter: blur(10px);
+        opacity: 0;
+      }
+
+      /* fireball — 0x0 anchor at the birth point (960, 860); children hang off it,
+         so group scale/ascent pivot on the detonation centre itself */
+      #fireball-group {
+        position: absolute;
+        left: 960px;
+        top: 860px;
+        width: 0;
+        height: 0;
+      }
+      #fireball-halo {
+        position: absolute;
+        left: -450px;
+        top: -450px;
+        width: 900px;
+        height: 900px;
+        border-radius: 50%;
+        background: radial-gradient(
+          closest-side,
+          rgba(var(--orange-rgb), 0.7),
+          transparent 70%
+        );
+        filter: blur(60px);
+        opacity: 0;
+      }
+      #fireball-core {
+        position: absolute;
+        left: -310px;
+        top: -310px;
+        width: 620px;
+        height: 620px;
+        border-radius: 50%;
+        background: radial-gradient(
+          closest-side,
+          var(--flash-white) 0%,
+          var(--gold) 35%,
+          var(--orange) 65%,
+          rgba(var(--ember-rgb), 0.6) 85%,
+          transparent
+        );
+        filter: blur(8px);
+      }
+
+      /* cap — 0x0 anchor at the assembly zone (960, 400); the cluster straddles the
+         glass band's top edge (y 360) so the cloud billows behind and above it */
+      #cap-cluster {
+        position: absolute;
+        left: 960px;
+        top: 400px;
+        width: 0;
+        height: 0;
+      }
+      .cap-blob {
+        position: absolute;
+        border-radius: 50%;
+        opacity: 0;
+      }
+      #cap-torus {
+        left: -320px;
+        top: 25px;
+        width: 640px;
+        height: 160px;
+        background: radial-gradient(
+          closest-side,
+          rgba(var(--soot-rgb), 0.9),
+          rgba(var(--soot-rgb), 0.4) 60%,
+          transparent
+        );
+        filter: blur(30px);
+      }
+      #cap-center {
+        left: -360px;
+        top: -210px;
+        width: 720px;
+        height: 420px;
+        background: radial-gradient(
+          closest-side,
+          var(--gold) 0%,
+          var(--orange) 55%,
+          rgba(var(--ember-rgb), 0.7) 100%
+        );
+        filter: blur(30px);
+      }
+      .cap-inner {
+        top: -150px;
+        width: 420px;
+        height: 300px;
+        background: radial-gradient(
+          closest-side,
+          var(--orange) 0%,
+          var(--ember) 65%,
+          rgba(var(--ember-rgb), 0.55) 100%
+        );
+        filter: blur(34px);
+      }
+      #cap-inner-l {
+        left: -400px;
+      }
+      #cap-inner-r {
+        left: -20px;
+      }
+      .cap-outer {
+        top: -120px;
+        width: 320px;
+        height: 240px;
+        background: radial-gradient(
+          closest-side,
+          var(--ember) 0%,
+          var(--ash) 60%,
+          rgba(var(--ash-rgb), 0.45) 100%
+        );
+        filter: blur(38px);
+      }
+      #cap-outer-l {
+        left: -490px;
+      }
+      #cap-outer-r {
+        left: 170px;
+      }
+
+      /* shockwave — 300x120 centered (960, 850). Deliberately OUTSIDE
+         #explosion-wrapper: it is gone by 3.1s and must never take the cooling tween */
+      #shockwave {
+        position: absolute;
+        left: 810px;
+        top: 790px;
+        width: 300px;
+        height: 120px;
+        border: 6px solid rgba(var(--flash-white-rgb), 0.8);
+        border-radius: 50%;
+        filter: blur(4px);
+      }
+
+      /* flash — full-bleed, above the whole background stack */
+      #flash {
+        background: var(--flash-white);
+        opacity: 0;
+      }
+
+      /* static SVG feTurbulence grain — fixed seed, deterministic.
+         Required banding mitigation for the large soft gradients on near-black. */
+      #bg-grain {
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='320' height='320' filter='url(%23g)'/></svg>");
+        background-repeat: repeat;
+        opacity: 0.05;
+        mix-blend-mode: overlay;
+      }
+
+      #bg-vignette {
+        background: radial-gradient(
+          ellipse at center,
+          transparent 55%,
+          var(--vignette-edge) 100%
+        );
+      }
+
+      /* the fade to black — above grain/vignette, below the panel clip */
+      #black-scrim {
+        background: var(--black);
+        opacity: 0;
+      }
+
+      /* ================= clip B: glassmorphic band + the question ================= */
+      /* exactly the middle horizontal third: y 360 -> 720, full width */
+      #glass-band {
+        position: absolute;
+        left: 0;
+        top: 360px;
+        width: 1920px;
+        height: 360px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--glass-tint);
+        -webkit-backdrop-filter: blur(26px) saturate(1.2);
+        backdrop-filter: blur(26px) saturate(1.2);
+        border-top: 1px solid var(--glass-edge);
+        border-bottom: 1px solid var(--glass-edge);
+        opacity: 0;
+      }
+      /* frost-up: the contrast guarantee for the black ending (~4.8:1, AA normal).
+         Over the glass tint, under the sheen and the text. */
+      #frost-layer {
+        position: absolute;
+        inset: 0;
+        background: var(--frost);
+        opacity: 0;
+      }
+      /* static glass sheen — sits above the frost so the band still reads as glass
+         on the final frame rather than a flat plate */
+      #glass-sheen {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          to bottom,
+          var(--glass-sheen),
+          transparent 40%
+        );
+      }
+      #band-text {
+        position: relative;
+        z-index: 1;
+        font-family: Georgia, "Times New Roman", serif;
+        font-style: italic;
+        font-weight: 400;
+        font-size: 148px;
+        line-height: 1;
+        letter-spacing: 0.01em;
+        padding-left: 0.01em; /* optical centering vs the trailing letter-space */
+        color: var(--cobalt);
+        text-rendering: optimizeLegibility;
+        opacity: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="20"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- clip A (track 0): the full 20s explosion stack -->
+      <div
+        id="stage-bg"
+        class="clip"
+        data-start="0"
+        data-duration="20"
+        data-track-index="0"
+        data-layout-allow-overflow="true"
+      >
+        <div id="bg-base" class="bg-layer"></div>
+        <div id="sky-wash" class="bg-layer"></div>
+
+        <div
+          id="explosion-wrapper"
+          class="bg-layer"
+          data-layout-allow-overflow="true"
+        >
+          <div id="ground-haze" data-layout-allow-overflow="true"></div>
+          <div id="stem"></div>
+          <div id="skirt-ring"></div>
+          <div id="fireball-group" data-layout-allow-overflow="true">
+            <div id="fireball-halo"></div>
+            <div id="fireball-core"></div>
+          </div>
+          <!-- back to front: dim curls, inner billows, bright centre, then the
+               dark underside torus painted over the cap's lower edge -->
+          <div id="cap-cluster" data-layout-allow-overflow="true">
+            <div id="cap-outer-l" class="cap-blob cap-outer"></div>
+            <div id="cap-outer-r" class="cap-blob cap-outer"></div>
+            <div id="cap-inner-l" class="cap-blob cap-inner"></div>
+            <div id="cap-inner-r" class="cap-blob cap-inner"></div>
+            <div id="cap-center" class="cap-blob"></div>
+            <div id="cap-torus" class="cap-blob"></div>
+          </div>
+        </div>
+
+        <div id="shockwave" data-layout-allow-overflow="true"></div>
+        <div id="flash" class="bg-layer"></div>
+        <div id="bg-grain" class="bg-layer"></div>
+        <div id="bg-vignette" class="bg-layer"></div>
+        <div id="black-scrim" class="bg-layer"></div>
+      </div>
+
+      <!-- clip B (track 1): the glass band surfaces at the midpoint and never exits -->
+      <div
+        id="panel-clip"
+        class="clip"
+        data-start="9.9"
+        data-duration="10.1"
+        data-track-index="1"
+      >
+        <div id="glass-band">
+          <div id="frost-layer"></div>
+          <div id="glass-sheen"></div>
+          <h1 id="band-text">why not?</h1>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* Tweens are registered in ascending start order so the forward render pass
+         applies every chain in sequence. Chained tweens on one property share exact
+         boundary values, and every tween after the first on a given property carries
+         immediateRender:false so build time does not clobber the chain. */
+
+      /* ---- 0.07-1.60s · FLASH: 2 frames of pure black, then the detonation and
+              its double-pulse decay (peak, dip, re-brighten, die).
+              One keyframed tween rather than four chained ones: the segment
+              boundaries are then exact by construction, with no float-epsilon
+              overlap where one tween's end meets the next one's start. ---- */
+      tl.fromTo(
+        "#flash",
+        { opacity: 0 },
+        {
+          keyframes: [
+            { opacity: 1, duration: 0.1, ease: "power4.out" },
+            { opacity: 0.18, duration: 0.25, ease: "expo.out" },
+            { opacity: 0.5, duration: 0.3, ease: "sine.inOut" },
+            { opacity: 0, duration: 0.88, ease: "expo.out" },
+          ],
+        },
+        0.07
+      );
+
+      /* ---- 0.10s · sky-wash blooms with the flash ---- */
+      tl.fromTo(
+        "#sky-wash",
+        { opacity: 0 },
+        { opacity: 0.85, duration: 0.4, ease: "power2.out" },
+        0.1
+      );
+
+      /* ---- 0.30s · fireball core swells out of the flash ---- */
+      tl.fromTo(
+        "#fireball-core",
+        { scale: 0 },
+        { scale: 1.0, duration: 3.0, ease: "power2.out" },
+        0.3
+      );
+
+      /* ---- 0.40s · halo ---- */
+      tl.fromTo(
+        "#fireball-halo",
+        { scale: 0.2, opacity: 0 },
+        { scale: 1.15, opacity: 0.6, duration: 3.4, ease: "power2.out" },
+        0.4
+      );
+
+      /* ---- 0.50-3.10s · the single shockwave ring races outward ---- */
+      tl.fromTo(
+        "#shockwave",
+        { scale: 0 },
+        { scale: 6.5, duration: 2.6, ease: "power2.out" },
+        0.5
+      );
+      tl.fromTo(
+        "#shockwave",
+        { opacity: 0.9 },
+        { opacity: 0, duration: 2.6, ease: "power1.in" },
+        0.5
+      );
+
+      /* ---- 1.00s · ground haze spreads along the horizon ---- */
+      tl.fromTo(
+        "#ground-haze",
+        { autoAlpha: 0 },
+        { autoAlpha: 0.8, duration: 2.0, ease: "power1.out" },
+        1.0
+      );
+      tl.fromTo(
+        "#ground-haze",
+        { scaleX: 0.6 },
+        { scaleX: 1.25, duration: 8.0, ease: "power1.out" },
+        1.0
+      );
+
+      tl.fromTo(
+        "#sky-wash",
+        { opacity: 0.85 },
+        { opacity: 0.55, duration: 4.0, ease: "sine.inOut", immediateRender: false },
+        2.0
+      );
+
+      /* ---- 3.00-9.00s · the ascent: fireball climbs to the cap zone (y ~420) ---- */
+      tl.fromTo(
+        "#fireball-group",
+        { y: 0 },
+        { y: -440, duration: 6.0, ease: "power1.inOut" },
+        3.0
+      );
+      tl.fromTo(
+        "#fireball-group",
+        { scale: 1.0 },
+        { scale: 1.25, duration: 6.0, ease: "sine.inOut" },
+        3.0
+      );
+
+      /* ---- 3.50s · the column climbs from the horizon ---- */
+      tl.fromTo(
+        "#stem",
+        { scaleY: 0.02 },
+        { scaleY: 1.0, duration: 5.0, ease: "power1.inOut" },
+        3.5
+      );
+      tl.fromTo(
+        "#stem",
+        { opacity: 0 },
+        { opacity: 0.9, duration: 1.0, ease: "power1.out" },
+        3.5
+      );
+
+      /* ---- 5.50s · Wilson-cloud skirt: transient condensation ring ---- */
+      tl.fromTo(
+        "#skirt-ring",
+        { autoAlpha: 0 },
+        { autoAlpha: 0.5, duration: 1.0, ease: "sine.inOut" },
+        5.5
+      );
+      tl.fromTo(
+        "#skirt-ring",
+        { scale: 0.7 },
+        { scale: 1.35, duration: 4.0, ease: "power1.out" },
+        5.5
+      );
+
+      /* ---- 7.60-8.20s · the cap billows: centre first, then symmetric pairs ---- */
+      const CAP_BLOBS = [
+        { sel: "#cap-center", start: 7.6, alpha: 0.95 },
+        { sel: "#cap-inner-l", start: 7.9, alpha: 0.9 },
+        { sel: "#cap-inner-r", start: 7.9, alpha: 0.9 },
+        { sel: "#cap-outer-l", start: 8.2, alpha: 0.85 },
+        { sel: "#cap-outer-r", start: 8.2, alpha: 0.85 },
+      ];
+      CAP_BLOBS.forEach(function (b) {
+        tl.fromTo(
+          b.sel,
+          { autoAlpha: 0 },
+          { autoAlpha: b.alpha, duration: 1.6, ease: "power2.out" },
+          b.start
+        );
+        tl.fromTo(
+          b.sel,
+          { scale: 0.5 },
+          { scale: 1.0, duration: 4.0, ease: "power1.out" },
+          b.start
+        );
+      });
+
+      tl.fromTo(
+        "#sky-wash",
+        { opacity: 0.55 },
+        { opacity: 0.3, duration: 4.5, ease: "sine.inOut", immediateRender: false },
+        8.0
+      );
+
+      /* ---- 8.00s · stem thickens under the growing cap ---- */
+      tl.fromTo(
+        "#stem",
+        { scaleX: 1.0 },
+        { scaleX: 1.3, duration: 6.0, ease: "sine.inOut" },
+        8.0
+      );
+
+      /* ---- 8.00-13.00s · the outer pair curls into the mushroom silhouette ---- */
+      tl.fromTo(
+        "#cap-outer-l",
+        { x: 0, rotation: 0 },
+        { x: -70, rotation: -14, duration: 5.0, ease: "sine.inOut" },
+        8.0
+      );
+      tl.fromTo(
+        "#cap-outer-r",
+        { x: 0, rotation: 0 },
+        { x: 70, rotation: 14, duration: 5.0, ease: "sine.inOut" },
+        8.0
+      );
+
+      /* ---- 8.50s · handoff: the core dims as the cap takes over the light ---- */
+      tl.fromTo(
+        "#fireball-core",
+        { opacity: 1 },
+        { opacity: 0.35, duration: 2.5, ease: "sine.inOut" },
+        8.5
+      );
+      tl.fromTo(
+        "#cap-torus",
+        { autoAlpha: 0 },
+        { autoAlpha: 0.7, duration: 2.0, ease: "power1.out" },
+        8.5
+      );
+      tl.fromTo(
+        "#skirt-ring",
+        { autoAlpha: 0.5 },
+        { autoAlpha: 0, duration: 2.0, ease: "power1.in", immediateRender: false },
+        8.5
+      );
+
+      /* ---- 9.00-16.00s · the whole cloud drifts up and swells, slowly ---- */
+      tl.fromTo(
+        "#explosion-wrapper",
+        { scale: 1.0, y: 0 },
+        { scale: 1.04, y: -20, duration: 7.0, ease: "sine.inOut" },
+        9.0
+      );
+
+      /* ---- 9.90s · the band surfaces (beat 10.0, anticipated 0.1s) ---- */
+      tl.fromTo(
+        "#glass-band",
+        { autoAlpha: 0 },
+        { autoAlpha: 1, duration: 2.5, ease: "sine.out" },
+        9.9
+      );
+      tl.fromTo(
+        "#glass-band",
+        { y: 24 },
+        { y: 0, duration: 2.5, ease: "power1.out" },
+        9.9
+      );
+
+      /* ---- 10.60s · the question resolves inside it by 12.4s ---- */
+      tl.fromTo(
+        "#band-text",
+        { autoAlpha: 0 },
+        { autoAlpha: 1, duration: 1.8, ease: "sine.out" },
+        10.6
+      );
+      tl.fromTo(
+        "#band-text",
+        { y: 12 },
+        { y: 0, duration: 1.8, ease: "power1.out" },
+        10.6
+      );
+
+      /* ---- 12.50-16.50s · the piece's ONE filter tween: gold decays to ash ---- */
+      tl.fromTo(
+        "#explosion-wrapper",
+        { filter: "saturate(1.1) brightness(1)" },
+        {
+          filter: "saturate(0.3) brightness(0.6)",
+          duration: 4.0,
+          ease: "power1.inOut",
+        },
+        12.5
+      );
+
+      /* ---- 13.00-18.00s · frost-up: the band takes the light as the fire dies.
+              The shot-plan put this at 15.0-18.0 to lead the black scrim (16.0) by
+              1s, but the backdrop starts dimming at 12.5 with the cooling tween, so
+              contrast troughed at 2.14:1 around 14.4s. Starting with the cooling and
+              front-loading the ease (power1.out) keeps the band's luminance ahead of
+              the darkening throughout; end time and 0.72 end value are unchanged, so
+              the ~4.8:1 end-state on black still holds. ---- */
+      tl.fromTo(
+        "#frost-layer",
+        { opacity: 0 },
+        { opacity: 0.72, duration: 5.0, ease: "power1.out" },
+        13.0
+      );
+
+      /* ---- 16.00-19.00s · the world goes black; nothing moves after 19.0 ---- */
+      tl.fromTo(
+        "#black-scrim",
+        { autoAlpha: 0 },
+        { autoAlpha: 1, duration: 3.0, ease: "power1.inOut" },
+        16.0
+      );
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

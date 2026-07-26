@@ -1,0 +1,3 @@
+# Microsoft-licensed font faces copied at build time from /mnt/c/Windows/Fonts —
+# render-time inputs only, never redistributed. See assets/index.md.
+assets/fonts/*.ttf

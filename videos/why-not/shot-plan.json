@@ -1,0 +1,104 @@
+{
+  "category": "kinetic-type",
+  "duration_s": 20,
+  "fps": 30,
+  "canvas": { "w": 1920, "h": 1080, "aspect": "16:9" },
+  "style": "solemn, monumental, stylized-not-photoreal: a painterly nuclear detonation built from layered radial-gradient blobs over black; motion slow and inevitable rather than violent; one calm glassmorphic band surfaces at midpoint and holds the last light as the world goes dark. Silent.",
+  "palette": [
+    "#000000",
+    "#FFF7EA",
+    "#FFD08A",
+    "#FF7A29",
+    "#9E2B1E",
+    "#6E635C",
+    "#2A2726",
+    "#0047AB"
+  ],
+  "font": "Georgia, 'Times New Roman', serif",
+  "beats": [0.1, 0.8, 3.5, 8.0, 10.0, 12.5, 16.0, 19.0],
+  "export": "mp4",
+  "asset_needs": [],
+
+  "block": null,
+  "customize": {
+    "decision": "No catalog block fits. All 18 caption-* blocks are word-synced caption effects (slam/glow/glitch/karaoke energy); this shot is a single static two-word line that enters gently ONCE inside a persistent glassmorphic band over a hand-authored explosion background — no word sync, no caption energy, and no block covers glass-over-animated-background. Hand-author per the kinetic-type module fallback, same precedent as sibling videos/cleophis-intro.",
+    "approach": "hand-author",
+    "clip_structure": "Two clips on the root composition, one paused registered GSAP timeline (window.__timelines) with ABSOLUTE times: (clip A, data-start=0, data-duration=20, track 0) the full explosion background stack per content.background; (clip B, data-start=9.9, data-duration=10.1, track 1) the glassmorphic band + text per content.overlay_panel. All motion is seek-safe gsap.fromTo with explicit from AND to values; visibility gates via autoAlpha only on inner non-clip elements; chained fromTo sequences (the flash double-pulse) must have exactly matching boundary values so any seek is exact.",
+    "polish_blocks": {
+      "reuse": ["grain-overlay", "vignette"],
+      "note": "npx hyperframes add if available. Grain is REQUIRED here, not optional polish — it dithers the large soft radial gradients against near-black and is the primary banding mitigation (static SVG feTurbulence noise data-URI tile fallback, ~0.05 opacity, mix-blend-mode overlay, NO animation). Vignette constant, edges toward #000, moderate. Both sit above the explosion stack and below the glass panel."
+    },
+    "typography": {
+      "line": "'why not?' — lowercase exactly as briefed, single line, Georgia italic 400, 148px, color #0047AB, letter-spacing 0.01em STATIC (never tween letter-spacing — pixel-snap lint trap; no tracking animation is wanted here anyway), centered horizontally and vertically inside the 360px band, text-rendering optimizeLegibility",
+      "font_check": "Georgia is a system stack; Builder must verify at build time that headless Chrome on this WSL host resolves Georgia (fc-list | grep -i georgia). If absent, the stack falls to 'Times New Roman'/serif — acceptable per BRIEF, but take one snapshot to confirm the serif renders with true italics before the full render."
+    },
+    "layer_discipline": "Hard caps for the Builder: <= 20 animated elements, <= 45 tweens total. All per-frame motion is transform/opacity only (x, y, scale, rotate, autoAlpha). Blur is STATIC per element (set in CSS, max 90px, never tweened). Exactly ONE filter tween in the whole piece: the cooling saturate/brightness tween on the explosion wrapper (12.5-16.5s). backdrop-filter blur radius on the glass band is STATIC at 26px — never animated; the panel enters via autoAlpha + y only. Avoid stacking more than 3 large blurred layers over the same pixel region. No will-change, no canvas, no rAF loops, no Math.random, no Date.now.",
+    "contrast_solution": "Cobalt #0047AB has relative luminance ~0.074 -> ~2.5:1 against black (FAILS even AA-large 3:1). Resolution, verified by math: (1) 10-16s the band's frosted tint rgba(240,246,255,0.30) + backdrop blur(26px) sits over the still-bright fireball/cap golds, so cobalt reads dark-on-light at roughly 5:1+. (2) The FROST-UP: a child luminance layer inside the band (full band size, background #ECF2FA, opacity fromTo 0 -> 0.72 over 15.0-18.0s ease power1.inOut) brightens the band BEFORE the background fade (16.0-19.0s) darkens the world — the frost leads by 1.0s so band luminance never dips below the AA-large floor during the crossfade. (3) End-state on pure black: the 0.30 white tint over black composited with the 0.72 frost layer gives an effective band fill of ~#BEC3CA (relative luminance ~0.54); #0047AB on #BEC3CA = ~4.8:1 — passes WCAG AA for NORMAL text, comfortably above the 3:1 large-text requirement for the 148px line. No text glow or stroke needed; the panel carries the luminance, which also lands the story beat: the question holds the last light as everything else goes black."
+  },
+
+  "brief": "From a black frame the piece detonates almost instantly: a full-screen warm-white flash at 0.1s (with the characteristic double-pulse dip and re-brighten) collapses into a glowing fireball low on the horizon that swells as a single shockwave ring races outward; from ~3.5s a roiling column climbs beneath the rising fireball, and from ~8s a five-blob cap billows outward and curls into the full mushroom silhouette — all hand-authored deterministic GSAP layers (no footage provider) in flash-white/gold/orange/ember over black. At the 10s midpoint, while the cap is still billowing, a full-width glassmorphic band (static backdrop blur 26px, faint white tint, hairline borders) gently surfaces over the middle horizontal third (y 360-720): autoAlpha 0 to 1 with a 24px upward drift over 2.5s, no bounce; 'why not?' resolves inside it in Georgia italic, cobalt #0047AB, static. From 12.5s the explosion cools — one wrapper saturate/brightness tween decays gold to ember and ash — then from 15s the band quietly frosts brighter while the world fades to black (16-19s), so the cobalt question ends at AA contrast, holding alone on black in total stillness to 20s. Dominant motion idea: one slow vertical growth (the rising mushroom) against which a single still panel calmly surfaces — a defiant question over catastrophe.",
+
+  "content": {
+    "scenes": [
+      {
+        "id": "detonation",
+        "start": 0,
+        "end": 10,
+        "text": "",
+        "emphasis_words": [],
+        "emotion": "awe / dread",
+        "motion": "Background-only build, all tweens fromTo at absolute times. FLASH (hook): 2 frames of pure black, then flash layer (full-bleed #FFF7EA) autoAlpha 0->1 start 0.07s dur 0.10s ease power4.out; double-pulse decay chain with matching boundaries: 1->0.18 (0.17-0.42s, expo.out), 0.18->0.50 (0.42-0.72s, sine.inOut), 0.50->0 (0.72-1.60s, expo.out). SKY-WASH: opacity 0->0.85 (0.10-0.50s, power2.out), 0.85->0.55 (2.0-6.0s, sine.inOut), 0.55->0.30 (8.0-12.5s, sine.inOut). SHOCKWAVE ring: scale 0.2->6.5 (0.5-3.1s, power2.out) + opacity 0.9->0 (0.5-3.1s, power1.in), one ring only. FIREBALL group at (960,860): core scale 0.12->1.00 (0.3-3.3s, power2.out), halo scale 0.20->1.15 + opacity 0->0.6 (0.4-3.8s, power2.out); group ascent y 0->-440px (3.0-9.0s, power1.inOut) with group scale 1.00->1.25 (3.0-9.0s, sine.inOut) — the fireball arrives at the cap zone (~y 420) at 9s. STEM: transformOrigin 50% 100% at horizon y=850, scaleY 0.02->1.00 (3.5-8.5s, power1.inOut), opacity 0->0.9 (3.5-4.5s, power1.out). SKIRT condensation ring at (960,640): autoAlpha 0->0.5 (5.5-6.5s, sine.inOut), scale 0.7->1.35 (5.5-9.5s, power1.out), autoAlpha 0.5->0 (8.5-10.5s, power1.in). GROUND HAZE: autoAlpha 0->0.8 (1.0-3.0s, power1.out), scaleX 0.6->1.25 (1.0-9.0s, power1.out). CAP begins: 5 cap blobs autoAlpha 0->0.85..0.95 staggered starts 7.6/7.9/7.9/8.2/8.2s dur 1.6s power2.out (center first, L/R symmetric pairs together); each scale 0.5->1.0 dur 4.0s power1.out from its own start; fireball core hands off: opacity 1->0.35 (8.5-11.0s, sine.inOut) so cap and core never double-bright.",
+        "beats": [0.1, 0.8, 3.5, 8.0]
+      },
+      {
+        "id": "statement",
+        "start": 10,
+        "end": 20,
+        "text": "why not?",
+        "emphasis_words": [],
+        "emotion": "calm defiance",
+        "motion": "CAP completes: outer curl blobs x 0->±70px and rotate 0->±14deg (8.0-13.0s, sine.inOut); cap underside torus autoAlpha 0->0.7 (8.5-10.5s, power1.out); stem scaleX 1.0->1.3 (8.0-14.0s, sine.inOut). PANEL entrance (beat 10.0 anticipated 0.1s): band container autoAlpha 0->1 start 9.9s dur 2.5s ease sine.out + y +24px->0 start 9.9s dur 2.5s ease power1.out — no bounce, no overshoot. TEXT: autoAlpha 0->1 start 10.6s dur 1.8s ease sine.out + y +12px->0 start 10.6s dur 1.8s ease power1.out — panel surfaces first, the question resolves inside it by ~12.4s. COOLING: whole-explosion wrapper drift scale 1.00->1.04 + y 0->-20px (9.0-16.0s, sine.inOut); the piece's single filter tween: wrapper saturate(1.1) brightness(1.0) -> saturate(0.3) brightness(0.6) (12.5-16.5s, power1.inOut). FROST-UP: band's inner luminance child (#ECF2FA) opacity 0->0.72 (15.0-18.0s, power1.inOut) — leads the darkness by 1s. FINAL FADE: full-bleed black scrim (above explosion+grain+vignette, below panel) autoAlpha 0->1 (16.0-19.0s, power1.inOut). ENDING HOLD: 19.0-20.0s absolute stillness — no tween ends or starts after 19.0s; final frame is pure black, the opal glass band, and 'why not?' in cobalt at AA contrast.",
+        "beats": [10.0, 12.5, 16.0, 19.0]
+      }
+    ],
+
+    "background": {
+      "type": "hand-authored deterministic explosion layer (no video/footage provider in this environment — accepted degrade, recorded in BRIEF)",
+      "reads_as": "stylized painterly nuclear detonation: flash, fireball, stem, full mushroom, cooling ash, black",
+      "geometry": "horizon line y=850; detonation center x=960; fireball birth center (960,860); cap assembly zone centered (960,400) — the cap deliberately straddles the glass band's top edge (y=360) so the cloud billows behind/above the panel while the stem stays visible below it (y 720-850)",
+      "stack_back_to_front": [
+        { "layer": "base", "spec": "solid #000000 full-bleed, static" },
+        { "layer": "sky-wash", "spec": "full-bleed div, radial-gradient(ellipse at 50% 79%, rgba(255,122,41,0.55), transparent 60%), no blur (gradient is already soft); opacity choreographed per scene 1" },
+        { "layer": "explosion-wrapper", "spec": "group containing ground-haze / stem / skirt / fireball-group / cap-cluster; carries the 9.0-16.0s drift tween and the single cooling filter tween; transformOrigin 50% 78%" },
+        { "layer": "ground-haze", "spec": "ellipse div 1700x260 centered (960,870), radial-gradient(closest-side, rgba(110,99,92,0.85), rgba(42,39,38,0.5) 60%, transparent), blur 40px static" },
+        { "layer": "stem", "spec": "div 200x460 anchored bottom at (960,850), vertical linear-gradient(#FF7A29 0%, #9E2B1E 45%, #6E635C 100%), border-radius 45% top, blur 18px static, transformOrigin 50% 100%" },
+        { "layer": "skirt-ring", "spec": "ellipse 520x140 centered (960,640), 5px border rgba(255,247,234,0.35), no fill, blur 10px static — the Wilson-cloud condensation ring, transient (5.5-10.5s)" },
+        { "layer": "fireball-group", "spec": "group at (960,860): halo child 900px circle radial-gradient(closest-side, rgba(255,122,41,0.7), transparent 70%) blur 60px static; core child 620px circle radial-gradient(closest-side, #FFF7EA 0%, #FFD08A 35%, #FF7A29 65%, rgba(158,43,30,0.6) 85%, transparent) blur 8px static" },
+        { "layer": "cap-cluster", "spec": "assembled around (960,400): center blob 720x420 (gradient #FFD08A->#FF7A29->rgba(158,43,30,0.7), blur 30px); inner pair 420x300 at x ±190 (orange->ember, blur 34px); outer curl pair 320x240 at x ±330 (ember->smoke gray, blur 38px, these carry the ±14deg curl); underside torus 640x160 dark ellipse rgba(42,39,38,0.9) blur 30px at (960,505). 6 blobs + torus total" },
+        { "layer": "shockwave-ring", "spec": "ellipse 300x120 centered (960,850), 6px border rgba(255,247,234,0.8), no fill, blur 4px static; kept OUTSIDE the explosion-wrapper (it must not receive the cooling tween — it is gone by 3.1s)" },
+        { "layer": "flash", "spec": "full-bleed #FFF7EA div, above everything in the background stack; opacity per the double-pulse chain" },
+        { "layer": "grain", "spec": "polish block grain-overlay, else static SVG feTurbulence data-URI tile, opacity 0.05, mix-blend-mode overlay, STATIC — required banding mitigation for the soft gradients" },
+        { "layer": "vignette", "spec": "polish block vignette, else radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.7) 100%), constant all 20s" },
+        { "layer": "black-scrim", "spec": "full-bleed #000000 div above grain/vignette and below the panel clip; autoAlpha 0->1 over 16.0-19.0s power1.inOut — the fade to black" }
+      ],
+      "determinism": "Every size/position/travel vector is a hardcoded constant above — no runtime randomness anywhere. All motion is fromTo with explicit endpoints on the single paused registered timeline; any seek is exact. Blobs are plain CSS gradient divs with static blur; no canvas, no rAF, no Date.now()."
+    },
+
+    "overlay_panel": {
+      "geometry": "full-bleed horizontal band: x 0-1920, y 360-720 (exactly the middle horizontal third per BRIEF), border-radius 0",
+      "glass": "background rgba(240,246,255,0.30); backdrop-filter blur(26px) saturate(1.2) — STATIC, never tweened; border-top and border-bottom 1px solid rgba(255,255,255,0.45); static inner sheen: linear-gradient(to bottom, rgba(255,255,255,0.12), transparent 40%)",
+      "frost_up_layer": "child div filling the band, background #ECF2FA, opacity 0 at rest; fromTo 0->0.72 over 15.0-18.0s ease power1.inOut; sits UNDER the text, over the glass tint — the contrast guarantee for the black ending (~4.8:1 end-state, AA normal)",
+      "text": "'why not?' — Georgia italic 400, 148px, #0047AB, letter-spacing 0.01em static, centered in the band; no shadow, no stroke, no glow — the frost carries the contrast",
+      "entrance": "band: autoAlpha 0->1 + y +24px->0, start 9.9s, dur 2.5s, ease sine.out / power1.out; text: autoAlpha 0->1 + y +12px->0, start 10.6s, dur 1.8s, same ease pair; both fromTo, both gated by clip B (data-start 9.9)",
+      "hold": "from 12.4s the panel and text are motionless for the remaining 7.6s; they never exit"
+    }
+  },
+
+  "risks": [
+    "RESOLVED — cobalt-on-black contrast: frost-up treatment specified in customize.contrast_solution; end-state ~4.8:1 (AA normal) on ~#BEC3CA effective fill; frost leads the black fade by 1s so there is no low-contrast dip.",
+    "OPEN (build-time check) — Georgia availability on the WSL headless-Chrome render host: fc-list check + one snapshot before full render; 'Times New Roman'/serif fallback acceptable per BRIEF.",
+    "ACCEPTED — stylized-not-photoreal explosion (no footage provider; recorded degrade, same as cleophis-intro).",
+    "MITIGATED — gradient banding on near-black: grain-overlay is mandatory (static, 0.05 opacity); vignette constant; layer_discipline caps apply (<=20 animated elements, <=45 tweens, static blur only, one filter tween total).",
+    "NOTE — scene 1 is intentionally text-free (background-only 0-10s); motion/contrast lints flagging the long no-text stretch are expected and by design."
+  ]
+}
