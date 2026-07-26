@@ -1762,11 +1762,45 @@ is unchanged from `402e5e6`, so acceptance findings on those carry over.
 
 | checkpoint | HEAD | `git status --porcelain` |
 |---|---|---|
-| PRE | `53780ca` | empty |
-| POST | `53780ca` | empty |
+| PRE (compile start, 09:44:11) | `53780ca`, reflog-attested | **agent-attested clean; not durably recorded** |
+| POST (steering's verification) | `53780ca` | clean apart from this entry |
 
-All four facts agree, and this is the first APK in the track built against a
-**genuinely empty** porcelain — no untracked file to explain away.
+**Attributed as "live worktree at `53780ca`", not "at `53780ca`."** Protocol v2
+wants four facts and this build has three and a half.
+
+The PRE checkpoint **was taken** — gen-4 ran it in its own command immediately
+before launching the build, deliberately separated from the launch after a
+trailing `&` had swallowed an earlier `&&` chain and truncated exactly this
+kind of record. It read `53780ca` and an empty porcelain. But it survives only
+in a session transcript, and **an agent's report that it checked is precisely
+the class of assurance protocol v2 was written to stop accepting.** So it is
+recorded here as an attestation and ranked *below* the reflog, and the
+attribution stays weak.
+
+That distinction is worth more than the checkpoint would have been. The
+interesting case is not "nobody looked" — it is **"somebody looked, and the
+looking left no trace anyone else can audit."** A gate discipline that only
+catches the first kind is half a discipline: it is satisfied by an agent
+sincerely remembering, which is how the contaminated runs passed review in the
+first place. The fix is not to trust the transcript more; it is to make the
+check write something down where a stranger can find it.
+
+Two things *are* attestable by durable records rather than by an agent's
+memory:
+
+- **HEAD did not move across the build.** The reflog puts `53780ca` at 09:38:47
+  with no entry after it; the build log opens at 09:44:11 and the artifact
+  lands at 10:21. That is better evidence than a remembered checkpoint and
+  still not the same fact — the reflog watches HEAD, never the tree.
+- **The tree is clean at `53780ca` now**, its only deviation being this ledger
+  entry, which is docs.
+
+So the compiled content is `0ede91b`'s gated tree unless something was edited
+and reverted without trace inside a 37-minute window, while the *attribution*
+is a live worktree. Recording the weaker of the two available claims is the
+whole point: this document already softened every pre-v2 run for exactly this
+reason, and a new entry that quietly awarded itself the stronger form would
+spend that credibility rather than add to it.
 
 **A precision worth keeping rather than rounding off.** This is loosely "the
 `0ede91b` APK", since `0ede91b` is the commit the 322/0 gate blessed, but it
@@ -1782,6 +1816,30 @@ hides that the compiled content is the gated tree.
 **355,315,918** = **0.05 % unaccounted**; `assets/` is `tauri.conf.json` only;
 `arm64-v8a` only; `com.cleophis.app`; `allowBackup=false`;
 `windowSoftInputMode=0x10` in the packaged manifest.
+
+**Verified from the artifact twice, by two parties** — by steering when it
+blessed the build, and independently by gen-5 against the archived copy, both
+using the committed `verify-apk.py`. Identical digest, entry count and
+unaccounted fraction. The second run is not ceremony: steering verified the
+*build output*, and what the founder installs is the **archive**, so re-hashing
+`~/cleophis-artifacts/cleophis-2.2b-debug-53780ca.apk` is what closes the gap
+between the thing that was checked and the thing that was shipped.
+
+Unusually, the build output at
+`gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+**also still exists** — gen-4 stalled before starting another build, so nothing
+overwrote it, and it hashes identical to the archive. Every previous entry in
+this document had to note that its build output was gone; this is the one time
+both copies can be compared, and they agree.
+
+*(A claim in this paragraph's first draft — that the output had been overwritten
+"by every later build" — was written from the pattern of previous entries rather
+than from `ls`, and was false. Corrected before commit. It is a small instance
+of the thing this document keeps recording: the plausible generalisation and the
+checked fact diverge exactly where nobody looks.)*
+
+**What it is for:** the founder holds it as `cleophis-2.2b.apk` for the 2.2
+visual-acceptance session. Results arrive via steering.
 
 #### 🔬 The third way good work becomes worthless: delivery
 
