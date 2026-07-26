@@ -109,6 +109,58 @@ test('phase "done" falls through to engine state rather than latching', () => {
   assert.equal(s.kind, 'loading');
 });
 
+test('a download that stopped partway is visible and resumable, not "no model"', () => {
+  // The bytes are on disk and `download_status` has always reported them, but
+  // until now they only surfaced inside the model drawer — invisible to anyone
+  // sitting in the chat view, who saw a screen identical to a fresh install.
+  const s = describeEngineState({ installed: false, partBytes: 403847056, downloadActive: false });
+  assert.equal(s.kind, 'download-interrupted');
+  assert.equal(s.action, 'resume');
+  assert.match(s.detail, /385 MB/);
+  assert.match(s.detail.toLowerCase(), /resum/);
+});
+
+test('a partial download does not claim to be stopped while it is running', () => {
+  const s = describeEngineState({ installed: false, partBytes: 403847056, downloadActive: true });
+  assert.notEqual(s.kind, 'download-interrupted');
+});
+
+test('a live download outranks the stale partial-bytes state', () => {
+  const s = describeEngineState({
+    installed: false,
+    partBytes: 403847056,
+    downloadActive: true,
+    download: { phase: 'downloading', bytesDownloaded: 5e8, totalBytes: 8e8 },
+  });
+  assert.equal(s.kind, 'downloading');
+});
+
+test('an installed model is never described as a stopped download', () => {
+  const s = describeEngineState({ installed: true, partBytes: 999, engineStatus: 'Ready' });
+  assert.equal(s.kind, 'ready');
+});
+
+test('only the states a user can act on carry an action', () => {
+  const withAction = [
+    describeEngineState({ installed: false }),                                     // no-model
+    describeEngineState({ installed: false, partBytes: 1e8 }),                     // interrupted
+    describeEngineState({ download: { phase: 'failed' } }),                        // failed
+    describeEngineState({ download: { phase: 'cancelled' } }),                     // paused
+  ];
+  for (const s of withAction) {
+    assert.ok(['download', 'resume'].includes(s.action), `${s.kind} should be actionable`);
+  }
+  const withoutAction = [
+    describeEngineState({ installed: true, engineStatus: 'Ready' }),
+    describeEngineState({ installed: true, engineStatus: 'Starting' }),
+    describeEngineState({ download: { phase: 'verifying' } }),
+    describeEngineState({ supported: false }),
+  ];
+  for (const s of withoutAction) {
+    assert.equal(s.action, undefined, `${s.kind} offers an action the user cannot take`);
+  }
+});
+
 test('a failed engine outranks "no model", because the user did download one', () => {
   // Failed + not-fully-installed is the missing-adapter case the milestone
   // describes. Saying "no model on this device" there would be wrong: they
@@ -182,6 +234,7 @@ test('every state carries a pill-sized short form as well as a row-sized label',
   const cases = [
     { supported: false },
     { engineStatus: 'NoModel', installed: false },
+    { installed: false, partBytes: 403847056 },
     { engineStatus: 'Failed', installed: true },
     { engineStatus: 'Starting', installed: true },
     { engineStatus: 'Restarting', installed: true },

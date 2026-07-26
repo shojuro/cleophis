@@ -94,10 +94,15 @@ function rate(bytesPerSec) {
 ///              compact pill. Prominence is how a first-time user finds the
 ///              element at all: it is loud exactly when something is happening
 ///              and quiet once there is nothing to say.
+///   action     'download' | 'resume' | undefined — a NAME, not a handler, so
+///              this module stays free of the DOM and of app.js's state. The
+///              renderer maps the name to a click.
 export function describeEngineState({
   engineStatus = null,
   download = null,
   installed = false,
+  partBytes = 0,
+  downloadActive = false,
   turn = null,
   supported = true,
 } = {}) {
@@ -165,6 +170,7 @@ export function describeEngineState({
         detail: download.error || 'You can pick up where it stopped.',
         tone: 'error',
         prominent: true,
+        action: 'resume',
       };
     }
     if (p === 'cancelled') {
@@ -175,10 +181,32 @@ export function describeEngineState({
         detail: 'The part you already have is kept — resuming continues from there.',
         tone: 'warn',
         prominent: true,
+        action: 'resume',
       };
     }
     // 'done' falls through to engine state: the bytes are here, and what
     // matters next is whether the engine picked them up.
+  }
+
+  // A download that stopped and left bytes behind. Distinct from "no model"
+  // because the user already started, and distinct from a live download
+  // because nothing is happening right now — without this state the app looks
+  // identical to a fresh install, silently discarding the fact that most of a
+  // multi-gigabyte file is already on disk.
+  //
+  // `download_status` has always reported `partBytes`, and the drawer has
+  // always offered "Resume download · X of Y GiB" — but only inside the
+  // model's drawer, which a user in the chat view never opens.
+  if (!installed && partBytes > 0 && !downloadActive) {
+    return {
+      kind: 'download-interrupted',
+      label: 'Download stopped partway',
+      short: 'Paused',
+      detail: `${bytesIn(partBytes)} already saved — resuming picks up from there.`,
+      tone: 'warn',
+      prominent: true,
+      action: 'resume',
+    };
   }
 
   if (engineStatus === 'Failed') {
@@ -203,6 +231,7 @@ export function describeEngineState({
       detail: 'Download one to start chatting — it runs entirely offline afterwards.',
       tone: 'warn',
       prominent: true,
+      action: 'download',
     };
   }
 

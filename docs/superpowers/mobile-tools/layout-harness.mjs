@@ -9,6 +9,7 @@
 // Nothing in src/ is modified. Query params drive the emulation:
 //   ?ua=android      -> navigator.userAgent reports Android (transport picks mobile)
 //   ?installed=1     -> download_status reports the hero installed
+//   ?part=<bytes>    -> download_status reports a stopped, resumable download
 //   ?supported=0     -> detect_hardware reports supported:false
 //   ?engine=<status> -> engine_info status (Starting|Ready|Failed)
 
@@ -37,6 +38,9 @@ function stub(q) {
   const catalog = JSON.parse(fs.readFileSync(CATALOG, 'utf8'));
   const forMobile = q.get('ua') === 'android';
   const installed = q.get('installed') === '1';
+  // Bytes left behind by a download that stopped — drives the
+  // 'download-interrupted' state, which is otherwise unreachable in a harness.
+  const partBytes = Number(q.get('part') || 0);
   const supported = q.get('supported') !== '0';
   const engineStatus = q.get('engine') || 'Ready';
   return `<script>
@@ -51,7 +55,7 @@ function stub(q) {
   const canned = {
     get_catalog: () => CATALOG.map((m) => Object.assign({}, m, { coverAbs: '/covers/' + m.id + '.webp' })),
     get_tier_selection: () => ({ mode: 'auto', activeTier: 'low', effectiveTier: 'low', committed: false, switchAvailable: true, nextChangeAt: 0 }),
-    download_status: () => ({ installed: ${installed}, partBytes: 0, active: false }),
+    download_status: () => ({ installed: ${installed}, partBytes: ${partBytes}, active: false, bytesDownloaded: ${partBytes}, totalBytes: 807694112 }),
     engine_info: () => ({ port: 0, status: ${JSON.stringify(engineStatus)}, gpuOffload: false }),
     restore_session: () => ({ signedIn: false }),
     // Field names mirror the Rust struct exactly: HardwareInfo has NO serde

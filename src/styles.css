@@ -421,6 +421,12 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .is-mobile .enginestate.tone-error{background:rgba(226,104,95,.10)}
 .is-mobile .enginestate.tone-error .enginestate-dot{background:var(--heavy)}
 @keyframes enginepulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* An actionable state carries its own control — see renderEngineState. */
+.enginestate-action{margin-left:auto;flex:none;align-self:center;
+  background:var(--teal);color:var(--teal-ink);border:none;border-radius:8px;
+  padding:7px 14px;font-size:13px;font-weight:600}
+.enginestate-action:disabled{opacity:.6;cursor:default}
+.is-mobile .enginestate.tone-error .enginestate-action{background:var(--amber);color:var(--amber-ink)}
 /* Progress is part of the state row, not a separate widget, so a download
    never reads as a thing happening somewhere else in the app. */
 .enginestate-prog{display:none}

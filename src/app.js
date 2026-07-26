@@ -1464,6 +1464,25 @@ function renderEngineState(p) {
   dot.className = 'pill-dot';
   pill.append(dot, document.createTextNode(p.short || p.label));
 
+  // An actionable state carries its own control. A row that says "download
+  // stopped partway" with no way to resume is the same defect as the engine
+  // banner that said "re-download it" without a button — the instruction is
+  // useless where the user is standing. `p.action` is a NAME; the mapping to a
+  // handler lives here so engine-state.js stays DOM-free.
+  const oldBtn = row.querySelector('.enginestate-action');
+  if (oldBtn) oldBtn.remove();
+  if (p.action) {
+    const hero = heroEntry();
+    if (hero) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'enginestate-action';
+      btn.textContent = p.action === 'resume' ? 'Resume' : 'Download';
+      btn.onclick = () => { btn.disabled = true; heroDownload(hero, btn); };
+      row.appendChild(btn);
+    }
+  }
+
   const prog = $('engineStateProg');
   const dl = p.kind === 'downloading' && state.dlProgress && state.dlProgress.totalBytes > 0;
   prog.hidden = !dl;
@@ -1483,6 +1502,12 @@ function refreshEngineState() {
     engineStatus: state.engine && state.engine.status,
     download: state.dlProgress,
     installed: state.dl.installed,
+    // Bytes already on disk from a download that stopped. `download_status`
+    // has always reported these; until now the only place they surfaced was
+    // the model drawer's "Resume download" button, which a user sitting in the
+    // chat view never sees.
+    partBytes: state.dl.partBytes,
+    downloadActive: state.dl.active,
     turn: state.turn ? { ...state.turn, now: Date.now() } : null,
     supported: state.hw ? state.hw.supported !== false : true,
   });
