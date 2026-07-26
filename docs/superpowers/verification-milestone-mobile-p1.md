@@ -743,6 +743,49 @@ something unexpected got compiled in, low means something intended did not.
 
 Running total across both phases: **266 → 277 → 286 → 297 → 302 → 313 → 321**.
 
+**2.2 layout + engine-state gate: GREEN** (run 17, at `55673cf`, protocol v2):
+**321 passed / 0 failed, zero warnings**, `cleophis` freshly compiled, PRE
+`55673cf` → POST `55673cf`, porcelain identical at both ends (one untracked
+`docs/ops/android-signing-ceremony.md`, staged by steering, named in advance
+and inert — the frontend is embedded from `src/` and docs are not a build
+input). **Predicted 321 unchanged, and 321 came back.** Third consecutive exact
+prediction, and the first where the informative outcome was a number that
+*did not move*: every change in that range is frontend or Android-manifest with
+zero Rust touched, so a movement would have meant something compiled that
+should not have.
+
+**D-4 + interrupted-download gate: GREEN** (run 18, at `0ede91b`, protocol v2):
+control run **322 passed / 0 failed**, single-threaded, 291 s. Predicted
+321 → 322 for the one new desktop test, and 322 is what came back.
+
+That gate took two runs, and the reason is worth keeping:
+
+- **Run 1: 321 passed / 1 FAILED, total 322 — and the failing test's name was
+  never recorded**, because the capture filter matched only the tally line and
+  not the `FAILED`/`panicked` lines. A steering-side legibility flaw, fixed at
+  the source (the gate template now captures those lines permanently).
+- **Run 2, same commit, same command: 322 / 0.** Per gate protocol v1 step 2, a
+  same-commit control is what a suspicious result calls for, and the failure
+  moved-or-vanished — the signature of the documented `cloud::rest`/`session`
+  family rather than of the branch.
+
+**A prediction was registered before run 2 and was upheld without being
+needed.** The new test performs no I/O, binds no port, touches no filesystem
+and shares no state — `Engine::new(8080)` stores the integer, it does not bind
+it — so it is *incapable* of flaking, and the two outcomes were stated in
+advance: the same test failing again would be deterministic and real, while a
+failure that moved or vanished would exonerate it. The second branch fired.
+Registering the discriminator first is what made a one-run ambiguity resolvable
+in one further run instead of an argument.
+
+**Provenance and legibility are separate properties, and this phase has now
+been bitten by each independently.** The contaminated runs were a correct
+recording of the wrong artifact; run 1 was a correct measurement of the right
+artifact whose recorder dropped the part that mattered. A gate needs both, and
+fixing one has never fixed the other.
+
+Running total: **266 → 277 → 286 → 297 → 302 → 313 → 321 → 321 → 322**.
+
 #### 🔬 The dead-code warning: an evidence-provenance failure, resolved
 
 The most instructive episode of the phase, because the *evidence itself* was
@@ -1773,6 +1816,30 @@ session.
   existed. Reaching the race still needs a chat switch within the
   sub-millisecond window between `invoke('chat_stream')` and Rust's `begin()`,
   and the drawer adds a tap, not a shortcut.
+- **BRIDGE-FIRST (ratified by steering) — the JNI bridge is built and
+  smoke-tested as its own commit, with its own device checkpoint, before any
+  feature rides on it.** The sequencing changed because of a read-only audit
+  done during a gate freeze, and the facts are worth recording since they are
+  cheap to re-derive and easy to assume away:
+  - **The bridge has zero prior art in this repo.** `jni = "0.21"` is declared
+    under the Android target deps and **nothing** in `src-tauri/src/`
+    references `jni::`, `JNIEnv`, or `ndk_context`.
+  - **`ndk_context` is not declared at all** — and it is what yields the
+    `JavaVM`/`Context` from the Android runtime. So the first native task
+    starts one dependency short of what the plan assumes.
+  - `cloud/secure_store.rs` does not exist (3.1 unstarted), and **`keyring` is
+    still ungated** — unconditional with `windows-native`/`linux-native`,
+    neither of which applies on Android, so v3's silent in-memory mock is still
+    live and **a force-stop still logs the user out on device.**
+
+  Three separate Kotlin shim surfaces (`ConnectivityManager`, `ACTION_SEND`,
+  and SAF/content-URIs if the founder's pack-upload feature lands) all sit
+  behind that one unbuilt bridge. Discovering its failure modes *inside*
+  whichever feature happens to go first is compound debugging — two unknowns,
+  one symptom — which is the specific trap this track keeps paying for
+  (a gradle launcher bug that surfaced as a Rust task failure being the
+  clearest prior example).
+
 - **Download-manager network policy and share-sheet export are NOT done.**
   Both need native work — `ConnectivityManager` via the Kotlin shim (with the
   JNI bridge smoke-tested first, per the brief) and an `ACTION_SEND` shim. The
