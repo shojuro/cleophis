@@ -1744,6 +1744,72 @@ screenshot showed both. Now asserted in-browser across all three states.
 - **H1 invariant preserved**: every new render site writes via `textContent`.
   The one escaped path into markup is still the chat title.
 
+#### 📱 2.2b APK — the superseding build (D-4 + interrupted downloads)
+
+```
+sha256  7c22d7c72d20613a8b76e38b4e9b565a307cc8fe6f43c58ea494bf9dd3c69571
+size    355,315,918 bytes
+built   from 53780ca, debug-signed, arm64-v8a
+copy    ~/cleophis-artifacts/cleophis-2.2b-debug-53780ca.apk
+log     ~/cleophis-mobile-logs/apk-debug-20260726-094411.log
+```
+
+**Supersedes the `402e5e6` APK below.** Adds D-4's real context window (a long
+chat on the A22 now trims instead of failing its decode) and interrupted-
+download visibility with a Resume control in the chat view. Everything the 2.2
+visual-acceptance session judges — drawer, on-screen Send, the engine states —
+is unchanged from `402e5e6`, so acceptance findings on those carry over.
+
+| checkpoint | HEAD | `git status --porcelain` |
+|---|---|---|
+| PRE | `53780ca` | empty |
+| POST | `53780ca` | empty |
+
+All four facts agree, and this is the first APK in the track built against a
+**genuinely empty** porcelain — no untracked file to explain away.
+
+**A precision worth keeping rather than rounding off.** This is loosely "the
+`0ede91b` APK", since `0ede91b` is the commit the 322/0 gate blessed, but it
+was built from `53780ca`. `git diff --stat 0ede91b..53780ca` is **one file,
++67 lines, the ledger markdown** — measured, not remembered. Docs are not a
+build input and the frontend is embedded from `src/` into the binary, so the
+artifact carries exactly `0ede91b`'s gated code while its *attribution* belongs
+to `53780ca`. Both statements are true, and neither substitutes for the other:
+saying only the first overstates what was checked out, saying only the second
+hides that the compiled content is the gated tree.
+
+`verify-apk.py` PASS: 968 entries, Σ compressed **355,125,898** vs file
+**355,315,918** = **0.05 % unaccounted**; `assets/` is `tauri.conf.json` only;
+`arm64-v8a` only; `com.cleophis.app`; `allowBackup=false`;
+`windowSoftInputMode=0x10` in the packaged manifest.
+
+#### 🔬 The third way good work becomes worthless: delivery
+
+This APK was built, correct, and sat **unreported for a day.** The build
+finished with `tauri exit status: 0`, the tree never moved, and the artifact
+was on disk the whole time — but the agent's verify-and-report step never ran,
+so nothing downstream knew it existed. Steering noticed only because no digest
+ever arrived, and opened a status check on the assumption of a silent death.
+
+That completes a trio this phase has now suffered in three distinct forms:
+
+| failure | shape |
+|---|---|
+| **provenance** | a correct recording of the *wrong* artifact (gate runs labelled with a commit while compiling a live worktree) |
+| **legibility** | a correct measurement of the *right* artifact whose recorder dropped the part that mattered (gate run 1's lost test name) |
+| **delivery** | a correct, correctly-measured artifact that **nobody was told about** |
+
+**An artifact nobody is told about is indistinguishable from one that was never
+built** — and from the outside it looks exactly like an agent that died. The
+countermeasure is the same shape as the other two: **the report is part of the
+deliverable, not a follow-up to it.** A build step that ends without emitting
+its digest has not finished, however green its exit status.
+
+Mechanically: background waiters were armed on the build and they fired, but
+the turn that should have collected them never resumed. Arming a watcher is not
+the same as having reported — the watcher only creates the *opportunity* to
+report.
+
 #### 📱 2.2 APK — BUILT, verified against the artifact, clean provenance
 
 ```
