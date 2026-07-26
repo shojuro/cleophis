@@ -1678,6 +1678,67 @@ screenshot showed both. Now asserted in-browser across all three states.
 - **H1 invariant preserved**: every new render site writes via `textContent`.
   The one escaped path into markup is still the chat title.
 
+#### 📱 2.2 APK — BUILT, verified against the artifact, clean provenance
+
+```
+sha256  13a26f8a054b5462606b058554c9a040e495fb9f2d0a1070d6966b76a9d4f870
+size    355,300,838 bytes
+built   from 402e5e6 (2.2 layout + engine state), debug-signed, arm64-v8a
+copy    ~/cleophis-artifacts/cleophis-2.2-debug-402e5e6.apk
+log     ~/cleophis-mobile-logs/apk-debug-20260726-062018.log
+```
+
+**Provenance — the first APK in this track built under protocol v2.**
+
+| checkpoint | HEAD | `git status --porcelain` |
+|---|---|---|
+| PRE | `402e5e6` | `?? docs/ops/android-signing-ceremony.md` |
+| POST | `402e5e6` | `?? docs/ops/android-signing-ceremony.md` |
+
+All four facts agree. The single untracked file is another agent's
+work-in-progress under `docs/`, and it **cannot** enter the artifact: the
+frontend is embedded from `src/` into `libcleophis_lib.so` at Rust compile
+time (`assets/` holds only `tauri.conf.json`), and docs are not a build input.
+Recorded rather than hidden — "clean except X, and here is why X is inert" is
+worth more than an unqualified claim of pristine.
+
+**Why this APK is a rebuild.** The first build of this session was started
+before the last commit landed and was therefore attributable to no commit at
+all — the frontend snapshot is taken when `cleophis` compiles, so a later
+`src/` edit silently produces an artifact whose contents match nothing. That is
+the same failure as the contaminated gate runs, in a new place. It was
+discarded and rebuilt from a frozen tree rather than shipped with a caveat.
+
+Digest produced by `sha256sum`, never retyped, and re-hashed at the artifacts
+copy: **identical**, so the copy is intact.
+
+Verified from the APK itself by the new
+`docs/superpowers/mobile-tools/verify-apk.py`, which encodes the checks this
+document has been performing by hand:
+
+| check | result |
+|---|---|
+| zip-entry accounting (zipflinger orphan trap) | 968 entries, Σ compressed **355,110,818** vs file **355,300,838** — **0.05 % unaccounted**, no stranded copy |
+| `assets/` contents (`{}`-vs-`null` merge trap) | **`assets/tauri.conf.json` only** |
+| `lib/` ABIs | **`arm64-v8a` only** |
+| package identity | **`com.cleophis.app`**, versionCode 1000, targetSdk 36 |
+| `allowBackup` | **false** |
+| permissions | REQUEST_INSTALL_PACKAGES, FOREGROUND_SERVICE_SPECIAL_USE |
+| **`windowSoftInputMode` (new in 2.2)** | **present, `0x00000010` = `adjustResize`** |
+
+That last row is the one worth reading twice. The IME fix was a change to
+`gen/android/AndroidManifest.xml`, and this repo's standing rule is that config
+claims are checked against the built artifact and never against the config that
+was meant to produce them — so it is confirmed by dumping the *packaged*
+manifest, where the attribute resolves to the numeric constant rather than the
+source text.
+
+**What this APK is for:** the 2.2 visual-acceptance session. It is also the
+first build carrying the CP1 items that were still open — `[kernels]`
+DOTPROD=1, quantified TTFT/tok-s/RSS, the tampered-file probe and a formal
+Stage-5 4/4 all remain uncaptured and fold naturally into the same device
+session.
+
 #### Surfaced, not fixed
 
 - **Desktop's pill has the same defect** — static `"Local · offline"`, no
