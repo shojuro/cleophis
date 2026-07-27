@@ -2212,6 +2212,56 @@ setup call carries the same gate, and the Kotlin and ProGuard files are not
 desktop build inputs. A movement in either direction would be the interesting
 result: it would mean something compiled on desktop that should not have.
 
+### 📱 Bridge APK — BUILT, verified against the artifact, clean provenance both ends
+
+```
+sha256  fa85ab6b8536aa3938963715c34c235e5001c7cde33c6379c90d1bdd7226f0d1
+size    355,402,510 bytes
+built   from 7ec85ae (bridge + the exception fix), debug-signed, arm64-v8a
+copy    ~/cleophis-artifacts/cleophis-bridge-debug-7ec85ae.apk
+log     ~/cleophis-mobile-logs/apk-debug-20260727-084037.log
+```
+
+**Provenance — both checkpoints recorded live, each in its own command.**
+
+| checkpoint | HEAD | `git status --porcelain` | recorded |
+|---|---|---|---|
+| PRE | `7ec85ae` | empty, exit 0 | 2026-07-27T08:38:35+07:00 |
+| POST | `7ec85ae` | empty, exit 0 | 2026-07-27T09:19:41+07:00 |
+
+All four facts agree and **this is attributable to the commit**, not to a live
+worktree — the standard protocol v2 was written to produce, and the first APK in
+this track to meet it with both checkpoints taken by a living witness rather
+than reconstructed afterwards. The 2.2b entry above is the contrast case, and
+the difference is entirely that someone was present to run two commands.
+
+Digest produced by `sha256sum` and never retyped. **Both copies hash
+identically**, so the archive is intact — and unlike 2.2b, that comparison was
+made and recorded in the same breath as the build rather than a day later.
+
+`verify-apk.py` **PASS**: 968 entries, Σ compressed **355,212,779** vs file
+**355,402,510** = **0.05 % unaccounted** (no zipflinger orphan); `assets/` is
+`tauri.conf.json` only; `arm64-v8a` only.
+
+**One check this commit needed that the standard script does not do.** Every
+other artifact claim in this document is about Rust or config; this is the first
+commit whose payload is *Kotlin*, and the script has nothing to say about
+whether a `.kt` file compiled and got packaged. If it had not, the on-device
+symptom would be `ClassNotFoundException` — indistinguishable from the
+class-loader bug the bridge deliberately avoids, which is precisely the
+two-causes-one-symptom confusion the whole bridge-first sequencing exists to
+prevent. So it was read out of the APK:
+
+| check | result |
+|---|---|
+| `Lcom/cleophis/app/NativeBridge;` class descriptor | present, `classes8.dex` |
+| `describeDevice` method name | present, `classes8.dex` |
+
+Read from the shipped archive's dex, not from a gradle log. It confirms the
+Kotlin compiled, survived dexing, and is in the artifact the founder will
+install — which narrows what a failure on device could mean before the device
+is even touched.
+
 ### 📱 Device checkpoint — and the value predicted BEFORE it runs
 
 The bridge cannot be proven off-device: an aarch64 `check` proves it compiles,
@@ -2245,6 +2295,31 @@ That last row is why both branches print. Reaching logcat: Rust's stderr is
 redirected by tao to the tag **`RustStdoutStderr`**, so
 `adb logcat -s RustStdoutStderr` (or `adb logcat -d | grep -F "[bridge]"`)
 carries it, the same channel the `[kernels]` line uses.
+
+**A seventh outcome, now excluded by construction: the app must not crash.**
+Before the exception fix it would have, on every failure branch. If a crash
+happens anyway, that is information rather than noise — it would mean a JNI
+misuse the `exception_clear` path does not cover, and the logcat ART abort
+message names it directly.
+
+**Everything else about this build is unchanged from 2.2b**, so the visual
+acceptance findings from that session carry over — the bridge probe adds one
+log line and touches no UI. A founder holding both APKs should use this one.
+
+### Prerequisite already found for N.2 (`ConnectivityManager`)
+
+Surfaced now because it is cheap to find and expensive to hit mid-feature:
+**`ACCESS_NETWORK_STATE` is not declared in the manifest.** The permission list
+is currently `INTERNET`, `REQUEST_INSTALL_PACKAGES`, `POST_NOTIFICATIONS`,
+`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` — and
+`ConnectivityManager.isActiveNetworkMetered()` / `getNetworkCapabilities()` both
+require `ACCESS_NETWORK_STATE`, throwing `SecurityException` without it. It is a
+normal (install-time) permission, so no runtime prompt, but it must be in the
+manifest before the metered check can run at all.
+
+Noted here rather than added now: this commit is the bridge and nothing else,
+and a permission with no caller is the same kind of dead surface as a frontend
+policy invoking a command that does not exist.
 
 ## Conventions
 
