@@ -20,7 +20,7 @@ const BEATS_FILE = process.argv[4];
 const FPS = 30;
 const W = 1920;
 const H = 1080;
-const DUR = 1306.61;
+const DUR = Number(process.env.HF_DUR || 1306.61); // override for slices/tests
 const HOLD = 3.6;
 const q = (t) => Math.round(t * FPS) / FPS;
 
