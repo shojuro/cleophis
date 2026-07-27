@@ -1832,6 +1832,14 @@ overwrote it, and it hashes identical to the archive. Every previous entry in
 this document had to note that its build output was gone; this is the one time
 both copies can be compared, and they agree.
 
+*(Later the same day that window closed: the next APK build ran, and
+`build-android-apk.sh` deletes the prior output before packaging — the fix for
+the zipflinger orphan trap. So 2.2b again exists only as the archive. The
+comparison above was made while both copies were present and is recorded as a
+measurement taken then, not as something a reader can now re-derive. Noted
+because a future reader following the path above would otherwise find an empty
+directory and wonder which claim was wrong.)*
+
 *(A claim in this paragraph's first draft — that the output had been overwritten
 "by every later build" — was written from the pattern of previous entries rather
 than from `ls`, and was false. Corrected before commit. It is a small instance
@@ -2090,6 +2098,83 @@ will legitimately pass while the release path stays broken, and nothing in the
 green result would hint at it. Every previous instance of this family was one
 artifact measured wrongly; this one is the right measurement of an artifact that
 is not the one that ships.
+
+### 🔬 The diagnostic that would have crashed instead of reporting
+
+Found after the bridge was committed (`580b2bc`) and while its APK was
+building, by the ledger's own habit — writing down why the existing code was
+correct and discovering it was not. **The in-flight build was killed**, because
+the defect lands squarely on the one path the bridge exists to protect, and
+shipping a checkpoint APK whose failure mode is a crash would have burned a
+founder-serialized device session.
+
+Landed as its own `fix(mobile-p1)` commit rather than an amend, deliberately:
+`580b2bc` had already been reported to steering by hash, and rewriting a hash
+someone else has been told about trades a small tidiness gain for exactly the
+kind of provenance confusion this document spends most of its length
+preventing. The history showing the defect and its fix is also the more useful
+artifact.
+
+**`jni` does not clear a pending Java exception on error.** Its own docs say so
+(`jnienv.rs`: the exception "will be thrown in java unless `exception_clear` is
+called"). So a failing `getAppClass` or `describeDevice` returns `Err` *and*
+leaves the exception pending on the thread.
+
+That thread is the **UI thread**, which Tauri and wry drive with constant JNI
+traffic, and ART aborts the process on the next JNI call made with an exception
+pending. So the first version of the probe would have **crashed the app instead
+of printing `[bridge] FAILED …`** — and only when the bridge was broken.
+
+Why this is worth a section rather than a line in a diff:
+
+- **The failure mode was inverted.** A working bridge prints its line and a
+  broken one takes the app down. The checkpoint's entire value is the
+  *distinction* between six enumerated failure strings, and a crash collapses
+  all of them into one uninformative outcome — on a founder-serialized device
+  session that cannot cheaply be re-run.
+- **Nothing off-device could have caught it.** It compiles, cross-compiles
+  clean, and passes every check in this document. There is no test, because
+  there is no JVM here.
+- **It is the "check that cannot fail" family again, one level up.** The probe
+  is itself a check; this defect meant the probe could only ever report
+  success. A diagnostic that cannot report failure is exactly as useless as an
+  assertion that cannot fail, and it took the same countermeasure to find:
+  stating plainly what happens when it goes wrong.
+
+Fixed by splitting the JNI calls into `round_trip` so the caller can, on any
+error, `exception_describe` (which dumps the Java stack trace to logcat — the
+part that names the missing class or method) and then `exception_clear`,
+once, rather than repeating cleanup at each `?`.
+
+**The generalisable form: error paths in FFI are the code most likely to be
+wrong and least likely to be exercised.** Every `?` here was written for the
+happy path; the failure path had never been reasoned about at all, and it was
+the only path that mattered for this commit's purpose.
+
+#### Operational trap found while killing that build: `pkill` does not kill the build
+
+Worth recording because it has a provenance consequence, not merely a tidiness
+one. Killing the build meant `pkill -f build-android-apk.sh`, `pkill -f "tauri
+android build"` and the gradle daemon — and **the compile survived all three.**
+The actual worker was
+
+```
+cargo build --package cleophis --manifest-path .../src-tauri/Cargo.toml --target aarch64-linux-android ...
+```
+
+spawned several layers down, matching none of those patterns. It kept running
+for six more minutes, and it did two harmful things at once: it **held the
+cargo build-directory lock**, so the follow-up `check` sat on "Blocking waiting
+for file lock on build directory" with no live holder that `pgrep` on the
+obvious patterns would reveal; and it was **compiling a tree that was being
+edited underneath it** — precisely the contamination protocol v2 exists to
+prevent, arrived at from a new direction.
+
+The rule this adds to the freeze discipline: **a build is not stopped until the
+compiler is stopped.** Kill by walking the process table for `cargo`/`rustc`
+against this manifest, not by killing the script that launched them. And a
+`check` blocked on a build-directory lock is evidence that some earlier build is
+*still alive*, not that a lock leaked.
 
 ### One safety property worth stating, because the code cannot show it
 

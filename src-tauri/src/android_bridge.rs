@@ -61,7 +61,7 @@
 //! round trip is what checks them.
 
 use jni::objects::{JClass, JObject, JString};
-use jni::JavaVM;
+use jni::{JNIEnv, JavaVM};
 use tauri::tao::platform::android::prelude::main_android_context;
 
 /// The Kotlin object we call into. Must match `NativeBridge.kt`'s package and
@@ -103,6 +103,31 @@ pub(crate) fn describe_device() -> Result<String, String> {
     // must not free it — `JObject::from_raw` does not take ownership.
     let activity = unsafe { JObject::from_raw(ctx.context_jobject.cast()) };
 
+    let result = round_trip(&mut env, &activity);
+
+    // A failed JNI call leaves its Java exception PENDING — `jni` does not
+    // clear it (its own docs: the exception "will be thrown in java unless
+    // `exception_clear` is called"). That is not cosmetic here. This runs on
+    // the UI thread, which Tauri and wry drive with constant JNI traffic, and
+    // ART aborts the process on the next JNI call made with an exception
+    // pending. So the naive version of this probe **crashes the app instead of
+    // reporting**, and it does so only on the failure path — the one the whole
+    // commit exists to make legible. A diagnostic whose failure mode is a
+    // crash tells you strictly less than one that prints a line.
+    //
+    // `exception_describe` first, because it dumps the Java stack trace to
+    // logcat, which is the part that says *which* class or method was missing.
+    if result.is_err() && env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+
+    result
+}
+
+/// The calls themselves. Split out so the caller can clear a pending exception
+/// on any error without repeating the cleanup at each `?`.
+fn round_trip(env: &mut JNIEnv, activity: &JObject) -> Result<String, String> {
     let class_name = env
         .new_string(BRIDGE_CLASS)
         .map_err(|e| format!("new_string: {e}"))?;
@@ -116,7 +141,7 @@ pub(crate) fn describe_device() -> Result<String, String> {
     // own lookups through the same method for the same reason.
     let class = env
         .call_method(
-            &activity,
+            activity,
             "getAppClass",
             "(Ljava/lang/String;)Ljava/lang/Class;",
             &[(&class_name).into()],
