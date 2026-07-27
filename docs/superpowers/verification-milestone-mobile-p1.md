@@ -1972,6 +1972,195 @@ session.
   it, and `navigator.connection` reports wifi-vs-cellular, which is **not** the
   same fact as metered.
 
+---
+
+## Native chunk — N.1 The JNI bridge, built and proven on its own
+
+Steering ratified bridge-first sequencing (rationale under "Surfaced, not
+fixed" above). This is the deliverable: **one commit whose only job is a round
+trip — Rust → our Kotlin → Rust — that fails loudly if the bridge does not
+work.** Not a feature. `ConnectivityManager`, `ACTION_SEND` and (if the
+pack-upload feature lands) SAF all sit behind it.
+
+`src-tauri/src/android_bridge.rs` + `gen/android/.../NativeBridge.kt`, called
+once from `lib.rs` setup, printing one `[bridge]` line in the mould of
+`[kernels]`.
+
+### 🔬 The brief's `ndk_context` is wrong, and it would have failed on device
+
+The brief (§5) and the native handoff both specify `ndk_context` as the source
+of the `JavaVM` and `Context`, and steering's assignment repeated it. **It is
+the wrong mechanism for this app**, and the way it is wrong is this milestone's
+signature failure shape: it compiles, it cross-compiles, and it hands you null
+pointers at runtime.
+
+Measured, not assumed:
+
+| claim | check |
+|---|---|
+| `ndk-context` is undeclared by us | true, and **stronger than that** — it is absent from `Cargo.lock` entirely, so *nothing* in the graph depends on it |
+| `Cargo.lock` would show Android-only deps | yes — `jni 0.21.1` and `ndk 0.9.0` are both in it via `tao`, so absence is meaningful rather than an artifact of target filtering |
+| something initializes it | **no.** Zero calls to `initialize_android_context` in `tao 0.35.3`, `wry 0.55.1` or `tauri 2.11.5`. The single occurrence of the name across all three is a commented-out `// TODO: use ndk-context instead` in tao's Android event loop |
+
+`ndk_context`'s accessor reads process-global statics that some *other* crate is
+expected to have filled in. Adding the dependency would have produced a bridge
+that failed on device presenting as **"JNI is broken"** rather than as "this
+global was never initialized" — and it would have failed inside whichever
+feature went first, which is the exact compound-debugging trap bridge-first
+sequencing exists to prevent. The sequencing earned its keep before a single
+feature was written.
+
+**What Tauri actually offers is better.** `tao` keeps its own `AndroidContext`
+(the `JavaVM` pointer plus the activity's global ref) and the accessor is public
+the whole way down: `tauri::tao` is a re-export (`tauri/src/lib.rs`:
+`pub use tauri_runtime_wry::{tao, wry}`), and
+`tao::platform::android::prelude` re-exports the `ndk_glue` module holding
+`main_android_context()`. **No new dependency at all** — the bridge adds zero
+lines to `Cargo.toml`, and `jni = "0.21"`, declared since Phase 0.2 and
+referenced by nothing, finally has a caller.
+
+**Ordering is proven rather than hoped for.** tao inserts the context into its
+map and only *then* calls the setup path that reaches our `run()` — the insert
+precedes the `setup(...)` call in the same function in tao's activity-create
+handler. So `main_android_context()` is populated by the time Tauri's `setup`
+hook runs, which is where the probe is called. That is a source-level proof, in
+the mould of the cover-scope fix: two callers of one function cannot disagree.
+
+**Version unification checked**, because two semver-incompatible `jni` crates
+would mean `JObject` from tao and `JObject` from us are different types with an
+identical name — a genuinely baffling error. `tao` declares `jni = "0.21"` under
+its Android target and our lock resolves exactly one `jni 0.21.1`. One crate,
+one set of types.
+
+### The class-loader trap, avoided by reading tao rather than by debugging
+
+`env.find_class("com/cleophis/app/NativeBridge")` is the obvious call and it is
+**wrong on Android**. On a thread attached through JNI, `FindClass` resolves
+against the *system* class loader, which cannot see application classes. It is
+the most common way an Android JNI bridge fails, and it fails with a bare
+`ClassNotFoundException` that says nothing about class loaders.
+
+The bridge instead calls `WryActivity.getAppClass(name)` on the activity, which
+is a one-line `Class.forName(name)` — but executed *inside an app class*, so it
+resolves in the app's loader. tao routes its own lookups through the same
+method, which is what made this findable by reading rather than by a device
+round trip. Recorded because the correct code and the broken code differ by one
+call and look equally reasonable.
+
+Note the consequence for `Desc`: passing a `&str` where `jni` wants a class
+silently selects the `find_class` path. The bridge passes a `&JClass` obtained
+from `getAppClass`, so the wrong path is not merely avoided but unreachable.
+
+### 🔬 The R8 trap: the smoke test proves the bridge in debug and says NOTHING about release
+
+The most valuable thing found while writing this commit, and it was found by
+asking what the smoke test *could not* tell us.
+
+`app/build.gradle.kts` sets `isMinifyEnabled = false` for debug and **`true` for
+release**. R8 shrinks on reachability from Java/Kotlin, and `NativeBridge`'s
+only caller is Rust across JNI, which R8 cannot see. From R8's point of view
+`describeDevice` is dead code.
+
+The existing wry rule is **not** sufficient, and reading it carelessly says it
+is:
+
+```
+-keep class com.cleophis.app.* { native <methods>; }
+```
+
+That matches our class and so preserves the class *name* — but its member spec
+keeps only `native` methods. `describeDevice` is a plain static with no Java
+caller and would be removed. The symptom would be **`NoSuchMethodError`, not
+`ClassNotFoundException`** — a class that exists with the method missing, which
+points an investigator at the signature rather than at minification.
+
+Fixed with `app/proguard-cleophis.pro` (hand-written; the other two `.pro` files
+are autogenerated and marked do-not-edit). The release buildType globs
+`**/*.pro` under `app/`, so a new file is picked up without a gradle change.
+
+**This rule is reasoned, not yet verified**, and the distinction is the point:
+no release APK exists, because signing is founder-serialized. Added to the
+Phase 5.2 release-config audit alongside `debuggable=false`,
+`usesCleartextTraffic` and the `abiFilters` check.
+
+The generalisable form, which is new to this document: **a debug-only proof and
+a release-only failure mode are the same "check that cannot fail" pattern, split
+across build types instead of across artifacts.** The device checkpoint below
+will legitimately pass while the release path stays broken, and nothing in the
+green result would hint at it. Every previous instance of this family was one
+artifact measured wrongly; this one is the right measurement of an artifact that
+is not the one that ships.
+
+### One safety property worth stating, because the code cannot show it
+
+The probe calls `vm.attach_current_thread()` from the UI thread, which the JVM
+has already attached. `jni` tries `get_env()` first and, on success, returns a
+**nested** guard with `should_detach: false`, so dropping it is a no-op; only a
+guard for a thread the call actually attached detaches on drop. Verified in
+`jni`'s source rather than assumed, because the failure it rules out —
+detaching the UI thread from the JVM on the way out of a smoke probe — would
+take the whole app down and would look nothing like a bridge bug.
+
+### Why none of this went where the tests run (decision D-3 applied, not ignored)
+
+D-3 moves logic out from behind a `cfg` when it is platform-neutral **and**
+fails silently. Neither half holds. Every line is FFI against a live JVM — the
+case D-3 explicitly exempts — and the failure mode is the opposite of silent:
+each step returns a described `Err` that the startup line prints. There is no
+decision left in it for a test to check; the class name and the method
+signature are the only claims, and the round trip is what checks them. D-3's
+own tell applies: what remains behind the `cfg` is plumbing.
+
+### Verification
+
+| what | result |
+|---|---|
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | **exit 0, zero warnings** (unanchored `grep -ci warning` = 0) |
+| desktop surface touched | **none** — see below |
+
+Logs: `cleophis-mobile-logs/bridge-aarch64-check-*.log`.
+
+**Desktop prediction: 322 unchanged, zero warnings.** Every file in this commit
+is Android-only by construction — `android_bridge.rs` is declared under
+`#[cfg(target_os = "android")]` (not `mobile`, which would include iOS), the
+setup call carries the same gate, and the Kotlin and ProGuard files are not
+desktop build inputs. A movement in either direction would be the interesting
+result: it would mean something compiled on desktop that should not have.
+
+### 📱 Device checkpoint — and the value predicted BEFORE it runs
+
+The bridge cannot be proven off-device: an aarch64 `check` proves it compiles,
+and nothing on this host can run Kotlin. So this needs the founder's A22.
+
+**Predicted output, recorded before the run** — per the convention that an
+unpredicted result proves less than a predicted one:
+
+```
+[bridge] ok round-trip via com.cleophis.app.NativeBridge device=samsung/SM-A226B/api33
+```
+
+`samsung` is `Build.MANUFACTURER`, `SM-A226B` is the A22 5G's `Build.MODEL`, and
+`33` is `Build.VERSION.SDK_INT` for its Android 13. The probe returns real
+`android.os.Build` values rather than a constant on purpose: a constant would
+prove the call mechanism and nothing else, while this proves the Kotlin ran with
+genuine framework access, which is what every queued shim actually needs.
+
+**A mismatch is informative rather than merely disappointing:**
+
+| observed | means |
+|---|---|
+| the line, values as predicted | bridge works end to end |
+| the line, *different* values | bridge works; the prediction about the device was wrong (harmless, and it still proves real framework access) |
+| `[bridge] FAILED getAppClass(...)` | the class-loader or minification path — R8 is off in debug, so suspect packaging |
+| `[bridge] FAILED describeDevice: ...` | class found, method not — the `@JvmStatic` contract |
+| `[bridge] FAILED main_android_context() is None` | the ordering proof above is wrong |
+| **no `[bridge]` line at all** | the probe never ran — worse than a failure, and the one outcome that would otherwise be silent |
+
+That last row is why both branches print. Reaching logcat: Rust's stderr is
+redirected by tao to the tag **`RustStdoutStderr`**, so
+`adb logcat -s RustStdoutStderr` (or `adb logcat -d | grep -F "[bridge]"`)
+carries it, the same channel the `[kernels]` line uses.
+
 ## Conventions
 
 - **A `docs(` prefix can hide a code change.** Commit `6299dc3` is prefixed

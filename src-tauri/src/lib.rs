@@ -4,6 +4,12 @@
 // binary that calls `run()`. All modules, commands, and the builder live
 // here unchanged — the split moves code, it does not alter behavior.
 
+/// The JNI bridge to our own Kotlin (`NativeBridge.kt`). Android-only, and
+/// deliberately proven on its own before the `ConnectivityManager`,
+/// `ACTION_SEND` and SAF shims are built on top of it. `target_os = "android"`
+/// rather than `mobile`, which would also mean iOS.
+#[cfg(target_os = "android")]
+mod android_bridge;
 mod calc;
 mod catalog;
 mod catalog_dist;
@@ -162,6 +168,20 @@ pub fn run() {
             if let Err(e) = resources_embed::materialize(app.handle()) {
                 eprintln!("setup: failed to materialize embedded resources: {e}");
             }
+
+            // The JNI bridge smoke probe. Prints `[bridge] ...` exactly once,
+            // in the mould of the `[kernels]` line, so a device transcript
+            // carries its own proof that Rust → Kotlin → Rust works. It runs
+            // here, before any feature needs the bridge, because three shim
+            // surfaces are queued behind it and discovering its failure modes
+            // inside whichever one goes first is compound debugging.
+            //
+            // Non-fatal by construction: nothing depends on the bridge yet, so
+            // a failure must be loud rather than terminal. `main_android_context()`
+            // is already populated at this point — tao inserts it before
+            // calling the setup path that reaches `run()`.
+            #[cfg(target_os = "android")]
+            android_bridge::log_smoke_probe();
 
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
