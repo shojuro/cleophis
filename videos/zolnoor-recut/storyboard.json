@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 3,
+  "composition": {
+    "fps": 30,
+    "width": 1080,
+    "height": 1920,
+    "durationSeconds": 249.8,
+    "layout": "portrait",
+    "themeId": "noir",
+    "seed": 42
+  },
+  "videoTrack": {
+    "sourcePath": "input-video.mp4",
+    "startSec": 0,
+    "endSec": 249.8,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1080,
+      "height": 1920
+    }
+  },
+  "subtitles": {
+    "enabled": false
+  },
+  "cards": [
+    {
+      "id": "card-01",
+      "intent": "Emphasize the spoken line \"COMPLETELY ARBITRARY\" as kinetic type over the full-bleed clip",
+      "startSec": 4.9,
+      "endSec": 8.1,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "COMPLETELY ARBITRARY"
+      }
+    },
+    {
+      "id": "card-02",
+      "intent": "Emphasize the spoken line \"THEY JUST DON'T APPLY\" as kinetic type over the full-bleed clip",
+      "startSec": 17.4,
+      "endSec": 20.6,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THEY JUST DON'T APPLY"
+      }
+    },
+    {
+      "id": "card-03",
+      "intent": "Emphasize the spoken line \"IGNORE REPERCUSSIONS\" as kinetic type over the full-bleed clip",
+      "startSec": 35.36666666666667,
+      "endSec": 38.56666666666667,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "IGNORE REPERCUSSIONS"
+      }
+    },
+    {
+      "id": "card-04",
+      "intent": "Emphasize the spoken line \"THE COURT BECOMES ILLEGITIMATE\" as kinetic type over the full-bleed clip",
+      "startSec": 40.63333333333333,
+      "endSec": 43.833333333333336,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THE COURT BECOMES ILLEGITIMATE"
+      }
+    },
+    {
+      "id": "card-05",
+      "intent": "Emphasize the spoken line \"TAKE CONTROL = IN CONTROL\" as kinetic type over the full-bleed clip",
+      "startSec": 56.266666666666666,
+      "endSec": 59.46666666666667,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "TAKE CONTROL = IN CONTROL"
+      }
+    },
+    {
+      "id": "card-06",
+      "intent": "Emphasize the spoken line \"NO ONE ASKS HOW YOU GOT THERE\" as kinetic type over the full-bleed clip",
+      "startSec": 63.5,
+      "endSec": 66.7,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "NO ONE ASKS HOW YOU GOT THERE"
+      }
+    },
+    {
+      "id": "card-07",
+      "intent": "Emphasize the spoken line \"GO ALONG AND GET ALONG\" as kinetic type over the full-bleed clip",
+      "startSec": 75.23333333333333,
+      "endSec": 78.43333333333334,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "GO ALONG AND GET ALONG"
+      }
+    },
+    {
+      "id": "card-08",
+      "intent": "Emphasize the spoken line \"STRONGLY WORDED THINGS\" as kinetic type over the full-bleed clip",
+      "startSec": 79.5,
+      "endSec": 82.7,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "STRONGLY WORDED THINGS"
+      }
+    },
+    {
+      "id": "card-09",
+      "intent": "Emphasize the spoken line \"DELEGITIMIZE THE COURTS\" as kinetic type over the full-bleed clip",
+      "startSec": 99.03333333333333,
+      "endSec": 102.23333333333333,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "DELEGITIMIZE THE COURTS"
+      }
+    },
+    {
+      "id": "card-10",
+      "intent": "Emphasize the spoken line \"THAT WASN'T ALLOWED\" as kinetic type over the full-bleed clip",
+      "startSec": 121.83333333333333,
+      "endSec": 125.03333333333333,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THAT WASN'T ALLOWED"
+      }
+    },
+    {
+      "id": "card-11",
+      "intent": "Emphasize the spoken line \"WHO'S GOING TO ENFORCE IT?\" as kinetic type over the full-bleed clip",
+      "startSec": 133.33333333333334,
+      "endSec": 136.53333333333333,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "WHO'S GOING TO ENFORCE IT?"
+      }
+    },
+    {
+      "id": "card-12",
+      "intent": "Emphasize the spoken line \"WHERE ARE THOSE GUYS?\" as kinetic type over the full-bleed clip",
+      "startSec": 139.1,
+      "endSec": 142.3,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "WHERE ARE THOSE GUYS?"
+      }
+    },
+    {
+      "id": "card-13",
+      "intent": "Emphasize the spoken line \"IN THE WOODS. COSPLAYING.\" as kinetic type over the full-bleed clip",
+      "startSec": 150.1,
+      "endSec": 153.3,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "IN THE WOODS. COSPLAYING."
+      }
+    },
+    {
+      "id": "card-14",
+      "intent": "Emphasize the spoken line \"TYRANNY LOOKS EXACTLY LIKE THIS\" as kinetic type over the full-bleed clip",
+      "startSec": 161.23333333333332,
+      "endSec": 164.43333333333334,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "TYRANNY LOOKS EXACTLY LIKE THIS"
+      }
+    },
+    {
+      "id": "card-15",
+      "intent": "Emphasize the spoken line \"CO-EQUAL BRANCH\" as kinetic type over the full-bleed clip",
+      "startSec": 172.46666666666667,
+      "endSec": 175.66666666666666,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "CO-EQUAL BRANCH"
+      }
+    },
+    {
+      "id": "card-16",
+      "intent": "Emphasize the spoken line \"I ANSWER TO A KING\" as kinetic type over the full-bleed clip",
+      "startSec": 192.4,
+      "endSec": 195.6,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "I ANSWER TO A KING"
+      }
+    },
+    {
+      "id": "card-17",
+      "intent": "Emphasize the spoken line \"LEGITIMACY ONLY EXISTS BECAUSE WE GIVE IT\" as kinetic type over the full-bleed clip",
+      "startSec": 213.36666666666667,
+      "endSec": 216.56666666666666,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "LEGITIMACY ONLY EXISTS BECAUSE WE GIVE IT"
+      }
+    },
+    {
+      "id": "card-18",
+      "intent": "Emphasize the spoken line \"THE LAWS ARE JUST AN AGREEMENT\" as kinetic type over the full-bleed clip",
+      "startSec": 227.76666666666668,
+      "endSec": 230.96666666666667,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THE LAWS ARE JUST AN AGREEMENT"
+      }
+    },
+    {
+      "id": "card-19",
+      "intent": "Emphasize the spoken line \"ARBITRARINESS DELEGITIMIZES IT\" as kinetic type over the full-bleed clip",
+      "startSec": 238.83333333333334,
+      "endSec": 242.03333333333333,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "ARBITRARINESS DELEGITIMIZES IT"
+      }
+    }
+  ]
+}

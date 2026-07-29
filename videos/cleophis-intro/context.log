@@ -1,0 +1,8 @@
+source phase — degrade notes (2026-07-26)
+- asset_need role=background kind=video query="dark slow smoke": UNMET as footage.
+  Providers checked: heygen CLI (absent), GEMINI_API_KEY/GOOGLE_API_KEY (unset),
+  reuse candidates (none in project or global cache). Degrade: hand-authored
+  deterministic animated background layer in the composition (kinetic-type module fallback).
+- asset_need role=music-bed kind=bgm query="warm ambient minimal": RESOLVED by local
+  generation (procedural synthesis, no providers needed) -> assets/bgm-ambient-bed.wav.
+- ffmpeg/ffprobe not on PATH; heygen CLI not installed. Doctor output retained in session log.

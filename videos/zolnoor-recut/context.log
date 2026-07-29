@@ -1,0 +1,54 @@
+talking-head-recut — build log (2026-07-26)
+
+INPUT (not committed — third-party footage, public repo)
+  /mnt/c/Users/JM505 Computers/Downloads/What's stopping us If laws are
+  arbitrarily enforced, then they don't exist. - SHEILA ZOLNOOR (720p).mp4
+  720x1280 @ 30fps, 249.8s, h264 + aac. Speaker: Sheila Zolnoor.
+
+WHAT WAS BUILT
+  19 kinetic emphasis-word cards over the untouched clip. Canvas 1080x1920 @30,
+  overlay layout (video full-bleed), noir palette, Inter 700 uppercase.
+  The clip plays unchanged underneath; original audio preserved via a separate
+  #source-audio track (visual <video> stays muted, per the skill contract).
+
+TRANSCRIPTION
+  Local Whisper via `npx hyperframes transcribe --model small.en` — no API key,
+  no third-party service. 727 words, word-level timestamps.
+
+EDITORIAL NOTES
+  - Emphasis beats were auto-selected from the transcript and reviewed by the
+    user before the build.
+  - The source carries a PERMANENT burned-in disclaimer at y~1230-1590
+    ("I'm not telling anyone to do anything. I'm just talking hypothetically
+    here."). The emphasis band was moved ABOVE it (block bottom-anchored at
+    y=1160, scrim fades out by y=1220) so the speaker's own framing is never
+    occluded. First layout attempt collided with it — caught in proof snapshots.
+  - Two lines from the Second Amendment passage ("it's go time", "when will
+    those men in training be ready") were left out of the emphasis set: as
+    isolated kinetic type they lose the hypocrisy-callout irony that the
+    surrounding speech carries. Her critique is represented instead by
+    "WHERE ARE THOSE GUYS?" and "IN THE WOODS. COSPLAYING." Nothing was
+    removed from the video itself — the clip and audio play in full.
+
+ENVIRONMENT TRAPS HIT
+  - `hyperframes snapshot` spawns a child that does NOT inherit a PATH-provided
+    ffmpeg; fixed by symlinking the static build into ~/.local/bin.
+  - First render died: ffmpeg encode exceeded the default 999200 ms timeout at
+    2:58 of 4:10 (0.178x) running off /mnt/c. Fixed by rendering on the
+    WSL-native disk with PRODUCER_ENABLE_CHUNKED_ENCODE=true and
+    FFMPEG_ENCODE_TIMEOUT_MS=5400000. Render then took 182 min for 7494 frames
+    (machine was at load ~17 on 12 cores from other concurrent sessions).
+  - Source has one corrupt AAC packet ("Input buffer exhausted before END
+    element"); ffmpeg recovers and full-length audio is intact.
+
+VERIFICATION
+  lint 0 errors; check pass (0 runtime/layout/motion errors, 3/3 WCAG AA);
+  proof snapshots inspected at 7 beats; final MP4 verified with ffprobe
+  (249.800s, 1080x1920 h264 + aac stereo) and frames extracted from the render
+  at 6.5s / 140.5s / 214.5s; audio overall RMS -30.5 dB (speech present).
+
+REPRODUCE
+  cd videos/zolnoor-recut
+  ffmpeg -y -i "<source.mp4>" -c:v libx264 -crf 18 -g 30 -keyint_min 30 \
+    -pix_fmt yuv420p -movflags +faststart -c:a aac public/input-video.mp4
+  npx hyperframes render public --skill=talking-head-recut -o output.mp4 --fps 30

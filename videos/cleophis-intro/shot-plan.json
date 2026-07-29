@@ -1,0 +1,128 @@
+{
+  "category": "kinetic-type",
+  "duration_s": 10,
+  "fps": 30,
+  "canvas": { "w": 1920, "h": 1080, "aspect": "16:9" },
+  "style": "calm premium minimal; deep night-toned atmosphere with one warm lamplight accent; slow breathing motion, generous negative space; restraint over spectacle — the fade-in wordmark is the signature move",
+  "palette": ["#0B0F14", "#141B24", "#EDE9E0", "#D5A559"],
+  "font": "Inter",
+  "beats": [0.5, 4.7, 8.0],
+  "export": "mp4",
+
+  "asset_needs": [
+    {
+      "role": "background",
+      "kind": "video",
+      "query": "dark slow smoke",
+      "treatment": "darken-vignette"
+    },
+    {
+      "role": "music-bed",
+      "kind": "bgm",
+      "query": "warm ambient minimal",
+      "treatment": "low-mix-fadeout"
+    }
+  ],
+
+  "block": null,
+  "customize": {
+    "decision": "No caption-* block fits: all 18 are word-synced caption effects (slam/glow/glitch/karaoke energy), while this shot is a persistent two-line brand lockup — wordmark enters once at 0.5s and HOLDS on screen through 10s while the tagline joins beneath it, then both resolve together. That cross-scene continuity breaks the caption-block model, so hand-author per the kinetic-type module fallback.",
+    "approach": "hand-author",
+    "clip_structure": "One full-duration .clip (data-start=0, data-duration=10) containing: (z0) hand-authored atmospheric background stack per content.background; (z1) a single flex-centered lockup .group holding both the wordmark line and the tagline line — NOT one group per scene torn down between scenes, because the wordmark must persist visually from 0.5s to 10s. Scene boundaries are choreography phases on the one paused GSAP timeline, not element swaps. Words as spans; seek-safe fromTo tweens only; autoAlpha on inner non-clip elements.",
+    "polish_blocks": {
+      "reuse": ["grain-overlay", "vignette"],
+      "note": "npx hyperframes add if available in the registry; intensity low (grain ~0.05 opacity, vignette moderate — edges toward #0B0F14). If either block is unavailable, fall back to hand CSS: static SVG-noise data-URI layer for grain (deterministic, no runtime random) and a radial-gradient overlay for vignette."
+    },
+    "typography": {
+      "wordmark": "Inter 300, 132px, color #EDE9E0, final letter-spacing 0.12em, single line 'Cleophis', centered horizontally, vertical center at ~46% of frame height",
+      "tagline": "Inter 400, 28px, final letter-spacing 0.20em, lowercase 'intelligence, close to home', color rgba(237,233,224,0.78) except the word 'home' in #D5A559 (baked in CSS), centered ~64px below the wordmark baseline"
+    }
+  },
+
+  "brief": "Over a slowly drifting dark atmospheric background (hand-authored deterministic aurora/smoke layer, scrimmed and vignetted so it reads as texture, not subject), the wordmark 'Cleophis' fades in from black at ~0.5s — the single dominant motif: a patient, premium emergence with letter-spacing settling and a barely-perceptible rise. It holds alone long enough to breathe, then the pattern-interrupt at ~4.5s: the tagline 'intelligence, close to home' fades up word by word beneath it, with 'home' warmed by the single amber accent like a lit window at dusk. From 7.5s the lockup simply holds in stillness while the background and the low ambient music bed ease down together, resolving to near-black by 10s. No narration; motion is restraint — everything drifts, nothing snaps.",
+
+  "content": {
+    "scenes": [
+      {
+        "id": "title",
+        "start": 0,
+        "end": 4.5,
+        "text": "Cleophis",
+        "emphasis_words": ["Cleophis"],
+        "emotion": "calm arrival",
+        "motion": "Frame is alive before the type lands: background blobs already mid-drift at t=0 (fromTo tweens spanning 0-10s). Wordmark signature fade_blur entrance, tween starts at 0.4s (beat 0.5 anticipated 0.1s): opacity 0->1 over 2.2s ease power2.out; filter blur(8px)->blur(0px) over 1.8s ease power2.out; letter-spacing 0.32em->0.12em over 2.6s ease power3.out; y +6px->0 over 2.2s ease power2.out (all fromTo, overlapping from the same 0.4s start). Then hold_breath: scale 1.000->1.010 from 2.7s to 7.5s, ease sine.inOut, transformOrigin center — a single slow inhale that ends before the resolve stillness. No exit; the wordmark persists into the next scenes.",
+        "beats": [0.5]
+      },
+      {
+        "id": "tagline",
+        "start": 4.5,
+        "end": 7.5,
+        "text": "intelligence, close to home",
+        "emphasis_words": ["home"],
+        "emotion": "warm assurance",
+        "motion": "word_reveal beneath the held wordmark, 4 word-spans ['intelligence,','close','to','home'], stagger 0.18s, first tween starts 4.6s (beat 4.7 anticipated 0.1s) so word starts are 4.6 / 4.78 / 4.96 / 5.14. Each word fromTo: opacity 0->1, y +10px->0, filter blur(4px)->blur(0px), duration 0.9s, ease power2.out ('home' fully landed by ~6.05s). 'home' is #D5A559 in CSS from the start (invisible until its reveal); at 6.1s give it the piece's only accent glow: textShadow none -> '0 0 28px rgba(213,165,89,0.45)' over 0.8s ease sine.inOut, then settle back to a resting '0 0 14px rgba(213,165,89,0.25)' over 0.8s ease sine.inOut (fromTo pair, not yoyo, for seek-safety). Wordmark continues its hold_breath above; nothing else moves.",
+        "beats": [4.7]
+      },
+      {
+        "id": "resolve",
+        "start": 7.5,
+        "end": 10,
+        "text": "Cleophis — intelligence, close to home",
+        "emphasis_words": [],
+        "emotion": "settled stillness",
+        "motion": "7.5-8.0s: complete stillness — lockup motionless (breath tween ended at 7.5s), background still drifting almost imperceptibly. From the 8.0s beat everything eases down together: full-bleed #0B0F14 scrim layer opacity 0.25->0.85 over 8.0-10.0s ease power1.inOut; warm lamplight blob opacity eases to 0.04 over the same window; from 8.4s the lockup (wordmark + tagline as one group) fades opacity 1->0.15 over 8.4-10.0s ease power1.inOut — ending as a barely-legible ghost in near-black rather than a hard cut. Grain and vignette persist unchanged so the final frame still has texture. No element ever snaps; final frame is quiet, near-black, with a whisper of the lockup.",
+        "beats": [8.0]
+      }
+    ],
+
+    "background": {
+      "type": "hand-authored deterministic atmospheric layer (background-video need UNMET — no footage provider)",
+      "reads_as": "slow drifting dark smoke/aurora footage, scrimmed to texture",
+      "stack_back_to_front": [
+        {
+          "layer": "base",
+          "spec": "solid #0B0F14 full-bleed"
+        },
+        {
+          "layer": "drift-container",
+          "spec": "wrapper div holding the three blobs; whole container scales 1.04->1.00 across 0-10s ease sine.inOut (slow filmic settle), transformOrigin 50% 45%"
+        },
+        {
+          "layer": "blob-A-cool",
+          "spec": "div 1400x1100px, border-radius 50%, background radial-gradient(closest-side, rgba(20,27,36,0.9), transparent 70%), filter blur(80px), opacity 0.7, positioned center at (30%, 40%) of frame; fromTo across 0-10s: x +0->+90px, y 0->-50px, scale 1.00->1.08, rotate 0->8deg, ease sine.inOut"
+        },
+        {
+          "layer": "blob-B-slate",
+          "spec": "div 1200x1200px, border-radius 50%, background radial-gradient(closest-side, rgba(27,38,54,0.8), transparent 72%), filter blur(90px), opacity 0.6, positioned center at (72%, 62%); fromTo across 0-10s: x 0->-70px, y 0->+40px, scale 1.06->1.00, rotate 0->-6deg, ease sine.inOut"
+        },
+        {
+          "layer": "blob-C-lamplight",
+          "spec": "div 900x700px, border-radius 50%, background radial-gradient(closest-side, rgba(213,165,89,0.55), transparent 68%), filter blur(100px), positioned center at (64%, 70%) — the 'lit window at dusk' undertone; opacity choreography: 0.10 at t=0, swell 0.10->0.16 over 4.5-6.0s ease sine.inOut (peaking with the tagline's 'home'), hold, then ->0.04 over 8.0-10.0s; drift fromTo across 0-10s: x 0->-30px, y 0->-20px, ease sine.inOut"
+        },
+        {
+          "layer": "scrim",
+          "spec": "full-bleed #0B0F14 div, opacity 0.25 constant from 0-8.0s (keeps blobs reading as texture, not subject), then 0.25->0.85 over 8.0-10.0s ease power1.inOut (the resolve darken)"
+        },
+        {
+          "layer": "grain",
+          "spec": "polish block grain-overlay if available, else static SVG feTurbulence noise data-URI tile at opacity ~0.05, mix-blend-mode overlay; STATIC (no animation) — deterministic"
+        },
+        {
+          "layer": "vignette",
+          "spec": "polish block vignette if available, else radial-gradient(ellipse at center, transparent 55%, rgba(11,15,20,0.75) 100%) overlay; constant intensity for the whole 10s"
+        }
+      ],
+      "determinism": "All blob sizes/positions/travel vectors are the hardcoded constants above — no Math.random at runtime. All motion is fromTo tweens with explicit start and end values on the single paused registered timeline, so any seek is exact. Blur/gradient layers are plain CSS; no canvas, no rAF loops, no Date.now()."
+    },
+
+    "audio": {
+      "src": "assets/bgm-ambient-bed.wav",
+      "volume": 0.4,
+      "fade": {
+        "in": "none needed — 2.5s attack is baked into the file",
+        "out": { "start": 8.0, "end": 10.0, "ease": "power1.in", "to": 0 }
+      },
+      "playback": "framework-owned <audio> element (muted-video/audio contract), data-start=0, plays the 12s file across the full 10s composition; the composition-side 8.0-10.0s volume fade rides on top of the file's baked 3s tail fade to guarantee silence at the 10s cut, synchronized with the visual resolve"
+    }
+  }
+}

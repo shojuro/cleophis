@@ -1,0 +1,66 @@
+talking-head-recut #2 — build log (2026-07-27)
+
+INPUT (not committed — third-party footage, public repo)
+  "Big Tech Is Speedrunning Human Stupidity - House of El - AI (1080p).mp4"
+  1920x1080 @30, 1306.61s (21m47s), 302 MB. Speaker: Elle (House of El).
+
+WHAT WAS BUILT
+  41 liquid-glass emphasis panels over the untouched clip. Original audio
+  preserved on a separate #source-audio track; visual <video> stays muted.
+
+PLACEMENT — measured, not guessed
+  User asked for panels at bottom / left third / right third, randomly placed,
+  because the speaker holds the middle third. But the clip cuts to its OWN
+  B-roll (news article screenshots) that fill the left half ~25% of the runtime.
+  Blind random placement would collide with those.
+  Solution: extracted 1fps thumbnails (1307 frames), scored each candidate zone
+  for busyness (mean gradient magnitude + luminance spread), and had a SEEDED
+  PRNG (mulberry32, seed 20260727) pick only among zones that are free for a
+  card's entire window. Deterministic — required by HyperFrames — but reads as
+  scattered. Same zone never repeats back-to-back.
+  Measured availability: left blocked 333s/1307s (25%, 24 ranges), right 3s,
+  bottom 7s. Resulting distribution: right 17, bottom 16, left 8.
+  Zone busyness thresholds: left>20, right>16, bottom>40. See tools/zone-analyze.py.
+
+LIQUID GLASS
+  Rounded 34px slab; backdrop blur(30px) saturate(2.1) brightness(1.02)
+  contrast(1.06); angled specular sweep; inner refractive rim with a cool
+  fringe; lit top bevel + shaded base; layered drop shadows; entrance scales
+  0.9 -> 1 on back.out with staggered word pop.
+  NOTE: the panel is SMOKED (dark tint), not clear. First version used a light
+  translucent fill and `check` failed contrast at t=943.66s (2.76:1 and 2.56:1)
+  where a panel sits over the bright warm-lit wall. Dark tint holds white type
+  over both the bright wall and the bright article screenshots.
+
+TRANSCRIPTION
+  Local Whisper via hyperframes (small.en) — 3743 words, word-level timestamps.
+  All 53 anchor phrases matched; 8s minimum spacing left 41 beats.
+
+RUNPOD (this job could not be done locally)
+  Local box sat at load 12-17 on 12 cores all session. Local whisper ran
+  2h46m / 10.2 CPU-hours on this audio with NO output (whisper.cpp decode-loop
+  stall); a chunked parallel retry timed out too.
+  Pod: id hrqv7jo9trlrxw, cpu5c, 32 vCPU, 124 GB RAM, EUR-IS-1, $1.12/hr.
+  Image runpod/base:0.6.2-cpu (Ubuntu 20.04) + Node 22 (NodeSource) +
+  google-chrome-stable .deb + fonts-liberation. ffmpeg 4.2.7 preinstalled.
+  API key lives in tools/pipeline/.env (the RUNPOD_API_KEY in the shell env is
+  a placeholder literal, "your-runpod-api-key-here", and 401s).
+  Timings: transcribe 21m47s audio = 5m50s (incl. whisper build+model dl);
+  re-encode with dense keyframes = 62s; render 39199 frames = ~35 min at
+  ~1100 frames/min (6 workers) vs ~45/min locally; delivery compress = 85s.
+  CPU pod chosen over GPU deliberately: the cost is Chrome frame capture and
+  x264 encode, and HyperFrames caps capture at 16 workers, so vCPU count is
+  what matters. Pod terminated after download.
+
+VERIFICATION
+  lint 0 errors; check pass (0 runtime/layout/motion errors, 3/3 WCAG AA);
+  proof snapshots at 10 times inspected across all three zones; final MP4
+  verified with ffprobe (1306.655s, 1920x1080 h264 + aac stereo) and frames
+  extracted from the render at 3s / 208s / 613s / 945s / 1073s.
+
+REPRODUCE
+  node tools/gen-el.mjs "$PWD" tools/zonemap.json tools/beats.json
+  ffmpeg -y -i "<source.mp4>" -c:v libx264 -crf 18 -preset veryfast -g 30 \
+    -keyint_min 30 -pix_fmt yuv420p -movflags +faststart -c:a aac \
+    public/input-video.mp4
+  npx hyperframes render public --skill=talking-head-recut -o output.mp4 --fps 30

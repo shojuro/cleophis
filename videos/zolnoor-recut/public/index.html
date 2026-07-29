@@ -1,0 +1,2131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: 'Inter';
+        src: url('fonts/Inter-400-latin.woff2') format('woff2');
+        font-weight: 400;
+        font-display: block;
+      }
+      @font-face {
+        font-family: 'Inter';
+        src: url('fonts/Inter-700-latin.woff2') format('woff2');
+        font-weight: 700;
+        font-display: block;
+      }
+
+      :root {
+        /* noir palette */
+        --bg: #0a0a0a;
+        --text: #f1f1f1;
+        --accent-0: #4cc9f0;
+        --accent-1: #f72585;
+        --accent-2: #4ade80;
+        --accent-3: #fb923c;
+        --accent-4: #a78bfa;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+      }
+      #stage {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      .video-wrapper {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 1080px;
+        height: 1920px;
+        overflow: hidden;
+      }
+      .video-wrapper video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .card-host {
+        position: absolute;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .card-host .card {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      .card-host .char { display: inline-block; visibility: visible; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="stage"
+      data-composition-id="talking-head-recut"
+      data-start="0"
+      data-duration="249.8"
+      data-fps="30"
+      data-width="1080"
+      data-height="1920"
+    >
+      <div class="video-wrapper" id="video-wrap">
+        <video
+          id="bg-video"
+          src="input-video.mp4"
+          muted
+          playsinline
+          data-start="0"
+          data-duration="249.8"
+          data-track-index="1"
+        ></video>
+      </div>
+      <audio
+        id="source-audio"
+        src="input-video.mp4"
+        data-start="0"
+        data-duration="249.8"
+        data-track-index="10"
+        data-volume="1"
+      ></audio>
+
+      <div
+        class="card-host clip"
+        id="host-card-01"
+        data-card-id="card-01"
+        data-start="4.9000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-01">
+          <style>
+            .card[data-card-id="card-01"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-01"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-01"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-01"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-4);
+              box-shadow: 0 0 26px var(--accent-4);
+            }
+            .card[data-card-id="card-01"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-01"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-01-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-01-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">COMPLETELY</span>
+                  <span class="char">ARBITRARY</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-02"
+        data-card-id="card-02"
+        data-start="17.4000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-02">
+          <style>
+            .card[data-card-id="card-02"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-02"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-02"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-02"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-0);
+              box-shadow: 0 0 26px var(--accent-0);
+            }
+            .card[data-card-id="card-02"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-02"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-02-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-02-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">THEY</span>
+                  <span class="char">JUST</span>
+                  <span class="char">DON'T</span>
+                  <span class="char">APPLY</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-03"
+        data-card-id="card-03"
+        data-start="35.3667"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-03">
+          <style>
+            .card[data-card-id="card-03"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-03"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-03"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-03"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-3);
+              box-shadow: 0 0 26px var(--accent-3);
+            }
+            .card[data-card-id="card-03"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-03"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-03-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-03-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">IGNORE</span>
+                  <span class="char">REPERCUSSIONS</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-04"
+        data-card-id="card-04"
+        data-start="40.6333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-04">
+          <style>
+            .card[data-card-id="card-04"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-04"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-04"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-04"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-1);
+              box-shadow: 0 0 26px var(--accent-1);
+            }
+            .card[data-card-id="card-04"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-04"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-04-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-04-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">THE</span>
+                  <span class="char">COURT</span>
+                  <span class="char">BECOMES</span>
+                  <span class="char">ILLEGITIMATE</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-05"
+        data-card-id="card-05"
+        data-start="56.2667"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-05">
+          <style>
+            .card[data-card-id="card-05"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-05"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-05"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-05"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-4);
+              box-shadow: 0 0 26px var(--accent-4);
+            }
+            .card[data-card-id="card-05"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-05"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-05-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-05-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">TAKE</span>
+                  <span class="char">CONTROL</span>
+                  <span class="char">=</span>
+                  <span class="char">IN</span>
+                  <span class="char">CONTROL</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-06"
+        data-card-id="card-06"
+        data-start="63.5000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-06">
+          <style>
+            .card[data-card-id="card-06"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-06"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-06"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-06"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-0);
+              box-shadow: 0 0 26px var(--accent-0);
+            }
+            .card[data-card-id="card-06"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-06"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-06-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-06-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">NO</span>
+                  <span class="char">ONE</span>
+                  <span class="char">ASKS</span>
+                  <span class="char">HOW</span>
+                  <span class="char">YOU</span>
+                  <span class="char">GOT</span>
+                  <span class="char">THERE</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-07"
+        data-card-id="card-07"
+        data-start="75.2333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-07">
+          <style>
+            .card[data-card-id="card-07"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-07"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-07"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-07"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-2);
+              box-shadow: 0 0 26px var(--accent-2);
+            }
+            .card[data-card-id="card-07"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-07"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-07-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-07-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">GO</span>
+                  <span class="char">ALONG</span>
+                  <span class="char">AND</span>
+                  <span class="char">GET</span>
+                  <span class="char">ALONG</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-08"
+        data-card-id="card-08"
+        data-start="79.5000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-08">
+          <style>
+            .card[data-card-id="card-08"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-08"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-08"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-08"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-3);
+              box-shadow: 0 0 26px var(--accent-3);
+            }
+            .card[data-card-id="card-08"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-08"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-08-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-08-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">STRONGLY</span>
+                  <span class="char">WORDED</span>
+                  <span class="char">THINGS</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-09"
+        data-card-id="card-09"
+        data-start="99.0333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-09">
+          <style>
+            .card[data-card-id="card-09"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-09"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-09"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-09"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-1);
+              box-shadow: 0 0 26px var(--accent-1);
+            }
+            .card[data-card-id="card-09"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-09"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-09-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-09-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">DELEGITIMIZE</span>
+                  <span class="char">THE</span>
+                  <span class="char">COURTS</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-10"
+        data-card-id="card-10"
+        data-start="121.8333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-10">
+          <style>
+            .card[data-card-id="card-10"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-10"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-10"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-10"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-4);
+              box-shadow: 0 0 26px var(--accent-4);
+            }
+            .card[data-card-id="card-10"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-10"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-10-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-10-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">THAT</span>
+                  <span class="char">WASN'T</span>
+                  <span class="char">ALLOWED</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-11"
+        data-card-id="card-11"
+        data-start="133.3333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-11">
+          <style>
+            .card[data-card-id="card-11"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-11"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-11"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-11"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-0);
+              box-shadow: 0 0 26px var(--accent-0);
+            }
+            .card[data-card-id="card-11"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-11"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-11-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-11-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">WHO'S</span>
+                  <span class="char">GOING</span>
+                  <span class="char">TO</span>
+                  <span class="char">ENFORCE</span>
+                  <span class="char">IT?</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-12"
+        data-card-id="card-12"
+        data-start="139.1000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-12">
+          <style>
+            .card[data-card-id="card-12"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-12"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-12"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-12"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-3);
+              box-shadow: 0 0 26px var(--accent-3);
+            }
+            .card[data-card-id="card-12"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-12"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-12-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-12-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">WHERE</span>
+                  <span class="char">ARE</span>
+                  <span class="char">THOSE</span>
+                  <span class="char">GUYS?</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-13"
+        data-card-id="card-13"
+        data-start="150.1000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-13">
+          <style>
+            .card[data-card-id="card-13"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-13"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-13"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-13"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-2);
+              box-shadow: 0 0 26px var(--accent-2);
+            }
+            .card[data-card-id="card-13"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-13"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-13-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-13-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">IN</span>
+                  <span class="char">THE</span>
+                  <span class="char">WOODS.</span>
+                  <span class="char">COSPLAYING.</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-14"
+        data-card-id="card-14"
+        data-start="161.2333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-14">
+          <style>
+            .card[data-card-id="card-14"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-14"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-14"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-14"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-1);
+              box-shadow: 0 0 26px var(--accent-1);
+            }
+            .card[data-card-id="card-14"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-14"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-14-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-14-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">TYRANNY</span>
+                  <span class="char">LOOKS</span>
+                  <span class="char">EXACTLY</span>
+                  <span class="char">LIKE</span>
+                  <span class="char">THIS</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-15"
+        data-card-id="card-15"
+        data-start="172.4667"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-15">
+          <style>
+            .card[data-card-id="card-15"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-15"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-15"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-15"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-4);
+              box-shadow: 0 0 26px var(--accent-4);
+            }
+            .card[data-card-id="card-15"] .emph {
+              margin: 0;
+              font: 800 128px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-15"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-15-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="260"
+              ></div>
+              <h2
+                class="emph"
+                id="card-15-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">CO-EQUAL</span>
+                  <span class="char">BRANCH</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-16"
+        data-card-id="card-16"
+        data-start="192.4000"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-16">
+          <style>
+            .card[data-card-id="card-16"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-16"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-16"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-16"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-0);
+              box-shadow: 0 0 26px var(--accent-0);
+            }
+            .card[data-card-id="card-16"] .emph {
+              margin: 0;
+              font: 800 108px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-16"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-16-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="360"
+              ></div>
+              <h2
+                class="emph"
+                id="card-16-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">I</span>
+                  <span class="char">ANSWER</span>
+                  <span class="char">TO</span>
+                  <span class="char">A</span>
+                  <span class="char">KING</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-17"
+        data-card-id="card-17"
+        data-start="213.3667"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-17">
+          <style>
+            .card[data-card-id="card-17"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-17"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-17"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-17"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-3);
+              box-shadow: 0 0 26px var(--accent-3);
+            }
+            .card[data-card-id="card-17"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-17"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-17-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-17-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">LEGITIMACY</span>
+                  <span class="char">ONLY</span>
+                  <span class="char">EXISTS</span>
+                  <span class="char">BECAUSE</span>
+                  <span class="char">WE</span>
+                  <span class="char">GIVE</span>
+                  <span class="char">IT</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-18"
+        data-card-id="card-18"
+        data-start="227.7667"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-18">
+          <style>
+            .card[data-card-id="card-18"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-18"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-18"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-18"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-2);
+              box-shadow: 0 0 26px var(--accent-2);
+            }
+            .card[data-card-id="card-18"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-18"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-18-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-18-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">THE</span>
+                  <span class="char">LAWS</span>
+                  <span class="char">ARE</span>
+                  <span class="char">JUST</span>
+                  <span class="char">AN</span>
+                  <span class="char">AGREEMENT</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="card-host clip"
+        id="host-card-19"
+        data-card-id="card-19"
+        data-start="238.8333"
+        data-duration="3.2000"
+        data-track-index="2"
+        style="left:0;top:0;width:1080px;height:1920px;visibility:hidden;opacity:0;"
+      >
+        <div class="card" data-card-id="card-19">
+          <style>
+            .card[data-card-id="card-19"] .root {
+              width: 100%;
+              height: 100%;
+              position: relative;
+              overflow: hidden;
+              background: transparent;
+              font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+            }
+            /* The source footage carries a permanent burned-in disclaimer at
+               y≈1230–1590. The emphasis band sits ABOVE it and the scrim fades out
+               before it, so the speaker's own caption is never occluded. */
+            .card[data-card-id="card-19"] .scrim {
+              position: absolute;
+              left: 0;
+              right: 0;
+              top: 600px;
+              height: 620px;
+              background: linear-gradient(
+                to bottom,
+                rgba(6, 5, 16, 0) 0%,
+                rgba(6, 5, 16, 0.82) 26%,
+                rgba(6, 5, 16, 0.86) 82%,
+                rgba(6, 5, 16, 0) 100%
+              );
+            }
+            .card[data-card-id="card-19"] .block {
+              position: absolute;
+              left: 64px;
+              right: 64px;
+              bottom: 760px;
+              display: flex;
+              flex-direction: column;
+              gap: 26px;
+            }
+            .card[data-card-id="card-19"] .rule {
+              height: 10px;
+              width: 0;
+              border-radius: 5px;
+              background: var(--accent-1);
+              box-shadow: 0 0 26px var(--accent-1);
+            }
+            .card[data-card-id="card-19"] .emph {
+              margin: 0;
+              font: 800 88px/1.06 'Inter', ui-sans-serif, system-ui, sans-serif;
+              letter-spacing: -0.01em;
+              text-transform: uppercase;
+              color: #f7f5ff;
+              text-shadow:
+                0 6px 44px rgba(6, 5, 16, 0.95),
+                0 0 70px rgba(6, 5, 16, 0.8);
+            }
+            .card[data-card-id="card-19"] .emph .char {
+              display: inline-block;
+              margin-right: 0.24em;
+            }
+          </style>
+        
+          <div class="root">
+            <div class="scrim"></div>
+            <div class="block">
+              <div
+                class="rule"
+                id="card-19-rule"
+                data-anim="grow-x"
+                data-anim-at="0.10"
+                data-anim-duration="0.55"
+                data-anim-target-w="440"
+              ></div>
+              <h2
+                class="emph"
+                id="card-19-emph"
+                data-anim="kinetic-chars"
+                data-anim-at="0.22"
+                data-anim-duration="0.5"
+                data-anim-stagger="0.06"
+                data-anim-pattern="pop"
+              >
+                  <span class="char">ARBITRARINESS</span>
+                  <span class="char">DELEGITIMIZES</span>
+                  <span class="char">IT</span>
+              </h2>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <script src="vendor/gsap.min.js"></script>
+      <script>
+        (function () {
+          const tl = window.gsap.timeline({ paused: true });
+
+          // ── card-01 · "COMPLETELY ARBITRARY" [4.90–8.10] ──
+          tl.set('.card-host[data-card-id="card-01"]', { visibility: 'visible' }, 4.9000);
+          tl.fromTo('.card-host[data-card-id="card-01"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 4.9000);
+          tl.fromTo('.card[data-card-id="card-01"] #card-01-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 5.0000);
+          tl.from('.card[data-card-id="card-01"] #card-01-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 5.1333);
+          tl.to('.card-host[data-card-id="card-01"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 7.7000);
+          tl.set('.card-host[data-card-id="card-01"]', { visibility: 'hidden' }, 8.1000);
+
+          // ── card-02 · "THEY JUST DON'T APPLY" [17.40–20.60] ──
+          tl.set('.card-host[data-card-id="card-02"]', { visibility: 'visible' }, 17.4000);
+          tl.fromTo('.card-host[data-card-id="card-02"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 17.4000);
+          tl.fromTo('.card[data-card-id="card-02"] #card-02-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 17.5000);
+          tl.from('.card[data-card-id="card-02"] #card-02-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 17.6333);
+          tl.to('.card-host[data-card-id="card-02"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 20.2000);
+          tl.set('.card-host[data-card-id="card-02"]', { visibility: 'hidden' }, 20.6000);
+
+          // ── card-03 · "IGNORE REPERCUSSIONS" [35.37–38.57] ──
+          tl.set('.card-host[data-card-id="card-03"]', { visibility: 'visible' }, 35.3667);
+          tl.fromTo('.card-host[data-card-id="card-03"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 35.3667);
+          tl.fromTo('.card[data-card-id="card-03"] #card-03-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 35.4667);
+          tl.from('.card[data-card-id="card-03"] #card-03-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 35.6000);
+          tl.to('.card-host[data-card-id="card-03"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 38.1667);
+          tl.set('.card-host[data-card-id="card-03"]', { visibility: 'hidden' }, 38.5667);
+
+          // ── card-04 · "THE COURT BECOMES ILLEGITIMATE" [40.63–43.83] ──
+          tl.set('.card-host[data-card-id="card-04"]', { visibility: 'visible' }, 40.6333);
+          tl.fromTo('.card-host[data-card-id="card-04"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 40.6333);
+          tl.fromTo('.card[data-card-id="card-04"] #card-04-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 40.7333);
+          tl.from('.card[data-card-id="card-04"] #card-04-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 40.8667);
+          tl.to('.card-host[data-card-id="card-04"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 43.4333);
+          tl.set('.card-host[data-card-id="card-04"]', { visibility: 'hidden' }, 43.8333);
+
+          // ── card-05 · "TAKE CONTROL = IN CONTROL" [56.27–59.47] ──
+          tl.set('.card-host[data-card-id="card-05"]', { visibility: 'visible' }, 56.2667);
+          tl.fromTo('.card-host[data-card-id="card-05"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 56.2667);
+          tl.fromTo('.card[data-card-id="card-05"] #card-05-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 56.3667);
+          tl.from('.card[data-card-id="card-05"] #card-05-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 56.5000);
+          tl.to('.card-host[data-card-id="card-05"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 59.0667);
+          tl.set('.card-host[data-card-id="card-05"]', { visibility: 'hidden' }, 59.4667);
+
+          // ── card-06 · "NO ONE ASKS HOW YOU GOT THERE" [63.50–66.70] ──
+          tl.set('.card-host[data-card-id="card-06"]', { visibility: 'visible' }, 63.5000);
+          tl.fromTo('.card-host[data-card-id="card-06"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 63.5000);
+          tl.fromTo('.card[data-card-id="card-06"] #card-06-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 63.6000);
+          tl.from('.card[data-card-id="card-06"] #card-06-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 63.7333);
+          tl.to('.card-host[data-card-id="card-06"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 66.3000);
+          tl.set('.card-host[data-card-id="card-06"]', { visibility: 'hidden' }, 66.7000);
+
+          // ── card-07 · "GO ALONG AND GET ALONG" [75.23–78.43] ──
+          tl.set('.card-host[data-card-id="card-07"]', { visibility: 'visible' }, 75.2333);
+          tl.fromTo('.card-host[data-card-id="card-07"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 75.2333);
+          tl.fromTo('.card[data-card-id="card-07"] #card-07-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 75.3333);
+          tl.from('.card[data-card-id="card-07"] #card-07-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 75.4667);
+          tl.to('.card-host[data-card-id="card-07"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 78.0333);
+          tl.set('.card-host[data-card-id="card-07"]', { visibility: 'hidden' }, 78.4333);
+
+          // ── card-08 · "STRONGLY WORDED THINGS" [79.50–82.70] ──
+          tl.set('.card-host[data-card-id="card-08"]', { visibility: 'visible' }, 79.5000);
+          tl.fromTo('.card-host[data-card-id="card-08"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 79.5000);
+          tl.fromTo('.card[data-card-id="card-08"] #card-08-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 79.6000);
+          tl.from('.card[data-card-id="card-08"] #card-08-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 79.7333);
+          tl.to('.card-host[data-card-id="card-08"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 82.3000);
+          tl.set('.card-host[data-card-id="card-08"]', { visibility: 'hidden' }, 82.7000);
+
+          // ── card-09 · "DELEGITIMIZE THE COURTS" [99.03–102.23] ──
+          tl.set('.card-host[data-card-id="card-09"]', { visibility: 'visible' }, 99.0333);
+          tl.fromTo('.card-host[data-card-id="card-09"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 99.0333);
+          tl.fromTo('.card[data-card-id="card-09"] #card-09-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 99.1333);
+          tl.from('.card[data-card-id="card-09"] #card-09-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 99.2667);
+          tl.to('.card-host[data-card-id="card-09"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 101.8333);
+          tl.set('.card-host[data-card-id="card-09"]', { visibility: 'hidden' }, 102.2333);
+
+          // ── card-10 · "THAT WASN'T ALLOWED" [121.83–125.03] ──
+          tl.set('.card-host[data-card-id="card-10"]', { visibility: 'visible' }, 121.8333);
+          tl.fromTo('.card-host[data-card-id="card-10"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 121.8333);
+          tl.fromTo('.card[data-card-id="card-10"] #card-10-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 121.9333);
+          tl.from('.card[data-card-id="card-10"] #card-10-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 122.0667);
+          tl.to('.card-host[data-card-id="card-10"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 124.6333);
+          tl.set('.card-host[data-card-id="card-10"]', { visibility: 'hidden' }, 125.0333);
+
+          // ── card-11 · "WHO'S GOING TO ENFORCE IT?" [133.33–136.53] ──
+          tl.set('.card-host[data-card-id="card-11"]', { visibility: 'visible' }, 133.3333);
+          tl.fromTo('.card-host[data-card-id="card-11"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 133.3333);
+          tl.fromTo('.card[data-card-id="card-11"] #card-11-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 133.4333);
+          tl.from('.card[data-card-id="card-11"] #card-11-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 133.5667);
+          tl.to('.card-host[data-card-id="card-11"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 136.1333);
+          tl.set('.card-host[data-card-id="card-11"]', { visibility: 'hidden' }, 136.5333);
+
+          // ── card-12 · "WHERE ARE THOSE GUYS?" [139.10–142.30] ──
+          tl.set('.card-host[data-card-id="card-12"]', { visibility: 'visible' }, 139.1000);
+          tl.fromTo('.card-host[data-card-id="card-12"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 139.1000);
+          tl.fromTo('.card[data-card-id="card-12"] #card-12-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 139.2000);
+          tl.from('.card[data-card-id="card-12"] #card-12-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 139.3333);
+          tl.to('.card-host[data-card-id="card-12"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 141.9000);
+          tl.set('.card-host[data-card-id="card-12"]', { visibility: 'hidden' }, 142.3000);
+
+          // ── card-13 · "IN THE WOODS. COSPLAYING." [150.10–153.30] ──
+          tl.set('.card-host[data-card-id="card-13"]', { visibility: 'visible' }, 150.1000);
+          tl.fromTo('.card-host[data-card-id="card-13"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 150.1000);
+          tl.fromTo('.card[data-card-id="card-13"] #card-13-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 150.2000);
+          tl.from('.card[data-card-id="card-13"] #card-13-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 150.3333);
+          tl.to('.card-host[data-card-id="card-13"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 152.9000);
+          tl.set('.card-host[data-card-id="card-13"]', { visibility: 'hidden' }, 153.3000);
+
+          // ── card-14 · "TYRANNY LOOKS EXACTLY LIKE THIS" [161.23–164.43] ──
+          tl.set('.card-host[data-card-id="card-14"]', { visibility: 'visible' }, 161.2333);
+          tl.fromTo('.card-host[data-card-id="card-14"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 161.2333);
+          tl.fromTo('.card[data-card-id="card-14"] #card-14-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 161.3333);
+          tl.from('.card[data-card-id="card-14"] #card-14-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 161.4667);
+          tl.to('.card-host[data-card-id="card-14"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 164.0333);
+          tl.set('.card-host[data-card-id="card-14"]', { visibility: 'hidden' }, 164.4333);
+
+          // ── card-15 · "CO-EQUAL BRANCH" [172.47–175.67] ──
+          tl.set('.card-host[data-card-id="card-15"]', { visibility: 'visible' }, 172.4667);
+          tl.fromTo('.card-host[data-card-id="card-15"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 172.4667);
+          tl.fromTo('.card[data-card-id="card-15"] #card-15-rule', { width: 0 }, { width: 260, duration: 0.55, ease: 'power2.out' }, 172.5667);
+          tl.from('.card[data-card-id="card-15"] #card-15-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 172.7000);
+          tl.to('.card-host[data-card-id="card-15"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 175.2667);
+          tl.set('.card-host[data-card-id="card-15"]', { visibility: 'hidden' }, 175.6667);
+
+          // ── card-16 · "I ANSWER TO A KING" [192.40–195.60] ──
+          tl.set('.card-host[data-card-id="card-16"]', { visibility: 'visible' }, 192.4000);
+          tl.fromTo('.card-host[data-card-id="card-16"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 192.4000);
+          tl.fromTo('.card[data-card-id="card-16"] #card-16-rule', { width: 0 }, { width: 360, duration: 0.55, ease: 'power2.out' }, 192.5000);
+          tl.from('.card[data-card-id="card-16"] #card-16-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 192.6333);
+          tl.to('.card-host[data-card-id="card-16"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 195.2000);
+          tl.set('.card-host[data-card-id="card-16"]', { visibility: 'hidden' }, 195.6000);
+
+          // ── card-17 · "LEGITIMACY ONLY EXISTS BECAUSE WE GIVE IT" [213.37–216.57] ──
+          tl.set('.card-host[data-card-id="card-17"]', { visibility: 'visible' }, 213.3667);
+          tl.fromTo('.card-host[data-card-id="card-17"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 213.3667);
+          tl.fromTo('.card[data-card-id="card-17"] #card-17-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 213.4667);
+          tl.from('.card[data-card-id="card-17"] #card-17-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 213.6000);
+          tl.to('.card-host[data-card-id="card-17"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 216.1667);
+          tl.set('.card-host[data-card-id="card-17"]', { visibility: 'hidden' }, 216.5667);
+
+          // ── card-18 · "THE LAWS ARE JUST AN AGREEMENT" [227.77–230.97] ──
+          tl.set('.card-host[data-card-id="card-18"]', { visibility: 'visible' }, 227.7667);
+          tl.fromTo('.card-host[data-card-id="card-18"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 227.7667);
+          tl.fromTo('.card[data-card-id="card-18"] #card-18-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 227.8667);
+          tl.from('.card[data-card-id="card-18"] #card-18-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 228.0000);
+          tl.to('.card-host[data-card-id="card-18"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 230.5667);
+          tl.set('.card-host[data-card-id="card-18"]', { visibility: 'hidden' }, 230.9667);
+
+          // ── card-19 · "ARBITRARINESS DELEGITIMIZES IT" [238.83–242.03] ──
+          tl.set('.card-host[data-card-id="card-19"]', { visibility: 'visible' }, 238.8333);
+          tl.fromTo('.card-host[data-card-id="card-19"]', { opacity: 0 }, { opacity: 1, duration: 0.38, ease: 'power2.out' }, 238.8333);
+          tl.fromTo('.card[data-card-id="card-19"] #card-19-rule', { width: 0 }, { width: 440, duration: 0.55, ease: 'power2.out' }, 238.9333);
+          tl.from('.card[data-card-id="card-19"] #card-19-emph .char', { opacity: 0, y: 26, scale: 0.86, duration: 0.5, ease: 'power2.out', stagger: 0.06 }, 239.0667);
+          tl.to('.card-host[data-card-id="card-19"]', { opacity: 0, duration: 0.35, ease: 'power2.in' }, 241.6333);
+          tl.set('.card-host[data-card-id="card-19"]', { visibility: 'hidden' }, 242.0333);
+
+          window.__timelines = window.__timelines || {};
+          window.__timelines['talking-head-recut'] = tl;
+          tl.seek(0);
+        })();
+      </script>
+    </div>
+  </body>
+</html>

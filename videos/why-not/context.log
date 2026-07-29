@@ -1,0 +1,22 @@
+source/build phase — notes (2026-07-26)
+- asset_needs was empty by design: kinetic-type, no search. Source phase skipped.
+- background "nuclear explosion footage": no footage provider exists (media-use has
+  no video type; heygen CLI absent; GEMINI_API_KEY/GOOGLE_API_KEY unset). Degrade:
+  hand-authored deterministic GSAP layer stack (flash / shockwave / fireball /
+  stem / cap blobs / cooling filter / black scrim). Stylized, not photoreal.
+- Georgia: absent on the Linux render host (fc-match fell back to DejaVu Serif).
+  Fixed by @font-face over the host's licensed Windows fonts
+  (/mnt/c/Windows/Fonts/georgia.ttf + georgiai.ttf) copied to assets/fonts/.
+  Font files are render-time inputs, NOT committed (no redistribution) — see
+  assets/index.md for the re-copy instruction.
+- Audio: intentionally silent per BRIEF (spec itemized visuals only).
+- CLI pin bumped 0.7.71 → 0.7.72 via `npx hyperframes@latest upgrade --project .`;
+  verified with `npx hyperframes check` (passed) per the /hyperframes pin policy.
+- Builder deviation from shot-plan (documented in index.html): frost-up layer
+  starts at 13.0s (not 15.0s) with power1.out — the shot-plan timing let contrast
+  trough to 2.14:1 around 14.4s while the cooling tween dimmed the backdrop;
+  end value/time unchanged, end-state ~4.8:1 (WCAG AA) preserved.
+- Verify: lint 0 errors (1 advisory: file-size split suggestion), check pass
+  (0 runtime/layout/motion errors; 2/2 contrast AA), 7 proof snapshots inspected
+  at 0.3/2.2/6/12/15.5/19.4/19.5s.
+- Render approved in advance in BRIEF.md (unattended background run).

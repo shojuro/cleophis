@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #000;
+      }
+      body {
+        font-family: "Inter", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      code,
+      pre,
+      .monospace {
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      /* ---- palette (single source of truth) ---- */
+      :root {
+        --ink: #0b0f14; /* base night */
+        --slate: #141b24; /* deep slate */
+        --ivory: #ede9e0; /* wordmark */
+        --amber: #d5a559; /* lamplight accent */
+        --ivory-dim: rgba(237, 233, 224, 0.78); /* tagline body */
+        --blob-cool: rgba(20, 27, 36, 0.9); /* blob A core */
+        --blob-slate: rgba(27, 38, 54, 0.8); /* blob B core */
+        --blob-amber: rgba(213, 165, 89, 0.55); /* blob C lamplight core */
+        --vignette-edge: rgba(11, 15, 20, 0.75);
+        /* glow values mirrored as JS constants in the timeline script:
+           peak 0 0 28px rgba(213,165,89,0.45) / rest 0 0 14px rgba(213,165,89,0.25) */
+      }
+
+      /* ---- sized root (HF contract) ---- */
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+      }
+
+      /* ---- the one full-duration clip ---- */
+      #stage {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      /* ---- z0: background stack (decorative absolutes, back to front) ---- */
+      .bg-layer {
+        position: absolute;
+        inset: 0;
+      }
+      #bg-base {
+        background: var(--ink);
+      }
+      #bg-drift {
+        transform-origin: 50% 45%;
+      }
+      .blob {
+        position: absolute;
+        border-radius: 50%;
+      }
+      #blob-a {
+        width: 1400px;
+        height: 1100px;
+        left: calc(30% - 700px); /* center at 30%, 40% of frame */
+        top: calc(40% - 550px);
+        background: radial-gradient(closest-side, var(--blob-cool), transparent 70%);
+        filter: blur(80px);
+        opacity: 0.7;
+      }
+      #blob-b {
+        width: 1200px;
+        height: 1200px;
+        left: calc(72% - 600px); /* center at 72%, 62% */
+        top: calc(62% - 600px);
+        background: radial-gradient(closest-side, var(--blob-slate), transparent 72%);
+        filter: blur(90px);
+        opacity: 0.6;
+      }
+      #blob-c {
+        width: 900px;
+        height: 700px;
+        left: calc(64% - 450px); /* center at 64%, 70% — lit window at dusk */
+        top: calc(70% - 350px);
+        background: radial-gradient(closest-side, var(--blob-amber), transparent 68%);
+        filter: blur(100px);
+        opacity: 0.1;
+      }
+      #bg-scrim {
+        background: var(--ink);
+        opacity: 0.25;
+      }
+      /* static SVG feTurbulence grain — fixed seed, deterministic */
+      #bg-grain {
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='7' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='320' height='320' filter='url(%23g)'/></svg>");
+        background-repeat: repeat;
+        opacity: 0.05;
+        mix-blend-mode: overlay;
+      }
+      #bg-vignette {
+        background: radial-gradient(
+          ellipse at center,
+          transparent 55%,
+          var(--vignette-edge) 100%
+        );
+      }
+
+      /* ---- z1: lockup (flex-centered, title-safe padding; wordmark
+              optical center lands at ~46% of frame height) ---- */
+      #lockup {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 80px 80px 108px;
+      }
+      #lockup-group {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+      #wordmark {
+        font-weight: 300;
+        font-size: 132px;
+        line-height: 1.1;
+        color: var(--ivory);
+        letter-spacing: 0.12em; /* ground truth; entrance settles into this */
+        padding-left: 0.12em; /* optical centering vs trailing letter-space */
+      }
+      #wordmark .glyph {
+        display: inline-block; /* transforms need block-level */
+      }
+      #tagline {
+        margin-top: 24px; /* tagline line center ≈ 64px below wordmark baseline */
+        font-weight: 400;
+        font-size: 28px;
+        line-height: 1.2;
+        letter-spacing: 0.2em;
+        padding-left: 0.2em;
+        color: var(--ivory-dim);
+      }
+      .word {
+        display: inline-block; /* transforms/blur need block-level */
+      }
+      .accent {
+        color: var(--amber); /* "home" is amber from the start, baked in CSS */
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="10"
+      data-fps="30"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ONE full-duration clip; scenes are timeline phases, not element swaps -->
+      <div id="stage" class="clip" data-start="0" data-duration="10" data-track-index="0">
+        <!-- z0: background stack, back to front -->
+        <div id="bg-base" class="bg-layer"></div>
+        <div id="bg-drift" class="bg-layer">
+          <div id="blob-a" class="blob"></div>
+          <div id="blob-b" class="blob"></div>
+          <div id="blob-c" class="blob"></div>
+        </div>
+        <div id="bg-scrim" class="bg-layer"></div>
+        <div id="bg-grain" class="bg-layer"></div>
+        <div id="bg-vignette" class="bg-layer"></div>
+
+        <!-- z1: persistent brand lockup -->
+        <div id="lockup">
+          <div id="lockup-group">
+            <!-- per-glyph spans so the tracking tighten animates on transform x
+                 (letterSpacing snaps to integer device pixels); no whitespace
+                 between spans — parent letter-spacing 0.12em is the ground truth -->
+            <h1 id="wordmark"><span class="glyph">C</span><span class="glyph">l</span><span class="glyph">e</span><span class="glyph">o</span><span class="glyph">p</span><span class="glyph">h</span><span class="glyph">i</span><span class="glyph">s</span></h1>
+            <p id="tagline">
+              <span id="tag-w1" class="word">intelligence,</span>
+              <span id="tag-w2" class="word">close</span>
+              <span id="tag-w3" class="word">to</span>
+              <span id="tag-w4" class="word accent">home</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- framework-owned music bed: 12s file, trimmed to the 10s composition;
+           baseline volume 0.4, composition-side fade-out tweened on the timeline -->
+      <audio
+        id="bgm"
+        src="assets/bgm-ambient-bed.wav"
+        data-start="0"
+        data-duration="10"
+        data-track-index="10"
+        data-volume="0.4"
+      ></audio>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* glow strings kept in sync with the :root palette (--amber) */
+      const GLOW_NONE = "0 0 0px rgba(213, 165, 89, 0)";
+      const GLOW_PEAK = "0 0 28px rgba(213, 165, 89, 0.45)";
+      const GLOW_REST = "0 0 14px rgba(213, 165, 89, 0.25)";
+
+      /* ---- background: alive from t=0, full-span drifts (0-10s) ---- */
+      tl.fromTo(
+        "#bg-drift",
+        { scale: 1.04 },
+        { scale: 1.0, duration: 10, ease: "sine.inOut", transformOrigin: "50% 45%" },
+        0
+      );
+      tl.fromTo(
+        "#blob-a",
+        { x: 0, y: 0, scale: 1.0, rotation: 0 },
+        { x: 90, y: -50, scale: 1.08, rotation: 8, duration: 10, ease: "sine.inOut" },
+        0
+      );
+      tl.fromTo(
+        "#blob-b",
+        { x: 0, y: 0, scale: 1.06, rotation: 0 },
+        { x: -70, y: 40, scale: 1.0, rotation: -6, duration: 10, ease: "sine.inOut" },
+        0
+      );
+      tl.fromTo(
+        "#blob-c",
+        { x: 0, y: 0 },
+        { x: -30, y: -20, duration: 10, ease: "sine.inOut" },
+        0
+      );
+      /* lamplight swell peaks with the tagline's "home" (4.5-6.0s) */
+      tl.fromTo(
+        "#blob-c",
+        { opacity: 0.1 },
+        { opacity: 0.16, duration: 1.5, ease: "sine.inOut" },
+        4.5
+      );
+      /* resolve: lamplight dims with the ensemble (8.0-10.0s) */
+      tl.fromTo(
+        "#blob-c",
+        { opacity: 0.16 },
+        { opacity: 0.04, duration: 2.0, ease: "power1.inOut", immediateRender: false },
+        8.0
+      );
+      /* resolve darken: scrim 0.25 -> 0.85 (8.0-10.0s) */
+      tl.fromTo(
+        "#bg-scrim",
+        { opacity: 0.25 },
+        { opacity: 0.85, duration: 2.0, ease: "power1.inOut" },
+        8.0
+      );
+
+      /* ---- scene "title" (beat 0.5, tween starts 0.4): fade_blur entrance ---- */
+      tl.fromTo(
+        "#wordmark",
+        { autoAlpha: 0 },
+        { autoAlpha: 1, duration: 2.2, ease: "power2.out" },
+        0.4
+      );
+      tl.fromTo(
+        "#wordmark",
+        { filter: "blur(8px)" },
+        { filter: "blur(0px)", duration: 1.8, ease: "power2.out" },
+        0.4
+      );
+      /* signature tracking tighten, per-glyph x instead of letterSpacing
+         (letterSpacing snaps to integer device pixels): the extra 0.20em at
+         132px is 26.4px per gap; glyph i of n=8 spreads from
+         x = (i - 3.5) * 26.4 (±92.4px at the ends) and settles to 0 */
+      const GLYPH_SPREAD = 26.4;
+      const glyphs = gsap.utils.toArray("#wordmark .glyph");
+      glyphs.forEach(function (el, i) {
+        tl.fromTo(
+          el,
+          { x: (i - 3.5) * GLYPH_SPREAD },
+          { x: 0, duration: 2.6, ease: "power3.out" },
+          0.4
+        );
+      });
+      tl.fromTo(
+        "#wordmark",
+        { y: 6 },
+        { y: 0, duration: 2.2, ease: "power2.out" },
+        0.4
+      );
+      /* hold_breath: one slow inhale, 2.7 -> 7.5s, ends before the stillness */
+      tl.fromTo(
+        "#wordmark",
+        { scale: 1.0 },
+        { scale: 1.01, duration: 4.8, ease: "sine.inOut", transformOrigin: "50% 50%" },
+        2.7
+      );
+
+      /* ---- scene "tagline" (beat 4.7, first tween 4.6): word_reveal ---- */
+      const words = ["#tag-w1", "#tag-w2", "#tag-w3", "#tag-w4"];
+      words.forEach(function (sel, i) {
+        tl.fromTo(
+          sel,
+          { autoAlpha: 0, y: 10, filter: "blur(4px)" },
+          {
+            autoAlpha: 1,
+            y: 0,
+            filter: "blur(0px)",
+            duration: 0.9,
+            ease: "power2.out",
+          },
+          4.6 + i * 0.18
+        );
+      });
+      /* the piece's only accent glow on "home": swell then settle (fromTo pair, seek-safe) */
+      tl.fromTo(
+        "#tag-w4",
+        { textShadow: GLOW_NONE },
+        { textShadow: GLOW_PEAK, duration: 0.8, ease: "sine.inOut" },
+        6.1
+      );
+      tl.fromTo(
+        "#tag-w4",
+        { textShadow: GLOW_PEAK },
+        { textShadow: GLOW_REST, duration: 0.8, ease: "sine.inOut", immediateRender: false },
+        6.9
+      );
+
+      /* ---- scene "resolve" (beat 8.0): lockup ghosts to 0.15 from 8.4s ---- */
+      tl.fromTo(
+        "#lockup-group",
+        { opacity: 1 },
+        { opacity: 0.15, duration: 1.6, ease: "power1.inOut", immediateRender: false },
+        8.4
+      );
+
+      /* ---- audio: composition-side fade-out riding the baked tail fade ---- */
+      tl.fromTo(
+        "#bgm",
+        { volume: 0.4 },
+        { volume: 0, duration: 2.0, ease: "power1.in" },
+        8.0
+      );
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

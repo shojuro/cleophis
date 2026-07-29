@@ -1,0 +1,520 @@
+{
+  "schemaVersion": 3,
+  "composition": {
+    "fps": 30,
+    "width": 1920,
+    "height": 1080,
+    "durationSeconds": 1306.61,
+    "layout": "landscape",
+    "themeId": "noir",
+    "seed": 20260727
+  },
+  "videoTrack": {
+    "sourcePath": "input-video.mp4",
+    "startSec": 0,
+    "endSec": 1306.61,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1080
+    }
+  },
+  "subtitles": {
+    "enabled": false
+  },
+  "cards": [
+    {
+      "id": "card-01",
+      "intent": "Liquid-glass emphasis panel \"LOSING THE ABILITY TO READ\" in the bottom zone",
+      "startSec": 1.1666666666666667,
+      "endSec": 4.766666666666667,
+      "accentIndex": 0,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "LOSING THE ABILITY TO READ",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-02",
+      "intent": "Liquid-glass emphasis panel \"WHAT THE RESEARCH SAYS\" in the left zone",
+      "startSec": 29.133333333333333,
+      "endSec": 32.733333333333334,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "WHAT THE RESEARCH SAYS",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-03",
+      "intent": "Liquid-glass emphasis panel \"OUTSOURCING OUR THINKING\" in the bottom zone",
+      "startSec": 62.36666666666667,
+      "endSec": 65.96666666666667,
+      "accentIndex": 2,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "OUTSOURCING OUR THINKING",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-04",
+      "intent": "Liquid-glass emphasis panel \"WEAKEST NEURAL CONNECTIVITY\" in the right zone",
+      "startSec": 181.93333333333334,
+      "endSec": 185.53333333333333,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "WEAKEST NEURAL CONNECTIVITY",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-05",
+      "intent": "Liquid-glass emphasis panel \"STRONGEST NEURAL NETWORKS\" in the bottom zone",
+      "startSec": 196.7,
+      "endSec": 200.3,
+      "accentIndex": 4,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "STRONGEST NEURAL NETWORKS",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-06",
+      "intent": "Liquid-glass emphasis panel \"TOTAL COGNITIVE AMNESIA\" in the right zone",
+      "startSec": 206,
+      "endSec": 209.6,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "TOTAL COGNITIVE AMNESIA",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-07",
+      "intent": "Liquid-glass emphasis panel \"SCREENSAVER MODE\" in the bottom zone",
+      "startSec": 221.46666666666667,
+      "endSec": 225.06666666666666,
+      "accentIndex": 1,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "SCREENSAVER MODE",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-08",
+      "intent": "Liquid-glass emphasis panel \"DID NOT RETURN TO NORMAL\" in the right zone",
+      "startSec": 256.26666666666665,
+      "endSec": 259.8666666666667,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "DID NOT RETURN TO NORMAL",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-09",
+      "intent": "Liquid-glass emphasis panel \"319 KNOWLEDGE WORKERS\" in the bottom zone",
+      "startSec": 274.1666666666667,
+      "endSec": 277.76666666666665,
+      "accentIndex": 3,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "319 KNOWLEDGE WORKERS",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-10",
+      "intent": "Liquid-glass emphasis panel \"LESS CRITICAL THINKING\" in the right zone",
+      "startSec": 292,
+      "endSec": 295.6,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "LESS CRITICAL THINKING",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-11",
+      "intent": "Liquid-glass emphasis panel \"LET GO OF THE WHEEL\" in the bottom zone",
+      "startSec": 300.6,
+      "endSec": 304.2,
+      "accentIndex": 0,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "LET GO OF THE WHEEL",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-12",
+      "intent": "Liquid-glass emphasis panel \"DIMINISHED INDEPENDENT SKILL\" in the left zone",
+      "startSec": 315.7,
+      "endSec": 319.3,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "DIMINISHED INDEPENDENT SKILL",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-13",
+      "intent": "Liquid-glass emphasis panel \"COGNITIVE OFFLOADING\" in the bottom zone",
+      "startSec": 339.1666666666667,
+      "endSec": 342.76666666666665,
+      "accentIndex": 2,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "COGNITIVE OFFLOADING",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-14",
+      "intent": "Liquid-glass emphasis panel \"17% WORSE ON CONCEPTS\" in the right zone",
+      "startSec": 363.03333333333336,
+      "endSec": 366.6333333333333,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "17% WORSE ON CONCEPTS",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-15",
+      "intent": "Liquid-glass emphasis panel \"RETRACTED\" in the bottom zone",
+      "startSec": 390.7,
+      "endSec": 394.3,
+      "accentIndex": 4,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "RETRACTED",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-16",
+      "intent": "Liquid-glass emphasis panel \"CRITICAL ENGAGEMENT WINS\" in the right zone",
+      "startSec": 418.53333333333336,
+      "endSec": 422.1333333333333,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "CRITICAL ENGAGEMENT WINS",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-17",
+      "intent": "Liquid-glass emphasis panel \"THE TOOL IS NOT THE PROBLEM\" in the bottom zone",
+      "startSec": 431.4,
+      "endSec": 435,
+      "accentIndex": 1,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "THE TOOL IS NOT THE PROBLEM",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-18",
+      "intent": "Liquid-glass emphasis panel \"USE IT OR LOSE IT\" in the right zone",
+      "startSec": 461.1333333333333,
+      "endSec": 464.73333333333335,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "USE IT OR LOSE IT",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-19",
+      "intent": "Liquid-glass emphasis panel \"PROFOUNDLY HUMAN\" in the bottom zone",
+      "startSec": 484.46666666666664,
+      "endSec": 488.06666666666666,
+      "accentIndex": 3,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "PROFOUNDLY HUMAN",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-20",
+      "intent": "Liquid-glass emphasis panel \"AI DIDN'T DESTROY IT\" in the right zone",
+      "startSec": 510.56666666666666,
+      "endSec": 514.1666666666666,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "AI DIDN'T DESTROY IT",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-21",
+      "intent": "Liquid-glass emphasis panel \"ACADEMICALLY ADRIFT\" in the bottom zone",
+      "startSec": 525.2,
+      "endSec": 528.8,
+      "accentIndex": 0,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "ACADEMICALLY ADRIFT",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-22",
+      "intent": "Liquid-glass emphasis panel \"AN ARGUMENT FOR ACTING FASTER\" in the left zone",
+      "startSec": 563.4,
+      "endSec": 567,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "AN ARGUMENT FOR ACTING FASTER",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-23",
+      "intent": "Liquid-glass emphasis panel \"46% IN SEPTEMBER -> 95% BY FEBRUARY\" in the right zone",
+      "startSec": 610.2,
+      "endSec": 613.8,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "46% IN SEPTEMBER -> 95% BY FEBRUARY",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-24",
+      "intent": "Liquid-glass emphasis panel \"REMOVING THE TOOL REBUILDS IT\" in the bottom zone",
+      "startSec": 637.6666666666666,
+      "endSec": 641.2666666666667,
+      "accentIndex": 3,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "REMOVING THE TOOL REBUILDS IT",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-25",
+      "intent": "Liquid-glass emphasis panel \"THEY MAY NEVER BUILD IT\" in the right zone",
+      "startSec": 660.3666666666667,
+      "endSec": 663.9666666666667,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THEY MAY NEVER BUILD IT",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-26",
+      "intent": "Liquid-glass emphasis panel \"REPLACES THE DEVELOPMENT\" in the bottom zone",
+      "startSec": 668.7666666666667,
+      "endSec": 672.3666666666667,
+      "accentIndex": 0,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "REPLACES THE DEVELOPMENT",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-27",
+      "intent": "Liquid-glass emphasis panel \"EVERYONE SOUNDS THE SAME\" in the right zone",
+      "startSec": 684.8666666666667,
+      "endSec": 688.4666666666667,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "EVERYONE SOUNDS THE SAME",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-28",
+      "intent": "Liquid-glass emphasis panel \"THE MODEL'S REASONING BECOMES THEIRS\" in the bottom zone",
+      "startSec": 695.3333333333334,
+      "endSec": 698.9333333333333,
+      "accentIndex": 2,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "THE MODEL'S REASONING BECOMES THEIRS",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-29",
+      "intent": "Liquid-glass emphasis panel \"REDUCED COGNITIVE CAPACITY\" in the right zone",
+      "startSec": 743.1666666666666,
+      "endSec": 746.7666666666667,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "REDUCED COGNITIVE CAPACITY",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-30",
+      "intent": "Liquid-glass emphasis panel \"SOCIAL MEDIA TOOK ATTENTION. AI TAKES THINKING.\" in the left zone",
+      "startSec": 809.2,
+      "endSec": 812.8,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "SOCIAL MEDIA TOOK ATTENTION. AI TAKES THINKING.",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-31",
+      "intent": "Liquid-glass emphasis panel \"70% OF STUDENTS ARE WORRIED\" in the right zone",
+      "startSec": 817.6666666666666,
+      "endSec": 821.2666666666667,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "70% OF STUDENTS ARE WORRIED",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-32",
+      "intent": "Liquid-glass emphasis panel \"THAT IS DATA\" in the bottom zone",
+      "startSec": 834.5666666666667,
+      "endSec": 838.1666666666666,
+      "accentIndex": 1,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "THAT IS DATA",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-33",
+      "intent": "Liquid-glass emphasis panel \"ONE TOOL. EVERY CONTEXT.\" in the right zone",
+      "startSec": 920.0333333333333,
+      "endSec": 923.6333333333333,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "ONE TOOL. EVERY CONTEXT.",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-34",
+      "intent": "Liquid-glass emphasis panel \"MISUSING THE INFRASTRUCTURE\" in the left zone",
+      "startSec": 942.5333333333333,
+      "endSec": 946.1333333333333,
+      "accentIndex": 3,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "MISUSING THE INFRASTRUCTURE",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-35",
+      "intent": "Liquid-glass emphasis panel \"REFUSE TO HAND OVER THE ANSWER\" in the right zone",
+      "startSec": 976.5,
+      "endSec": 980.1,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "REFUSE TO HAND OVER THE ANSWER",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-36",
+      "intent": "Liquid-glass emphasis panel \"THINK HARDER, NOT LESS\" in the left zone",
+      "startSec": 1072.3666666666666,
+      "endSec": 1075.9666666666667,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "THINK HARDER, NOT LESS",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-37",
+      "intent": "Liquid-glass emphasis panel \"RESEARCH IS URGENTLY NEEDED\" in the right zone",
+      "startSec": 1135.9333333333334,
+      "endSec": 1139.5333333333333,
+      "accentIndex": 1,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "RESEARCH IS URGENTLY NEEDED",
+        "placement": "right"
+      }
+    },
+    {
+      "id": "card-38",
+      "intent": "Liquid-glass emphasis panel \"CAN MAKE BETTER THINKERS\" in the left zone",
+      "startSec": 1177.4666666666667,
+      "endSec": 1181.0666666666666,
+      "accentIndex": 2,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "CAN MAKE BETTER THINKERS",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-39",
+      "intent": "Liquid-glass emphasis panel \"SMARTER, NOT LAZIER\" in the bottom zone",
+      "startSec": 1200.6666666666667,
+      "endSec": 1204.2666666666667,
+      "accentIndex": 3,
+      "zone": "lower-third",
+      "contentHints": {
+        "emphasis": "SMARTER, NOT LAZIER",
+        "placement": "bottom"
+      }
+    },
+    {
+      "id": "card-40",
+      "intent": "Liquid-glass emphasis panel \"POTENTIAL WITHOUT INTENTIONALITY\" in the left zone",
+      "startSec": 1234.1333333333334,
+      "endSec": 1237.7333333333333,
+      "accentIndex": 4,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "POTENTIAL WITHOUT INTENTIONALITY",
+        "placement": "left"
+      }
+    },
+    {
+      "id": "card-41",
+      "intent": "Liquid-glass emphasis panel \"WE CAN SEE THE PATTERN\" in the right zone",
+      "startSec": 1257.6333333333334,
+      "endSec": 1261.2333333333333,
+      "accentIndex": 0,
+      "zone": "video-overlay",
+      "contentHints": {
+        "emphasis": "WE CAN SEE THE PATTERN",
+        "placement": "right"
+      }
+    }
+  ]
+}
