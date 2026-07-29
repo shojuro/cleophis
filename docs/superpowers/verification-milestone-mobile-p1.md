@@ -2794,6 +2794,98 @@ made from recollection.
 | **322** | `blob.rs` compiled but its tests did not run — the module is `#[cfg_attr(not(android), allow(dead_code))]`, and a mistake there is exactly how D-3 logic passes a gate while asserting nothing |
 | anything else | something compiled that should not have |
 
+#### 3.2 gate: **GREEN** (run 20, at `0354f6c`, protocol v2) — 332/0, exact
+
+**332 passed / 0 failed, zero warnings.** PRE `0354f6c`/clean → POST
+`0354f6c`/clean, all four provenance facts agreeing, so this is attributable
+**to the commit**. All ten `blob::tests` observed **by name**, so the 322 branch
+— compiled-but-not-run — is excluded by observation rather than by assumption.
+
+Running total: **266 → … → 321 → 321 → 322 → 322 → 332.**
+
+**A confounder pre-registered, and that is the new thing here.** A window of
+machine load was disclosed to steering *before* the verdict landed (two Android
+builds briefly overlapped the suite — see the operational note below). This
+document already records that slow runs correlate with the
+`cloud::rest`/`session` flake family, so the disclosure gave steering a
+known cause to weigh a cloud-family failure against, rather than one invented
+after the fact. No flake appeared, so it cost nothing — **which is the point**.
+The predict-the-count convention pre-registers what we expect to see; this
+pre-registers what could *contaminate* what we see, and the two are the same
+discipline pointed at different things. Cheap when unnecessary, decisive when
+not.
+
+### ⚑ The general form: AN ABSENT RESULT IS NOT A NEGATIVE FINDING
+
+Promoted to a heading because this proposition has now bitten twice in two
+different instruments, and the second time it bit an agent **who had read the
+first instance**. That is the evidence that lessons do not transfer across
+instruments by being written down as incidents — the general form has to be
+stated, with the incidents filed under it.
+
+**The proposition:** a command that has not answered tells you nothing. Silence,
+emptiness and absence are not evidence of a negative; they are evidence of
+nothing at all. Before reading any empty result, establish that the producing
+command *finished*.
+
+| instrument | incident |
+|---|---|
+| `git status --porcelain` | A run that **times out** returns exit 124 with empty output, byte-identical to a clean tree. Demonstrated deliberately while testing the provenance sidecar. Only `porcelain_exit 0` licenses the word "clean". |
+| a backgrounded pipeline | A long build piped through `tail -40` writes **nothing** until the pipe closes, so an empty output file means *still running*, not *produced nothing*. Read as a dead build; a second build was launched on that basis (below). |
+
+Both are the same sentence with a different subject. The countermeasure is also
+the same in both: **record the exit status of every command whose output you
+interpret**, and treat "no output yet" as a question rather than an answer.
+
+#### The incident, recorded by its author
+
+An empty task-output file plus a `pgrep` whose pattern did not match at that
+instant led to the conclusion that the APK build had died. A second build was
+started. It immediately printed:
+
+```
+Blocking waiting for file lock on build directory
+```
+
+— **exactly the signal this document already documents**: *a check blocked on a
+cargo build-directory lock means an earlier build is still alive, not that a
+lock leaked.* The entry earned its keep by being read from the inside.
+
+Resolved by the ledger's own kill discipline — *a build is not stopped until
+the COMPILER is stopped* — walking the process table to the actual `cargo` and
+`rustc` workers rather than killing the wrapper, then verifying afterwards that
+exactly one build script remained, that both compiler processes were parented
+to it, and that the killed tree was fully reaped. Disclosed to steering as a
+confounder before the gate verdict, per the paragraph above.
+
+### ⚑ A watcher is not a report — the second instance, and what actually held
+
+The CP3 build finished at 17:16:35 with its digest computed. A background
+watcher was armed on it and **fired correctly**, capturing the full tail and
+the provenance with exit 0. Its notification nonetheless reached this agent
+only *after* steering had independently verified the artifact and ferried it to
+the founder.
+
+Nothing hung and nothing was lost, and there was still a window in which a
+correct, complete artifact could not report itself. That is gen-4's delivery
+failure arriving from the other side: there, waiters fired into a turn that
+never resumed; here, the watch was perfect and the gap sat in the resume.
+**"Arming a watcher is not the same as having reported" holds even when the
+watcher works.**
+
+**What actually held was neither the watcher nor the agent: it was the
+sidecar.** `build-android-apk.sh` had already written HEAD, porcelain, exit
+statuses and the sha256 into a durable file, so steering's verification was a
+**check against the build's own record** rather than a substitute for a missing
+report — the two produced identical digests. This is the first live payoff of
+the ratified policy that *scripts emit provenance, agents do not report it*,
+and it paid off in exactly the scenario it was written for: the agent was
+unavailable and the evidence was not.
+
+The generalisation, which is now three-for-three on this track: **make the
+tool write the record, because every mechanism that depends on an agent being
+present to speak has failed at least once.**
+
 #### 📱 CP3 — what only the device can say
 
 Predicted logcat, recorded before the run (`adb logcat -s RustStdoutStderr`, the
@@ -2827,6 +2919,59 @@ is compatible with a shipped build that signs the user out on every launch.
 That is item **1b** of `docs/ops/release-config-audit.md` — the same
 debug-proof/release-failure split as the bridge, now carrying a security
 feature instead of a diagnostic.
+
+### 📱 CP3 APK — built, verified, clean provenance both ends
+
+```
+sha256  a3fd92dddf1f0f61a19d715b37d310f566539ea271a50754d7e61458690efd24
+size    355,151,042 bytes
+built   from 0354f6c (3.2 + the §6 backup fix), debug-signed, arm64-v8a
+copy    ~/cleophis-artifacts/cleophis-cp3-debug-0354f6c.apk
+log     ~/cleophis-mobile-logs/apk-debug-20260729-163405.log
+```
+
+**Provenance, written by the build itself** (the sidecar policy, not an agent's
+report):
+
+| checkpoint | HEAD | porcelain | exit |
+|---|---|---|---|
+| PRE 16:34:05 | `0354f6c` | `<empty: tree clean>` | `porcelain_exit 0` |
+| POST 17:16:35 | `0354f6c` | `<empty: tree clean>` | `porcelain_exit 0` |
+
+All four facts agree → **attributable to the commit**. Worth noting *how* that
+was achieved: the build was deliberately started while steering's gate freeze
+was in force and all worktree edits were held until POST was written. Editing
+docs mid-build would have dropped this to "live worktree near `0354f6c`", the
+weaker form the 2.2b entry had to record and defend. The cost of the strong
+form was latency and nothing else.
+
+**Digest independently derived three times, all identical** — the build's own
+sidecar, steering's verification, and this agent's re-hash of the **archive**.
+Produced by `sha256sum` and never retyped. The third derivation is not
+ceremony: the first two measured the *build output*, and what the founder
+installs is the *archive*.
+
+`verify-apk.py` **PASS**: 968 entries, Σ compressed **354,963,874** vs file
+**355,151,042** = **0.05 % unaccounted** (no zipflinger orphan); `assets/` is
+`tauri.conf.json` only; `arm64-v8a` only.
+
+#### The check the standard script cannot do, on the commit that needed it most
+
+`verify-apk.py` has nothing to say about whether Kotlin compiled and got
+packaged. The bridge commit established this gap; **this is the first commit
+where the answer is a security property**, since a missing `SecureStore` means
+no credential can be read at all. Read out of the shipped archive's dex:
+
+| symbol | result |
+|---|---|
+| `Lcom/cleophis/app/SecureStore;` | present, `classes8.dex` |
+| `blobDir`, `encrypt`, `decrypt` | all present, `classes8.dex` |
+| `Lcom/cleophis/app/NativeBridge;`, `describeDevice` | present — regression check that the `with_app_class` refactor did not drop the bridge |
+
+This narrows what a CP3 failure can mean **before the device is touched**: a
+`getAppClass` failure can no longer be "the class is not in the APK". It is
+also a *debug* answer only — R8 is off here — so it says nothing about release,
+which remains audit item 1b.
 
 ### 🔴 §6 privacy: the backup exclusions covered the empty set — FIXED
 
@@ -2866,9 +3011,15 @@ family.** Settled by reading the parser rather than a doc example:
 - **`path` is optional.** `FullBackup.extractCanonicalFile` substitutes `""`
   for a null path, with the source comment *"Allow things like `<include
   domain="sharedpref"/>`"*, and `validateInnerTagContents` permits **up to 2**
-  attributes on `<exclude>`. The bare form is well-formed by design. (It is
-  also the form the four pre-existing lines already used, so the old rules were
-  correctly *parsed* — they were just aimed at the wrong directories.)
+  attributes on `<exclude>`. The bare form is well-formed by design.
+
+  **The defect was TARGETING, never SYNTAX** — worth stating plainly, because
+  the four pre-existing lines were *also* bare, so anyone who later greps for
+  this fix and sees bare `<exclude>` on both sides of the diff could easily
+  conclude the bare form was the bug and "fix" it by adding `path` attributes
+  everywhere. The old rules parsed perfectly. They named four directories the
+  app does not use. Nothing about their form was wrong and nothing about their
+  form changed.
 - **Excluding a directory prunes its whole subtree.**
   `BackupAgent.fullBackupFileTree` matches excludes by **exact canonical path**
   and, on a match, `continue`s *before* enqueueing that directory's children.
