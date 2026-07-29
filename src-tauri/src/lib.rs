@@ -50,6 +50,16 @@ mod engine_tool_loop;
 mod hardware;
 mod inference;
 mod kpack;
+/// The 2.2 native completions: the download policy's fact source and
+/// share-sheet export. Compiled on every platform (decision D-1 — mobile-only
+/// commands live on the shared invoke surface); the bodies are cfg-gated and
+/// desktop refuses.
+mod mobile_native;
+/// Parses the network/battery snapshot Android reports. Compiled everywhere
+/// because the parse is pure and its failure mode is silent and expensive —
+/// a field misread as `metered=0` starts a multi-gigabyte download on someone's
+/// cellular plan and nothing reports an error (decision D-3).
+mod net_state;
 mod ocr;
 /// Compiled on every platform so its consistency tests run in the desktop
 /// suite; the `include_bytes!` payload inside it is `cfg(mobile)`, so the
@@ -287,7 +297,9 @@ pub fn run() {
             convstore::export_chat_to_file,
             chat_cmds::chat_stream,
             chat_cmds::chat_complete,
-            chat_cmds::chat_cancel
+            chat_cmds::chat_cancel,
+            mobile_native::network_state,
+            mobile_native::share_chat
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

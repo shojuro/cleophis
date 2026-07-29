@@ -2443,6 +2443,181 @@ policy invoking a command that does not exist.
 
 ---
 
+## 2.2 native completions — download network policy + share sheet — DONE
+
+The two items 2.2 surfaced but could not build without a proven bridge. Both
+ride `android_bridge::with_app_class`, so neither is the first thing over that
+bridge — which is the whole return on bridge-first sequencing: a failure here
+has one candidate cause instead of two.
+
+### N.2 `ConnectivityManager` metered policy
+
+**`isActiveNetworkMetered` is the only correct source, and the two obvious
+substitutes are both wrong in the case that matters.** A transport check
+(`TRANSPORT_WIFI`) and `navigator.connection` both report
+Wi-Fi-versus-cellular — and a **metered Wi-Fi hotspot** (a tethered phone, a
+hotel plan, a capped home line) is precisely where that distinction inverts.
+The feature exists to respect someone's data plan, so a false negative costs
+them money. The brief said this; it is restated here because the cheap
+implementation is the wrong one and looks fine.
+
+**`ACCESS_NETWORK_STATE` landed WITH its caller**, not before. A permission
+with no caller is the same dead surface as a frontend policy invoking a
+command that does not exist: it appears in every store listing and every
+privacy review and nobody can say what it is for.
+
+#### The split, and why it is three pieces rather than one
+
+| piece | where | why there |
+|---|---|---|
+| `NetworkPolicy.describe(context)` → `metered=1 charging=0 battery=57` | Kotlin | Only the platform can answer it. |
+| `net_state::parse` | Rust, compiled everywhere, **8 tests** | Pure, and silently expensive when wrong. |
+| `decideDownload` / `chargeAdvice` | `src/download-policy.js`, **18 tests** | A user-facing rule with an override, whose prompt the frontend already owns. |
+
+**One Kotlin string, not three booleans.** Each JNI method is a signature that
+can be wrong, failing with a `NoSuchMethodError` that names the signature
+rather than the cause; three accessors would be three chances at that, three
+R8 keep surfaces, and — the real reason — three round trips for facts that
+must describe *the same instant*. A connection that changes between two calls
+yields a report that was never simultaneously true. One call, one snapshot,
+and the parse becomes testable.
+
+#### The asymmetry, stated so it cannot be "simplified" away
+
+**Every unknown resolves to metered.** Absence, malformity, an empty string, a
+missing key, a bridge failure — all of it lands on the conservative answer,
+asserted by a test whose only job is to enumerate the failure modes.
+
+The reason is that the two mistakes are not comparable: guessing *unmetered*
+when the truth is metered spends the user's money and cannot be undone;
+guessing *metered* when the truth is unmetered costs one tap. Same shape as
+`tier_for_mobile` degrading to the floor tier on every detection failure, and
+the general rule is worth naming: **when a probe can fail, fail toward the
+cheaper mistake — and write down which one that is**, because the next person
+to read the code will otherwise "clean up" the default to the common case.
+
+Two smaller decisions with the same character:
+
+- **`charging` is `Option<bool>`, not `bool`.** "We do not know" and "it is not
+  charging" must stay distinct, because a charge *recommendation* issued on a
+  guess is noise. `chargeAdvice` returns nothing on the unknown, and a test
+  pins it.
+- **A small download never prompts, even on metered.** A prompt that fires for
+  a 2 MB catalog trains people to dismiss prompts, which is how the one that
+  matters gets dismissed. The threshold is asserted as a boundary.
+- **The charge notice is advice and never blocks.** A download refused for
+  battery is one the user cannot start while their phone sits at 38 %, and
+  they may have a charger in their bag. Telling them is useful; deciding for
+  them is not.
+
+The gate runs **once per install**, totalled over base + adapter + contract
+adapter, rather than per artifact: those are one user action, and the figure
+someone is asked to approve should be what will actually be transferred.
+
+**Checked rather than assumed:** `window.confirm` is the app's existing
+confirmation idiom, and in an Android WebView an unimplemented `onJsConfirm`
+returns *false* silently — which would have meant a metered download could
+never proceed, a policy that fails closed and invisibly. wry's generated
+`RustWebChromeClient` implements it (line 161), so the idiom holds.
+
+### N.3 `ACTION_SEND` share-sheet export
+
+`exportChat` branches on `IS_MOBILE`; **the desktop `dialog.save` path is
+untouched below the branch**. Both platforms format through the same
+`convstore::export_chat`, so the bytes are identical and only the destination
+differs — the handoff's point that mobile needs a destination, not a
+formatter.
+
+Three details in `ShareSheet.kt` are load-bearing, each a silent or misleading
+failure: `FileProvider.getUriForFile` rather than `Uri.fromFile` (which raises
+`FileUriExposedException` on everything ≥ N, and our minSdk is 24);
+`FLAG_GRANT_READ_URI_PERMISSION` on the **chooser**, since that is the intent
+the system delivers and granting only the inner one surfaces as a permission
+denial inside the *other* app; and `FLAG_ACTIVITY_NEW_TASK`, because this is
+called from a JNI-attached thread with no activity stack.
+
+**No new FileProvider wiring was needed** — the scaffold's `cache-path` root
+already covers the `exports/` directory, found by reading `file_paths.xml`
+rather than assuming a new entry was required.
+
+### 🔬 A D-3 violation caught in my own draft, and then a real bug behind it
+
+`safe_file_stem` — the sanitiser that turns a user-typed chat title into a
+filename — was **first written inside the `cfg(target_os = "android")`
+module, with its tests beside it.** Those tests would never have executed:
+not in the desktop suite, not in the aarch64 `check`, not anywhere, because
+nothing on Android runs until a founder device checkpoint. A sanitiser whose
+failure mode is a path separator surviving into a filename is D-3's trigger
+almost by definition, and the first draft put it on the wrong side of the line
+while the module's own doc comment argued for D-3.
+
+Moving it to `mobile_native/pure.rs` (the `#[path]` pattern `engine_tools` and
+`engine_serve` established) made it runnable — **and it immediately failed.**
+
+`safe_file_stem("...")` returned `"___"` rather than falling back. Two defects
+in one line:
+
+1. **A `trim_matches('.')` that could never fire.** The character map has
+   already replaced every dot with `_` by the time the trim runs. A defensive
+   step guarding against something that cannot reach it — the "check that
+   cannot fail" family, in miniature, and invisible on inspection because it
+   reads as prudent.
+2. **The fallback tested `is_empty()`, which was the wrong question.** `"___"`
+   is non-empty and perfectly safe, and a file called `___.md` tells the user
+   nothing about what they just shared.
+
+Fixed by asking the question that was actually meant: fall back when the stem
+**carries no information** — no alphanumeric character — which covers `""`,
+`"   "`, `"..."`, `"///"` and `"!@#$%"` with one rule and no unreachable
+defence.
+
+**The chain is the lesson.** Putting the code where tests run is what made the
+test run; the test running is what exposed the bug; the bug's shape was a
+guard that could not fire. D-3 has been ratified since 1.5 and it still had to
+be applied against a draft that had just finished explaining it — which is the
+same finding as the absent-result lesson above: **a rule you have written down
+is not a rule you automatically apply.**
+
+### Why `safe_file_stem` sanitises where `account_dir_segment` rejects
+
+Two sanitisers, opposite policies, in one codebase — worth stating so neither
+gets "unified" into the other:
+
+- A `user_id` is **machine-issued**. Anything malformed is a bug or an attack,
+  and rejecting costs a legitimate user nothing. Reject, don't strip.
+- A chat title is **typed by a human**. A chat honestly named `3/4 of what?` is
+  not an attack, and refusing to share it would be a defect. Sanitise and keep.
+
+Safety does not depend on the difference: the character map removes every
+separator, the result is one component joined onto a directory we choose, and
+the length is capped.
+
+### Verification
+
+| what | result |
+|---|---|
+| `net_state.rs` + `mobile_native/pure.rs`, scratch crate over the **real files** via `#[path]` | **14 passed / 0 failed** |
+| `net_state.rs` sha256 | `d343a25a8568931a0679b5f1ef07503e5bcb52306b003061d8cfaef7c3ee1e95` |
+| `mobile_native/pure.rs` sha256 | `8d904dda2953dea6c637ad0c739cacb14715456d0210012f2c72df99a4bd4cc6` |
+| `npm test` | **58 → 76**, 0 failed |
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | **exit 0, zero warnings** (unanchored) |
+
+Log: `cleophis-mobile-logs/item3-aarch64-final-20260729-185951.log`.
+
+#### Desktop prediction: **332 → 346**
+
+**8** `net_state` tests + **6** `pure` tests, counted from the files. `npm test`
+is already measured at 76 (58 + 18) and needs no prediction.
+
+| observed | means |
+|---|---|
+| **346** | both modules' tests executed on the Windows target |
+| **338** | `pure.rs` compiled but did not run — the `#[cfg_attr(not(android), allow(dead_code))]` misapplied, i.e. the exact D-3 failure this chunk already made once |
+| **340** | `net_state`'s tests did not run |
+| anything else | something compiled that should not have |
+
+---
+
 ## Phase 3 — Secure credential storage
 
 ### 3.1 `secure_store` seam + `keyring` off Android — DONE

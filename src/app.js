@@ -4,6 +4,7 @@ import { streamWithTools } from './calc-loop.js';
 import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
+import { decideDownload, meteredPromptText } from './download-policy.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -490,6 +491,37 @@ function tierVariantByBase(baseModel) {
   return Object.values(h.tiers).find((t) => t.baseModel === baseModel) || null;
 }
 
+// §2.2 download network policy, Android only. The gate runs ONCE for the whole
+// install rather than per artifact: base + adapter (+ contract) are one user
+// action, and asking twice for one decision is how a prompt becomes noise.
+//
+// Desktop is untouched — `IS_MOBILE` is the same platform predicate that picks
+// the transport (decision D-5), not a viewport check, so a narrow desktop
+// window never sees this.
+//
+// The decision itself is `download-policy.js`, tested by `npm test`; the facts
+// come from `network_state`, whose parse is tested in the desktop suite. If the
+// command fails outright we do NOT block: the Rust side already falls back to
+// "metered" internally, and a bridge failure that made the app un-downloadable
+// would be a worse outcome than an unasked-for prompt.
+async function meteredGate(totalBytes) {
+  if (!IS_MOBILE) return true;
+  let net;
+  try {
+    net = await invoke('network_state');
+  } catch (e) {
+    console.warn('network_state unavailable, proceeding:', e);
+    return true;
+  }
+  const verdict = decideDownload(net, { bytes: totalBytes });
+  if (verdict.chargeNotice) showToast(verdict.chargeNotice);
+  if (verdict.allowed) return true;
+  // The per-download override: this answer applies to this install and is
+  // never remembered, so a user who says yes once on the train is not opted
+  // in forever.
+  return window.confirm(`${meteredPromptText(totalBytes)}\n\nDownload anyway?`);
+}
+
 async function downloadHeroPair(baseModel, btn) {
   const prog = $('prog');
   if (prog) prog.style.display = 'block';
@@ -502,6 +534,20 @@ async function downloadHeroPair(baseModel, btn) {
     const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === baseModel);
     if (!base || !adapter) {
       throw new Error("This model isn't available to download yet — please update the app or try again later.");
+    }
+    // Totalled across everything this install will pull, including the
+    // contract adapter when the tier declares one — the user is being asked
+    // about their data allowance, and a figure that undercounts what will
+    // actually be transferred is the wrong number to answer with.
+    const variant = tierVariantByBase(baseModel);
+    const contractArt = variant && variant.contractAdapterFile
+      ? arts.find((a) => a.kind === 'contract-adapter' && a.base_model === baseModel)
+      : null;
+    const totalBytes = (base.size || 0) + (adapter.size || 0) + ((contractArt && contractArt.size) || 0);
+    if (!(await meteredGate(totalBytes))) {
+      // A declined prompt is a cancellation, not a failure: no toast, no error
+      // chip. The `finally` below restores the button and the progress bar.
+      return;
     }
     await downloadArtifact(base);
     await downloadArtifact(adapter);
@@ -2429,6 +2475,23 @@ const EXPORT_FILTER_NAME = { markdown: 'Markdown', json: 'JSON', txt: 'Plain tex
 async function exportChat(id, title, format) {
   state.sidebar.exportMenuFor = null;
   renderSidebar();
+
+  // Android: a share sheet, not a file picker. `dialog.save` is a desktop
+  // assumption — on a phone "put this somewhere" means Drive, Keep, mail or
+  // another chat app, and there is no filesystem path a person wants to type.
+  // `share_chat` reuses the SAME formatter (`convstore::export_chat`), so the
+  // bytes are identical on both platforms; only the destination differs.
+  //
+  // Everything below this branch is the desktop path, unchanged.
+  if (IS_MOBILE) {
+    try {
+      await invoke('share_chat', { id, format, title: title || 'chat' });
+    } catch (e) {
+      showToast(String(e));
+    }
+    return;
+  }
+
   const ext = EXPORT_EXT[format] || 'txt';
   const safeTitle = (title || 'chat').replace(/[\\/:*?"<>|]/g, '_').trim() || 'chat';
   let path;

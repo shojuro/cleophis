@@ -13,6 +13,19 @@
          ever request). Runtime-prompted on Android 13+. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Download network policy (§2.2): ConnectivityManager.isActiveNetworkMetered
+         throws SecurityException without this. Normal/install-time, so no runtime
+         prompt, and it grants no ability to read traffic — only to ask whether the
+         active connection is metered.
+
+         Deliberately added WITH its caller (NetworkPolicy.kt + net_state.rs) and
+         not before. A permission with no caller is the same dead surface as a
+         frontend policy invoking a command that does not exist: it shows up in
+         every store listing and every privacy review, and nobody can say what it
+         is for. This one is the only way to keep the promise that a multi-GB
+         model never downloads on someone's cellular plan without being asked. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- On-device inference runs in a foreground service so the OS does not kill
          generation mid-turn (H4/H5). Android 14+ requires a declared FGS type;
          none fits local inference, so `specialUse` with a justification string

@@ -36,3 +36,15 @@
 # shipped build fails, because isMinifyEnabled is false for debug and true for
 # release.
 -keep class com.cleophis.app.SecureStore { *; }
+
+# The 2.2 native completions, same rule and same reason: only Rust calls them,
+# R8 cannot see a JNI caller, so all of it is dead code to the shrinker.
+#
+# Release-only symptoms, both of which look like something other than
+# minification:
+#   NetworkPolicy — the metered check fails, the Rust side falls back to its
+#     safe default, and EVERY download prompts for cellular consent even on
+#     wifi. A degradation, not a crash, which is why it could ship unnoticed.
+#   ShareSheet    — the export button does nothing at all.
+-keep class com.cleophis.app.NetworkPolicy { *; }
+-keep class com.cleophis.app.ShareSheet { *; }
