@@ -2604,6 +2604,83 @@ the length is capped.
 
 Log: `cleophis-mobile-logs/item3-aarch64-final-20260729-185951.log`.
 
+#### Item 3 gate: **346/0 exact, all 14 named — and ONE warning**
+
+Run 21. **346 passed / 0 failed**, 14 new tests observed by name (6
+`mobile_native::pure`, 8 `net_state`), so both the 338 and 340 discriminator
+branches are excluded **by observation**. The count prediction hit exactly.
+
+| checkpoint | HEAD | porcelain |
+|---|---|---|
+| PRE 19:11:16 | `b1f7b89` | clean |
+| POST 19:18:06 | `e203ec3` | clean |
+
+**Attributed as "live worktree `b1f7b89` → `e203ec3`, Rust-identical across the
+delta."** The tree was never dirty; only the tip moved, because a commit landed
+mid-run. The delta is two docs files plus one **comment-only** change to
+`download-policy.js` (verified with a non-comment-line filter: the expression
+`net?.metered !== false` is byte-identical, a trailing comment moved above the
+line), so no Rust changed and the result means the same thing at either commit.
+
+**This was recoverable rather than a permanent asterisk for one structural
+reason: the harness reads HEAD live at both ends rather than accepting a value
+from a message.** That is the same principle as the provenance sidecar,
+applied to the gate runner — the run records what it observed, not what it was
+told. Compare 2.2b, where a correct PRE checkpoint survived only in a
+transcript and the attribution had to be softened forever.
+
+**The race itself was structural, not a discipline failure.** The freeze
+message and the commit crossed: steering wrote "freeze" while this agent was
+committing work steering had approved. **A message in flight is not a freeze in
+effect** — the protocol assumed the agent would be idle between the gate
+request and the freeze arriving, and it had explicitly been told to keep
+working. Proposed structural close, deferred to Phase 4: the gate script
+refuses to start without a **freeze-marker file on disk**, and the requester
+**pins the commit** rather than inheriting the tip. Same shape as
+sidecar-over-watcher, applied to the coordination layer.
+
+##### The warning, and why the prediction was half right in the interesting half
+
+`warning: function `parse` is never used` — one warning, `cleophis` lib. The
+count was predicted and hit; **"zero warnings" was predicted and missed.**
+
+Diagnosed from source: nothing gates `parse`, nothing gates its tests, and
+**desktop never calls it** — its only production caller is
+`mobile_native.rs:68`, inside `#[cfg(target_os = "android")]`. `NetState` does
+*not* warn, being `network_state`'s return type outside any cfg, which is why
+there was exactly one. So this is **correct by design, not a wiring gap**: the
+tests reach `parse` while nothing in the desktop production path does, which is
+the state D-3 deliberately creates. Fixed with the narrow cfg'd `allow` and a
+stated platform fact, and D-3 amended above so the next extraction carries it
+by construction.
+
+#### ⚑ A CHECK'S SILENCE IS ONLY EVIDENCE WITHIN ITS COMPETENCE
+
+The zero-warnings half of the prediction rested on
+`cargo ndk … check --all-targets` reporting clean. **It could not have reported
+anything else.** On Android `parse` *is* used, so the cross-compile is clean by
+construction — the check was structurally incapable of detecting a function
+that is dead on desktop.
+
+This is the check-that-cannot-fail family's **cleanest self-inflicted
+instance**. Every prior member was inherited: a percentage that fit any number,
+assertions measuring a bounding box, a run labelled with the wrong commit.
+Here the check was built by the same agent that then trusted it *outside its
+competence* — not fooled by someone else's instrument, but by the range of
+one's own.
+
+**The general form:** a green result is evidence only about what the check is
+capable of seeing. Before citing a clean run, state what that run **could have
+come back negative about** — the same discipline the download retraction
+demanded for numbers ("say what a figure would have to be inconsistent with"),
+now applied to tooling.
+
+**The specific corollary, in both directions:** `cargo ndk check` **cannot
+substitute for the desktop gate on dead-code questions**, because each platform
+is blind to code dead on the other. A D-3 extraction is dead on desktop and
+live on Android; a `cfg(desktop)`-only helper is the mirror image. Neither
+check sees both, and their silences are not additive.
+
 #### Desktop prediction: **332 → 346**
 
 **8** `net_state` tests + **6** `pure` tests, counted from the files. `npm test`
@@ -3482,6 +3559,55 @@ closure, drop it. There is no decision left in it to get wrong.
 
 **Precedent it extends:** `tools.rs` and `tool_loop.rs` were placed this way in
 1.3–1.4 for the same reason. D-3 states the rule those two were following.
+
+#### ⚑ AMENDMENT (ratified, item 3 chunk) — the `allow` is PART of the extraction
+
+**Every D-3 extraction leaves a function whose production caller lives on the
+other platform.** That is not an occasional side effect; it is what the rule
+*does* — it moves logic to where the tests run, which by construction is not
+where the caller is. So the narrow `cfg_attr(..., allow(dead_code))` **with a
+stated platform fact is a required step of the extraction, not an afterthought
+to it.**
+
+**The mechanical form, answerable by grep at the moment the code is written:**
+
+> **Who calls this on the platform where the tests run? If the answer is "only
+> the tests", it needs the allow.**
+
+**Why the rule needed amending rather than restating.** `net_state::parse`
+reached a gate with a dead-code warning after this same pattern had been
+applied *twice in the same session* (`blob.rs`, `pure.rs`). The author's
+account: *"I didn't fail to know it, I failed to notice it applied again."*
+Knowing the rule was never the missing ingredient — which is why the fix is a
+derived checklist item that fires at the point of application, and not a more
+emphatic statement of the rule.
+
+**And the audit that explains how it was missable.** The same rule turned out
+to be encoded **three different ways** across six modules:
+
+| module | form |
+|---|---|
+| `engine_inproc/serve.rs` | `#![cfg_attr(desktop, allow(dead_code))]` — inner, cfg'd |
+| `engine_inproc/tools.rs` | `#![allow(dead_code)]` — inner, **bare** |
+| `engine_inproc/tool_loop.rs` | `#![allow(dead_code)]` — inner, **bare** |
+| `cloud/secure_store/blob.rs` | outer, on the `mod` declaration, cfg'd |
+| `mobile_native/pure.rs` | outer, on the `mod` declaration, cfg'd |
+| `net_state.rs` | **nothing** |
+
+The earlier extractions did not get lucky — each solved this, in a *different
+place*. **A rule with three encodings cannot be checked by looking**: answering
+"does every D-3 module carry it?" means inspecting two locations per module and
+knowing that bare and cfg'd variants both count. Each new extraction re-derives
+the placement, and one eventually re-derives *nowhere*.
+
+**Canonical form, going forward: on the `mod` declaration, cfg'd, beside the
+D-3 rationale comment that already lives there.** `serve.rs` has the right
+instinct about *which* form — cfg'd, not bare, so the dead-code check stays
+**live on the platform where the code actually ships**. The two bare
+`#![allow(dead_code)]` modules are surfaced rather than changed here: tightening
+them could re-enable dead-code checking on Android and surface new warnings,
+which is worth doing on its own merits and worth keeping out of a gate whose
+job is to show one warning disappearing.
 
 ### D-4 (FOUNDER) — Truncate-oldest for the model's window; storage is never truncated
 

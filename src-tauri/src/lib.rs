@@ -59,6 +59,17 @@ mod mobile_native;
 /// because the parse is pure and its failure mode is silent and expensive —
 /// a field misread as `metered=0` starts a multi-gigabyte download on someone's
 /// cellular plan and nothing reports an error (decision D-3).
+///
+/// The `allow` states a **permanent platform fact, not a symptom**: desktop has
+/// no metered-network concept and no `ConnectivityManager`, so `parse`'s only
+/// production caller is — and will remain — the `cfg(target_os = "android")`
+/// branch of `mobile_native::network_state`. On desktop the function is
+/// therefore reachable *only* from its own tests, which is precisely the state
+/// D-3 asks for and precisely what `dead_code` reports. Narrowly scoped and
+/// cfg'd rather than bare, so the check stays **live on Android**, where the
+/// function does ship — the distinction `engine_serve` already draws and the
+/// one the 5.3 `mobile-check` CI job exists to exercise.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod net_state;
 mod ocr;
 /// Compiled on every platform so its consistency tests run in the desktop
