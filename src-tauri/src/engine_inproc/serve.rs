@@ -36,7 +36,8 @@
 // the tests below run in the desktop suite. This states a permanent platform
 // fact rather than deferring a question — on Android the dead-code check stays
 // live, which is what the 5.3 `mobile-check` CI job is for.
-#![cfg_attr(desktop, allow(dead_code))]
+// (The dead-code allow for this module lives on its `mod` declaration in
+// lib.rs — canonical placement per D-3's amendment, beside the rationale.)
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

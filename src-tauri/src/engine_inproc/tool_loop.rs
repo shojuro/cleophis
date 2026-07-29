@@ -13,7 +13,8 @@
 //! tests actually run. `engine_inproc` supplies the real implementation over the
 //! inference thread's session; the tests supply a scripted one.
 
-#![allow(dead_code)] // 1.4's chat commands are the first production caller
+// (Dead-code allow on the `mod` declaration in lib.rs — canonical placement,
+// and cfg'd to `desktop` so the check stays LIVE on the platform that ships.)
 
 use crate::engine_tools::{
     dispatch, parse_tool_calls, ToolFamily, ToolOutcome, ToolStream,
@@ -45,6 +46,17 @@ pub(crate) struct LoopMessage {
 }
 
 impl LoopMessage {
+    /// Test-only, and gated rather than suppressed so the dead-code check
+    /// stays honest on both platforms.
+    ///
+    /// Production never calls it: `chat_cmds::to_loop_messages` converts each
+    /// incoming `WireMessage` with a struct literal (`chat_cmds.rs:162,167`)
+    /// because the role comes from the wire rather than from the call site.
+    /// Its siblings `assistant` and `tool` DO have production callers
+    /// (`tool_loop.rs:151,169`), which is why only this one was ever dead —
+    /// invisible since 1.4 behind a bare `#![allow(dead_code)]` that switched
+    /// the check off on Android as well as desktop.
+    #[cfg(test)]
     pub fn user(content: impl Into<String>) -> Self {
         LoopMessage { role: LoopRole::User, content: content.into() }
     }

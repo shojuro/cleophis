@@ -3084,10 +3084,19 @@ command *finished*.
 |---|---|
 | `git status --porcelain` | A run that **times out** returns exit 124 with empty output, byte-identical to a clean tree. Demonstrated deliberately while testing the provenance sidecar. Only `porcelain_exit 0` licenses the word "clean". |
 | a backgrounded pipeline | A long build piped through `tail -40` writes **nothing** until the pipe closes, so an empty output file means *still running*, not *produced nothing*. Read as a dead build; a second build was launched on that basis (below). |
+| `grep … \| head` | A caller search for `ToolOutcome::is_err` was piped through `head`, which **cut the list at ten**. The three real callers sat below the cut, the visible portion was read as exhaustive, and the method was deleted as "zero callers anywhere". The compiler caught it in 80 seconds. |
 
-Both are the same sentence with a different subject. The countermeasure is also
-the same in both: **record the exit status of every command whose output you
-interpret**, and treat "no output yet" as a question rather than an answer.
+All three are the same sentence with a different subject. The countermeasure is
+also the same: **record the exit status of every command whose output you
+interpret**, and treat "no output yet" — or "no output *here*" — as a question
+rather than an answer.
+
+**The third instance is the one that proves the heading was needed**, because
+it happened *in the same session as the first two, while writing them up*. The
+specific defeater is worth naming since it recurs: **`head` and `tail` are
+truncation, and truncation is indistinguishable from absence.** For any query
+whose answer licenses a *deletion*, count first (`wc -l`) or don't truncate —
+a partial list read as complete is how correct-looking code gets removed.
 
 #### The incident, recorded by its author
 
@@ -3601,13 +3610,64 @@ knowing that bare and cfg'd variants both count. Each new extraction re-derives
 the placement, and one eventually re-derives *nowhere*.
 
 **Canonical form, going forward: on the `mod` declaration, cfg'd, beside the
-D-3 rationale comment that already lives there.** `serve.rs` has the right
-instinct about *which* form — cfg'd, not bare, so the dead-code check stays
-**live on the platform where the code actually ships**. The two bare
-`#![allow(dead_code)]` modules are surfaced rather than changed here: tightening
-them could re-enable dead-code checking on Android and surface new warnings,
-which is worth doing on its own merits and worth keeping out of a gate whose
-job is to show one warning disappearing.
+D-3 rationale comment that already lives there.**
+
+One nuance that must not be flattened: **the canonical thing is the placement
+and the principle, not a single literal cfg.** The allow must *mirror its
+module's production caller* — `engine_serve`/`engine_tools`/`engine_tool_loop`
+are consumed by `engine_inproc`, which is `cfg(mobile)`, so they take
+`cfg_attr(desktop, …)`; `blob`/`pure`/`net_state` are consumed from
+`cfg(target_os = "android")` blocks, so they take
+`cfg_attr(not(target_os = "android"), …)`. Forcing one literal cfg on all six
+would put the suppression on the wrong platform for half of them.
+
+#### 🔴 The bare allows were hiding real dead code on the platform that SHIPS
+
+Tightening `tools.rs` and `tool_loop.rs` from bare `#![allow(dead_code)]` to
+the cfg'd form was expected to be a tidy-up. It was not.
+
+**A bare allow switches the check off on *both* platforms — including Android,
+where those modules actually run, and which is exactly what the 5.3
+`mobile-check` CI job exists to police.** So two of the six D-3 modules had
+been running with dead-code checking disabled on the platform that matters,
+since they were written in 1.3–1.4. The first aarch64 run after tightening
+surfaced two genuinely dead items that had been invisible for the whole phase:
+
+| item | verdict on the merits |
+|---|---|
+| `ToolOutcome::is_err` (`tools.rs`) | **test-only** — its three callers are all closed-registry assertions in this module's own tests. Production never asks: `tool_loop` feeds `as_content()` back to the model either way, which *is* the design — a tool error is a message the model self-corrects from, not a branch Rust takes. Now `#[cfg(test)]`. |
+| `LoopMessage::user` (`tool_loop.rs`) | **test-only** — production converts each `WireMessage` with a struct literal (`chat_cmds.rs:162,167`) because the role comes from the wire, not the call site. Its siblings `assistant` and `tool` have production callers, which is why only this one was dead. Now `#[cfg(test)]`. |
+
+Both **gated, not suppressed** — the standing rule. And note the shape of what
+was hidden: not bugs, but *two items whose real scope was narrower than their
+declaration claimed*. That is the same family as the dead `trim_matches('.')`
+found hours earlier: code that reads as legitimate API and is reachable by
+nothing that ships.
+
+This is the blind spot 5.3 would have **inherited silently**. A CI job that
+runs `cargo ndk check` against a tree containing bare allows reports clean and
+means nothing for those modules.
+
+#### ⚑ The audit, in `check-mobile-build.sh` — convention needs a mechanism
+
+Canonical placement is the convention; this is the mechanism, and **both were
+required** — the placement alone would have been re-derived away again, and the
+check alone would not have said what the right shape was.
+
+```sh
+grep -rn '^#!\[allow(dead_code)\]' src-tauri/src   # must return nothing
+```
+
+Step 0 of `check-mobile-build.sh`, the script a CI job will call. **Demonstrated
+capable of failing**, per the standing requirement for believing a green: run
+against the tree at `2305fc1` it finds both bare allows.
+
+It deliberately checks for the **bare** form rather than for the presence of an
+allow. Absence-of-a-bare-allow is mechanically checkable; "every D-3 module has
+a *correctly cfg'd* allow" is not, since the correct cfg differs per module. So
+the check catches the failure that is uniform and leaves the judgement that is
+not — which is the honest division between what a grep can assert and what a
+reviewer must.
 
 ### D-4 (FOUNDER) — Truncate-oldest for the model's window; storage is never truncated
 

@@ -31,6 +31,14 @@ mod engine_inproc;
 /// a thread that stops accepting work, and the desktop suite is the only place
 /// tests run. Only the half that holds the session's borrow stays behind the
 /// `cfg`.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/serve.rs"]
 mod engine_serve;
 /// Tool-call parsing, the closed tool registry, and the per-family prompt
@@ -39,12 +47,28 @@ mod engine_serve;
 /// platform — because it is pure logic and the desktop suite is the only place
 /// tests actually run. Gating it to Android would mean the closed-registry
 /// security property is asserted nowhere.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/tools.rs"]
 mod engine_tools;
 /// The calc tool-loop, transcribed from `src/calc-loop.js`. Declared here for
 /// the same reason as `engine_tools`: it is written against a `TurnSource`
 /// trait rather than `EngineSession` precisely so it compiles and is tested off
 /// Android.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/tool_loop.rs"]
 mod engine_tool_loop;
 mod hardware;

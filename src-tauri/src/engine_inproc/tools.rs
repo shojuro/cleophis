@@ -28,7 +28,8 @@
 // then is genuinely unused rather than merely early. Scoped to this one pure
 // module on purpose: a crate-wide allow would have hidden the real findings the
 // aarch64 build surfaced in 1.1 and 1.2.
-#![allow(dead_code)]
+// (Dead-code allow on the `mod` declaration in lib.rs — canonical placement,
+// and cfg'd to `desktop` so the check stays LIVE on the platform that ships.)
 
 use serde_json::Value;
 
@@ -97,6 +98,20 @@ impl ToolOutcome {
         }
     }
 
+    /// Test-only, and gated rather than suppressed so the dead-code check
+    /// stays honest on both platforms.
+    ///
+    /// The three callers are all assertions in this module's own tests
+    /// (`tools.rs` 595, 607, 621) — the closed-registry probes that check an
+    /// invented tool name becomes a tool *error* rather than a dispatch.
+    /// Production never asks whether an outcome is an error: `tool_loop` feeds
+    /// `as_content()` back to the model either way, which is the whole point of
+    /// the design — a tool error is a message the model self-corrects from, not
+    /// a branch the Rust side takes.
+    ///
+    /// Dead on the production side since 1.3, invisible behind this module's
+    /// bare `#![allow(dead_code)]` which switched the check off on Android too.
+    #[cfg(test)]
     pub fn is_err(&self) -> bool {
         matches!(self, ToolOutcome::Err(_))
     }

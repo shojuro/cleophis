@@ -24,6 +24,29 @@ ENGINE_DIR="$(cd "$HERE/../../../crates/kpack-engine" && pwd)"
 PROBE_DIR="$HERE/aarch64-align-probe"
 READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 
+SRC="$(cd "$HERE/../../../src-tauri/src" && pwd)"
+
+echo "== [0/3] D-3 audit: no BARE dead-code allows in cross-platform modules =="
+# Why this is a check and not a convention: the D-3 dead-code allow was, at one
+# point, encoded three different ways across six modules (inner bare, inner
+# cfg'd, outer cfg'd, and once not at all). With three encodings the question
+# "does every D-3 module carry it, correctly?" cannot be answered by looking --
+# so it was never enforceable by attention.
+#
+# A BARE `#![allow(dead_code)]` is the failure this catches. It switches the
+# check off on BOTH platforms, including the one where the module actually
+# ships, which is exactly the blind spot the mobile-check job exists to close.
+# Two such allows hid a genuinely dead method and a genuinely dead constructor
+# from 1.3/1.4 until they were tightened. The allow must be cfg'd to mirror its
+# module's production caller, and must live on the `mod` declaration.
+BARE="$(grep -rn '^#!\[allow(dead_code)\]' "$SRC" || true)"
+if [ -n "$BARE" ]; then
+  echo "FAIL (D-3): bare inner dead-code allow(s) -- cfg them to mirror the caller:"
+  echo "$BARE"
+  exit 1
+fi
+echo "PASS (D-3): no bare inner dead-code allows"
+
 echo "== [1/3] cross-compiling kpack-engine --features real for arm64-v8a =="
 ( cd "$ENGINE_DIR" && cargo ndk -t arm64-v8a -P 24 build --features real )
 
