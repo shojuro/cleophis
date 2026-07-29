@@ -119,7 +119,7 @@ NOT_CHECKABLE = {
 
 # Implementation and runners ONLY. Prose is deliberately excluded -- see below.
 SEARCH = ['src-tauri/src', 'src', 'src-tauri/gen/android/app/src/main',
-          'docs/superpowers/mobile-tools']
+          'docs/superpowers/mobile-tools', '.github/workflows']
 
 # ⚠ THE GUARD'S OWN FIRST BUG, fixed here and recorded because it is the exact
 # failure the guard was built to catch.
@@ -136,7 +136,7 @@ SEARCH = ['src-tauri/src', 'src', 'src-tauri/gen/android/app/src/main',
 # evidence. Code is evidence, and an executable runner is evidence; a document
 # saying the thing should exist is the assertion, not the implementation.
 EVIDENCE_SUFFIXES = ('.rs', '.js', '.mjs', '.kt', '.xml', '.py', '.sh', '.toml',
-                     '.json', '.pro', '.gradle', '.kts')
+                     '.json', '.pro', '.gradle', '.kts', '.yml', '.yaml')
 
 
 def haystack() -> str:
@@ -153,6 +153,25 @@ def haystack() -> str:
                                capture_output=True, text=True).stdout.split('\0')
         for rel in filter(None, files):
             if not rel.endswith(EVIDENCE_SUFFIXES):
+                continue
+            # ⚠ THE GUARD'S THIRD SELF-INFLICTED BUG, and the nastiest.
+            #
+            # This file's ACCEPTANCE manifest contains every pattern as a
+            # literal string, so the guard is a perfect match for its own
+            # requirements: it reported A1, A2 and A7 IMPLEMENTED on the
+            # strength of nothing but its own source.
+            #
+            # What makes it worse than the first two: it did not appear until
+            # the file was COMMITTED. `git ls-files` excludes untracked files,
+            # so the "demonstrated capable of failing" run -- taken, recorded
+            # and reported before the commit -- was performed in a state the
+            # guard would never be in again. The verdict changed at commit
+            # time, with no edit to the guard and nothing to notice.
+            #
+            # A manifest of patterns can never be evidence for the patterns it
+            # lists. Skipped by resolved path, not by name, so a copy under
+            # another name cannot reintroduce it.
+            if (ROOT / rel).resolve() == Path(__file__).resolve():
                 continue
             try:
                 out.append((ROOT / rel).read_text(errors='ignore'))

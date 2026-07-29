@@ -3856,10 +3856,20 @@ evidence for the rule that a check must be seen to fail. Run 1 reported A7
 *implemented* because it searched markdown and matched the ledger's own prose
 about the requirement — the spec satisfying itself. Run 2 still passed A7,
 matching unrelated rate-limiting (`throttl`) and comments saying the notice
-"lands in Phase 5.1" — **a TODO counting as the feature.** Both fixed: markdown
-is never evidence, and every pattern is definition-shaped (`fn name(`,
-`"event-name"`). The fix turned the manifest into a **contract**: each pattern
-names the symbol the implementing phase must create.
+"lands in Phase 5.1" — **a TODO counting as the feature.** Run 3 — worst of the three — the guard's own
+`ACCEPTANCE` dict lists every pattern as a literal, so **the manifest satisfied
+itself**, reporting A1/A2/A7 implemented on the strength of its own source; and
+it did so **only once the file was committed**, since `git ls-files` skips
+untracked files. The demonstration banked and reported before that commit was
+taken in a state the guard would never be in again.
+
+All fixed: markdown is never evidence, every pattern is definition-shaped
+(`fn name(`, `"event-name"`), and the guard excludes its own resolved path. The
+run-2 fix turned the manifest into a **contract**: each pattern names the symbol
+the implementing phase must create. The run-3 lesson generalises past this
+script — **a check whose own source lives inside its search space is
+self-satisfying, and the moment that becomes true may be a `git add` rather
+than an edit.**
 
 **The blind spot, stated so it is designed around rather than into.** A symbol
 can exist and be wired to nothing — `#chatStatusPill` existed for the whole

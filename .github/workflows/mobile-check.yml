@@ -1,0 +1,111 @@
+# Phase 5.3 — the mobile-check job.
+#
+# ── SCOPE, AND WHY IT IS THIS NARROW ──────────────────────────────────────────
+# Adding the first CI workflow to this repo is a founder-gated decision (P0's
+# gate report lists it among three parked ones, and check-mobile-build.sh's own
+# header records it). The founder's "start Phase 5" covers writing this job;
+# the shape below is what keeps it from needing a further decision:
+#
+#   * `push` on `mobile/**` ONLY. No `pull_request` trigger, deliberately —
+#     `pull_request.branches` filters on the TARGET branch, so a PR from
+#     mobile/p1-alpha into main would match `main`, not `mobile/**`, and the
+#     demo branch would silently inherit Android cross-compile minutes nobody
+#     asked for. Push-scoped is the only filter that cannot leak that way.
+#   * `workflow_dispatch` so it can be run by hand without widening the trigger.
+#
+# If this job ever needs to run outside `mobile/**`, that is a new founder
+# decision, not a config tweak.
+name: mobile-check
+
+on:
+  push:
+    branches: ['mobile/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Audits: seconds, no toolchain, so they fail fast and cheap ─────────────
+  #
+  # These are the checks this branch converted from habits into mechanisms.
+  # They run FIRST because a bare dead-code allow or an asserted-but-unbuilt
+  # acceptance item is knowable without compiling anything, and there is no
+  # reason to spend 20 minutes of cross-compile before reporting one.
+  audits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # D-3's amendment: a BARE `#![allow(dead_code)]` disables the check on
+      # BOTH platforms, including the one the module ships on — which is
+      # precisely what this job exists to police. Two such allows hid a dead
+      # method and a dead constructor from 1.3 until they were tightened.
+      - name: D-3 — no bare dead-code allows
+        run: |
+          BARE="$(grep -rn '^#!\[allow(dead_code)\]' src-tauri/src || true)"
+          if [ -n "$BARE" ]; then
+            echo "FAIL (D-3): bare inner dead-code allow(s):"; echo "$BARE"; exit 1
+          fi
+          echo "PASS (D-3)"
+
+      # D-6: does anything IMPLEMENT what spec §11 asserts? Four times on this
+      # branch a test asserted behaviour no task had built, and all four were
+      # caught by human review alone.
+      - name: D-6 — acceptance coverage
+        run: python3 docs/superpowers/mobile-tools/acceptance-coverage.py
+
+  # ── The aarch64 cross-compile ─────────────────────────────────────────────
+  mobile-check:
+    runs-on: ubuntu-latest
+    needs: audits
+    env:
+      # The zero-warnings standard is a standing gate criterion on this branch
+      # and was, until now, enforced by a human reading a log. Today a dead
+      # `parse` reached a gate because of that. Machine-enforced here.
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain + aarch64-linux-android target
+        run: rustup target add aarch64-linux-android
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # r27c specifically: it gives 16 KB page alignment by default (spec H2),
+      # which is what keeps the shipped .so from crashing on Android 15+.
+      - name: Android NDK r27c
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: libclang (bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      # llama-cpp-sys-2 reads ANDROID_NDK_ROOT/NDK_ROOT/ANDROID_NDK, NOT the
+      # ANDROID_NDK_HOME that cargo-ndk sets — a Phase 0 build blocker whose
+      # error message blamed the SDK. All four are exported for that reason.
+      - name: aarch64 check
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK: ${{ steps.ndk.outputs.ndk-path }}
+        working-directory: src-tauri
+        run: cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets
+
+# ── WHAT THIS JOB CANNOT TELL YOU ────────────────────────────────────────────
+#
+# Stated because "a check's silence is only evidence within its competence" is
+# a standing lesson here, learned the hard way on exactly this instrument:
+#
+#   * It sees ANDROID-dead code only. A function dead on desktop is live here
+#     and vice versa, so a green run says nothing about desktop dead code —
+#     which is how the `net_state::parse` warning reached a gate while the
+#     aarch64 check was clean by construction. The Windows suite remains the
+#     desktop gate; the two silences are NOT additive.
+#   * It does not link, package, sign, or run anything on a device. The
+#     alignment probe (H2) and the APK checks live in check-mobile-build.sh and
+#     verify-apk.py, which need artifacts this job does not produce.

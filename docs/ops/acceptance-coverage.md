@@ -100,7 +100,24 @@ throttle, the progress-tick throttle and a SQLite write-throttling comment
 Fixed: every pattern is now **definition-shaped** — `fn name(`, `"event-name"` —
 which a prose mention or a TODO cannot satisfy by accident.
 
-A useful side effect of that fix: **the manifest became a contract.** Each
+**Run 3 — the manifest satisfied itself, and only after being committed.** The
+`ACCEPTANCE` dict lists every pattern as a literal string, so the guard's own
+source is a perfect match for its own requirements: it reported **A1, A2 and A7
+implemented** on the strength of nothing but itself.
+
+This is the nastiest of the three, because **it did not exist until the file
+was committed.** `git ls-files` excludes untracked files, so the
+demonstrated-capable-of-failing run — taken, recorded and reported to steering
+*before* the commit — was performed in a state the guard would never be in
+again. The verdict changed at commit time, with no edit and nothing to notice.
+Fixed by excluding the guard's own resolved path: **a manifest of patterns can
+never be evidence for the patterns it lists.**
+
+The generalisation worth keeping: **a check whose own source lives inside its
+search space is self-satisfying**, and the moment that becomes true may be a
+`git add` rather than an edit.
+
+A useful side effect of the run-2 fix: **the manifest became a contract.** Each
 pattern names the exact symbol the implementing phase must create, so 5.1 knows
 what will turn A7 green before writing a line.
 
