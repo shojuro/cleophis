@@ -247,7 +247,7 @@ mod tests {
         let h = hero(&v).expect("catalog must contain the hero model");
         let tiers = h.tiers.as_ref().expect("hero must declare a tiers block");
         for (tier, expect_base) in [
-            (&tiers.low, "Llama-3.2-1B"),
+            (&tiers.low, "Qwen3-1.7B"),
             (&tiers.mid, "Qwen3-4B"),
             (&tiers.high, "Qwen3-8B"),
         ] {
@@ -269,7 +269,7 @@ mod tests {
         let raw = include_str!("../resources/catalog.json");
         let v = parse_catalog(raw).unwrap();
         let h = hero(&v).unwrap();
-        assert_eq!(hero_variant(h, "low").base_model.as_deref(), Some("Llama-3.2-1B"));
+        assert_eq!(hero_variant(h, "low").base_model.as_deref(), Some("Qwen3-1.7B"));
         assert_eq!(hero_variant(h, "mid").base_model.as_deref(), Some("Qwen3-4B"));
         assert_eq!(hero_variant(h, "high").base_model.as_deref(), Some("Qwen3-8B"));
         // Unknown tier defends to mid.

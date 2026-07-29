@@ -222,7 +222,7 @@ function renderGrid() {
 // are disabled with a hint.
 const TIER_OPTS = [
   { mode: 'auto', label: 'Auto', sub: 'match my device' },
-  { mode: 'low', label: 'Small · 1B', sub: '≈0.8 GB · fastest' },
+  { mode: 'low', label: 'Small · 1.7B', sub: '≈1.2 GB · fastest' },
   { mode: 'mid', label: 'Balanced · 4B', sub: '≈2.4 GB' },
   { mode: 'high', label: 'Large · 8B', sub: '≈4.8 GB · most capable' },
 ];

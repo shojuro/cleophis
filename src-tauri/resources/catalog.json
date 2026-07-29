@@ -26,14 +26,14 @@
     "inside": ["Algebra I & II, geometry, pre-calculus", "Step-by-step questioning, never the raw answer", "Worked-example library with hints on demand"],
     "tiers": {
       "low": {
-        "baseModel": "Llama-3.2-1B",
-        "sizeParams": "1B",
-        "modelFile": "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-        "sha256": "47bd9de32f183b7dfe3488b09085e3e32a4f9e66a90d808ae6068beebf483926",
-        "adapterFile": "models/behavioral-v1-Llama-3.2-1B.gguf",
-        "adapterSha256": "a97c0516dbbee48472ab2c5868b963e03f4362ae27950407bda5ad04236bb242",
-        "adapterId": "behavioral-v1-llama-3.2-1b",
-        "fileBytes": 807694112
+        "baseModel": "Qwen3-1.7B",
+        "sizeParams": "1.7B",
+        "modelFile": "models/Qwen3-1.7B-Instruct-Q4_K_M.gguf",
+        "sha256": "25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3",
+        "adapterFile": "models/behavioral-v1-Qwen3-1.7B.gguf",
+        "adapterSha256": "61ac495709f1b52ab262acdc0279fb3bb9f134a8ee0bf897df28a900f9ca0ed9",
+        "adapterId": "behavioral-v1-qwen3-1.7b",
+        "fileBytes": 1282439008
       },
       "mid": {
         "baseModel": "Qwen3-4B",
