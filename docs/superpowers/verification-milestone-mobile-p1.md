@@ -3401,6 +3401,33 @@ never been tested at all.
 
 ## Conventions
 
+- **⚑ Before writing tests in a test-writing phase, take the ASSERTION
+  INVENTORY** (decision D-6, part 3). List every assertion the phase will make
+  and name the `file:line` that satisfies it, or mark it **MISSING**. One page,
+  into this ledger, *before* the first test is written.
+
+  This is the manual pass that caught all four "asserted but unbuilt"
+  instances, and it is **not** made redundant by the
+  `acceptance-coverage.py` guard. The guard catches **absence**; the inventory
+  catches **inert presence** — a symbol that exists and is wired to nothing.
+  `#chatStatusPill` is the standing example: it existed for the entire project,
+  hard-coded in `index.html`, never written by any code, and any
+  symbol-existence check would have passed it green while the founder could not
+  locate the engine state at all. A grep cannot tell "defined" from "reachable
+  and doing something"; a person reading the call chain can.
+
+  **Phase 5 inventory (taken 2026-07-29, before 5.1/5.2/5.3):**
+
+  | acceptance | satisfied by | state |
+  |---|---|---|
+  | A1 determinism CI | *nothing yet* — 5.3's workflow must invoke `cargo test -p kpack-embed --features real -- --ignored` | **MISSING** |
+  | A2 airplane suite | *nothing yet* — 5.2 harness | **MISSING** |
+  | A3 Stage-5 probes in-app | *prose only* (spec §11, `adapter-distribution-design.md` §8) — 5.2 must make them runnable | **MISSING** |
+  | A4 kill-restore | `convstore.rs` `checkpoint_partial` / `finalize_partial` / `discard_partial`; `chat_cmds.rs:262,320,332,335` | present |
+  | A5 backup-leak | `backup_rules.xml` + `data_extraction_rules.xml` `root`/`device_root`; test procedure in `release-config-audit.md` §4 | rule present, **test MISSING** |
+  | A6 update path | Phase-4 gated | **not checkable** |
+  | A7 thermal soak | *nothing* — 5.1 must create `fn detect_thermal_*` and emit `"thermal-notice"` | **MISSING** |
+
 - **A `docs(` prefix can hide a code change.** Commit `6299dc3` is prefixed
   `docs(` but also carries the `DESKTOP_REFUSAL` change; the body says so, but
   a `git log --grep` filtering for code commits would miss it. Noted here so a
@@ -3795,6 +3822,52 @@ cross-language duplicate left standing and surfaced rather than fixed here:
 `src/calc-tool.js` declares the calc grammar and says "Keep in sync with
 `crates/kpack-calc`". That one is a real second home for a real fact. It is out
 of 2.2's scope, it is not currently wrong, and it is now written down.
+
+### D-6 (FOUNDER-APPROVED) — Acceptance criteria get IDs, and a guard checks that something implements them
+
+**Decision:** §11's acceptance criteria are named **A1–A7** in the spec, and
+`check-mobile-build.sh` fails the build when an acceptance item names no
+implementation. Design: `docs/ops/acceptance-coverage.md`. Before writing tests
+in a test-writing phase, a **phase-entry assertion inventory** lists every
+assertion with the `file:line` that satisfies it, or MISSING.
+
+**Rejected alternative:** keep relying on plan review, which had caught all
+four instances.
+
+**Rationale.** It caught them, and it is the mechanism this project has
+otherwise stopped trusting. The ledger records rules failing three times in one
+day *on rules the agent could recite* — knowing a rule was never the missing
+ingredient. Every other recurring failure here has been converted into a check;
+this was the last one enforced by attention.
+
+The class is **D-4**: a requirement lives in the spec, the code, and a test —
+three homes, no canonical link. What made *this* class uncatchable is that
+**§11's bullets were the only requirement set in the spec with no identifiers**
+(hazards are H1–H15, decisions are D-n and cited from code). A mapping cannot
+be checked mechanically when one side has no name, so the IDs are the enabling
+change and everything else follows.
+
+**Evidence.** Demonstrated capable of failing on its first run, before 5.1
+exists: A7 **ASSERTED-BUT-UNBUILT**, exit 1, with A1/A2/A3 also correctly red
+and A6 reported **NOT-CHECKED** under its own token rather than as a pass.
+
+**And it caught two of its own bugs while being built**, which is the sharpest
+evidence for the rule that a check must be seen to fail. Run 1 reported A7
+*implemented* because it searched markdown and matched the ledger's own prose
+about the requirement — the spec satisfying itself. Run 2 still passed A7,
+matching unrelated rate-limiting (`throttl`) and comments saying the notice
+"lands in Phase 5.1" — **a TODO counting as the feature.** Both fixed: markdown
+is never evidence, and every pattern is definition-shaped (`fn name(`,
+`"event-name"`). The fix turned the manifest into a **contract**: each pattern
+names the symbol the implementing phase must create.
+
+**The blind spot, stated so it is designed around rather than into.** A symbol
+can exist and be wired to nothing — `#chatStatusPill` existed for the whole
+project, hard-coded and never written by any code, and a symbol-existence check
+would have passed it green while the founder could not find the engine state at
+all. **The guard catches absence; only the inventory catches inert presence.**
+Part 3 is not optional, and this script's existence must not be allowed to
+argue it away.
 
 ### D-5 — Mobile divergence keys on a platform CLASS, never on viewport width
 

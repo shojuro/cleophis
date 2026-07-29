@@ -158,13 +158,25 @@ Android: internal app storage only (no shared/SD in v1 — permission + reliabil
 
 ## 11. Testing & acceptance
 
-- **Golden-pack + cross-build determinism CI** extended to both mobile targets (the existing suite, cross-compiled).
-- **Airplane-mode suite on device:** full download→verify→chat cycle with radios off after artifact fetch; any socket attempt post-setup = fail.
-- **Behavioral probes in-app** (the Stage-5 four: fake-entity refusal, 5+5=9 pushback, concession, medical boundary) on floor + workhorse devices — the same "did the adapter survive" gate as the desktop slice. `[v1.1]` Run against the full composed stack (§0); a probe run against a reduced stack is a different gate and is labeled as such.
-- **Kill-and-restore:** force-stop mid-generation → relaunch → transcript intact, no corruption (H4/H5 gate).
-- **Backup-leak test:** trigger Android backup / iOS backup with defaults → assert conversation DB and packs absent from the backup set (§6 gate — this is the packet-capture test's sibling).
-- **Update path test:** install v1 APK → publish v1.1 to `apps.json` → in-app update succeeds; tampered APK hash → refused; `[v1.1]` older `apps.json` version → refused (downgrade guard).
-- **Battery/thermal soak:** 20-minute continuous session on floor device → no kill, throttle notice fires appropriately, battery drain recorded and sane.
+`[v1.1]` **Each item below carries a stable identifier (A1–A7).** Added in
+place, like the `{}`-vs-`null` and `ndk_context` corrections, because these
+were the **only requirement set in this spec with no names**: hazards are
+H1–H15, sections are §n, decisions are D-1…D-6 and are cited from code. The
+acceptance criteria were unnamed prose, referenced as "the §11 kill-restore
+test" — and *a mapping cannot be checked mechanically when one side has no
+name*. Four times on this branch a test asserted behaviour no task had built;
+all four were caught by human review. The IDs are what let
+`check-mobile-build.sh` check it instead. Cross-references to hazards are
+load-bearing: they make an unbuilt requirement traceable to the hazard it was
+meant to mitigate.
+
+- **A1 — Golden-pack + cross-build determinism CI** extended to both mobile targets (the existing suite, cross-compiled).
+- **A2 — Airplane-mode suite on device:** full download→verify→chat cycle with radios off after artifact fetch; any socket attempt post-setup = fail.
+- **A3 — Behavioral probes in-app** (the Stage-5 four: fake-entity refusal, 5+5=9 pushback, concession, medical boundary) on floor + workhorse devices — the same "did the adapter survive" gate as the desktop slice. `[v1.1]` Run against the full composed stack (§0); a probe run against a reduced stack is a different gate and is labeled as such.
+- **A4 — Kill-and-restore:** force-stop mid-generation → relaunch → transcript intact, no corruption (**H4/H5** gate).
+- **A5 — Backup-leak test:** trigger Android backup / iOS backup with defaults → assert conversation DB and packs absent from the backup set (**§6** gate — this is the packet-capture test's sibling).
+- **A6 — Update path test:** install v1 APK → publish v1.1 to `apps.json` → in-app update succeeds; tampered APK hash → refused; `[v1.1]` older `apps.json` version → refused (downgrade guard).
+- **A7 — Battery/thermal soak:** 20-minute continuous session on floor device → no kill, throttle notice fires appropriately, battery drain recorded and sane (**H6** gate).
 
 ## 12. Founder handoff needs (blocking items, before/at P1)
 

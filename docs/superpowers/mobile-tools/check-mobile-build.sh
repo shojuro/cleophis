@@ -26,7 +26,7 @@ READELF="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readel
 
 SRC="$(cd "$HERE/../../../src-tauri/src" && pwd)"
 
-echo "== [0/3] D-3 audit: no BARE dead-code allows in cross-platform modules =="
+echo "== [1/5] D-3 audit: no BARE dead-code allows in cross-platform modules =="
 # Why this is a check and not a convention: the D-3 dead-code allow was, at one
 # point, encoded three different ways across six modules (inner bare, inner
 # cfg'd, outer cfg'd, and once not at all). With three encodings the question
@@ -47,15 +47,25 @@ if [ -n "$BARE" ]; then
 fi
 echo "PASS (D-3): no bare inner dead-code allows"
 
-echo "== [1/3] cross-compiling kpack-engine --features real for arm64-v8a =="
+
+echo "== [2/5] acceptance coverage: does anything IMPLEMENT what §11 asserts? =="
+# Four times on this branch a test asserted behaviour no task ever built (the
+# A7 soak test's throttle notice -- still unbuilt today; A4's intact transcript
+# before partial-flush existed; A5's absent DB while the exclusion rules named
+# four wrong directories; §2's download policy, absent entirely). All four were
+# caught by HUMAN PLAN REVIEW and by nothing else -- while every other
+# recurring failure here has been converted into a check. See decision D-6.
+python3 "$HERE/acceptance-coverage.py" || exit 1
+
+echo "== [3/5] cross-compiling kpack-engine --features real for arm64-v8a =="
 ( cd "$ENGINE_DIR" && cargo ndk -t arm64-v8a -P 24 build --features real )
 
-echo "== [2/3] linking the alignment probe .so =="
+echo "== [4/5] linking the alignment probe .so =="
 ( cd "$PROBE_DIR" && cargo ndk -t arm64-v8a -P 24 build )
 SO="$CARGO_TARGET_DIR/aarch64-linux-android/debug/libaarch64_align_probe.so"
 [ -f "$SO" ] || { echo "FAIL: probe .so not found at $SO"; exit 1; }
 
-echo "== [3/3] asserting 16 KB (0x4000) LOAD alignment =="
+echo "== [5/5] asserting 16 KB (0x4000) LOAD alignment =="
 ALIGNS="$("$READELF" -l "$SO" | awk '/LOAD/{print $NF}' | sort -u)"
 echo "LOAD segment alignments: $ALIGNS"
 if [ "$ALIGNS" != "0x4000" ]; then
