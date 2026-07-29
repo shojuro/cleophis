@@ -1,12 +1,20 @@
+//! On-disk cloud state: the single-account `CloudCache`, the per-account
+//! `auth-cache/` entries, and the pure helpers over both.
+//!
+//! **Secrets do not live here.** The refresh token and the offline-sign-in
+//! verifiers moved to [`crate::cloud::secure_store`] in Phase 3.1, because
+//! their storage is platform-dependent (OS keyring on desktop, AndroidKeyStore
+//! on Android) while everything remaining in this file is plain JSON that
+//! behaves identically on every target. The split is along that line and not
+//! along module tidiness: what is left needs no `cfg` at all.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 
 use crate::cloud::config;
 use crate::cloud::error::CloudError;
-use crate::cloud::verifier::StoredVerifier;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -62,67 +70,6 @@ pub struct AuthCacheEntry {
     pub last_online_auth: i64,
     pub failed_attempts: u32,
     pub last_failed_at: i64,
-}
-
-pub const KEYRING_SERVICE: &str = "com.cleophis.desktop";
-pub const KEYRING_USER: &str = "supabase-refresh-token";
-
-pub fn save_refresh_token(token: &str) -> Result<(), CloudError> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| {
-        eprintln!("keyring: failed to create entry: {e}");
-        CloudError::Internal("keyring unavailable".into())
-    })?;
-    entry.set_password(token).map_err(|e| {
-        eprintln!("keyring: failed to save refresh token: {e}");
-        CloudError::Internal("keyring save failed".into())
-    })
-}
-
-/// None on any error (missing entry, locked keyring, unsupported backend...).
-pub fn load_refresh_token() -> Option<String> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER).ok()?;
-    entry.get_password().ok()
-}
-
-/// Best-effort: errors swallowed. Never logs the token itself.
-pub fn delete_refresh_token() {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        let _ = entry.delete_credential();
-    }
-}
-
-fn verifier_keyring_key(user_id: &str) -> String {
-    format!("verifier:{user_id}")
-}
-
-/// One keyring entry per account, so removing one account's offline-sign-in
-/// verifier (Task 6) never touches another's.
-pub fn save_verifier(user_id: &str, v: &StoredVerifier) -> Result<(), CloudError> {
-    let entry = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)).map_err(|e| {
-        eprintln!("keyring: failed to create verifier entry: {e}");
-        CloudError::Internal("keyring unavailable".into())
-    })?;
-    let json = serde_json::to_string(v)
-        .map_err(|e| CloudError::Internal(format!("failed to serialize verifier: {e}")))?;
-    entry.set_password(&json).map_err(|e| {
-        eprintln!("keyring: failed to save verifier: {e}");
-        CloudError::Internal("keyring save failed".into())
-    })
-}
-
-/// None on any error (missing entry, locked keyring, unsupported backend,
-/// or corrupt JSON).
-pub fn load_verifier(user_id: &str) -> Option<StoredVerifier> {
-    let entry = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)).ok()?;
-    let json = entry.get_password().ok()?;
-    serde_json::from_str(&json).ok()
-}
-
-/// Best-effort: errors swallowed. Never logs the verifier itself.
-pub fn delete_verifier(user_id: &str) {
-    if let Ok(entry) = Entry::new(KEYRING_SERVICE, &verifier_keyring_key(user_id)) {
-        let _ = entry.delete_credential();
-    }
 }
 
 /// Missing or corrupt file → `CloudCache::default()`.
@@ -333,8 +280,11 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// keyring tests hit the real OS credential store; serialize them (and
-    /// anything else in this module that could race) behind one lock.
+    /// Serializes this module's tests against each other. Deliberately a
+    /// LOCAL lock, not `cloud::test_support::lock()`: nothing left in this
+    /// file touches the OS credential store (Phase 3.1 moved those to
+    /// `secure_store`), so these tests share no global state with the rest
+    /// of the `cloud` module — only temp paths with each other.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -468,67 +418,12 @@ mod tests {
         assert!(grace_expired(last_online_auth, now_31));
     }
 
-    // 13. keyring round-trip: save → load → delete → load is None.
-    // Runs against the real OS credential store (Windows Credential Manager
-    // on the interop run; linux-native/keyutils under native Linux). Cleans
-    // up its own entry via a Drop guard so it never leaves a stray secret
-    // behind, even if an assertion above it fails.
-    struct KeyringCleanup;
-    impl Drop for KeyringCleanup {
-        fn drop(&mut self) {
-            delete_refresh_token();
-        }
-    }
-
-    #[test]
-    fn keyring_round_trip() {
-        // Unified with every other cloud-module test that touches the real
-        // OS credential store: the keyring entry is shared global state, so
-        // this must serialize on the SAME lock as auth.rs/rest.rs/
-        // session.rs's keyring-touching tests, not this module's own
-        // separate local lock (which would let them race).
-        let _g = crate::cloud::test_support::lock();
-        let _cleanup = KeyringCleanup;
-        delete_refresh_token(); // ensure a clean slate before we start
-
-        save_refresh_token("test-refresh-token-a4").expect("save should succeed");
-        assert_eq!(
-            load_refresh_token(),
-            Some("test-refresh-token-a4".to_string())
-        );
-
-        delete_refresh_token();
-        assert_eq!(load_refresh_token(), None);
-    }
-
-    // 14. per-account verifier keyring round-trip: save -> load -> delete ->
-    // load is None. Same real-OS-credential-store lock as `keyring_round_trip`
-    // above (not this module's local `lock()`) — the credential store is
-    // shared global state across every keyring test in the `cloud` module.
-    struct VerifierKeyringCleanup<'a>(&'a str);
-    impl Drop for VerifierKeyringCleanup<'_> {
-        fn drop(&mut self) {
-            delete_verifier(self.0);
-        }
-    }
-
-    #[test]
-    fn verifier_keyring_roundtrip() {
-        let _g = crate::cloud::test_support::lock();
-        let uid = "verifier-test-uid-t2";
-        let _cleanup = VerifierKeyringCleanup(uid);
-        delete_verifier(uid); // ensure a clean slate before we start
-
-        let v = crate::cloud::verifier::derive_verifier("plan-test-pw-abcdef").unwrap();
-        save_verifier(uid, &v).unwrap();
-        assert!(crate::cloud::verifier::verify(
-            "plan-test-pw-abcdef",
-            &load_verifier(uid).unwrap()
-        ));
-
-        delete_verifier(uid);
-        assert!(load_verifier(uid).is_none());
-    }
+    // Tests 13 (`keyring_round_trip`) and 14 (`verifier_keyring_roundtrip`)
+    // moved with their subjects to `secure_store/desktop.rs` in Phase 3.1.
+    // They still run in the desktop suite, unchanged, and are now excluded
+    // from the Android build by construction rather than by remembering to
+    // exclude them: the module that holds them is itself
+    // `cfg(not(target_os = "android"))`.
 
     // 15. auth-cache round-trip + case/space-insensitive email lookup.
     #[test]

@@ -197,7 +197,11 @@ have not been run against their actual acceptance criteria (airplane-mode
 suite, force-stop survival, sign-out purge), and one session is not a gate.
 
 **⚠ Caveat that materially qualifies the sign-in result — known-until-3.1.**
-`keyring` v3 **silently mocks in-memory on unsupported targets**, which is
+*(Sharpened in 3.1: the mock does not hold the token in process memory either
+— `CredentialPersistence::EntryOnly`, a fresh credential per `Entry::new`, so
+the save is discarded on the next line while returning `Ok`. The session
+survives in `Session`'s own field, not in keyring. See the 3.1 section.)*
+`keyring` v3 **silently mocks on unsupported targets**, which is
 precisely why the brief requires moving it to
 `[target.'cfg(not(target_os = "android"))'.dependencies]` in Phase 3.1. Until
 the Kotlin AndroidKeyStore `SecureStore` lands, an Android session lives in
@@ -987,9 +991,9 @@ as failures of this branch.
 #### ⚠ Desktop regression cannot run on this Linux host
 
 `cargo test -p cleophis` fails here before compiling any of our code:
-`keyring`'s `linux-native` feature pulls `libdbus-sys`, whose build script
-requires system dbus development headers, and the toolchain is userspace-only
-by founder decision (no sudo). This is environmental and pre-existing — it is
+`libdbus-sys`'s build script requires system dbus development headers, and the
+toolchain is userspace-only by founder decision (no sudo). This is
+environmental and pre-existing — it is
 also why Phase 0.2's Linux evidence was the golden-pack (`kpack-embed`) plus
 the pure crates, never the app crate. **The desktop gate for Phase 1 is
 therefore the steering-side Windows suite, requested at each phase boundary.**
@@ -1019,8 +1023,18 @@ factor of two with nothing wrong in the build.
 
 Worth noting for Phase 3.1: moving `keyring` to
 `[target.'cfg(not(target_os = "android"))'.dependencies]` (already required
-because keyring v3 silently mocks in-memory on unsupported targets) will *not*
-fix this — Linux is exactly where `linux-native` applies.
+because keyring v3 falls back to a non-persisting mock on unsupported targets)
+will *not* fix the Linux-host build.
+
+> **CORRECTION (amended in place, like the `{}`-vs-`null` line in the brief).
+> This paragraph originally attributed `libdbus-sys` to `keyring`'s
+> `linux-native` feature and concluded "Linux is exactly where `linux-native`
+> applies." That reasoning is void — `keyring`'s Linux subtree is
+> `linux-keyutils` + `log` and it declares no default features. `libdbus-sys`
+> comes from `tauri → tauri-runtime-wry → tao → dbus`, which is
+> unconditional.** The conclusion survives and gets stronger: **no `keyring`
+> change of any kind can unblock the Linux host**, because the blocker is
+> Tauri itself. Measured in 3.1; full write-up in that section.
 
 ### 1.2 In-process engine lifecycle — DONE (commit 4a1bc6f)
 
@@ -2426,6 +2440,166 @@ manifest before the metered check can run at all.
 Noted here rather than added now: this commit is the bridge and nothing else,
 and a permission with no caller is the same kind of dead surface as a frontend
 policy invoking a command that does not exist.
+
+---
+
+## Phase 3 — Secure credential storage
+
+### 3.1 `secure_store` seam + `keyring` off Android — DONE
+
+Six functions — `save`/`load`/`delete` × (refresh token, offline-auth
+verifier) — moved out of `cloud/store.rs` into `cloud/secure_store.rs`, which
+is a seam with two bodies: `secure_store/desktop.rs` (the old bodies verbatim)
+and `secure_store/android.rs` (a legible platform error until 3.2).
+`keyring` moved from `[dependencies]` to
+`[target.'cfg(not(target_os = "android"))'.dependencies]`.
+
+#### 🔬 The thing being fixed is worse than this document recorded
+
+The ledger has said throughout that "keyring v3 **silently mocks in-memory** on
+unsupported targets", so an Android session "lives in process memory only".
+Checked in `keyring-3.6.3`'s own source before building on it — per the
+convention that you write down why the existing claim is correct — and **it is
+not in-memory at all**:
+
+| claim | source |
+|---|---|
+| Android resolves to the mock | `lib.rs`'s platform ladder ends `#[cfg(not(any(target_os = "linux", "freebsd", "openbsd", "macos", "ios", "windows")))] pub use mock as default;`. `target_os = "android"` matches none of those, and `linux-native` is gated on `target_os = "linux"`, which Android is not |
+| the mock does not persist across `Entry`s | `MockCredentialBuilder::persistence()` returns `CredentialPersistence::EntryOnly`, and its `build()` constructs a **fresh** `MockCredential` per `Entry::new` |
+
+Both of our functions build their own `Entry`. So on Android
+`save_refresh_token` wrote the token into a value **dropped on the next line**
+and returned `Ok`, and `load_refresh_token` — constructing its own fresh entry
+— could only ever return `None`. Not a store with the wrong lifetime: **a write
+that reports success and keeps nothing.**
+
+The correction matters beyond pedantry, because the two versions predict
+different things. "In-memory for the process" says a sign-in would survive
+until the process dies; the truth is the token was never readable at all, even
+one line later. It is the purest specimen yet of this milestone's signature
+family — *present, correct-looking, and silently void* — sitting alongside
+`bundle.resources = {}` and the gate run labelled with the wrong commit.
+
+#### What changes on Android is nothing, and that is the intended result
+
+Stated up front so a founder session does not read it as a regression, and
+because "we changed the storage layer and nothing changed" is the kind of claim
+that needs its reason written down:
+
+- A **live** session already survived on `Session`'s own in-memory
+  `refresh_token` — `refresh_via_gate` reads the token from the session
+  struct (`session.rs:902-910`), never from the keyring — so mid-session
+  rotation is untouched.
+- Boot-time `restore()` already got `None`, so a force-stop already logged the
+  user out.
+
+What changes is that it now does so **for a reason that is written down**. The
+three functions that return `Result` return `Err`; the three that return
+`Option`/`()` cannot carry a reason in their return value, so they emit a
+`[secure-store]` line — the same tag convention as `[bridge]` and `[kernels]`,
+where a device transcript carries its own explanation instead of requiring
+someone to have believed a build log. **3.2 changes the behaviour; 3.1 makes
+the gap honest and takes a dependency that cannot work out of the Android
+graph.**
+
+That split follows the "check that cannot **fail-report**" lesson from the
+bridge's exception bug: a `None` that means "nothing stored" and a `None` that
+means "this platform has no store" are indistinguishable at the call site, and
+the log line is the only channel that exists to tell them apart.
+
+#### Why the gate is `not(target_os = "android")` and not `desktop`
+
+`mobile` includes iOS, where `apple-native` is off and `keyring` lands on the
+same mock. The property that actually matters is "does this target have a
+working `keyring` backend compiled in", which is exactly the set the
+`Cargo.toml` target section names — so the code gate and the dependency gate
+are written in the same vocabulary and **cannot disagree about who gets it**.
+One fact, one home; the D-4 coupling etiology applied prospectively rather than
+after it bit.
+
+#### Verification
+
+| what | result |
+|---|---|
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | **exit 0, zero warnings** (unanchored `grep -ci warning` = 0) |
+| `keyring` in the **aarch64-linux-android** graph | **absent** — `cargo tree -i keyring --target aarch64-linux-android` → "nothing to print" |
+| `keyring` in the **windows-msvc** graph | `keyring v3.6.3 └── cleophis v0.1.0` |
+| `keyring` in the **linux-gnu** graph | `keyring v3.6.3 └── cleophis v0.1.0` |
+
+Read from the **resolved dependency graph** rather than from `Cargo.toml`,
+which is the dependency-level form of this document's standing rule that
+bundle claims are checked against the built APK and never against the config
+meant to produce them. A target section that is subtly mis-spelled reads as
+correct in the manifest and changes nothing in the graph — the same shape as
+`bundle.resources = {}`.
+
+**The aarch64 check is a check that can fail, and that is why it counts here.**
+`--all-targets` compiles the `#[cfg(test)]` modules, so if the
+`cfg(not(target_os = "android"))` gate on `secure_store/desktop.rs` were wrong
+in the permissive direction, that file's `use keyring::Entry` would have hit a
+crate that is no longer in the Android graph and the check would have failed to
+compile. Its passing *is* the proof of exclusion, not a separate assurance.
+
+Log: `cleophis-mobile-logs/p31-aarch64-check-20260729-105611.log`.
+
+#### Desktop prediction: **322 unchanged**, zero warnings
+
+322 is the standing baseline (run 18 at `0ede91b`; the bridge chunk predicted
+and expected no movement). 3.1 adds no tests and removes none — the two keyring
+round-trips move module, not existence — and every desktop body is a
+relocation.
+
+The prediction has a discriminator registered in advance, because an unmoving
+number proves nothing on its own:
+
+| observed | means |
+|---|---|
+| **322**, with `cloud::secure_store::desktop::tests::keyring_round_trip` and `…::verifier_keyring_roundtrip` in the log under their **new** paths | the move landed and both tests executed on the target |
+| **320** | the `cfg(not(target_os = "android"))` gate excluded `desktop.rs` on Windows too — the specific way this change could pass a gate while silently deleting two tests |
+| **324** | both bodies compiled, which the `pub use` collision should have made impossible |
+
+The middle row is the one this prediction exists for. Two tests that vanish
+into a cfg leave a green suite and a smaller number, and 320 read without a
+prediction beside it looks like an ordinary pass.
+
+#### 🔬 Ledger correction: the Linux host is blocked by Tauri, not by `keyring`
+
+This document has recorded since Phase 1.1 that "`cargo test -p cleophis` fails
+here before compiling any of our code: `keyring`'s `linux-native` feature pulls
+`libdbus-sys`, whose build script requires system dbus development headers",
+and drew the consequence that "moving `keyring` to
+`[target.'cfg(not(target_os = "android"))'.dependencies]` will **not** fix this
+— Linux is exactly where `linux-native` applies."
+
+**The conclusion is right and the mechanism is wrong.** Re-run deliberately
+after the move, to find out whether the desktop suite had become locally
+runnable:
+
+```
+libdbus-sys v0.2.7
+└── dbus v0.9.12
+    └── tao v0.35.3
+        └── tauri-runtime-wry v2.11.4
+            └── tauri v2.11.5
+                └── cleophis v0.1.0
+```
+
+`keyring`'s entire Linux subtree is `linux-keyutils` + `log` — no dbus anywhere
+— and the crate declares **no default features** at all, so nothing it offers
+could pull one. `libdbus-sys` comes from **Tauri's own Linux backend**, which is
+unconditional. The host check still fails (`libdbus-sys` build script: "The
+pkg-config command could not be found", explicit panic; the toolchain is
+userspace-only by founder decision), so the Windows suite remains the desktop
+gate.
+
+The corrected statement is *stronger* than the one it replaces: **no change to
+`keyring` could ever have unblocked local desktop testing**, because the
+blocker was never `keyring`. The old wording quietly invited a future agent to
+go after the keyring feature set — which is a **desktop-behaviour change**,
+forbidden by this branch's hard constraint — in pursuit of a capability keyring
+does not control. A plausible attribution nobody checked, aimed at the wrong
+crate, pointing the next investigation away from the code: the same shape as
+the probe whose failure path crashed.
 
 ## Conventions
 

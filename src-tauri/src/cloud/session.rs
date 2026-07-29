@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::cloud::auth;
 use crate::cloud::error::CloudError;
 use crate::cloud::rest;
+use crate::cloud::secure_store;
 use crate::cloud::store::{self, Entitlement};
 use crate::cloud::verifier;
 use crate::hardware;
@@ -164,7 +165,7 @@ impl Cloud {
     /// Boot-time restore. NEVER returns Err for offline — offline is a
     /// success mode (the app must still open with whatever it has cached).
     pub fn restore(&self) -> SessionInfo {
-        let refresh_token = match store::load_refresh_token() {
+        let refresh_token = match secure_store::load_refresh_token() {
             Some(t) => t,
             None => return SessionInfo::signed_out(),
         };
@@ -183,7 +184,7 @@ impl Cloud {
             // away server-side — the session cannot be re-established, so
             // purge everything and report signed out.
             Err(CloudError::SessionExpired) => {
-                store::delete_refresh_token();
+                secure_store::delete_refresh_token();
                 self.clear_memory();
                 {
                     let _guard = self.cache_lock.lock().unwrap();
@@ -311,7 +312,7 @@ impl Cloud {
         let mut entry =
             store::find_user_by_email(&dir, email).ok_or(CloudError::OfflineNoVerifier)?;
         let stored_verifier =
-            store::load_verifier(&entry.user_id).ok_or(CloudError::OfflineNoVerifier)?;
+            secure_store::load_verifier(&entry.user_id).ok_or(CloudError::OfflineNoVerifier)?;
 
         // Persisted, per-account throttle: only pays a delay once >=5
         // consecutive failures have accumulated on THIS account — see
@@ -393,7 +394,7 @@ impl Cloud {
         if let Some(access_token) = access_token {
             auth::logout(&access_token); // best-effort, no refresh attempted
         }
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
         self.clear_memory();
         {
             let _guard = self.cache_lock.lock().unwrap();
@@ -447,12 +448,12 @@ impl Cloud {
         // match here proves those artifacts are this account's, so purging is
         // safe (a DIFFERENT remembered account's token is left untouched).
         if store::read_cache(&self.cache_path).user_id == user_id {
-            store::delete_refresh_token();
+            secure_store::delete_refresh_token();
             let _guard = self.cache_lock.lock().unwrap();
             let _ = std::fs::remove_file(&self.cache_path);
         }
 
-        store::delete_verifier(user_id);
+        secure_store::delete_verifier(user_id);
         store::delete_auth_cache_entry(&dir, user_id)
     }
 
@@ -658,7 +659,7 @@ impl Cloud {
         // memory-only shape deliberately: skip the write, clean branch,
         // nothing lands in the keyring for this session at all.
         if !ephemeral {
-            if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
+            if let Err(e) = secure_store::save_refresh_token(&tok.refresh_token) {
                 eprintln!("cloud: failed to persist refresh token to keyring: {e}");
             }
         }
@@ -828,7 +829,7 @@ impl Cloud {
                 return;
             }
         };
-        if let Err(e) = store::save_verifier(user_id, &stored_verifier) {
+        if let Err(e) = secure_store::save_verifier(user_id, &stored_verifier) {
             eprintln!("cloud: failed to save offline-auth verifier: {e}");
             return;
         }
@@ -922,7 +923,7 @@ impl Cloud {
             // rule is it must never be held while TAKING session/
             // refresh_gate, not the reverse).
             Err(CloudError::SessionExpired) => {
-                store::delete_refresh_token();
+                secure_store::delete_refresh_token();
                 self.clear_memory();
                 {
                     let _guard = self.cache_lock.lock().unwrap();
@@ -937,7 +938,7 @@ impl Cloud {
         // that block's "keyring failure degrades to memory-only" comment,
         // just chosen deliberately here rather than hit by an error.
         if !ephemeral {
-            if let Err(e) = store::save_refresh_token(&tok.refresh_token) {
+            if let Err(e) = secure_store::save_refresh_token(&tok.refresh_token) {
                 eprintln!("cloud: failed to persist rotated refresh token to keyring: {e}");
             }
         }
@@ -1314,7 +1315,7 @@ mod tests {
     struct KeyringCleanup;
     impl Drop for KeyringCleanup {
         fn drop(&mut self) {
-            store::delete_refresh_token();
+            secure_store::delete_refresh_token();
         }
     }
 
@@ -1674,7 +1675,7 @@ mod tests {
     fn restore_no_keyring_entry_is_signed_out() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
         let cache_path = temp_cache_path("t1-cache.json");
 
         let cloud = Cloud::new(cache_path.clone());
@@ -1693,8 +1694,8 @@ mod tests {
     fn restore_offline_within_grace_is_offline_cached() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-refresh-token-2").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-refresh-token-2").expect("seed keyring");
 
         let cache_path = temp_cache_path("t2-cache.json");
         let mut cache = CloudCache::default();
@@ -1728,8 +1729,8 @@ mod tests {
     fn restore_offline_past_grace_sets_grace_expired() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-refresh-token-3").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-refresh-token-3").expect("seed keyring");
 
         let cache_path = temp_cache_path("t3-cache.json");
         let mut cache = CloudCache::default();
@@ -1755,8 +1756,8 @@ mod tests {
     fn restore_refresh_400_purges_everything() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-refresh-token-4").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-refresh-token-4").expect("seed keyring");
 
         let cache_path = temp_cache_path("t4-cache.json");
         let mut cache = CloudCache::default();
@@ -1774,7 +1775,7 @@ mod tests {
 
         assert!(!info.signed_in);
         assert_eq!(info.mode, "signedOut");
-        assert_eq!(store::load_refresh_token(), None);
+        assert_eq!(secure_store::load_refresh_token(), None);
         assert!(!cache_path.exists());
     }
 
@@ -1785,8 +1786,8 @@ mod tests {
     fn restore_online_happy_path_rotates_and_syncs() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("old-refresh-token-5").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("old-refresh-token-5").expect("seed keyring");
 
         let cache_path = temp_cache_path("t5-cache.json");
         store::write_cache(&cache_path, &CloudCache::default()).expect("seed cache");
@@ -1811,7 +1812,7 @@ mod tests {
         assert_eq!(info.mode, "online");
         assert_eq!(info.nickname.as_deref(), Some("ServerNick5"));
         assert_eq!(info.entitlements.len(), 1);
-        assert_eq!(store::load_refresh_token(), Some("rt-rotated-5".to_string()));
+        assert_eq!(secure_store::load_refresh_token(), Some("rt-rotated-5".to_string()));
 
         let rewritten = store::read_cache(&cache_path);
         assert_eq!(rewritten.user_id, "user-5");
@@ -1831,8 +1832,8 @@ mod tests {
     fn restore_flushes_pending_grant_on_success() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("old-refresh-token-6").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("old-refresh-token-6").expect("seed keyring");
 
         let cache_path = temp_cache_path("t6-cache.json");
         let mut cache = CloudCache::default();
@@ -1926,8 +1927,8 @@ mod tests {
     fn sign_out_purges_keyring_and_cache() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-token-9").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-token-9").expect("seed keyring");
 
         let cache_path = temp_cache_path("t9-cache.json");
         let mut cache = CloudCache::default();
@@ -1937,7 +1938,7 @@ mod tests {
         let cloud = Cloud::new(cache_path.clone()); // no in-memory session either
         cloud.sign_out();
 
-        assert_eq!(store::load_refresh_token(), None);
+        assert_eq!(secure_store::load_refresh_token(), None);
         assert!(!cache_path.exists());
     }
 
@@ -1973,7 +1974,7 @@ mod tests {
     fn ensure_fresh_stale_session_refreshes_and_persists() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
 
         let cache_path = temp_cache_path("t10b-cache.json");
         let cloud = Cloud::new(cache_path.clone());
@@ -2000,7 +2001,7 @@ mod tests {
         assert_eq!(access, "at-rotated-10b");
         assert_eq!(user_id, "user-10b");
         assert_eq!(
-            store::load_refresh_token(),
+            secure_store::load_refresh_token(),
             Some("rt-rotated-10b".to_string())
         );
     }
@@ -2013,8 +2014,8 @@ mod tests {
     fn ensure_fresh_stale_session_refresh_400_purges_everything() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-token-mid-session").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-token-mid-session").expect("seed keyring");
 
         let cache_path = temp_cache_path("t-mid-session-expired-cache.json");
         let mut cache = CloudCache::default();
@@ -2043,7 +2044,7 @@ mod tests {
 
         let result = cloud.ensure_fresh();
         assert!(matches!(result, Err(CloudError::SessionExpired)));
-        assert_eq!(store::load_refresh_token(), None);
+        assert_eq!(secure_store::load_refresh_token(), None);
         assert!(!cache_path.exists());
         assert!(cloud.session.lock().unwrap().is_none());
     }
@@ -2392,7 +2393,7 @@ mod tests {
     fn sign_in_ephemeral_leaves_no_keyring_or_cache_trace() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
 
         let cache_path = temp_cache_path("t-remember1-ephemeral-signin-cache.json");
 
@@ -2414,7 +2415,7 @@ mod tests {
         assert!(info.signed_in);
         assert_eq!(info.mode, "online");
         assert_eq!(
-            store::load_refresh_token(),
+            secure_store::load_refresh_token(),
             None,
             "expected no keyring entry for an ephemeral session"
         );
@@ -2436,7 +2437,7 @@ mod tests {
     fn ephemeral_session_refresh_skips_rotated_token_keyring_persist() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
 
         let cache_path = temp_cache_path("t-remember1-ephemeral-refresh-cache.json");
         let cloud = Cloud::new(cache_path.clone());
@@ -2463,7 +2464,7 @@ mod tests {
         assert_eq!(access, "at-eph-2-rotated");
         assert_eq!(user_id, "user-eph-2");
         assert_eq!(
-            store::load_refresh_token(),
+            secure_store::load_refresh_token(),
             None,
             "expected the rotated token NOT to be persisted for an ephemeral session"
         );
@@ -2479,7 +2480,7 @@ mod tests {
     fn sign_in_remember_true_persists_keyring_and_cache() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
 
         let cache_path = temp_cache_path("t-remember1-remember-true-cache.json");
 
@@ -2500,7 +2501,7 @@ mod tests {
 
         assert!(info.signed_in);
         assert_eq!(info.mode, "online");
-        assert_eq!(store::load_refresh_token(), Some("rt-rem-1".to_string()));
+        assert_eq!(secure_store::load_refresh_token(), Some("rt-rem-1".to_string()));
 
         let cached = store::read_cache(&cache_path);
         assert_eq!(cached.user_id, "user-rem-1");
@@ -2516,7 +2517,7 @@ mod tests {
     struct VerifierKeyringCleanup<'a>(&'a str);
     impl Drop for VerifierKeyringCleanup<'_> {
         fn drop(&mut self) {
-            store::delete_verifier(self.0);
+            secure_store::delete_verifier(self.0);
         }
     }
 
@@ -2528,9 +2529,9 @@ mod tests {
     fn sign_in_online_success_enrolls_verifier_and_auth_cache() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
+        secure_store::delete_refresh_token();
         let user_id = "user-oa4-1";
-        store::delete_verifier(user_id);
+        secure_store::delete_verifier(user_id);
         let _verifier_cleanup = VerifierKeyringCleanup(user_id);
 
         let cache_path = temp_cache_path("t-oa4-signin-cache.json");
@@ -2555,7 +2556,7 @@ mod tests {
             .expect("expected sign_in to succeed");
         assert!(info.signed_in);
 
-        let verifier = store::load_verifier(user_id).expect("expected a verifier to be enrolled");
+        let verifier = secure_store::load_verifier(user_id).expect("expected a verifier to be enrolled");
         assert!(
             crate::cloud::verifier::verify(password, &verifier),
             "expected the enrolled verifier to match the sign_in password"
@@ -2593,7 +2594,7 @@ mod tests {
         store::auth_cache_dir(&std::env::temp_dir())
     }
 
-    /// Enrolls an account directly via `store::save_verifier` +
+    /// Enrolls an account directly via `secure_store::save_verifier` +
     /// `store::write_auth_cache` — the same two calls `enroll_verifier`
     /// (Task 4) makes on a real online sign_in, without driving a mock
     /// server through a whole `sign_in` call for every test below. Task 4's
@@ -2611,7 +2612,7 @@ mod tests {
         last_failed_at: i64,
     ) {
         let v = crate::cloud::verifier::derive_verifier(password).expect("derive verifier");
-        store::save_verifier(user_id, &v).expect("save verifier");
+        secure_store::save_verifier(user_id, &v).expect("save verifier");
         let entry = AuthCacheEntry {
             user_id: user_id.to_string(),
             email: email.to_string(),
@@ -2635,7 +2636,7 @@ mod tests {
     }
     impl Drop for OfflineAccountCleanup<'_> {
         fn drop(&mut self) {
-            store::delete_verifier(self.user_id);
+            secure_store::delete_verifier(self.user_id);
             let _ = std::fs::remove_file(self.dir.join(format!("{}.json", self.user_id)));
         }
     }
@@ -2645,7 +2646,7 @@ mod tests {
     /// `keyring_round_trip`/OA4-1, in case a previous run's assertion
     /// panicked before its own `OfflineAccountCleanup` guard ran.
     fn oa5_clean_slate(user_id: &str, dir: &Path) {
-        store::delete_verifier(user_id);
+        secure_store::delete_verifier(user_id);
         let _ = std::fs::remove_file(dir.join(format!("{user_id}.json")));
     }
 
@@ -2937,8 +2938,8 @@ mod tests {
     fn restore_offline_sets_current_user_id() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("seed-refresh-token-oa5b-2").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("seed-refresh-token-oa5b-2").expect("seed keyring");
 
         let cache_path = temp_cache_path("t-oa5b-2-cache.json");
         let mut cache = CloudCache::default();
@@ -2975,8 +2976,8 @@ mod tests {
     fn offline_session_online_op_returns_offline_not_purge() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("global-remembered-token-safety").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("global-remembered-token-safety").expect("seed keyring");
 
         let cache_path = temp_cache_path("t-oa5b-safety-cache.json");
         let mut cache = CloudCache::default();
@@ -3005,7 +3006,7 @@ mod tests {
             "expected Err(Offline), got {result:?}"
         );
         assert_eq!(
-            store::load_refresh_token(),
+            secure_store::load_refresh_token(),
             Some("global-remembered-token-safety".to_string()),
             "expected the global refresh token to survive untouched"
         );
@@ -3027,8 +3028,8 @@ mod tests {
     fn offline_sign_out_preserves_global_token() {
         let _g = lock();
         let _cleanup = KeyringCleanup;
-        store::delete_refresh_token();
-        store::save_refresh_token("global-remembered-token-signout").expect("seed keyring");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("global-remembered-token-signout").expect("seed keyring");
 
         let cache_path = temp_cache_path("t-oa5b-signout-cache.json");
         let mut cache = CloudCache::default();
@@ -3048,7 +3049,7 @@ mod tests {
             "expected the offline session to be cleared"
         );
         assert_eq!(
-            store::load_refresh_token(),
+            secure_store::load_refresh_token(),
             Some("global-remembered-token-signout".to_string()),
             "expected the global refresh token to survive an offline sign_out"
         );
@@ -3232,7 +3233,7 @@ mod tests {
             0,
             0,
         );
-        assert!(store::load_verifier(user_id).is_some(), "setup: verifier should be enrolled");
+        assert!(secure_store::load_verifier(user_id).is_some(), "setup: verifier should be enrolled");
         assert!(
             store::read_auth_cache(&dir, user_id).is_some(),
             "setup: auth-cache entry should exist"
@@ -3243,7 +3244,7 @@ mod tests {
 
         cloud.remove_account_auth(user_id).expect("removal of a known account should succeed");
 
-        assert!(store::load_verifier(user_id).is_none(), "expected the verifier to be deleted");
+        assert!(secure_store::load_verifier(user_id).is_none(), "expected the verifier to be deleted");
         assert!(
             store::read_auth_cache(&dir, user_id).is_none(),
             "expected the auth-cache entry to be deleted"
@@ -3337,7 +3338,7 @@ mod tests {
             cloud.current_user_id().is_none(),
             "expected the active account to be signed out"
         );
-        assert!(store::load_verifier(user_id).is_none());
+        assert!(secure_store::load_verifier(user_id).is_none());
         assert!(store::read_auth_cache(&dir, user_id).is_none());
 
         let _ = std::fs::remove_file(&cache_path);
@@ -3369,8 +3370,8 @@ mod tests {
 
         // The device's global artifacts belong to THIS account: a remembered
         // refresh token + a cloud-cache.json owned by user_id.
-        store::delete_refresh_token();
-        store::save_refresh_token("rt-oa6-purge").expect("seed refresh token");
+        secure_store::delete_refresh_token();
+        secure_store::save_refresh_token("rt-oa6-purge").expect("seed refresh token");
         let cache_path = temp_cache_path("t-oa6-purge-cache.json");
         let mut cache = store::CloudCache::default();
         cache.user_id = user_id.to_string();
@@ -3388,10 +3389,10 @@ mod tests {
 
         cloud.remove_account_auth(user_id).expect("removal should succeed");
 
-        assert!(store::load_verifier(user_id).is_none(), "verifier removed");
+        assert!(secure_store::load_verifier(user_id).is_none(), "verifier removed");
         assert!(store::read_auth_cache(&dir, user_id).is_none(), "auth-cache removed");
         assert!(
-            store::load_refresh_token().is_none(),
+            secure_store::load_refresh_token().is_none(),
             "the remembered refresh token must be purged (else the removed account silently rebuilds)"
         );
         assert!(

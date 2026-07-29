@@ -21,7 +21,6 @@ ureq = { version = "2", features = ["json"] }
 # request actually connects (WHATWG delimiter handling: ? # \ etc.).
 url = "2"
 tokio = { version = "1", features = ["time"] }
-keyring = { version = "3", features = ["windows-native", "linux-native"] }
 sha2 = "0.10"
 tauri-plugin-opener = "2"
 # §3a A2: native file picker for the personal-pack builder (A3's
@@ -81,6 +80,21 @@ zxcvbn = "3"
 [target."cfg(windows)".dependencies]
 nvml-wrapper = "0.10"
 winreg = "0.52"
+
+# Everywhere EXCEPT Android. Phase 3.1: `keyring` v3 falls back to its `mock`
+# store on any target it has no native backend for, and Android is one — its
+# `pub use mock as default` arm is `cfg(not(any(linux, freebsd, openbsd, macos,
+# ios, windows)))`, and `target_os = "android"` matches none of those, so
+# neither `linux-native` nor `windows-native` applies. The mock's own builder
+# declares `CredentialPersistence::EntryOnly` and constructs a FRESH
+# `MockCredential` per `Entry::new`, so on Android `set_password` returns `Ok`
+# into a value that is dropped on the next line and `get_password` can only
+# ever be `NoEntry`. A credential store that reports success and keeps nothing
+# is exactly the silent-failure shape this milestone keeps cataloguing, so the
+# crate is removed from the Android graph entirely rather than left to lie:
+# `cloud/secure_store.rs` owns the seam, and 3.2 puts AndroidKeyStore behind it.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { version = "3", features = ["windows-native", "linux-native"] }
 
 # Android-only. The desktop app runs llama.cpp as a sidecar process; mobile
 # cannot, so it moves inference in-process via kpack-engine's real llama.cpp

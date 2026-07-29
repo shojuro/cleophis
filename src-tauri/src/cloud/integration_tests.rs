@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use crate::cloud::auth;
 use crate::cloud::error::CloudError;
 use crate::cloud::rest;
+use crate::cloud::secure_store;
 use crate::cloud::session::Cloud;
-use crate::cloud::store;
 use crate::cloud::test_support::lock;
 
 /// Restores whatever refresh-token keyring state existed before this test
@@ -37,7 +37,7 @@ struct KeyringGuard {
 impl KeyringGuard {
     fn capture() -> Self {
         KeyringGuard {
-            original: store::load_refresh_token(),
+            original: secure_store::load_refresh_token(),
         }
     }
 }
@@ -46,11 +46,11 @@ impl Drop for KeyringGuard {
     fn drop(&mut self) {
         match &self.original {
             Some(token) => {
-                if let Err(e) = store::save_refresh_token(token) {
+                if let Err(e) = secure_store::save_refresh_token(token) {
                     eprintln!("a8: failed to restore developer's refresh token: {e}");
                 }
             }
-            None => store::delete_refresh_token(),
+            None => secure_store::delete_refresh_token(),
         }
     }
 }
@@ -241,7 +241,7 @@ fn live_remember_restore_cycle() {
         .expect("remembered sign_up should succeed");
     assert!(info.signed_in);
     assert!(
-        store::load_refresh_token().is_some(),
+        secure_store::load_refresh_token().is_some(),
         "remembered sign_up must persist a keyring token"
     );
     assert!(cache_path.exists(), "remembered sign_up must write the cache");
@@ -271,14 +271,14 @@ fn live_remember_restore_cycle() {
     // sign_in variant (the login-modal path the user exercised): sign out,
     // remembered sign_in, then one more restart+restore.
     cloud3.sign_out();
-    assert!(store::load_refresh_token().is_none());
+    assert!(secure_store::load_refresh_token().is_none());
     let cloud4 = Cloud::new(cache_path.clone());
     let info2 = cloud4
         .sign_in(&email, &password, true)
         .expect("remembered sign_in should succeed");
     assert!(info2.signed_in);
     assert!(
-        store::load_refresh_token().is_some(),
+        secure_store::load_refresh_token().is_some(),
         "remembered sign_in must persist a keyring token"
     );
     drop(cloud4);
