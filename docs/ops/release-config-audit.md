@@ -97,6 +97,44 @@ prevent it; this check confirms the prevention worked.
 
 - [ ] `allowBackup=false`
 - [ ] `fullBackupContent` / `dataExtractionRules` reference the exclusion XMLs
+- [ ] **The conversation DB is ABSENT FROM THE BACKUP SET** — the only question
+      that matters, and deliberately *not* phrased as "the exclusion rules are
+      present". A rule that is present and covers nothing is exactly the defect
+      this item was created by (see below), so an item that checks for the rule
+      would inherit the bug it exists to catch.
+
+  Run it, don't read it:
+
+  ```
+  adb shell bmgr enable true
+  adb shell bmgr backupnow com.cleophis.app
+  adb shell dumpsys backup | grep -A20 com.cleophis.app
+  ```
+
+  With `allowBackup=false` the expected result is that the package is not
+  eligible at all — which is a *pass*, and also means this run says nothing
+  about whether the XML rules work. To test the rules themselves, flip
+  `allowBackup` to true in a **throwaway local build** (never committed), run
+  the above, and confirm the DB, `auth-cache/` and `cloud-cache.json` do not
+  appear. That is the only configuration in which the second layer is
+  observable, and an unobservable safety net is what this item is about.
+
+  **Why the item exists.** Until Phase 3.2's design work, both XMLs excluded
+  `file` / `database` / `sharedpref` / `external` — and **none of those is
+  where our data lives.** Tauri's `app_data_dir()` on Android is
+  `activity.dataDir`, which AOSP's `FullBackup.getDirectoryForCriteriaDomain`
+  maps to the **`root`** domain; `file` is `getFilesDir()`, a *child* of it. So
+  the belt-and-braces layer excluded four directories we do not use, while
+  reading in review, in the diff, and in its own comment as though it excluded
+  everything. `allowBackup="false"` was doing all the work alone. `root` and
+  `device_root` are now excluded; the *schema* is verified against the AOSP
+  parser (bare `<exclude domain="…"/>` is well-formed — `path` is optional —
+  and an excluded directory prunes its whole subtree), but **effectiveness is
+  only observable here.**
+
+- [ ] The exclusion XMLs are present *in the packaged artifact* with the `root`
+      lines intact — read out of the APK's compiled resources, not the source
+      tree, per the standing rule
 - [ ] package identity `com.cleophis.app`; desktop keeps `com.cleophis.desktop`
 - [ ] permission list is exactly what is intended — no permission without a
       caller, and none missing (`ACCESS_NETWORK_STATE` lands with the metered

@@ -4,15 +4,32 @@
   backup_rules.xml, for both transfer paths: cloud-backup (Google Drive) and
   device-transfer (phone-to-phone). Belt-and-suspenders with allowBackup="false".
   Exclude every app-managed data domain from both.
+
+  ⚠ `root` and `device_root` were missing here for the same reason they were
+  missing from backup_rules.xml, and the full derivation lives in that file's
+  comment: Tauri's `app_data_dir()` on Android is `activity.dataDir`, which
+  AOSP maps to the `root` domain, NOT to `file` (= getFilesDir(), a child of
+  it). So every sensitive artifact we ship sat in the one domain these rules
+  did not name. Not a live leak — allowBackup="false" is decisive — but a
+  second layer that covers the empty set is worse than no second layer,
+  because it reads as protection.
+
+  device-transfer matters independently of backup: a phone-to-phone migration
+  is a path a user can trigger deliberately, and "nothing a user types leaves
+  the device" has to hold for it too.
 -->
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="device_root" />
         <exclude domain="file" />
         <exclude domain="database" />
         <exclude domain="sharedpref" />
         <exclude domain="external" />
     </cloud-backup>
     <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="device_root" />
         <exclude domain="file" />
         <exclude domain="database" />
         <exclude domain="sharedpref" />

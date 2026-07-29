@@ -5,8 +5,46 @@
   Spec §6 privacy invariant #1 — Android Auto Backup would otherwise upload the
   conversation DB, model/adapter files, and offline-auth cache to the user's
   Google Drive, silently violating "nothing a user types leaves the device".
+
+  ⚠ `root` is the line that actually covers our data, and it was missing until
+  Phase 3.2's design work went looking for somewhere to put credential blobs.
+  Verified in AOSP's parser rather than from a doc example:
+
+  - FullBackup.java `getDirectoryForCriteriaDomain`: "root" -> ROOT_DIR, where
+    ROOT_DIR = ceContext.getDataDir(); "file" -> FILES_DIR = getFilesDir().
+    Those are DIFFERENT directories — files/ is a child of the data dir.
+  - Tauri resolves app_data_dir() to `activity.dataDir` on Android
+    (tauri/src/path/android.rs -> PathPlugin.kt `getDataDir`, SDK_INT >= 24;
+    our minSdk is 24, so the other branch is unreachable). So cloud-cache.json,
+    auth-cache/, the conversation DB, models/ and resources/ all sit directly
+    in the DATA DIR ROOT — the one domain these rules did not name.
+
+  The four domains below were therefore excluding directories we do not use.
+  Not a live leak — allowBackup="false" is decisive — but the second layer
+  covered the empty set while reading as though it covered everything. Same
+  family as `bundle.resources = {}`.
+
+  Two more things checked in the parser, because a silently malformed rule is
+  the exact failure this comment exists to prevent:
+
+  - The `path` attribute is OPTIONAL. `extractCanonicalFile` substitutes "" for
+    a null path, with the comment "Allow things like <include
+    domain='sharedpref'/>", and `validateInnerTagContents` permits up to 2
+    attributes on <exclude>. So the bare form below is well-formed by design,
+    not merely tolerated.
+  - Excluding a DIRECTORY prunes its whole subtree. BackupAgent.java's
+    `fullBackupFileTree` matches excludes by exact canonical path and, on a
+    match, `continue`s BEFORE enqueueing that directory's children — so the
+    first entry of the root-domain walk is the data dir itself, and nothing
+    beneath it is ever scanned.
+
+  Effectiveness is only answerable on a device: see the `bmgr` item in
+  docs/ops/release-config-audit.md, which asks whether the conversation DB is
+  ABSENT FROM THE BACKUP SET — not whether this rule is present in this file.
 -->
 <full-backup-content>
+    <exclude domain="root" />
+    <exclude domain="device_root" />
     <exclude domain="file" />
     <exclude domain="database" />
     <exclude domain="sharedpref" />

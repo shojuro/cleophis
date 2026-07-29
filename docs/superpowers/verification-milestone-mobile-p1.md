@@ -2562,6 +2562,121 @@ The middle row is the one this prediction exists for. Two tests that vanish
 into a cfg leave a green suite and a smaller number, and 320 read without a
 prediction beside it looks like an ordinary pass.
 
+#### 3.1 gate: **GREEN** (run 19, at `ecc785a`, protocol v2) — top row, by name
+
+**322 passed / 0 failed / 10 ignored, zero warnings**, 202 s. PRE `ecc785a`
+/empty → POST `ecc785a`/empty, all four provenance facts agreeing, so this is
+attributable **to the commit**.
+
+```
+test cloud::secure_store::desktop::tests::keyring_round_trip ... ok
+test cloud::secure_store::desktop::tests::verifier_keyring_roundtrip ... ok
+test result: ok. 322 passed; 0 failed; 10 ignored; finished in 202.00s
+```
+
+Both tests observed **under their new module paths**, which is the part the
+prediction was actually about. The 320 branch — the cfg silently excluding
+`desktop.rs` on Windows too — is excluded **by observation** rather than by
+assumption.
+
+**What this run adds to the predict-the-count convention.** Every prior use
+predicted a *number*. This one predicted a **mapping from each possible number
+to a distinct cause**, registered before the run — so the result was not "the
+number matched" but "one specific causal branch fired and the other two are
+ruled out". A number alone could not have done that here, because the
+informative outcome was a number that *did not move*: 322 is what a correct
+move produces and also what "nothing compiled at all" would produce, and only
+the test **names** separate them. Steering captured the names because the
+discriminator asked for them. Running total: **266 → … → 321 → 321 → 322 →
+322**.
+
+#### ⚑ Convention added: gate evidence should be emitted by the thing under test
+
+Logged beside this run because the run exposed it. Steering's tee target
+pointed at a scratchpad path that no longer existed, so the wrapper reported a
+nonzero exit and **wrote no log file** — the evidence survived only because the
+task runner happened to capture stdout.
+
+That is the **legibility** failure again (the run was correct; the recorder
+was not), and it is the third distinct place it has appeared: the lossy filter
+that dropped a failing test's name, the 2.2b PRE checkpoint that existed only
+in a transcript, and now a gate log that was never written. The committed
+provenance-sidecar policy already answers this for *builds* —
+`build-android-apk.sh` writes its own record, so a build cannot finish
+silently. **Steering-side gate runs have no equivalent and still depend on
+ad-hoc redirection by the hand that invokes them.**
+
+The rule this generalizes to, and the reason the sidecar policy was worth
+having: **gate evidence should be emitted by the thing under test, not by the
+hand that invokes it.** Same instinct as putting the `[kernels]` and
+`[bridge]` lines inside the app rather than in a build log. A wrapper that can
+lose its own output is a wrapper whose green result means less than it looks.
+
+### 🔴 §6 privacy: the backup exclusions covered the empty set — FIXED
+
+Found while deciding where 3.2's credential blobs should live, which is the
+only reason anyone looked at these files again. **Not a live leak** —
+`allowBackup="false"` is decisive and nothing has ever left the device — but
+the second layer, whose entire purpose is to be a second layer, protected
+nothing.
+
+Both XMLs excluded `file`, `database`, `sharedpref`, `external`. **None of
+those is where our data lives.** Read out of AOSP rather than from a doc page:
+
+| fact | source |
+|---|---|
+| `"root"` → `ROOT_DIR`, and `ROOT_DIR = ceContext.getDataDir()` | `FullBackup.java`, `getDirectoryForCriteriaDomain` + the `*_DIR` assignments |
+| `"file"` → `FILES_DIR = ceContext.getFilesDir()` — a **child** of the data dir, not the same directory | same |
+| Tauri's `app_data_dir()` on Android **is** `activity.dataDir` | `tauri-2.11.5/src/path/android.rs:137` calls `getDataDir`; `mobile/android/.../PathPlugin.kt:64` resolves it to `activity.dataDir` for `SDK_INT >= N`. Our `minSdkVersion` is 24, so the `applicationInfo.dataDir` branch is unreachable |
+
+So `cloud-cache.json`, `auth-cache/`, the conversation DB, `models/` and
+`resources/` all sit **directly in the data-dir root** — the one domain the
+rules did not name. The files read as correct in review, in the diff, and in
+their own comments ("exclude ALL app-managed data"), and covered four
+directories the app does not use.
+
+**Fixed** by adding `<exclude domain="root" />` and `<exclude
+domain="device_root" />` to `backup_rules.xml` and to both blocks of
+`data_extraction_rules.xml`.
+
+#### The fix was checked for the defect it fixes, before shipping
+
+Steering's review raised exactly the right objection: Android's docs show
+`path` on `<exclude>`, so a bare `<exclude domain="root" />` might be ignored
+or rejected as malformed — **a rule that reads correct, reviews correct, diffs
+correct, and covers nothing, in the very commit written to escape that
+family.** Settled by reading the parser rather than a doc example:
+
+- **`path` is optional.** `FullBackup.extractCanonicalFile` substitutes `""`
+  for a null path, with the source comment *"Allow things like `<include
+  domain="sharedpref"/>`"*, and `validateInnerTagContents` permits **up to 2**
+  attributes on `<exclude>`. The bare form is well-formed by design. (It is
+  also the form the four pre-existing lines already used, so the old rules were
+  correctly *parsed* — they were just aimed at the wrong directories.)
+- **Excluding a directory prunes its whole subtree.**
+  `BackupAgent.fullBackupFileTree` matches excludes by **exact canonical path**
+  and, on a match, `continue`s *before* enqueueing that directory's children.
+  So the first entry of the root-domain walk is the data dir itself, and
+  nothing beneath it is ever scanned. Exact-match plus prune-on-match is what
+  makes one line cover a tree — a fact that is invisible if you only read the
+  matcher, since exact matching alone would suggest it covers one directory
+  entry.
+- The Android 12+ `dataExtractionRules` path shares the same `parseRules` and
+  the same domain map, so the tokens mean the same thing in both files.
+
+**Effectiveness remains unverified and is recorded as such.** Schema validity
+is proved from source; whether the DB is actually absent from a backup set is
+only observable with `bmgr` on a device. That is now a checklist item in
+`docs/ops/release-config-audit.md`, phrased **"the conversation DB is ABSENT
+FROM THE BACKUP SET"** rather than "the exclusion rules are present" — because
+an item that checks for the rule's presence would inherit the exact bug it
+exists to catch. Packaged-artifact confirmation rides with the next APK build,
+per the standing rule that config claims are read from the artifact.
+
+Landed as its own `fix(mobile-p1)` commit ahead of 3.2 (steering's call): a §6
+privacy fix has nothing to do with crypto and deserves to be findable in the
+log on its own.
+
 #### 🔬 Ledger correction: the Linux host is blocked by Tauri, not by `keyring`
 
 This document has recorded since Phase 1.1 that "`cargo test -p cleophis` fails
@@ -2597,9 +2712,32 @@ The corrected statement is *stronger* than the one it replaces: **no change to
 blocker was never `keyring`. The old wording quietly invited a future agent to
 go after the keyring feature set — which is a **desktop-behaviour change**,
 forbidden by this branch's hard constraint — in pursuit of a capability keyring
-does not control. A plausible attribution nobody checked, aimed at the wrong
-crate, pointing the next investigation away from the code: the same shape as
-the probe whose failure path crashed.
+does not control.
+
+**A new member of the collection, and steering named it better than I did: a
+TRUE CLAIM WITH A FALSE MECHANISM.** Every failure shape recorded above is a
+statement that was *wrong* — a percentage that fit any number, a run labelled
+with the wrong commit, a config that merged instead of clearing. This one is a
+statement that was **right**, and stayed right, for four phases. That is what
+makes it more dangerous rather than less: **the conclusion keeps validating
+it.** Every agent that tried `cargo test -p cleophis` on this host got the
+predicted failure, and each success confirmed the sentence without ever
+touching the half of it that was false. Nothing in the normal course of work
+could have caught it — only asking "why, specifically?" of a claim that had
+never once misled anyone.
+
+The keyring correction earlier in this section is the same shape one level
+down: "silent in-memory mock" and "a write that keeps nothing and reports
+success" both explain every symptom anyone had observed, and only the second
+predicts that `load` can **never** return a token. Two explanations, identical
+track record, different futures — which is exactly the situation where a
+ledger's stated *mechanism* starts doing real work, and where a wrong one is
+invisible until someone builds on it.
+
+The practical rule: **a conclusion that keeps being confirmed is not evidence
+for the reason attached to it.** When a documented cause has never been
+exercised — because nobody ever needed the conclusion to be false — it has
+never been tested at all.
 
 ## Conventions
 
