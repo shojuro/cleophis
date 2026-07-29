@@ -41,7 +41,17 @@ export const CHARGE_NOTICE_MIN_BYTES = 1024 * 1024 * 1024; // 1 GB
  * @returns {{allowed: boolean, reason: string, chargeNotice: string|null}}
  */
 export function decideDownload(net, req) {
-  const metered = net?.metered !== false; // unknown → metered; see net_state.rs
+  // Unknown → metered, and this line is load-bearing: `!== false` means only an
+  // explicit `false` counts as unmetered, so a missing field, a null, an
+  // absent `net` object and a bridge failure all land on the safe answer.
+  //
+  // Do not "simplify" this to `net?.metered === true` or add a default of
+  // `false`. The two mistakes are not comparable: **guessing unmetered spends
+  // the user's MONEY and cannot be undone; guessing metered costs one tap.**
+  // Fail toward the cheaper mistake. `net_state.rs` enforces the identical
+  // rule on the Rust side and both have tests that enumerate the failure
+  // modes, so the two cannot drift apart quietly.
+  const metered = net?.metered !== false;
   const bytes = Number(req?.bytes) || 0;
   const override = req?.allowMetered === true;
 

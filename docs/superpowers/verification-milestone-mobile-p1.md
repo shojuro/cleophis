@@ -3033,33 +3033,47 @@ exactly one build script remained, that both compiler processes were parented
 to it, and that the killed tree was fully reaped. Disclosed to steering as a
 confounder before the gate verdict, per the paragraph above.
 
-### ⚑ A watcher is not a report — the second instance, and what actually held
+### ⚑ STRUCTURAL COUNTERMEASURES SURVIVE FAILURES THAT PROCEDURAL ONES DO NOT
 
-The CP3 build finished at 17:16:35 with its digest computed. A background
-watcher was armed on it and **fired correctly**, capturing the full tail and
-the provenance with exit 0. Its notification nonetheless reached this agent
-only *after* steering had independently verified the artifact and ferried it to
-the founder.
+The heading this track has been circling for three phases, now with the
+evidence to state it: **a watcher creates the opportunity to report; a file
+IS the report.** Two independent failures of the procedural form, one
+resolution by the structural form.
 
-Nothing hung and nothing was lost, and there was still a window in which a
-correct, complete artifact could not report itself. That is gen-4's delivery
-failure arriving from the other side: there, waiters fired into a turn that
-never resumed; here, the watch was perfect and the gap sat in the resume.
-**"Arming a watcher is not the same as having reported" holds even when the
-watcher works.**
+| # | the procedural mechanism | how it failed |
+|---|---|---|
+| 1 (gen-4) | background waiters armed on a finished build | they **fired**, into a turn that never resumed. The APK was correct, measured and on disk, and sat unreported for a day; steering opened a status check assuming a silent death. |
+| 2 (gen-6) | a watcher armed on the CP3 build | it **fired correctly**, capturing the tail and provenance with exit 0 — and its notification reached the agent only *after* steering had independently verified and ferried the artifact. |
 
-**What actually held was neither the watcher nor the agent: it was the
-sidecar.** `build-android-apk.sh` had already written HEAD, porcelain, exit
-statuses and the sha256 into a durable file, so steering's verification was a
-**check against the build's own record** rather than a substitute for a missing
-report — the two produced identical digests. This is the first live payoff of
-the ratified policy that *scripts emit provenance, agents do not report it*,
-and it paid off in exactly the scenario it was written for: the agent was
-unavailable and the evidence was not.
+Instance 2 is the sharper one precisely because **nothing malfunctioned**. The
+watch was perfect; the gap sat in the resume. So "arming a watcher is not the
+same as having reported" is not a claim about unreliable watchers — it holds
+when the watcher does its job exactly as designed. Any countermeasure whose
+final step is *an agent being present to speak* inherits that gap, and no
+amount of care removes it.
 
-The generalisation, which is now three-for-three on this track: **make the
-tool write the record, because every mechanism that depends on an agent being
-present to speak has failed at least once.**
+**What held was neither the watcher nor the agent: the sidecar.**
+`build-android-apk.sh` had already written HEAD, porcelain, both exit statuses
+and the sha256 into a durable file before either party looked. So steering's
+verification was a **check against the build's own record** rather than a
+substitute for a missing report — and the two digests matched. That is the
+first live payoff of the ratified policy that *scripts emit provenance, agents
+do not report it*, arriving in exactly the scenario it was written for: the
+agent unavailable, the evidence not.
+
+The distinction to carry forward: a **procedural** countermeasure asks someone
+to do the right thing at the right moment (report the digest, check the
+porcelain, arm a watcher). A **structural** one makes the artifact exist
+whether or not anyone shows up. This document's three standing mechanisms are
+all structural for that reason — the provenance sidecar, the `[kernels]` and
+`[bridge]` lines printed by the app itself, and the build computing its own
+digest — and each replaced a procedure that had already failed once.
+
+**Corollary, applied the same day:** the release-config audit's R8 items were a
+Python snippet pasted into a checklist — procedural, and due to be retyped
+correctly during a signing ceremony. They are now a step inside
+`verify-apk.py`. Same conversion, made before the failure rather than after
+it.
 
 #### 📱 CP3 — what only the device can say
 
@@ -3122,9 +3136,17 @@ form was latency and nothing else.
 
 **Digest independently derived three times, all identical** — the build's own
 sidecar, steering's verification, and this agent's re-hash of the **archive**.
-Produced by `sha256sum` and never retyped. The third derivation is not
-ceremony: the first two measured the *build output*, and what the founder
-installs is the *archive*.
+Produced by `sha256sum` and never retyped.
+
+**The third derivation is not ceremony, and the reasoning is the point:
+steering verified the BUILD OUTPUT, the sidecar recorded the BUILD OUTPUT, and
+what the founder installs is the ARCHIVE. Re-hashing the archive closes the gap
+between the thing checked and the thing shipped.** That distinction was paid
+for by the 2.2b entry — where the archive comparison happened a day late and
+the window to make it had closed — and this is the first time it was applied
+*prospectively* rather than reconstructed. Steering additionally re-hashed the
+ferry copy in the founder's Downloads, so the chain **build output → archive →
+founder copy** is unbroken end to end.
 
 `verify-apk.py` **PASS**: 968 entries, Σ compressed **354,963,874** vs file
 **355,151,042** = **0.05 % unaccounted** (no zipflinger orphan); `assets/` is
@@ -3147,6 +3169,16 @@ This narrows what a CP3 failure can mean **before the device is touched**: a
 `getAppClass` failure can no longer be "the class is not in the APK". It is
 also a *debug* answer only — R8 is off here — so it says nothing about release,
 which remains audit item 1b.
+
+**Second time reading the dex has pre-emptively narrowed a device failure**
+(the bridge APK was the first), which is what promoted it from a habit to a
+script step. And the argument for scripting it is visible in this very run:
+the `NativeBridge` + `describeDevice` regression check **rode along free**. A
+human performing the habit checks what they are thinking about — here,
+`SecureStore` — while a script checks everything it knows about, including the
+class the current commit's refactor might have broken without anyone
+suspecting it. That is the difference between a check that scales with
+attention and one that scales with the codebase.
 
 ### 🔴 §6 privacy: the backup exclusions covered the empty set — FIXED
 
