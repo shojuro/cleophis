@@ -50,28 +50,48 @@ preserves the class name but keeps only `native` members, so the method would be
 stripped and the symptom would be `NoSuchMethodError` (pointing at the
 signature) rather than `ClassNotFoundException` (pointing at packaging).
 
-Read it out of the dex, not out of a gradle log:
+**This is now one command, not a snippet to retype.** `verify-apk.py` checks
+every Kotlin entry point reached only from Rust, reading the shipped dex:
 
-```python
-import zipfile
-z = zipfile.ZipFile(APK)
-for n in z.namelist():
-    if n.startswith('classes') and n.endswith('.dex'):
-        b = z.read(n)
-        print(n, b'Lcom/cleophis/app/NativeBridge;' in b, b'describeDevice' in b)
+```
+python3 docs/superpowers/mobile-tools/verify-apk.py <release.apk>
 ```
 
-Anything else reached only from Rust across JNI inherits this item. The
-`ConnectivityManager` and `ACTION_SEND` shims will join it, and **each new
-Kotlin entry point needs its own keep rule and its own line here.**
+It covers `NativeBridge`, `SecureStore`, `NetworkPolicy` and `ShareSheet`,
+naming the on-device consequence of each loss at the point of failure — because
+none of them present as "minification broke something":
+
+| class | release-only symptom if stripped |
+|---|---|
+| `NativeBridge` | the `[bridge]` probe goes silent |
+| `SecureStore` | **no stored credential can be read — every launch signs the user out** |
+| `NetworkPolicy` | the metered check fails safe, so *every* download prompts for cellular consent even on wifi — a degradation, not a crash, which is how it ships unnoticed |
+| `ShareSheet` | the export button does nothing at all |
+
+**The check is known to be capable of failing**, which is this project's
+standing requirement for believing a green one: run against the CP3 debug APK
+(built before those last two classes existed) it correctly reports
+`NetworkPolicy` and `ShareSheet` MISSING and exits 1.
+
+*Scripted rather than pasted for the same reason the provenance sidecar exists:
+a checklist item that is a code snippet is an intention, not a check — someone
+has to retype it correctly at the worst possible moment, which here is during a
+signing ceremony.*
+
+**Each new Kotlin entry point reached only from Rust needs its own keep rule
+and its own entry in `KOTLIN_EXPECTED`.** Adding it to the script rather than
+to this document is what keeps the checklist runnable.
 
 #### 1b. R8 did not strip `SecureStore` — **the highest-consequence instance**
 
-- [ ] `Lcom/cleophis/app/SecureStore;` present in the release APK's dex
-- [ ] `blobDir`, `encrypt`, `decrypt` all present in the release APK's dex
+- [ ] `verify-apk.py` reports `SecureStore` + `blobDir`/`encrypt`/`decrypt` ok
 - [ ] **On the release build: sign in → force-stop → relaunch → still signed
       in.** The dex check proves the methods survived; only this proves they
       are reachable and working.
+- [ ] On the release build: share a chat (`ShareSheet`) and start a download on
+      cellular (`NetworkPolicy` — expect the metered prompt, then expect **no**
+      prompt on wifi; a prompt on wifi means the class was stripped and the
+      fallback is doing the work)
 
 Same mechanism as item 1, worse consequence. `NativeBridge` losing its method
 costs a diagnostic line. `SecureStore` losing its methods means the release

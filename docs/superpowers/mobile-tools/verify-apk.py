@@ -84,5 +84,72 @@ if aapt2:
         seg = xmltree.split('windowSoftInputMode')[1][:80].strip()
         print(f"            windowSoftInputMode raw: {seg.splitlines()[0]}")
 
+# ---------------------------------------------------------------- Kotlin/dex
+#
+# Every class below is reached ONLY from Rust across JNI, which R8 cannot see,
+# so all of it is dead code to the shrinker. `app/proguard-cleophis.pro` keeps
+# them; without those rules a RELEASE build loses them while the debug device
+# checkpoint passes green — this project's debug-proof / release-failure split.
+#
+# Scripted here rather than pasted into the audit doc because a checklist item
+# that is a code snippet is an intention, not a check: someone has to retype it
+# correctly at the worst possible moment. Same reasoning as the provenance
+# sidecar — make the tool do it.
+#
+# The consequences differ enough to be worth naming at the point of failure,
+# since each looks like something other than minification on device.
+KOTLIN_EXPECTED = {
+    'com/cleophis/app/NativeBridge': (
+        ['describeDevice'],
+        'the [bridge] probe goes silent',
+    ),
+    'com/cleophis/app/SecureStore': (
+        ['blobDir', 'encrypt', 'decrypt'],
+        'NO stored credential can be read: every launch signs the user out',
+    ),
+    'com/cleophis/app/NetworkPolicy': (
+        ['describe'],
+        'the metered check fails safe, so EVERY download prompts for cellular '
+        'consent even on wifi (a degradation, not a crash)',
+    ),
+    'com/cleophis/app/ShareSheet': (
+        ['shareFile'],
+        'the export button does nothing at all',
+    ),
+}
+
+dex = {i.filename: z.read(i.filename) for i in infos
+       if i.filename.startswith('classes') and i.filename.endswith('.dex')}
+print(f"\ndex         {len(dex)} file(s): {', '.join(sorted(dex))}")
+for cls, (methods, consequence) in KOTLIN_EXPECTED.items():
+    descriptor = f"L{cls};".encode()
+    where = [n for n, b in dex.items() if descriptor in b]
+    label = cls.rsplit('/', 1)[-1]
+    if not where:
+        print(f"FAIL        {label} class MISSING -> {consequence}")
+        # No method checks when the class is gone. The first version of this
+        # script ran them anyway and reported `ok .describe` directly beneath
+        # `FAIL NetworkPolicy class MISSING` -- because `describe` is a common
+        # string that appears in unrelated dex entries. A green sub-result
+        # under a red parent is worse than no sub-result: it is a correct
+        # measurement of the wrong thing, which is this project's hardest
+        # failure mode to notice.
+        ok = False
+        continue
+    print(f"ok          {label} class present ({', '.join(sorted(where))})")
+    # Scoped to the dex files holding the class, so a same-named method on an
+    # unrelated class cannot vouch for this one. Still a string-presence check
+    # rather than a parse of the method table -- adequate because the keep rule
+    # is `{ *; }`, so a surviving class brings its methods, and this is
+    # corroboration rather than the load-bearing assertion.
+    for m in methods:
+        needle = m.encode()
+        hit = [n for n in where if needle in dex[n]]
+        if hit:
+            print(f"ok            .{m} (in {', '.join(sorted(hit))})")
+        else:
+            print(f"FAIL          .{m} MISSING -> {consequence}")
+            ok = False
+
 print("\nVERDICT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
