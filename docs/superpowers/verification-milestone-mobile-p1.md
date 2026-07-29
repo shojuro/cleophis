@@ -2612,6 +2612,222 @@ hand that invokes it.** Same instinct as putting the `[kernels]` and
 `[bridge]` lines inside the app rather than in a build log. A wrapper that can
 lose its own output is a wrapper whose green result means less than it looks.
 
+### 3.2 Kotlin `SecureStore` — AndroidKeyStore AES-256-GCM — DONE (pending 📱 CP3)
+
+`gen/android/.../SecureStore.kt` does crypto and nothing else;
+`cloud/secure_store/android.rs` and `cloud/secure_store/blob.rs` own the file
+layout, slot naming, AAD derivation and the on-disk envelope. Design reviewed
+by steering before implementation, on the standing habit that the justification
+gets written before the code it justifies.
+
+**Why the division is this way round, and not the conventional way.** The
+common Android answer is a Kotlin store that owns its own persistence
+(EncryptedSharedPreferences-shaped). That would put the traversal rejection,
+the slot naming and the AAD derivation on the far side of a JNI boundary — in
+the one language this project cannot run a test in — and every one of those
+rules **fails silently**: a path that escapes its directory throws nothing, and
+a `save`/`load` pair deriving different AAD produces a decrypt failure whose
+symptom is "you keep getting signed out" and whose apparent cause is the
+keystore. That is decision **D-3** exactly, so the pure half is `blob.rs`,
+compiled on every platform, tested by the desktop suite. What stays behind the
+`cfg` is the JVM call, which D-3 exempts.
+
+#### The choices, each with the reason it was made
+
+| choice | reason |
+|---|---|
+| AndroidKeyStore provider | Non-exportability is a property of the provider, not a flag: key material never enters our address space. A key we could read would be no better than a file, which is the entire point of the phase. |
+| AES-256-GCM, `ENCRYPTION_PADDING_NONE` | Brief + security review L1. AEAD, so integrity ships with confidentiality; GCM is a stream mode and AndroidKeyStore rejects padding with it. |
+| `setRandomizedEncryptionRequired(true)` | The requirement "random 96-bit IV per encryption" **enforced by the platform instead of by our discipline** — with it set, AndroidKeyStore *refuses* a caller-supplied IV and generates one from its own CSPRNG. Set explicitly although it is the default, because a security property that holds only by default is one line from not holding. |
+| tag pinned at 128 bits | Specified on decrypt, so a stored blob cannot negotiate its own tag length. |
+| **`setUserAuthenticationRequired` deliberately OFF** | See the warning below — this is the footgun of the file. |
+| StrongBox not requested | `StrongBoxUnavailableException` on devices without a discrete secure element (much of our market), so adopting it means a new fallback branch **on the boot path** in exchange for a property we cannot confirm the A22 offers. |
+| one key, N blobs | GCM under one key with distinct random 96-bit IVs is safe far past our volume (collision bound ~2⁴⁸ encryptions; we do single digits per session). Per-slot keys would add lifecycle without adding a property. |
+| `@Synchronized` key creation | `generateKey()` on an existing alias **replaces** the key, which would leave the losing writer's blobs undecryptable. Two saves genuinely can overlap — `restore()` runs on a `spawn_blocking` thread while a sign-in runs on another — so check-then-create has to be atomic rather than usually-fine. |
+
+**GCM nonce reuse is catastrophic, not merely weak**, which is why the IV
+source is the row that matters most. Two messages under one key sharing a
+nonce leak their XOR *and* leak the authentication subkey, which lets an
+attacker forge tags for that key. It is the one mistake in this file that could
+not be recovered from — so it is arranged to be unmakeable rather than merely
+avoided.
+
+#### AAD: one line beyond L1, and what it buys
+
+Each ciphertext is bound to its slot (`cleophis-secure-v1/refresh-token`,
+`…/verifier/<user_id>`). Without it every blob under one key is
+interchangeable, so an attacker who could write to the app's private directory
+could copy `verifier-<A>.blob` over `verifier-<B>.blob`; it decrypts perfectly,
+and **account B's offline sign-in then accepts account A's password.** That is
+a privilege transfer, not corruption. The threat needs root, so it is not the
+top risk — but L1 asked that the tag be verified, and AAD is what makes
+verifying it say *which* secret was verified.
+
+#### ⚠ The footgun, written down because only a written warning stops it
+
+**Do not add `setUserAuthenticationRequired(true)`.** It reads as a free
+security upgrade. It is not, and the causal chain is worth stating because a
+future agent will meet the flag before they meet this paragraph:
+
+1. **It breaks the feature.** Every decrypt would demand a device credential
+   or biometric, and the decrypt that matters runs during boot-time
+   `Cloud::restore()` — no UI, no user present. "Stays signed in" becomes
+   "prompt on every launch", the exact opposite of what 3.2 delivers.
+2. **It arms `KeyPermanentlyInvalidatedException`.** With user-auth **off**, a
+   new fingerprint enrolment or a lock-screen PIN change does *not* invalidate
+   this key, so the exception essentially cannot arise and its residue is
+   already covered by the generic "key missing or unusable → no credential"
+   path. Turn user-auth on and a routine PIN change **silently destroys the
+   key**: every stored blob becomes permanently undecryptable, and the user is
+   signed out with no explanation and no route back but signing in again.
+
+The absence of that flag is therefore a decision with a stated reason, not an
+oversight awaiting tidying. Recorded in `SecureStore.kt` beside the builder —
+where someone would add it — as well as here.
+
+#### `getNoBackupFilesDir()`, and why it is not merely defence in depth
+
+Blobs live in `<noBackupFilesDir>/secure`. Steering asked for the argument
+either way; it turns out not to be a trade-off at all.
+
+**The key is non-exportable and device-bound, so it cannot be backed up or
+transferred by anything.** A blob restored onto another device — or onto this
+one after a wipe — is therefore *permanently undecryptable*. Backing up the
+ciphertext could only ever produce a confusing decrypt failure, never a working
+session. There is no convenience being given up.
+
+The second reason is structural: `BackupAgent.getExtraExcludeDirsIfAny`
+unconditionally adds this directory, and the framework ignores **even an app's
+own explicit `fullBackupFile()` call** on a file inside it (`BackupAgent.java`,
+the `fullBackupFile` doc). Compare the alternative — exclusion by a rule in
+`backup_rules.xml`, a mechanism this project demonstrated *in the previous
+commit* can be wrong for four phases without anyone noticing. **A guarantee the
+framework enforces against our own mistakes beats one we have to keep writing
+correctly.** The directory is also under the data-dir root, which those rules
+now exclude, so the blobs are covered twice — once structurally. That is what
+belt-and-braces is supposed to look like, as against what it looked like
+yesterday.
+
+#### The bridge's exception discipline now has exactly one home
+
+`android_bridge::with_app_class` generalises what was `describe_device`'s
+private `round_trip`: acquire the JVM and activity, resolve the class through
+`WryActivity.getAppClass` (never `find_class`), run a closure, and
+`exception_describe` + `exception_clear` on any error. `describe_device` and
+all three `SecureStore` calls go through it.
+
+**Not tidying.** That cleanup is the code most likely to be wrong and least
+likely to be exercised — it runs only after something else has failed, there is
+no JVM on the build host to test it against, and its first version was wrong in
+a way that *crashed the process instead of reporting*. A second hand-written
+copy is the duplicated-fact trap sitting in precisely the code that could never
+catch the divergence.
+
+#### ⚠ A JNI path the bridge checkpoint did NOT prove
+
+The probe ran on the **UI thread**, where `attach_current_thread` finds the JVM
+already attached and returns a nested guard whose drop is a no-op.
+`SecureStore`'s callers arrive from a different direction: `Cloud::restore`
+reaches us via `tauri::async_runtime::spawn_blocking` (`cloud/commands.rs:75`),
+i.e. a Tokio blocking-pool thread the JVM has **not** attached, and potentially
+a different one per call. There the guard genuinely attaches and genuinely
+detaches on drop.
+
+That is correct, and it is **unclaimed** rather than verified: the bridge
+result does not cover it, and CP3's force-stop → relaunch cycle is exactly the
+exercise that does — `restore()` on a fresh process, on a blocking thread, is
+the first thing that runs.
+
+#### A checkpoint flaw found by asking what the founder would actually see
+
+The first version of `android.rs` logged only failures. The happy path would
+therefore have been **silent** — and this document already records, from the
+bridge probe, that "no line at all" is the one outcome worse than a failure,
+because it cannot be told apart from "the code never ran". CP3's whole content
+would have reduced to an inference from app behaviour.
+
+Fixed: **every read and write emits exactly one `[secure-store]` line, success
+included**, so a transcript distinguishes four outcomes — `ok`, `no blob
+stored`, a named failure, and (by absence) never called. One line per launch is
+what `[kernels]` already costs and it carries no secret. Found by writing the
+checkpoint ask before the code was final, which is the same habit that has now
+caught defects in five separate places.
+
+#### Log hygiene (M3)
+
+No token, no verifier, no `user_id`, no ciphertext reaches a log line. The
+Java-side detail that identifies a failure — `AEADBadTagException` (tampered,
+truncated, or wrong slot label) versus a keystore error — reaches logcat
+through the bridge's `exception_describe`, which prints a stack trace and not
+our data.
+
+**A failed decrypt does not delete the blob**, deliberately: a destructive read
+path would turn transient keystore unavailability into permanent credential
+loss. Leaving it costs one failed read per launch until the next successful
+`save_*` overwrites it — self-healing in the safe direction.
+
+#### Verification
+
+| what | result |
+|---|---|
+| `blob.rs` logic, run in a scratch crate over the **real file** via `#[path]` (not a copy) | **10 passed / 0 failed** |
+| file compiled by that run, sha256 | `c15aa379fe1810ecc9e0b71cde4707212b652c3268c687f827e4150952441f52` |
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | **exit 0, zero warnings** (unanchored) |
+
+The scratch crate compiles the shipping `blob.rs` **byte-identically** — the
+digest above is of the file `#[path]` pointed at — against a verbatim copy of
+the one function it names from elsewhere (`store::account_dir_segment`). Same
+pattern as `tools.rs` (1.3), `serve.rs` (1.5) and `tier_for_mobile` (2.3), and
+for the same reason: `cargo test -p cleophis` cannot build on this host.
+
+Log: `cleophis-mobile-logs/p32-aarch64-check-final-20260729-162621.log`.
+
+#### Desktop prediction: **322 → 332**, zero warnings
+
+10 new tests, **counted from the file** rather than from memory — the
+correction from 2.2, where a predicted 24 came back 29 because the count was
+made from recollection.
+
+| observed | means |
+|---|---|
+| **332** | all 10 executed on the Windows target |
+| **322** | `blob.rs` compiled but its tests did not run — the module is `#[cfg_attr(not(android), allow(dead_code))]`, and a mistake there is exactly how D-3 logic passes a gate while asserting nothing |
+| anything else | something compiled that should not have |
+
+#### 📱 CP3 — what only the device can say
+
+Predicted logcat, recorded before the run (`adb logcat -s RustStdoutStderr`, the
+same channel as `[bridge]` and `[kernels]`):
+
+| step | expected line |
+|---|---|
+| first launch, never signed in | `[secure-store] load_refresh_token: no blob stored` |
+| sign in with **remember** | `[secure-store] save_refresh_token: ok (encrypted, written)` |
+| **force-stop → relaunch** | `[secure-store] load_refresh_token: ok (blob decrypted, tag verified)` **and the app is still signed in** |
+| sign out | `[secure-store] delete_refresh_token: ok (blob removed)` |
+| relaunch after sign-out | `[secure-store] load_refresh_token: no blob stored` |
+
+Acceptance, in priority order:
+
+1. **Sign in → force-stop → relaunch → still signed in.** The point of the
+   phase, and the first exercise of the `spawn_blocking` attach path above.
+2. **Sign out → blobs purged.** `adb shell run-as com.cleophis.app ls
+   no_backup/secure/` is empty.
+3. Airplane mode → offline sign-in works against a stored verifier.
+4. No `[bridge] FAILED` and no `[secure-store]` failure line on the happy path.
+
+A mismatch is informative rather than disappointing: a `getAppClass` failure
+means packaging (R8 is off in debug); a `NoSuchMethodError` means the
+`@JvmStatic` contract; `no SecureStore key in AndroidKeyStore` on a *load* that
+should have succeeded means the key was replaced between write and read.
+
+**What CP3 still cannot say:** whether R8 leaves `SecureStore` intact in a
+release build. Debug sets `isMinifyEnabled = false`, so a green checkpoint here
+is compatible with a shipped build that signs the user out on every launch.
+That is item **1b** of `docs/ops/release-config-audit.md` — the same
+debug-proof/release-failure split as the bridge, now carrying a security
+feature instead of a diagnostic.
+
 ### 🔴 §6 privacy: the backup exclusions covered the empty set — FIXED
 
 Found while deciding where 3.2's credential blobs should live, which is the

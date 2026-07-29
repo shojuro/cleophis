@@ -23,3 +23,16 @@
 # audit to confirm on a real release artifact, alongside debuggable=false,
 # usesCleartextTraffic and the abiFilters check.
 -keep class com.cleophis.app.NativeBridge { *; }
+
+# Phase 3.2's AndroidKeyStore SecureStore — the second Kotlin entry point
+# reached only from Rust, and the first one whose loss would be a SECURITY
+# failure rather than a diagnostic one.
+#
+# Same reasoning as NativeBridge above, with a sharper consequence: if R8
+# strips blobDir/encrypt/decrypt, the release build cannot read any stored
+# credential, so every launch signs the user out — which looks exactly like a
+# keystore or migration problem and nothing like minification. The debug
+# checkpoint (sign in -> force-stop -> still signed in) passes green while the
+# shipped build fails, because isMinifyEnabled is false for debug and true for
+# release.
+-keep class com.cleophis.app.SecureStore { *; }

@@ -235,7 +235,15 @@ pub fn normalize_email(email: &str) -> String {
 /// reachable with a raw, front-end-supplied `user_id` — this is what stops
 /// `../evil` (or any other traversal/separator string) from ever reaching
 /// a `dir.join(...)` call.
-fn account_dir_segment(user_id: &str) -> Option<String> {
+///
+/// `pub(crate)` since Phase 3.2 so `secure_store::blob` can reuse it rather
+/// than add a **fourth** copy of this rule. A visibility widen, no behaviour
+/// change — the same move 1.1 made with `verify_launch`. The Android port
+/// turns a `user_id` into a filename for the first time (on desktop it was
+/// only ever a keyring entry name, where `../` is an ordinary character), and
+/// a sanitizer that disagreed with its siblings would be worse than a strict
+/// one.
+pub(crate) fn account_dir_segment(user_id: &str) -> Option<String> {
     let is_clean = !user_id.is_empty()
         && user_id
             .chars()

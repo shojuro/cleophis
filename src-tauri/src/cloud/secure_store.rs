@@ -52,6 +52,22 @@
 //! dependency and the code that uses it cannot disagree about who gets it —
 //! the coupling has one home rather than two (the etiology under D-4).
 
+// Compiled on EVERY platform, deliberately (decision D-3). Only Android has
+// blobs on disk, so on desktop this module is dead code — and that is the
+// price being paid on purpose: every rule in it (which file a secret lives in,
+// what AAD binds it there, how the on-disk envelope is framed) fails
+// **silently** when wrong, and the desktop suite is the only place in this
+// project where anything actually executes. A cross-compile `check` proves it
+// compiles, not that it is right, and nothing runs on Android until a founder
+// device checkpoint.
+//
+// The `allow` states a true, permanent platform fact rather than hiding an
+// unknown — desktop uses the OS keyring and has no file layout to derive —
+// which is this phase's standing rule for warnings: resolve on the merits,
+// never blanket-suppress.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod blob;
+
 #[cfg(not(target_os = "android"))]
 mod desktop;
 #[cfg(not(target_os = "android"))]

@@ -61,10 +61,26 @@ for n in z.namelist():
         print(n, b'Lcom/cleophis/app/NativeBridge;' in b, b'describeDevice' in b)
 ```
 
-Anything else reached only from Rust across JNI inherits this item. As of now
-that is the whole of `NativeBridge`; the `ConnectivityManager` and `ACTION_SEND`
-shims will join it, and **each new Kotlin entry point needs its own keep rule
-and its own line here.**
+Anything else reached only from Rust across JNI inherits this item. The
+`ConnectivityManager` and `ACTION_SEND` shims will join it, and **each new
+Kotlin entry point needs its own keep rule and its own line here.**
+
+#### 1b. R8 did not strip `SecureStore` — **the highest-consequence instance**
+
+- [ ] `Lcom/cleophis/app/SecureStore;` present in the release APK's dex
+- [ ] `blobDir`, `encrypt`, `decrypt` all present in the release APK's dex
+- [ ] **On the release build: sign in → force-stop → relaunch → still signed
+      in.** The dex check proves the methods survived; only this proves they
+      are reachable and working.
+
+Same mechanism as item 1, worse consequence. `NativeBridge` losing its method
+costs a diagnostic line. `SecureStore` losing its methods means the release
+build **cannot read any stored credential**, so every launch signs the user
+out — presenting as a keystore or migration bug and nothing like minification.
+And the debug device checkpoint for Phase 3.2 passes green while the shipped
+build fails, because `isMinifyEnabled` is `false` for debug and `true` for
+release. That is the ledger's debug-only-proof / release-only-failure family,
+now sitting on a security feature rather than on a probe.
 
 ### 2. Debug-only flags absent from release
 
