@@ -103,6 +103,14 @@ platform where the tests run; if only the tests, it needs the allow.*
 - **Verify against the artifact**, never the config that was meant to produce
   it. `verify-apk.py` encodes this, including the dex checks for all four
   Rust-only Kotlin entry points.
+- **The CI job is scoped `push` on `mobile/**` ONLY, and that scope is load-bearing.**
+  Adding the first workflow to this repo was a founder-gated decision; this
+  shape is what made it not need a new one. There is deliberately **no
+  `pull_request` trigger**: `pull_request.branches` filters on the TARGET
+  branch, so a PR from `mobile/p1-alpha` into `main` would match `main` and the
+  demo branch would silently inherit Android cross-compile minutes nobody asked
+  for. **If the job ever needs to run outside `mobile/**`, that is a new founder
+  decision, not a config tweak — stop and surface it.**
 - Digests **full-length, never retyped**. `CARGO_TARGET_DIR` must be
   WSL-native. Never touch `feat/english-tutor-demo`.
 

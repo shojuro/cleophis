@@ -3046,7 +3046,20 @@ made from recollection.
 | **322** | `blob.rs` compiled but its tests did not run — the module is `#[cfg_attr(not(android), allow(dead_code))]`, and a mistake there is exactly how D-3 logic passes a gate while asserting nothing |
 | anything else | something compiled that should not have |
 
-#### 3.2 gate: **GREEN** (run 20, at `0354f6c`, protocol v2) — 332/0, exact
+##### Gate deliberately SKIPPED for `c2c8105..bb01769` — with the delta stated
+
+`git diff --name-only c2c8105..bb01769` is **five files, all `docs/`** (the
+acceptance-coverage design, the guard, `check-mobile-build.sh`, the spec's
+A1–A7 amendment, this ledger). **Zero `.rs`, `.js`, `.kt`, `.xml`** — no
+compiled input, so run 21's 346/0/zero-warnings at `2305fc1` covers this tip
+and the next code chunk's gate absorbs it.
+
+Recorded with the delta attached, per the `dc082bf` precedent: **"we didn't
+re-run the suite" and "the suite cannot see this change" leave identical
+evidence unless the reason is written down.** Verified by steering
+independently rather than asserted by the agent proposing the skip.
+
+### 3.2 gate: **GREEN** (run 20, at `0354f6c`, protocol v2) — 332/0, exact
 
 **332 passed / 0 failed, zero warnings.** PRE `0354f6c`/clean → POST
 `0354f6c`/clean, all four provenance facts agreeing, so this is attributable
@@ -3870,6 +3883,24 @@ the implementing phase must create. The run-3 lesson generalises past this
 script — **a check whose own source lives inside its search space is
 self-satisfying, and the moment that becomes true may be a `git add` rather
 than an edit.**
+
+**The general form of the fix, which outlives this script: EVIDENCE MUST BE
+DEFINITION-SHAPED.** A pattern a *promise* can satisfy is not a check. Both
+false positives produced the word `ok` beside the item and both would have
+passed review — and had the guard been run once, seen green, and shipped, **a
+guard against unbuilt requirements would itself have been satisfied by unbuilt
+requirements.** Nothing else on this branch demonstrates the
+demonstrated-capable-of-failing rule as completely.
+
+**Second-order finding — the manifest became a CONTRACT, and that inverts the
+usual failure.** Definition-shaped patterns do not merely resist false
+positives; they state each requirement's **acceptance signature in advance**.
+5.1 knows before writing a line that `fn detect_thermal_*` and
+`"thermal-notice"` are what turn A7 green. The ordinary order is: build, write
+a test, discover an absence afterwards. Here the requirement declares what
+would satisfy it *first*, so the implementing phase is handed a target rather
+than a verdict. That was not designed in — it fell out of fixing run 2 — and it
+is the most reusable thing the guard produced.
 
 **The blind spot, stated so it is designed around rather than into.** A symbol
 can exist and be wired to nothing — `#chatStatusPill` existed for the whole
