@@ -88,11 +88,63 @@ ROOT = Path(__file__).resolve().parents[3]
 # Before adding or editing an entry, ask: are these the same fact spelled
 # differently, or different facts? Same fact -> one element with alternation.
 # Different facts -> separate elements.
+# ⚠⚠⚠ A THIRD ELEMENT FORM: `(root, regex)` -- SCOPED, AND ALL IN ONE FILE.
+#
+# A plain string element is searched across every root, concatenated. A
+# 2-tuple restricts the pattern to one SEARCH root, and every scoped pattern
+# sharing a root must match **the same file**.
+#
+# Added for A1, whose requirement is not "a runner exists somewhere" but "CI
+# invokes the suite" -- a distinction the flat haystack cannot express, since
+# it dissolves the question of WHERE a match came from. See A1's own note.
+#
+# The one-file rule is not decoration either: an AND spread across two files
+# is a weaker claim than an AND within one, and this manifest has already been
+# bitten five times by an AND that turned out to be satisfiable by less than
+# the requirement. Two workflows, one naming the crate and the other naming
+# the test, do not add up to a workflow that runs the test.
 ACCEPTANCE = {
+    # ⚠ RULED BY STEERING, AND THE RULING IS "READ THE REQUIREMENT LITERALLY".
+    #
+    # A1 says determinism *CI*. So the requirement is the WORKFLOW INVOCATION,
+    # not a script's existence. The old unscoped patterns could not tell the
+    # two apart, and that produced a contradiction gen-9 surfaced rather than
+    # resolved unilaterally: `docs/superpowers/mobile-tools` is a SEARCH root,
+    # so **writing the runner at all would have turned A1 GREEN** -- the exact
+    # outcome the ruling ("let A1 sit red-because-unexecuted rather than
+    # green-because-a-runner-exists") forbids.
+    #
+    # Scoped to `.github/workflows`, both consequences follow at once: a runner
+    # may be written without faking the gate green, and A1 stays red for the
+    # TRUE reason -- CI does not run the suite, pending the founder's
+    # model-hosting decision, which the red keeps live rather than foreclosing.
+    #
+    # The rejected alternative was a committed result artifact (sha + date +
+    # pass/fail) that only a real execution can write, with A1 requiring the
+    # runner AND the artifact. Steering rejected it, and the caveat that made
+    # it rejectable is this ledger's own: a committed result is PERISHABLE
+    # EVIDENCE, and a guard whose green depends on a file's freshness goes
+    # stale silently.
+    #
+    # What it still does NOT catch, stated so nobody reads more into the green
+    # than is there: a workflow step can invoke the suite and the suite can
+    # SKIP. Both tests in `crates/kpack-embed/tests/build_determinism.rs` are
+    # `#[ignore]`d and `return` early with `eprintln!("SKIPPED: model missing")`,
+    # so even `--ignored` makes them pass while asserting nothing. That is D-6's
+    # own boundary -- the acceptance item that warns about unexecuted suites can
+    # itself be satisfied by an unexecuted suite -- and it is why the runner,
+    # when it is written, must refuse to start without the GGUF and must reject
+    # output containing `SKIPPED:` or a zero test count.
     'A1': (
-        [r'cargo test -p kpack-embed', r'build_determinism'],
-        'the determinism gate is claimed but no runner invokes it -- CI would be '
-        'green without ever having run the suite it is named for',
+        [('.github/workflows', r'cargo test -p kpack-embed'),
+         ('.github/workflows', r'build_determinism')],
+        'the determinism gate is claimed but NO CI WORKFLOW INVOKES IT -- CI '
+        'would be green without ever having run the suite it is named for. '
+        'NOTE the two clauses are scoped to `.github/workflows` and must land '
+        'in ONE file: a runner script under mobile-tools no longer satisfies '
+        'this item, deliberately, because A1 asks for determinism *CI* and a '
+        'script that nothing calls is exactly the green this red is worth '
+        'more than',
     ),
     # ⚠ BUG 4's SHAPE, FIFTH AND LAST INSTANCE -- found by auditing the siblings
     # after A7's split, not by a failure.
@@ -277,14 +329,20 @@ EVIDENCE_SUFFIXES = ('.rs', '.js', '.mjs', '.kt', '.xml', '.py', '.sh', '.toml',
                      '.json', '.pro', '.gradle', '.kts', '.yml', '.yaml')
 
 
-def haystack() -> str:
-    """Every tracked IMPLEMENTATION file in the search roots, concatenated.
+def files_by_root() -> dict:
+    """root -> the CONTENTS of every tracked implementation file under it.
 
     `git ls-files` rather than a walk: untracked scratch must never satisfy an
     acceptance item, or the guard goes green on a file nobody will review.
+
+    Keyed by root, and per file rather than pre-joined, because a scoped
+    pattern needs to know where a match came from and a same-file AND needs
+    the file boundaries. `haystack()` is the flat view over this, so the two
+    cannot disagree about which files count -- one home for that fact.
     """
-    out = []
+    by_root = {}
     for root in SEARCH:
+        by_root[root] = []
         if not (ROOT / root).exists():
             continue
         files = subprocess.run(['git', 'ls-files', '-z', root], cwd=ROOT,
@@ -312,14 +370,57 @@ def haystack() -> str:
             if (ROOT / rel).resolve() == Path(__file__).resolve():
                 continue
             try:
-                out.append((ROOT / rel).read_text(errors='ignore'))
+                by_root[root].append((ROOT / rel).read_text(errors='ignore'))
             except (OSError, UnicodeDecodeError):
                 continue
-    return '\n'.join(out)
+    return by_root
+
+
+def haystack(by_root: dict) -> str:
+    """Every tracked implementation file in every root, concatenated.
+
+    Still CONTENTS ONLY and still never a path -- the property two people once
+    got wrong in the same way about this function, and the reason the A2
+    write-up had to be corrected in both of its homes. `rel` is used to filter
+    by suffix and to exclude this file; it is never matched against.
+    """
+    return '\n'.join(t for texts in by_root.values() for t in texts)
+
+
+def unmatched(patterns, by_root: dict, hay: str) -> list:
+    """Which of `patterns` nothing satisfies. Plain strings search everything;
+    `(root, regex)` tuples are scoped, and all tuples sharing a root must be
+    satisfied by ONE file in it."""
+    missing = [p for p in patterns
+               if isinstance(p, str) and not re.search(p, hay, re.I)]
+
+    scoped = {}
+    for p in patterns:
+        if not isinstance(p, str):
+            scoped.setdefault(p[0], []).append(p[1])
+
+    for root, pats in scoped.items():
+        texts = by_root.get(root, [])
+        if any(all(re.search(p, t, re.I) for p in pats) for t in texts):
+            continue
+        # Two different failures, reported as two different things. "Nothing
+        # anywhere says this" and "everything is here but scattered across
+        # files" have different fixes, and collapsing them would make the
+        # second look like the first.
+        absent = [p for p in pats
+                  if not any(re.search(p, t, re.I) for t in texts)]
+        if absent:
+            missing.extend(f'{root} :: {p}' for p in absent)
+        else:
+            missing.append(
+                f'{root} :: {pats} all appear under this root but NEVER IN ONE '
+                f'FILE -- an AND spread across files is not the AND this asks for')
+    return missing
 
 
 def main() -> int:
-    hay = haystack()
+    by_root = files_by_root()
+    hay = haystack(by_root)
     unbuilt, satisfied, skipped = [], [], []
 
     # Non-short-circuiting on purpose: report EVERY unbuilt item in one run.
@@ -328,7 +429,7 @@ def main() -> int:
         if aid in NOT_CHECKABLE:
             skipped.append((aid, NOT_CHECKABLE[aid]))
             continue
-        missing = [p for p in patterns if not re.search(p, hay, re.I)]
+        missing = unmatched(patterns, by_root, hay)
         if missing:
             unbuilt.append((aid, missing, consequence))
         else:

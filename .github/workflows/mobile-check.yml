@@ -87,7 +87,7 @@ jobs:
       # llama-cpp-sys-2 reads ANDROID_NDK_ROOT/NDK_ROOT/ANDROID_NDK, NOT the
       # ANDROID_NDK_HOME that cargo-ndk sets — a Phase 0 build blocker whose
       # error message blamed the SDK. All four are exported for that reason.
-      - name: aarch64 check
+      - name: aarch64 check (dev)
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
@@ -95,6 +95,37 @@ jobs:
           ANDROID_NDK: ${{ steps.ndk.outputs.ndk-path }}
         working-directory: src-tauri
         run: cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets
+
+      # ── AND THE PROFILE THAT ACTUALLY SHIPS ───────────────────────────────
+      #
+      # Not redundant with the step above, and the evidence is a measurement
+      # rather than an argument: on one tree the dev check returned exit 0 with
+      # ZERO warnings while `--release` on the same tree returned SIX dead-code
+      # warnings -- items whose only caller is `cfg(all(mobile,
+      # debug_assertions))`. With `-D warnings` set for this job, that is the
+      # difference between a green build and a red one.
+      #
+      # The trap is worse than it looks because Phase 4 is deferred, so nothing
+      # else on this branch builds release for weeks at a time. A dev-only CI
+      # job would let debug-gated code accumulate in the dark and hand the
+      # whole bill to whoever finally cuts a release.
+      #
+      # It has already caught a second instance since: A3's reported shapes
+      # were kept compiled on every platform on the theory that the command's
+      # signature and their `Serialize` derives would keep them alive. Release
+      # said otherwise -- "variants ... are never constructed", with rustc's
+      # note that derived impls are ignored by dead-code analysis.
+      #
+      # Cheap, because the dev step above has already warmed the registry, the
+      # NDK and the git checkouts; only the codegen differs.
+      - name: aarch64 check (release — the profile that ships)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK: ${{ steps.ndk.outputs.ndk-path }}
+        working-directory: src-tauri
+        run: cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release
 
 # ── WHAT THIS JOB CANNOT TELL YOU ────────────────────────────────────────────
 #
@@ -109,3 +140,16 @@ jobs:
 #   * It does not link, package, sign, or run anything on a device. The
 #     alignment probe (H2) and the APK checks live in check-mobile-build.sh and
 #     verify-apk.py, which need artifacts this job does not produce.
+#   * IT DOES NOT RUN THE EMBEDDER DETERMINISM SUITE, and that is why
+#     acceptance item A1 is red. The suite's clauses are scoped to this
+#     directory precisely so the red means "CI does not run it" rather than "no
+#     script exists" -- see A1's note in acceptance-coverage.py. Turning it
+#     green means adding a step here, which needs the founder's decision about
+#     hosting a 118 MB GGUF in CI; the red is what keeps that decision live.
+#
+#     (Deliberately worded WITHOUT the literal strings A1 matches on. A guard
+#     clause is satisfiable by a comment quoting it -- measured: A3 reported
+#     `ok` against a file containing three lines of doc comment and no
+#     implementation at all -- so a well-meaning explanation here would have
+#     turned A1 green while nothing ran. The scoping makes this file the one
+#     place where that mistake is possible.)
