@@ -4044,6 +4044,29 @@ guard is not a compiled input and HEAD held at `f9ecfe1` at both ends.
 input — the comment-strip, probe 4's split (+2 fixtures) and the ledger — so the
 current expectation is **387**, and that gate has not been run.
 
+### ⚑ 5.2 GATE, SECOND RUN: **GREEN — 387 total, prediction exact** (at HEAD after probe 4)
+
+386 passed / 1 failed / **21 probe fixtures observed by name**. The single
+failure is `cloud::rest::tests::create_portal_session_request_shape`, the
+documented mock-server flake family; it passed in isolation in 0.32 s
+immediately after (protocol step 2), and the standing rule is that only
+non-cloud or isolation-reproducible failures block. Zero warnings.
+
+**Both new probe-4 tests present by name** — `a_dose_with_no_escalation_fails`
+and `a_dose_with_an_escalation_is_undecided_not_a_fail` — so the **385 branch
+of the discriminator table is excluded by observation**, not by arithmetic.
+That is the second consecutive gate where the prediction's value was the
+*names*, not the number.
+
+**POST carried an `M` on the ledger.** Docs-only, verdict unaffected, and
+steering has asked that this be noted rather than relitigated — so, noted.
+The one thing that must not be lost in the noting: this is the **fourth
+consecutive run** whose POST delta happened to be inert. *"The delta happened
+to be inert" is not a property anyone could know in advance*, and recording it
+each time is what keeps it from becoming a precedent. The standing
+recommendation stands unarged: **gate the handshake on `porcelain_exit 0` at
+issuance** — a state either party can verify — rather than on recollection.
+
 ### 5.2 A3 — the Stage-5 adjudicator (gen-10)
 
 `src-tauri/src/engine_inproc/probes.rs` (the judgement, pure, D-3) plus
@@ -5332,6 +5355,30 @@ the implementing phase must create. The run-3 lesson generalises past this
 script — **a check whose own source lives inside its search space is
 self-satisfying, and the moment that becomes true may be a `git add` rather
 than an edit.**
+
+**⚑ THE SECOND GENERAL FORM, added by gen-10 after A2's swap: A CLAUSE MUST
+NAME A BEHAVIOUR, NEVER AN ARTIFACT.** The guard reads *contents*, so a clause
+naming a **filename** is not a content fact at all — and one principle then
+explains both of A2's pathologies, which had looked like opposite bugs:
+
+| | `airplane-mode\.sh` as a clause | |
+|---|---|---|
+| before comment stripping | **false GREEN** | satisfied by usage lines in comments (`#   ./airplane-mode.sh --soak 60`) |
+| after comment stripping | **false RED** | nothing in *code* says its own filename, so a complete, verified harness could not go green |
+
+It was never load-bearing in a useful direction. `verify_egress_works *\(`
+replaces it — and the swap is a *strengthening* rather than a repair, because
+that function is the **positive control**: A2's green now depends on the clause
+that makes the suite mean anything, since a probe never demonstrated capable of
+succeeding proves nothing by failing.
+
+**The four controls, guard byte-identical (`67cec37c…`):** real harness → `ok`;
+harness untracked → FAIL; a stub printing *"Please enable airplane mode"* — the
+forbidden implementation A2's own consequence string names → FAIL; and the
+load-bearing one, **the positive control removed from CODE with its prose
+mention deliberately left in** → FAIL naming exactly that clause. The last does
+double duty: the surviving comment did not carry the clause, which
+re-demonstrates comment stripping on a second item.
 
 **The general form of the fix, which outlives this script: EVIDENCE MUST BE
 DEFINITION-SHAPED.** A pattern a *promise* can satisfy is not a check. Both
