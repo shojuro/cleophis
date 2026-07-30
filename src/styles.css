@@ -78,6 +78,13 @@ nav.top button.active{color:var(--teal)}
    `display:grid` would override this item's `display:block`. */
 #thermalSelftestBtn{display:none}
 .is-mobile.is-debug #thermalSelftestBtn{display:block}
+/* A3 debug affordance (spec §11 A3). Same two guards and the same `is-debug`
+   class: both commands are gated on `all(mobile, debug_assertions)`, so that
+   class means exactly "this is a mobile debug build" and one availability
+   probe answers for both. A second probe would be a second home for one fact
+   (D-4) and a second thing to get wrong. */
+#stage5ProbeBtn{display:none}
+.is-mobile.is-debug #stage5ProbeBtn{display:block}
 .profilemenu-item.danger{color:var(--heavy)}
 .profilemenu-item.danger:hover{background:rgba(226,104,95,.12)}
 /* offline-auth: sign-up password-strength meter */

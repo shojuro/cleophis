@@ -422,6 +422,114 @@ mod imp {
     pub(super) fn chat_cancel(request_id: String, app: AppHandle) {
         app.state::<ChatCancels>().cancel(&request_id);
     }
+
+    /// A3 — run the Stage-5 probe set through the **shipped engine path** and
+    /// adjudicate it.
+    ///
+    /// # Why this is here and not in `examples/probe.rs`
+    ///
+    /// §11 A3 asks for the probes *in-app*. The CLI harness links its own
+    /// `LlamaEngine`, sends its own system prompt and never sees the tools
+    /// preamble, the tool loop or `ThinkStripper` — so a green from it says
+    /// nothing about what a user gets. This calls [`chat_complete`], the same
+    /// entry point auto-title uses, so every arm goes through the real
+    /// composed stack, the real template resolution and the real suppressor.
+    ///
+    /// One consequence, stated because it makes transcripts differ from the
+    /// CLI's: `to_loop_messages` appends the tool contract to the system turn.
+    /// That is what the shipped path does, so it is what the gate must measure.
+    ///
+    /// Each arm is `chat_key: None` — a transient turn that neither inherits a
+    /// prefix nor leaves one — which is the in-app equivalent of the CLI's
+    /// fresh session per probe. Six arms in sequence, no interleaving, because
+    /// the inference thread serves one turn at a time anyway.
+    #[cfg(debug_assertions)]
+    pub(super) async fn stage5_probe(
+        app: AppHandle,
+    ) -> Result<crate::engine_probes::Verdict, String> {
+        use crate::engine_probes::adjudicate::{
+            probe_verdict, render, Transcript, STAGE5_ARMS,
+        };
+
+        // `?`, not a default. A probe run whose system prompt was invented by
+        // the harness measures a configuration no user runs, and it would look
+        // exactly like a real result.
+        let system = crate::inference::hero_system_prompt(&app).ok_or_else(|| {
+            "the catalog hero declares no systemPrompt, so there is nothing to \
+             probe the behavioural adapter WITH — this would measure a \
+             configuration no user ever runs"
+                .to_string()
+        })?;
+        let stack = stack_label(&app);
+        eprintln!("[stage5] running {} arms against {stack}", STAGE5_ARMS.len());
+
+        let mut transcripts = Vec::with_capacity(STAGE5_ARMS.len());
+        for spec in STAGE5_ARMS {
+            let messages = vec![
+                WireMessage {
+                    role: "system".to_string(),
+                    content: system.clone(),
+                },
+                WireMessage {
+                    role: "user".to_string(),
+                    content: spec.prompt.to_string(),
+                },
+            ];
+            let reply = chat_complete(messages, app.clone()).await?;
+            // Printed BEFORE adjudication, and in full. The verdicts below are
+            // this module's opinion; the transcript is the evidence, and the
+            // founder session exists partly to calibrate the former against
+            // the latter.
+            eprintln!("[stage5] ===== {} =====", spec.label);
+            eprintln!("[stage5] Q: {}", spec.prompt);
+            eprintln!("[stage5] A: {}", reply.trim());
+            transcripts.push(Transcript {
+                probe: spec.probe,
+                arm: spec.arm,
+                reply,
+            });
+        }
+
+        let verdict = probe_verdict(&transcripts, &stack);
+        eprint!("{}", render(&verdict));
+        Ok(verdict)
+    }
+
+    /// What the probes actually ran against, for [`Verdict::stack`].
+    ///
+    /// §11 A3: "Run against the full composed stack (§0); a probe run against
+    /// a reduced stack is a different gate and is labeled as such." So a
+    /// missing adapter is named in the label rather than being invisible —
+    /// the transcript of a base-only run looks like any other transcript, and
+    /// nothing else in the output would say which gate it was.
+    #[cfg(debug_assertions)]
+    fn stack_label(app: &AppHandle) -> String {
+        let Some(launch) = crate::inference::resolve_launch(app) else {
+            return "UNRESOLVED (no launchable hero on disk)".to_string();
+        };
+        let base = |p: &std::path::Path| {
+            p.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "?".to_string())
+        };
+        let label = |slot: &Option<std::path::PathBuf>| match slot {
+            Some(p) => base(p),
+            None => "ABSENT".to_string(),
+        };
+        let reduced = launch.behavioral_lora.is_none() || launch.contract_lora.is_none();
+        format!(
+            "base={} + behavioral={} + contract={}{}",
+            base(&launch.model),
+            label(&launch.behavioral_lora),
+            label(&launch.contract_lora),
+            if reduced {
+                "  [REDUCED STACK — §11 A3: a different gate from the full \
+                 composed stack, and must not be reported as the A3 result]"
+            } else {
+                ""
+            }
+        )
+    }
 }
 
 /// Stream one chat turn, emitting [`ChatEvent`]s on `on_event`.
@@ -592,6 +700,81 @@ pub fn chat_thermal_selftest(
         return Err(DESKTOP_REFUSAL.to_string());
         #[cfg(not(desktop))]
         return Err("the thermal selftest is a debug-build affordance and is \
+                    compiled out of release builds"
+            .to_string());
+    }
+}
+
+/// **A3 — the Stage-5 behavioural probes, in-app** (spec §11 A3;
+/// `adapter-distribution-design.md` §8).
+///
+/// `run: false` is the availability probe, in Q1's mould: it changes nothing,
+/// generates nothing, and answers only whether this build has the affordance.
+/// A release APK refuses it, so no control is ever presented that would only
+/// fail.
+///
+/// `run: true` sends six prompts through the shipped engine path and returns
+/// the adjudicated [`crate::engine_probes::Verdict`], having also written the
+/// full transcripts and the verdicts to logcat under `[stage5]`.
+///
+/// # ⚠ EVIDENCE SCOPE — what a green here does and does not mean
+///
+/// **It means:** on this device, through the real composed stack, the real
+/// template and the real suppressor, the adapter declined a mathematician who
+/// does not exist *while describing one who does*, disputed `5 + 5 = 9`,
+/// conceded a correct correction, and refused to dose a cardiac emergency
+/// *while answering a benign health question*. The paired arms are what make
+/// each of those a statement about behaviour rather than about a disposition
+/// to refuse.
+///
+/// **It does not mean `4/4`.** Three probes are machine-decided; probe 3 is
+/// machine-screened and the founder still owes it an answer — see
+/// [`crate::engine_probes::adjudicate::CONCESSION_HUMAN_QUESTION`]. Any probe
+/// whose evidence is contradictory comes back `UNDECIDED`, which is neither a
+/// pass nor a fail and must be reported as its own thing.
+///
+/// **It says nothing about a stack it did not run on.** [`Verdict::stack`]
+/// carries what was actually loaded, and labels a reduced stack as the
+/// different gate §11 says it is.
+///
+/// # Cost
+///
+/// Six prompts. At the A22's measured ~8 tok/s that is under a minute of
+/// device time — less than connecting the phone. The percentage this was first
+/// quoted as ("+75%") was true and misleading, which is now a Convention.
+///
+/// # Why the return type is a `Value` and not `Verdict`
+///
+/// `crate::engine_probes` is compiled out of release entirely, so a signature
+/// naming `Verdict` would not exist in every configuration this command does.
+/// The alternative — keeping the shapes compiled everywhere — was tried and
+/// **measured wrong**: `--release` reported their variants as never
+/// constructed, because a signature names a type without constructing one and
+/// dead-code analysis ignores derived impls. The typing that matters is kept
+/// where it can be: [`imp::stage5_probe`] returns a real `Verdict` and only
+/// the IPC boundary, which is JSON regardless, sees the erased form.
+#[tauri::command]
+pub async fn chat_stage5_probe(
+    run: bool,
+    app: AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    #[cfg(all(mobile, debug_assertions))]
+    {
+        if !run {
+            return Ok(None);
+        }
+        let verdict = imp::stage5_probe(app).await?;
+        return serde_json::to_value(verdict)
+            .map(Some)
+            .map_err(|e| format!("the Stage-5 verdict could not be serialised: {e}"));
+    }
+    #[cfg(not(all(mobile, debug_assertions)))]
+    {
+        let _ = (run, app);
+        #[cfg(desktop)]
+        return Err(DESKTOP_REFUSAL.to_string());
+        #[cfg(not(desktop))]
+        return Err("the Stage-5 probe run is a debug-build affordance and is \
                     compiled out of release builds"
             .to_string());
     }

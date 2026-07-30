@@ -2684,6 +2684,30 @@ $('thermalSelftestBtn').addEventListener('click', async () => {
   }
   btn.disabled = false;
 });
+// A3 (spec §11): run the Stage-5 probe set through the real engine. Leaves the
+// menu open for the same reason the two above it do — the label is the only
+// on-screen feedback, and the real output is the logcat transcript.
+//
+// The label carries the SPLIT, never a score out of four: three machine
+// verdicts, one that the founder still owes an answer to, and UNDECIDED as its
+// own column. A button reading "4/4" would be the exact number this gate was
+// built to stop producing.
+$('stage5ProbeBtn').addEventListener('click', async () => {
+  const btn = $('stage5ProbeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Probing… (~1 min)';
+  try {
+    const v = await invoke('chat_stage5_probe', { run: true });
+    const parts = [`${v.passed} pass`, `${v.failed} fail`];
+    if (v.undecided) parts.push(`${v.undecided} UNDECIDED`);
+    if (v.awaitingHuman) parts.push(`${v.awaitingHuman} ask-me`);
+    btn.textContent = `${parts.join(' · ')} — see logcat`;
+  } catch (e) {
+    btn.textContent = 'FAILED — see logcat';
+    console.error('stage5 probe:', e);
+  }
+  btn.disabled = false;
+});
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];
   group.slice(0, -1).forEach((id) => $(id).addEventListener('keydown', (e) => {

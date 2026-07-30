@@ -508,6 +508,29 @@ pub(crate) fn hero_chat_template(app: &AppHandle) -> Option<String> {
     hero.chat_template.clone()
 }
 
+/// The hero's catalog `systemPrompt` — what a real chat turn is prefixed with,
+/// and therefore what the A3 Stage-5 probes must be prefixed with too.
+///
+/// The behavioural adapter is trained to answer to this prompt; probing the
+/// stack without it measures a configuration no user ever runs. Read from the
+/// catalog rather than passed in by the caller for the same reason
+/// [`hero_chat_template`] is: a system prompt supplied by the probe harness is
+/// a second home for a fact that already has one, which is the D-4 trap.
+///
+/// `cfg`-gated to its only caller (`chat_cmds::chat_stage5_probe`, a debug-only
+/// mobile command) rather than carrying a dead-code allow, so it is compiled
+/// out of the profile that ships — the call D-3's amendment makes for an
+/// affordance rather than for logic. The cost is that the desktop suite never
+/// executes it; it is five lines and a clone of the function above it.
+#[cfg(all(mobile, debug_assertions))]
+pub(crate) fn hero_system_prompt(app: &AppHandle) -> Option<String> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    hero.system_prompt.clone()
+}
+
 fn hero_hash(
     app: &AppHandle,
     pick: impl Fn(&crate::catalog::ResolvedHero) -> Option<String>,

@@ -90,6 +90,38 @@ mod engine_tool_loop;
 #[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/thermal.rs"]
 mod engine_thermal;
+/// The A3 Stage-5 probe adjudicator (spec §11 A3) — the decision half.
+/// Declared here for the same reason as its four neighbours: `probe_verdict`
+/// is a pure `&[Transcript] -> Verdict`, its failure modes are a `4/4` on a
+/// broken adapter and a false red on a good one, and **neither raises an
+/// error**. The running of the probes stays in `chat_cmds`, where the engine
+/// is; the judgement is here, where the fixtures execute it.
+///
+/// GATED, NOT ALLOWED, for the release half — and the gate is on the whole
+/// module because **release measured it that way**. The first attempt kept the
+/// reported shapes (`Verdict`, `Outcome`, `ProbeId`, …) compiled everywhere on
+/// the theory that the command's signature and their `Serialize` derives would
+/// keep them alive. `cargo ndk check --release` disagreed, in writing:
+/// *"variants `FakeEntity`, `Arithmetic`, `Concession` and `Medical` are never
+/// constructed"*, plus two more, with the explicit note that **derived impls
+/// are intentionally ignored during dead-code analysis**. A signature names a
+/// type; it does not construct one. The command therefore hands the frontend a
+/// `serde_json::Value`, which exists in every configuration, and this whole
+/// module is absent from the profile that ships — which is also the stronger
+/// property: a release APK cannot contain the probe prompts at all.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `chat_cmds::chat_stage5_probe`'s body is
+/// `cfg(all(mobile, debug_assertions))`, so the code is live where it runs and
+/// dead only on desktop, where the fixtures are its only callers.
+///
+/// `test` sits beside `debug_assertions` so the desktop suite still runs the
+/// fixtures under `cargo test --release`.
+#[cfg(any(debug_assertions, test))]
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/probes.rs"]
+mod engine_probes;
 mod hardware;
 mod inference;
 mod kpack;
@@ -360,6 +392,7 @@ pub fn run() {
             chat_cmds::chat_cancel,
             chat_cmds::chat_thermal_state,
             chat_cmds::chat_thermal_selftest,
+            chat_cmds::chat_stage5_probe,
             mobile_native::network_state,
             mobile_native::share_chat,
             mobile_native::set_screen_privacy
