@@ -3,14 +3,42 @@
 Written outside the worktree deliberately, so it survives whatever happens to
 the branch or the session.
 
-**State: `mobile/p1-alpha` @ `f8517f1e73d161391c282b70afb59d3763eac442`, tree
+**State: `mobile/p1-alpha` @ `6f56024dca7c5728aee29b546efdd3c527edc41b`, tree
 clean, `porcelain_exit 0`.** Nothing is half-written. Every item below is either
 committed and verified, or explicitly not started.
 
 **5.1 IS CLOSED.** Steering ruled option 1 on the notification question: both
 the download notification and the runtime permission request are deferred, and
 the consequence is recorded as two distinct items in the ledger's Phase 5
-section. Your next task is **A2**, not 5.1.
+section. Do not reopen it.
+
+**Last gate: 359/0, zero warnings, at `616ee1b`.** Two commits landed after it
+(`f8517f1`, `41d7af3`) plus this document's own; none touched compiled code
+except `run-logged.sh`, which is a new script with no callers in the build.
+
+## START HERE — one small build, then A2
+
+**Build the Q1 synthetic-slowdown affordance.** It is fully designed in the
+ledger (Phase 5, "A7 THERMAL SOAK") and steering has asked for it explicitly as
+founder-ask preparation. It is the highest value-per-line item outstanding: a
+debug-only injection of a synthetic slowdown into the detector's input, so the
+founder can prove *detection → event → UI copy* in five seconds on a **cold**
+phone. That converts the one soak outcome that would otherwise be
+uninterpretable.
+
+⚠ **State its evidence scope when you build it:** a synthetic injection does
+**not** prove `on_token` is called once per token at the raw sampler sink. Only
+real generation exercises that wiring. Say so in the doc comment, or someone
+will read a green Q1 as covering Q2.
+
+Implementation note you will hit immediately: `ThermalWatch` lives on the
+inference thread inside an `Rc<RefCell<ThermalProbe>>`, which is **not**
+reachable from a Tauri command thread. Two honest options — a shared flag in
+managed state that `ThermalProbe` reads and uses to offset its clock during a
+real turn (proves more, needs a turn in flight), or a command that builds its
+own `ThermalWatch`, feeds it synthetic gaps and emits whatever notice results
+(simpler, no turn needed, proves strictly less). Pick deliberately and write
+down which, because the difference *is* the evidence scope.
 
 ---
 
@@ -177,9 +205,19 @@ wants one coherent session. Currently queued:
 - CI is push-only on `mobile/**`. Widening it is a **founder** decision — stop
   and surface, do not tweak the config.
 - Founder items surfaced are never attempted.
-- Gate protocol v2: a freeze binds **unconditionally**. An approval that arrives
-  during a freeze takes effect at thaw, never before. I held four rulings that
-  way this session and it cost nothing.
+- Gate protocol v2, now **three** rules — see Conventions:
+  1. The frozen party holds **unconditionally**; an approval arriving mid-freeze
+     takes effect at thaw. I held four rulings that way this session, at no cost.
+  2. *Steering's:* a freeze message carries the freeze and **nothing
+     actionable**. Both earlier breaches happened because work arrived inside
+     the message ordering the hold.
+  3. *New, from this session:* a freeze needs a **handshake** — steering does
+     not start a gate until the frozen party has acknowledged. A gate ran here
+     against a tree I was still editing, because the freeze and thaw messages
+     reached me in one batch *after* the edits. That was a delivery race, not a
+     compliance failure, and no rule about diligence can fix it. **Acknowledge
+     freezes explicitly**, so the record answers "was it frozen?" instead of
+     leaving it inferred from timestamps.
 - Digests full-length, never retyped. `CARGO_TARGET_DIR` WSL-native.
 - Commit convention `feat(mobile-p1)` / `fix(mobile-p1)`, ending:
   `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`
