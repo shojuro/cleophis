@@ -55,6 +55,19 @@ jobs:
       - name: D-6 — acceptance coverage
         run: python3 docs/superpowers/mobile-tools/acceptance-coverage.py
 
+      # The aarch64 CPU arch floor decides which PHONES the product runs on, and
+      # it necessarily lives in three files (the vendored build.rs, the script
+      # that reproduces that patch, and the Kotlin pre-load gate, which runs
+      # before any Rust exists and so cannot ask). Setting the floor to
+      # armv8.2-a+dotprod excluded a Cortex-A73 phone from spec §3's own named
+      # floor-device class with a SIGILL; a gate that disagrees with the build
+      # either lets that through or blocks a phone that would have worked.
+      #
+      # Seconds, no toolchain, and it belongs in this job for the same reason
+      # the others do: it is knowable without compiling anything.
+      - name: CPU arch floor — one value, three homes
+        run: python3 docs/superpowers/mobile-tools/check-cpu-floor.py
+
   # ── The aarch64 cross-compile ─────────────────────────────────────────────
   mobile-check:
     runs-on: ubuntu-latest

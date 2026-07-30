@@ -73,12 +73,17 @@ fn shared_backend() -> Result<&'static LlamaBackend, EngineError> {
     Ok(BACKEND.get_or_init(|| backend))
 }
 
-/// The compiled + runtime-detected CPU kernel features llama.cpp reports
+/// The **compile-time** CPU kernel macros llama.cpp reports
 /// (`llama_print_system_info`): NEON, ARM_FMA, DOTPROD, MATMUL_INT8 (i8mm),
-/// LLAMAFILE, AVX2, etc. Printed at harness startup so a device transcript
-/// **self-evidences** whether ARM SIMD kernels are active — a build compiled
-/// baseline-only (no `+dotprod`/`+i8mm`) shows those features missing and,
-/// together with the tok/s, makes a scalar build unmistakable (spec H3).
+/// LLAMAFILE, AVX2, etc.
+///
+/// 🔴 **This is a build constant, not a device fact.** It reports
+/// `__ARM_FEATURE_DOTPROD` and friends — the macros the C compiler had — so on
+/// this project's aarch64-android build (vendored `armv8.2-a+dotprod` patch) it
+/// prints `DOTPROD = 1` on **every** device, including one that then takes
+/// SIGILL on a dotprod instruction. It did exactly that on a Galaxy A51.
+/// Callers must pair it with [`crate::cpu::runtime_cpu`]; [`print_kernel_report`]
+/// is the wiring that makes doing so the default.
 pub fn backend_system_info() -> String {
     // Initialize the backend before querying (no-op if already done).
     let _ = shared_backend();
@@ -91,6 +96,28 @@ pub fn backend_system_info() -> String {
         }
         std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
+}
+
+/// Print the CPU capability block: what the silicon implements, what the binary
+/// was compiled to require, and the verdict between them.
+///
+/// **Two `eprintln!`s, not one, and that is the property.** The runtime line is
+/// emitted before `backend_system_info()` is called, so it reaches the log
+/// before anything of llama.cpp's runs. On a device whose CPU the build does
+/// not match, backend initialisation is itself a candidate for SIGILL — and a
+/// diagnostic that only prints after it would be silent on precisely the
+/// devices it exists for.
+///
+/// Use this instead of `eprintln!("[kernels] {}", backend_system_info())`. That
+/// line was the project's most load-bearing diagnostic and it could not print a
+/// failing value; the composition here is what makes the honest form the easy
+/// one, per the standing lesson that a rule which must be remembered at the
+/// moment of use will not be.
+pub fn print_kernel_report() {
+    let runtime = crate::cpu::runtime_cpu();
+    eprintln!("{}", crate::cpu::runtime_line(runtime));
+    let info = backend_system_info();
+    eprintln!("{}", crate::cpu::verdict_block(&info, runtime));
 }
 
 /// The real `llama-cpp-2`-backed engine. Stateless factory over the shared

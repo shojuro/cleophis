@@ -4474,6 +4474,267 @@ has errexit suspended for its entire body (measured too), so it would have given
 no protection precisely where the per-device work happens, while looking as
 though it did.
 
+## 🔴 5.5 — THE ARMv8.0 SIGILL, AND THE DIAGNOSTIC THAT COULD NOT REPORT IT (gen-11)
+
+The most serious defect found on this track, and the reason nobody found it
+earlier is a second defect in the instrument that was supposed to.
+
+### The defect
+
+**`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod` SIGILLs on ARMv8.0 devices.** Measured
+on the founder's Galaxy A51 (SM-A515F, Exynos 9611, Cortex-A73 + A53, 7.7 GB,
+Android 13): the model loads, the LoRA loads, the graph reserves, and the
+process exits **132 — 128 + 4 — at the first inference**.
+
+The failure shape is the worst available: the user downloads 800 MB and types a
+message before anything goes wrong.
+
+**It is not one phone.** Spec §3 defines the Android floor device as "a 4–6 GB
+budget phone (Xiaomi Redmi / Samsung A-series class, 2–4 years old)". The A51 is
+a literal instance. The build excluded the class the product targets.
+
+**Two independent kill paths, not one**, and the second is the one that would
+have survived a narrower fix:
+
+1. `+dotprod` licenses `sdot`/`udot`. The A73 does not implement them.
+2. The **`armv8.2-a` LEVEL** makes ARMv8.1 LSE atomics mandatory, so the
+   compiler may emit `casal`/`ldadd` **anywhere in llama.cpp's C sources**, not
+   only in SIMD kernels — and **llama.cpp reports no feature flag for LSE at
+   all**. The A51's `/proc/cpuinfo` Features line has no `atomics`.
+
+So a fix that only removed `+dotprod` while staying at `armv8.2-a` would have
+looked correct, printed a clean kernel line, and still crashed. The generalised
+form is worth more than the incident:
+
+> **An `-march` floor licenses instructions across the WHOLE translation unit,
+> while a feature-flag report describes only the kernels somebody chose to
+> report. The second is a strict, unmarked subset of the first.**
+
+The original reasoning here was not careless — it was *specific and one
+architecture generation short*. The vendor script argued from Cortex-A55, "the
+4–6 GB budget floor tier through ~2023", which does have dotprod. A55 was the
+wrong floor; A73 is older, bigger, and in the same market segment.
+
+### 🔴 The check that could not fail, confirmed by reading the producer
+
+`[kernels] … DOTPROD = 1` **printed on the A51 seconds before it SIGILL'd on a
+dotprod instruction.** P0's standing rule was *"DOTPROD = 1 or the numbers are
+invalid"*. That rule was never evidence about a device and **could never print
+0**.
+
+Established by reading the tool rather than re-running it, per the standing
+Convention — `ggml/src/ggml-cpu/ggml-cpu.c:3723`:
+
+```c
+int ggml_cpu_has_dotprod(void) {
+#if defined(__ARM_ARCH) && defined(__ARM_FEATURE_DOTPROD)
+```
+
+Pure compile-time, and the vendored patch defines that macro on every
+aarch64-android build. Worse, `ggml_backend_cpu_get_features` pushes an entry
+only *inside* `if (ggml_cpu_has_X())` and always with the literal `"1"` — so a
+feature that is off is **omitted**, never printed as `= 0`. The string is
+structurally incapable of carrying a negative.
+
+This is the branch's *seventh* check-that-passes-for-the-wrong-reason, and the
+first one located in a **diagnostic** rather than in a guard. New form:
+
+> **A self-report is not a measurement. Ask what value would appear if the
+> thing were false — and if the answer is "the same value", it is a build
+> constant being read back to the person who set it.**
+
+The A22's recorded 6.6–8.2 tok/s survive on their merits (Dimensity 700 is
+Cortex-A76 with real dotprod), but **the evidence offered for them did not**.
+
+### The fix to the instrument: `kpack_engine::cpu`
+
+`crates/kpack-engine/src/cpu.rs`. Reads `AT_HWCAP`/`AT_HWCAP2` from
+`/proc/self/auxv` and adjudicates the **runtime** word against the
+**compile-time** macros, printing both and the verdict. Wired into all three
+`[kernels]` sites: `examples/probe.rs`, `examples/stream.rs`, and the app's
+`engine_inproc.rs`.
+
+Three design points that are load-bearing rather than decorative:
+
+- **The runtime line is printed BEFORE llama.cpp is touched.** On a mismatched
+  device, backend init is itself a SIGILL candidate, and a diagnostic that only
+  prints afterwards is silent on exactly the devices it exists for.
+  `print_kernel_report` is therefore two `eprintln!`s, and a test pins
+  `kernel_report == runtime_line + verdict_block` so the tested form and the
+  shipped form cannot drift.
+- **Only one direction is fatal.** Compiled-1/runtime-0 is `Incompatible`;
+  runtime-1/compiled-0 is `Underbuilt`, which will run and is the signal for
+  "baseline binary on capable hardware" — i.e. the cost side of the universal
+  build, reported by the instrument rather than argued.
+- **The raw hex words are printed, not only the named bits.** Named bits are an
+  interpretation; a transcript carrying only the interpretation cannot be
+  re-adjudicated when the bit table turns out to be wrong.
+
+LSE stays **out of the verdict** and is emitted as an advisory, because the
+verdict should claim only what the printed evidence entails: llama.cpp reports
+no LSE flag, so there is no compile-time value to compare against.
+
+### ⚑ Demonstrated capable of failing — on ONE device, which is stronger than two
+
+The plan was A51 negative / A22 positive. The A22 is unreachable (below), and
+the substitute turned out to be better evidence:
+
+| build on the A51 | `[kernels]` | `[cpu-verdict]` | outcome |
+|---|---|---|---|
+| `armv8.2-a+dotprod` | `… DOTPROD = 1 \| REPACK = 1` | **INCOMPATIBLE** + ADVISORY | exit 132 |
+| `armv8-a` | `… ARM_FMA = 1 \| REPACK = 1` | **OK** | all 4 probes, exit 0 |
+
+**Same silicon, same `hwcap=0x8ff`, opposite verdicts.** A two-device control
+varies the CPU *and* the build together; this varies only the build, so the
+verdict is attributable to the thing being adjudicated.
+
+And the runtime read has its own attribution: `hwcap=0x00000000000008ff` was
+**predicted before the run** from `/proc/cpuinfo`'s Features line
+(fp|asimd|evtstrm|aes|pmull|sha1|sha2|crc32 = `0xff`, cpuid = bit 11) and came
+back exact. Two independent kernel interfaces agreeing bit-for-bit is why the
+reader is correct rather than merely plausible.
+
+### 🔴 A SILENT BUILD TRAP: CHANGING THE ARCH FLOOR DOES NOTHING
+
+Found the hard way, and it would have wasted a founder session.
+
+Editing `GGML_CPU_ARM_ARCH` in the vendored `build.rs` and rebuilding
+**succeeds in ~25 s, prints no warning, and links the previous arch's
+objects.** The build script re-runs (`invoked.timestamp` updates), cmake's
+`--build` step runs, and `CMakeCache.txt` still holds the OLD value. The
+produced binary was **byte-identical** — `sha256 53edd7b2…` both times.
+
+It was caught only because the new on-device diagnostic reported `DOTPROD = 1`
+from a binary built at `armv8-a`. **The instrument written for one bug caught a
+different one within an hour of existing**, which is the argument for building
+it before measuring anything.
+
+Note also that the obvious verification is a trap of its own:
+`find … -name flags.make | xargs grep -o 'march=[^ ]*'` prints **both**
+`armv8-a` and `armv8.2-a+dotprod` for a single build directory, because both
+strings legitimately appear in one file. That grep cannot distinguish the
+builds it was reached for.
+
+> **The fix: `cargo clean -p llama-cpp-sys-2 --release --target
+> aarch64-linux-android`, and confirm against the ARTIFACT's own kernel line,
+> never against `flags.make` and never against build.rs.**
+
+Recorded in the vendor script's header, where somebody about to change the
+value will meet it.
+
+### The measurement, and the part of it that is blocked
+
+**A51, `armv8-a` baseline, 1B + behavioral, temp 0.** Load 1.06 s, `VmRSS`
+851 MB, `VmHWM` 995 MB.
+
+| run | tok/s per probe | mean |
+|---|---|---|
+| 1 (phone idle beforehand) | 5.3 / 4.8 / 5.0 / 4.6 | 4.9 |
+| 2 (immediately after run 1) | 3.6 / 3.6 / 3.5 / 3.5 | 3.6 |
+
+⚑ **Quote the pair, never the first number alone.** Run 2 is **27 % slower**
+than run 1 on the same binary, same device, same prompts, minutes apart. Had I
+measured once I would have reported ≈4.9 tok/s as *the* figure and it would
+have been wrong for any session lasting more than a few turns. The decline
+within run 1 (5.3 → 4.6) already hinted at it and was individually
+indistinguishable from noise; the second run is what separates them. This is
+the A7 thermal question showing up uninvited in a throughput measurement, and
+it is the reason the soak exists.
+
+**The output is CORRECT, not merely non-crashing** — a distinction worth
+asserting, because a miscompiled kernel can produce fluent nonsense at full
+speed. All four Stage-5 probes behave: the fake mathematician is refused,
+`5 + 5 = 9` is corrected to 10, the tomato point is conceded on the botanical
+axis while keeping the culinary one, and the chest-pain prompt is declined with
+an escalation to emergency care. Baseline kernels are numerically sound.
+
+That is the *floor* device on a *baseline* binary landing in the same band as
+the reference device's recorded dotprod numbers (A22, 6.6–8.2 tok/s on the same
+1B). **Different SoCs, so it is not a ratio and must not be quoted as one** —
+but it does answer a question the ratio does not: a universally-correct binary
+leaves the floor device usable.
+
+⚠ **The ratio itself is BLOCKED and no substitute exists.** Baseline-vs-dotprod
+on one device requires a dotprod-capable device, and the A51 cannot execute the
+dotprod build at all. `192.168.1.2` pings but has **no open TCP port in
+1024–61000** — wireless debugging is off. The scanner was validated against the
+A51's known-open 41061 first, so that is a finding rather than a failure to
+look. Founder action, surfaced.
+
+### Kotlin pre-load gate (task 4)
+
+`CpuSupport.kt` + `LaunchGateActivity.kt`, with the LAUNCHER filter moved off
+`MainActivity`.
+
+**The trampoline activity is forced, not stylistic.** `MainActivity.onCreate`
+must call `super.onCreate`, and that chain (`TauriActivity` → `WryActivity` →
+`Rust.create()`) is what triggers `System.loadLibrary`. Returning early throws
+`SuperNotCalledException`; calling super first has already loaded the library.
+`Rust.kt` is auto-generated and cannot be edited. There is no point inside
+MainActivity that is both legal and early enough.
+
+Kotlin reads **the same `/proc/self/auxv`** the Rust side reads, deliberately,
+rather than `/proc/cpuinfo`: two readers of one file can be wrong together but
+cannot quietly disagree, and a gate disagreeing with a diagnostic is the defect
+being fixed.
+
+**The gate's requirements are derived from the arch string, not hardcoded**, so
+flipping the floor cannot leave the gate blocking devices the build supports.
+On `armv8-a` it demands nothing and is inert — which is the correct behaviour
+for a safety net, and also means **the shipped configuration cannot demonstrate
+it firing on hardware.** The JVM tests carry that half.
+
+⚠ **An unparseable arch yields NO requirements.** The gate's default must be
+non-interference: wrongly blocking a working phone is its own outage.
+`check-cpu-floor.py` is what makes that default safe, by refusing to let an
+unparseable floor ship.
+
+### ⚑ The arch floor has THREE homes, and a mechanism keeps them equal
+
+`build.rs` (truth), `vendor-llama-sys-dotprod.sh` (reproduces the patch), and
+`CpuSupport.NATIVE_ARM_ARCH` (the gate, which runs before any Rust exists and
+therefore cannot ask). This is not avoidable duplication — it spans a language
+boundary and a build boundary.
+
+`docs/superpowers/mobile-tools/check-cpu-floor.py`, wired into
+`mobile-check.yml`'s audits job. **Demonstrated capable of failing before being
+believed**, two controls, each isolated to its own mechanism:
+
+| control | result |
+|---|---|
+| gate value changed to `armv8.2-a+dotprod` | FAIL, printed all three values and named the disagreement |
+| the Kotlin constant renamed away | FAIL naming the FILE — a checker that stops finding its target must not pass quietly |
+| restored | PASS |
+
+It deliberately does **not** compare the vendor script's idempotency guard,
+which now keys on a marker comment rather than on the value. That change is
+itself a fix: the old guard keyed on the value, false-positived against stock
+`0.1.152` code that already defines `GGML_CPU_ARM_ARCH="armv8-a"`, and silently
+skipped patching.
+
+### One duplication removed rather than added
+
+The HWCAP bit table already existed in `src-tauri/src/hardware.rs` for SoC
+tiering. A second copy would have let a **tiering** verdict and a **kernel**
+verdict disagree about one bit — the same defect class as a diagnostic
+disagreeing with hardware. `hardware.rs` now reads through `kpack_engine::cpu`
+and its two auxv tests moved with the table (they still run on the desktop
+gate; kpack-engine is a workspace member with mock-only defaults).
+
+### The XML comment trap caught this branch again
+
+`activity_unsupported.xml` failed `mergeUniversalDebugResources` on the first
+compile: **`--` inside an XML comment**, from writing CSS custom-property names
+in their real form. aapt2 rejects the whole file and reports a row and column
+rather than the cause.
+
+This ledger has recorded that exact trap since Phase 0, in the Convention about
+a check's silence across languages. **It was recorded, it was read, and it
+happened anyway.** That is not an argument for reading harder; it is the
+branch's own finding about rules-versus-mechanisms arriving in a third place.
+The gradle compile is the mechanism that caught it, which is why the Convention
+requires it for any `gen/android` change.
+
 ## Conventions
 
 - **⚑ A PASSING CHECK STILL OWES YOU AN ATTRIBUTION.** Ask *which clause

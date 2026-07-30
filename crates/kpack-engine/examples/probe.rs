@@ -60,10 +60,12 @@ fn main() {
 }
 
 fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Self-evidencing (spec H3): print compiled+detected CPU kernels so the
-    // transcript proves whether ARM SIMD (DOTPROD/MATMUL_INT8) is active. A
-    // baseline-only build shows them missing and the tok/s collapses.
-    eprintln!("[kernels] {}", kpack_engine::backend_system_info());
+    // Self-evidencing (spec H3), and now actually self-evidencing: the runtime
+    // capability word from the kernel, the compile-time macros from llama.cpp,
+    // and the verdict between them. The old single `[kernels]` line reported a
+    // build constant, so it printed DOTPROD = 1 on a Galaxy A51 seconds before
+    // that device took SIGILL on a dotprod instruction.
+    kpack_engine::print_kernel_report();
 
     let mut adapters = Vec::new();
     for (role, path, sha) in [

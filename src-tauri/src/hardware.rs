@@ -55,26 +55,39 @@ pub mod mobile_tier {
 /// nobody would use. So the mid tier asks about the CPU too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SocCaps {
-    /// ARM dot-product (`asimddp`). Load-bearing for llama.cpp's Q4 kernels —
-    /// the vendored `llama-cpp-sys-2` patch compiles for `armv8.2-a+dotprod`
-    /// precisely so this path exists.
+    /// ARM dot-product (`asimddp`), read from `AT_HWCAP` — a fact about the
+    /// silicon, never about the build.
+    ///
+    /// This doc used to say the vendored patch "compiles for `armv8.2-a+dotprod`
+    /// precisely so this path exists", which conflated the two and is the exact
+    /// confusion that shipped a binary excluding ARMv8.0 phones. The build's
+    /// floor is `kpack_engine::cpu`'s business; this field is only ever the
+    /// kernel's answer.
     pub dotprod: bool,
     /// ARM Int8 Matrix Multiply. Present on Cortex-A78/X1-class cores and
-    /// absent on the A55-class cores that define the floor, which is what makes
-    /// it a good proxy for "this SoC is a generation above the A22".
+    /// absent on A55-class cores, which is what makes it a proxy for "this SoC
+    /// is a generation above the A22".
+    ///
+    /// Note the A55 framing describes the *tiering* question, not the support
+    /// floor. The support floor is a generation lower still — Cortex-A73,
+    /// ARMv8.0, no dotprod at all (Galaxy A51, measured 2026-07-31).
     pub i8mm: bool,
     /// Fastest core's `cpuinfo_max_freq`, in kHz (the unit the kernel uses).
     pub max_core_khz: u64,
 }
 
-// AArch64 HWCAP bits, from the kernel's `asm/hwcap.h`, and the auxv keys that
-// carry them. Named rather than inlined because a wrong bit here is silent in
-// the worst direction: it would promote an incapable phone to a 4B model it
-// cannot run, and the symptom is "the app is slow", not an error.
-pub const AT_HWCAP: u64 = 16;
-pub const AT_HWCAP2: u64 = 26;
-pub const HWCAP_ASIMDDP: u64 = 1 << 20;
-pub const HWCAP2_I8MM: u64 = 1 << 13;
+// ⚑ The HWCAP bit table used to live here, duplicated. It now has ONE home:
+// `kpack_engine::cpu`, which is also where the `[kernels]` diagnostic reads it.
+//
+// The reason is this generation's own finding rather than tidiness. A tiering
+// verdict and a kernel verdict that read the same bit from two tables can
+// disagree, and a diagnostic disagreeing with reality is exactly the defect
+// being fixed — `DOTPROD = 1` printed on a CPU with no dotprod. Two tables is
+// that failure with the second instrument moved in-house.
+//
+// The pure rule below (`tier_for_mobile`) stays here and stays desktop-tested:
+// `kpack-engine` is an Android-only dependency of this crate, so anything the
+// desktop suite must exercise cannot reach into it.
 
 /// 2.75 GHz, in `cpuinfo_max_freq`'s kHz.
 pub const FAST_CORE_KHZ: u64 = 2_750_000;
@@ -103,32 +116,6 @@ pub fn tier_for_mobile(ram_gb: u64, caps: SocCaps) -> &'static str {
     } else {
         "low"
     }
-}
-
-/// Pull `AT_HWCAP` and `AT_HWCAP2` out of a raw `/proc/self/auxv`.
-///
-/// The file is a flat array of `(key, value)` pairs of `unsigned long`,
-/// terminated by an `AT_NULL` (0) key. Parsed here rather than read through
-/// `getauxval` so that it needs no new dependency **and** so the parse is a
-/// pure function the desktop suite can test — the detection around it cannot
-/// be tested anywhere but a phone (decision D-3).
-///
-/// Trailing bytes that do not form a whole pair are ignored rather than
-/// guessed at: a truncated read should lose a capability (downgrading the
-/// device to `low`) and never invent one.
-pub fn hwcaps_from_auxv(bytes: &[u8]) -> (u64, u64) {
-    let (mut hwcap, mut hwcap2) = (0u64, 0u64);
-    for pair in bytes.chunks_exact(16) {
-        let key = u64::from_ne_bytes(pair[..8].try_into().unwrap_or_default());
-        let val = u64::from_ne_bytes(pair[8..].try_into().unwrap_or_default());
-        match key {
-            0 => break, // AT_NULL terminates the vector.
-            AT_HWCAP => hwcap = val,
-            AT_HWCAP2 => hwcap2 = val,
-            _ => {}
-        }
-    }
-    (hwcap, hwcap2)
 }
 
 /// The fastest core's max frequency from a set of `cpuinfo_max_freq` readings.
@@ -168,14 +155,17 @@ fn read_core_khz() -> u64 {
 /// degrades to the floor tier — the safe direction, since the cost of guessing
 /// low is a smaller model and the cost of guessing high is a device that
 /// swaps or is killed.
+///
+/// Reads through `kpack_engine::cpu`, the single home for the HWCAP bit table
+/// (see the note where that table used to be duplicated here). The degradation
+/// is unchanged: an unreadable auxv yields `None`, which yields no capability.
 #[cfg(target_os = "android")]
 pub fn soc_caps() -> SocCaps {
-    let (hwcap, hwcap2) = std::fs::read("/proc/self/auxv")
-        .map(|b| hwcaps_from_auxv(&b))
-        .unwrap_or((0, 0));
+    use kpack_engine::cpu::{Word, HWCAP2_I8MM, HWCAP_ASIMDDP};
+    let caps = kpack_engine::cpu::runtime_cpu().unwrap_or_default();
     SocCaps {
-        dotprod: hwcap & HWCAP_ASIMDDP != 0,
-        i8mm: hwcap2 & HWCAP2_I8MM != 0,
+        dotprod: caps.has(Word::Hwcap, HWCAP_ASIMDDP),
+        i8mm: caps.has(Word::Hwcap2, HWCAP2_I8MM),
         max_core_khz: read_core_khz(),
     }
 }
@@ -289,43 +279,12 @@ mod tests {
         assert!(mobile_supported(8));
     }
 
-    #[test]
-    fn hwcaps_are_read_out_of_an_auxv_image() {
-        // AT_HWCAP=16 carrying ASIMDDP, AT_HWCAP2=26 carrying I8MM, plus an
-        // unrelated key, terminated by AT_NULL.
-        let mut buf = Vec::new();
-        let mut pair = |k: u64, v: u64| {
-            buf.extend_from_slice(&k.to_ne_bytes());
-            buf.extend_from_slice(&v.to_ne_bytes());
-        };
-        pair(6, 4096); // AT_PAGESZ — must be ignored
-        pair(16, HWCAP_ASIMDDP);
-        pair(26, HWCAP2_I8MM);
-        pair(0, 0); // AT_NULL
-
-        let (hwcap, hwcap2) = hwcaps_from_auxv(&buf);
-        assert!(hwcap & HWCAP_ASIMDDP != 0);
-        assert!(hwcap2 & HWCAP2_I8MM != 0);
-    }
-
-    #[test]
-    fn auxv_parsing_stops_at_the_terminator_and_tolerates_a_short_read() {
-        let mut buf = Vec::new();
-        let mut pair = |k: u64, v: u64| {
-            buf.extend_from_slice(&k.to_ne_bytes());
-            buf.extend_from_slice(&v.to_ne_bytes());
-        };
-        pair(0, 0); // AT_NULL first
-        pair(16, HWCAP_ASIMDDP); // past the terminator — must not be read
-        assert_eq!(hwcaps_from_auxv(&buf), (0, 0));
-
-        // A truncated final pair is dropped, never half-parsed: losing a
-        // capability downgrades the device, inventing one promotes it.
-        let mut short = 16u64.to_ne_bytes().to_vec();
-        short.extend_from_slice(&[0xff, 0xff, 0xff]);
-        assert_eq!(hwcaps_from_auxv(&short), (0, 0));
-        assert_eq!(hwcaps_from_auxv(&[]), (0, 0));
-    }
+    // The two auxv-parsing tests that lived here moved with the bit table to
+    // `kpack_engine::cpu` (`hwcaps_are_read_out_of_an_auxv_image`,
+    // `auxv_parsing_stops_at_the_terminator_and_tolerates_a_short_read`). They
+    // still run on the desktop gate — kpack-engine is a workspace member whose
+    // default features are mock-only — so this is a move, not a deletion, and
+    // the count moves with them.
 
     #[test]
     fn the_fastest_core_wins_and_junk_is_skipped() {

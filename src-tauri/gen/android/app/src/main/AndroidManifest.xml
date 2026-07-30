@@ -50,12 +50,23 @@
              listener in app.js that drives the layout height directly,
              because an edge-to-edge activity on newer Android may not honour
              adjustResize at all. -->
+        <!-- The CPU capability gate, and the ONLY activity that runs before
+             libcleophis_lib.so is loaded.
+
+             The LAUNCHER filter moved here from MainActivity deliberately. A
+             Galaxy A51 (Cortex-A73, ARMv8.0) exits 132 — SIGILL — on the
+             armv8.2 build, and the check has to happen before the library
+             loads or there is no Rust left to render an explanation. There is
+             no earlier legal hook inside MainActivity: onCreate must call
+             super, and that chain is what triggers System.loadLibrary. See
+             LaunchGateActivity's doc comment.
+
+             MainActivity keeps every attribute it had; only the filter moved,
+             and `exported` drops to false because nothing outside the app
+             starts it any more. -->
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
-            android:launchMode="singleTask"
-            android:windowSoftInputMode="adjustResize"
+            android:name=".LaunchGateActivity"
             android:label="@string/main_activity_title"
-            android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -64,6 +75,14 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:exported="false" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

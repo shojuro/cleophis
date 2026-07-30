@@ -38,6 +38,12 @@
 
 pub mod adapter;
 pub mod backend;
+/// Runtime CPU capability (`AT_HWCAP`) and its differential against the
+/// compile-time macros llama.cpp reports. Deliberately **outside** the `real`
+/// gate: the adjudication is pure and must be tested by the desktop suite, and
+/// the capability read is what a caller needs *before* deciding to load a
+/// native backend at all.
+pub mod cpu;
 pub mod error;
 pub mod mock;
 pub mod template;
@@ -64,4 +70,4 @@ pub use mock::{CollectSink, MockBackend};
 pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
 
 #[cfg(feature = "real")]
-pub use llama::{backend_system_info, LlamaEngine};
+pub use llama::{backend_system_info, print_kernel_report, LlamaEngine};

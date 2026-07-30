@@ -625,16 +625,43 @@ fn main() {
         }
     }
 
-    // Cleophis mobile patch: floor-tier Android devices (Cortex-A55+) need ARM
-    // dotprod kernels; the stock cross-build leaves ggml-cpu at -march=armv8-a
-    // baseline, running quantized matmuls scalar (spec H3). Force the arch to
-    // armv8.2-a+dotprod. i8mm is DELIBERATELY EXCLUDED: A55 (the 4-6GB budget
-    // floor through ~2023) has dotprod but NOT i8mm, so hardcoding +i8mm would
-    // SIGILL on exactly that tier. i8mm belongs in a runtime-dispatched variant.
+    // CLEOPHIS ARM ARCH FLOOR — the aarch64-android ggml-cpu arch (spec H3).
+    // (That marker is the vendor script's idempotency key; do not reword it.)
+    //
+    // ── 🔴 MEASURED, 2026-07-31: `armv8.2-a+dotprod` SIGILLs on ARMv8.0 ──────
+    //
+    // The original value here was "armv8.2-a+dotprod", chosen because the stock
+    // cross-build leaves ggml-cpu at baseline and runs quantized matmuls scalar,
+    // and reasoned about in terms of Cortex-A55 (which has dotprod). **A55 was
+    // the wrong floor.** A Galaxy A51 (SM-A515F, Exynos 9611, Cortex-A73 + A53,
+    // ARMv8.0) loads the model, loads the LoRA, reserves the graph and then
+    // exits 132 — 128 + 4, SIGILL — at the first inference. Its
+    // `/proc/cpuinfo` Features line has no `asimddp`, no `i8mm` and no
+    // `atomics`; measured `AT_HWCAP` is `0x8ff`. Spec §3 names exactly that
+    // class of phone as the Android floor device, so this excluded part of the
+    // target market rather than an edge case.
+    //
+    // TWO independent reasons that value was fatal there, not one:
+    //   1. `+dotprod` licenses `sdot`/`udot`, absent on the A73.
+    //   2. the `armv8.2-a` LEVEL makes ARMv8.1 LSE atomics mandatory, so the
+    //      compiler may emit `casal`/`ldadd` anywhere in the C sources — not
+    //      only in SIMD kernels. llama.cpp reports no feature flag for this, so
+    //      no amount of reading `llama_print_system_info()` would have shown it.
+    //
+    // i8mm remains excluded for the original reason (absent on A55-class
+    // cores), and that reasoning was right about the mechanism while being one
+    // architecture generation short on the floor.
+    //
+    // ⚠ This string has two other homes, and a mechanism keeps them in step
+    // rather than a comment asking for care:
+    // `docs/superpowers/mobile-tools/vendor-llama-sys-dotprod.sh` (reproduces
+    // this patch) and `CpuSupport.NATIVE_ARM_ARCH` (the Kotlin gate, which must
+    // block exactly what this licenses). `mobile-tools/check-cpu-floor.py`
+    // fails the build if the three disagree.
     {
         let arch_target = env::var("TARGET").unwrap_or_default();
         if arch_target.starts_with("aarch64") && arch_target.contains("android") {
-            config.define("GGML_CPU_ARM_ARCH", "armv8.2-a+dotprod");
+            config.define("GGML_CPU_ARM_ARCH", "armv8-a");
         }
     }
 

@@ -214,14 +214,23 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
 
     let backend = LlamaEngine::new();
 
-    // The self-evidencing kernels line (spec H3). llama.cpp reports the CPU
-    // features it actually compiled and detected, so a device transcript
-    // carries its own proof that the `armv8.2-a+dotprod` build is the one
-    // running: **DOTPROD = 1, or every tok/s number measured on this build is
-    // invalid** — the brief's rule, and until now nothing in the app printed
-    // the evidence for it. CPU feature flags only; no user or token material,
-    // so this is safe in a release log (security review M3).
-    eprintln!("[kernels] {}", kpack_engine::backend_system_info());
+    // The self-evidencing kernels block (spec H3).
+    //
+    // 🔴 It was NOT self-evidencing until now, and the correction is the whole
+    // point. This printed `[kernels] … DOTPROD = 1` and the standing rule was
+    // "DOTPROD = 1 or every tok/s number on this build is invalid". But
+    // `llama_print_system_info()` reports `__ARM_FEATURE_DOTPROD` — a
+    // **compile-time macro** the vendored `armv8.2-a+dotprod` patch defines on
+    // every aarch64-android build. It could not print 0 on any device, and it
+    // printed 1 on a Galaxy A51 (Cortex-A73, ARMv8.0) seconds before that phone
+    // took SIGILL on a dotprod instruction.
+    //
+    // `print_kernel_report` emits the kernel's AT_HWCAP word first — before
+    // llama.cpp is touched, because backend init is itself a SIGILL candidate
+    // on a mismatched device — then the compile-time macros, then the verdict.
+    // CPU feature flags only; no user or token material, so this is safe in a
+    // release log (security review M3).
+    kpack_engine::print_kernel_report();
 
     let mut handle: Option<Box<dyn EngineHandle>> = None;
     // A command the inner serve loop received but could not serve. It must be

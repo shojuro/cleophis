@@ -1,4 +1,14 @@
 <resources>
     <string name="app_name">"Cleophis"</string>
     <string name="main_activity_title">"Cleophis"</string>
+
+    <!-- The CPU gate's screen (LaunchGateActivity). Kept in step with the web
+         "not yet" screen in src/index.html; see the layout's comment for why
+         the copy cannot simply be shared. -->
+    <string name="unsupported_title">Cleophis can\'t run on this phone yet</string>
+    <!-- %1$s is a comma-separated list of missing CPU feature names, e.g.
+         "lse-atomics, asimddp". Named rather than paraphrased because the name
+         is the thing a support conversation can act on. -->
+    <string name="unsupported_why">This phone\'s processor is missing instructions Cleophis needs: %1$s.</string>
+    <string name="unsupported_sub">Models run entirely on your own device, and this processor can\'t run the maths they need. We\'re working on a build that can — nothing has been charged, and there\'s nothing to cancel.</string>
 </resources>

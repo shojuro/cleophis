@@ -65,9 +65,16 @@
 #     ./run-on-device.sh --model $A/qwen-4b-base.gguf \
 #       --behavioral $A/qwen-4b-behavioral.gguf --contract $A/qwen-4b-contract.gguf \
 #       --template chatml
-#   The A22 is Cortex-A55-class: dotprod YES, i8mm NO. The binary MUST be built
-#   from the dotprod build (vendor-llama-sys-dotprod.sh) — the [kernels] line
-#   must show DOTPROD = 1 (and NOT crash, which +i8mm would).
+#   🔴 THE OLD RULE HERE WAS "the [kernels] line must show DOTPROD = 1", AND IT
+#   WAS NOT A CHECK. `llama_print_system_info()` reports the COMPILE-TIME macro
+#   `__ARM_FEATURE_DOTPROD`, which the vendored patch defines on every
+#   aarch64-android build — so the line could not print 0 on any device, and it
+#   printed `DOTPROD = 1` on a Galaxy A51 seconds before that phone took SIGILL
+#   on a dotprod instruction.
+#
+#   Read the `[cpu-verdict]` line instead. It compares the compile-time macros
+#   against the kernel's AT_HWCAP word and can say INCOMPATIBLE, OK, or
+#   UNCHECKED. See `kpack_engine::cpu`.
 #
 # `-e` is deliberately NOT set, and the reason is NOT the one this comment
 # first claimed.
@@ -226,11 +233,13 @@ done
 
 echo
 echo "Gate checklist:"
-echo " - KERNEL CHECK (spec H3): the '[kernels]' line printed at startup MUST show"
-echo "   DOTPROD = 1 (and ideally MATMUL_INT8 = 1). If they are 0/absent, or tok/s"
-echo "   is implausibly low (< ~5 tok/s on a modern phone), the ggml-cpu build is"
-echo "   BASELINE armv8-a (scalar) — the numbers are invalid; rebuild with"
-echo "   GGML_CPU_ALL_VARIANTS / GGML_CPU_ARM_ARCH before trusting perf."
+echo " - KERNEL CHECK (spec H3): read the '[cpu-verdict]' line, NOT '[kernels]'."
+echo "   '[kernels]' reports COMPILE-TIME macros and prints DOTPROD = 1 on every"
+echo "   aarch64-android build of this project — it did so on a phone that then"
+echo "   SIGILL'd on a dotprod instruction, so it is a build constant and not"
+echo "   evidence about the device in your hand. '[cpu-verdict]' compares it"
+echo "   against the kernel's AT_HWCAP word and can say INCOMPATIBLE, UNCHECKED"
+echo "   or OK; only OK licenses trusting any number printed below it."
 echo " - Record tokens/sec + VmRSS/VmHWM and the probe transcript PER DEVICE. The"
 echo "   5.4 gate is about the SPREAD across tiers, so a number without a serial"
 echo "   beside it is not a result."

@@ -41,8 +41,11 @@ fn main() {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Self-evidencing (spec H3): compiled+detected CPU kernels (DOTPROD/i8mm).
-    eprintln!("[kernels] {}", kpack_engine::backend_system_info());
+    // Self-evidencing (spec H3): the runtime capability word AND the
+    // compile-time macros, with the verdict between them — see
+    // `kpack_engine::cpu`. The bare `[kernels]` line reported only the build
+    // constant and therefore could never print a failing value.
+    kpack_engine::print_kernel_report();
 
     let mut adapters = Vec::new();
     if let Some(p) = &args.behavioral {
