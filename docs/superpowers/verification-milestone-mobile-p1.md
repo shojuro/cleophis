@@ -3895,7 +3895,19 @@ That is the shape to reach for when two readings conflict.
 **The source confirms the mechanism, second.** `haystack()` appends
 `read_text()` and nothing else — `rel` is used only to filter by suffix,
 exclude the guard's own path, and open the file — so **the guard searches file
-CONTENTS only and never matches a path.** The measuring script tested
+CONTENTS only and never matches a path.**
+
+> ⚠ *Dated note (gen-10, 2026-07-30, hours later): the sentence above describes
+> `haystack()`'s body as it was when this incident was investigated, and that
+> body has since moved.* A1's scoping split the reading out into
+> `files_by_root()`, over which `haystack()` is now the flat view. **The
+> property the paragraph asserts is unchanged and is still the point** —
+> contents only, never a path, in both functions — but the description of
+> *where* the `read_text()` lives is now one indirection out of date. Recorded
+> rather than edited away, because this entry is the record of an incident and
+> the incident is what the wording is evidence for. It is also this ledger's own
+> D-4 lesson arriving inside the ledger: a description of code aged into
+> inaccuracy **by addition**, without anyone editing it or it ever being wrong. The measuring script tested
 `pattern.search(path) or pattern.search(content)`, and the path half was *the
 measurer's own invention*. Steering's check re-ran the same reasoning and
 reproduced the same answer; it closed the incident only once it read line 315
