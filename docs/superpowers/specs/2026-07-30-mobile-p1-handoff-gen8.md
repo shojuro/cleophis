@@ -145,10 +145,24 @@ justification for the ask, not a download toast.
 
 ## Your work, in the order steering approved
 
-1. **A2 — airplane-mode suite. START HERE.** Genuinely greenfield and the most
+1. **A2 — airplane-mode suite.** Genuinely greenfield and the most
    straightforward of the three. The guard wants `fn airplane_` / `"airplane"` /
-   `airplane-mode.sh` / `run-airplane`. Build it **device-agnostic**, not
-   A22-specific: the founder is acquiring a second and third device for 5.4.
+   `airplane-mode.sh` / `run-airplane`.
+
+   **Two constraints from steering, and the second one is the whole point:**
+
+   - **Device-agnostic means the harness DISCOVERS the device**, rather than
+     assuming a serial or a model. The founder has two more phones arriving,
+     and the suite should absorb them without edits.
+   - **The harness must CONTROL the radios via adb, not instruct a human to.**
+     A2's own consequence string says the suite "would be satisfied by a human
+     remembering to turn radios off" — so a harness that prints *"please enable
+     airplane mode"* reproduces the exact failure the acceptance item names.
+     Further: it must **FAIL if it cannot verify the radios are actually off.**
+     The assertion is *no socket attempt after setup*, and that assertion is
+     meaningless unless the radio state is machine-verified rather than
+     asserted by whoever is running it. An unverifiable precondition makes the
+     whole suite a check that cannot fail.
 2. **A3 — bring the ADJUDICATION DESIGN to steering BEFORE implementing.** This
    is an explicit instruction, not a courtesy.
 

@@ -3706,6 +3706,42 @@ owes you an attribution.**
   real bug in itself — the phase argument leaking into the recorded command
   line, fixed with a `shift`.
 
+- **⚑ A TOOL BUILT TO CATCH A FAILURE CLASS IS A PRIME CANDIDATE FOR THAT
+  FAILURE CLASS — and the only thing that has ever found it is running it
+  against a KNOWN-BAD INPUT.** Three distinct instruments on this branch have
+  now been defeated by the class they were built to catch:
+
+  | instrument | how it failed at its own job |
+  |---|---|
+  | `acceptance-coverage.py` | four times — satisfied by prose, by a TODO, by its own source, and by an OR where a stub sufficed |
+  | `verify-apk.py` | reported `ok .describe` directly beneath `FAIL … class MISSING` — a green under a red |
+  | `run-logged.sh` | a tool built to stop mis-attributed evidence **mis-attributed evidence**, recording `command PRE bash -c …` because the phase argument was never shifted |
+
+  **Four negative controls, four finds, zero found by review.** Every one of
+  these was invisible to reading the source — including reading it carefully,
+  including by the person who had just written it — and every one appeared the
+  moment the tool was pointed at input whose correct answer was already known.
+  Treat "I have built a checker" as the *start* of the verification, never the
+  end of it.
+
+- **⚑ A HANDOFF THAT HANDS OVER A RULE HANDS OVER PRECISELY THE THING THAT
+  ALREADY FAILED.** Recorded verbatim because it generalises past its incident
+  to every handoff this project will write. The gen-8 handoff originally warned
+  "never pipe a build through `tail`" — which is the identical instruction that
+  had already failed **six times** in the hands of people who knew it. Replaced
+  with a pointer to `run-logged.sh`. When writing a handoff, for each warning
+  ask: *is there a tool that makes this unnecessary?* If yes, hand over the
+  tool. If no, that absence is the more useful thing to report.
+
+- **The cheap instances of a failure family are the evidence the discipline has
+  become reflexive.** Seventh instance of absent-result, and the first caught
+  *before* it became a claim rather than after: while self-testing
+  `run-logged.sh`, a `grep` for its warning-count line returned nothing and the
+  obvious conclusion was that the line never printed. The raw file showed it
+  present — the grep pattern had an apostrophe mismatch. Cost: one command.
+  Recorded *because* it cost nothing; a family whose instances are getting
+  cheaper and earlier is being managed rather than merely survived.
+
 - **⚑ FREEZE PROTOCOL — now THREE rules, because the third incident had a
   different cause from the first two.** Recorded by gen-8, in its own words, at
   steering's request.
