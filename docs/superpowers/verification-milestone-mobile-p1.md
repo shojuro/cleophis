@@ -3746,6 +3746,85 @@ six copies of a subtle cfg — the three-encodings problem in miniature. The
 gate is also the stronger property: **the release binary now contains no path
 capable of faking a thermal notice.**
 
+### 5.2 A2 — the airplane-mode harness (gen-9, `8ac76c5`)
+
+`docs/superpowers/mobile-tools/airplane-mode.sh`. Both steering constraints:
+`discover_devices` parses `adb devices` and runs every attached phone (verified
+against 1 and 3), and `verify_radios_off` drives the radios over adb and
+**fails if it cannot confirm they are off**.
+
+**Verification is empirical, not a settings read.** `settings get global
+airplane_mode_on` is the *config*, and this branch verifies against the
+artifact — the same rule that makes bundle claims read the built APK. A device
+can report `airplane_mode_on=1` with a VPN or tethered link still carrying
+packets, so the setting is necessary and **not sufficient**: no packet may
+actually leave.
+
+**And the probe has a positive control**, which is the part that would have
+been skipped. "The egress probe failed" also means *the probe is broken*, *ping
+is missing on this OEM image*, or *the network was already down* — an absent
+result is not a negative finding. So the **identical** probe is required to
+**succeed** with the radios on, before airplane mode is enabled. Only a probe
+demonstrated capable of succeeding may prove anything by failing.
+
+#### 🔴 Two green-under-reds in the harness built because A2 must be able to fail
+
+Both found by *running* it, neither visible in source I had just written:
+
+| # | bug | symptom |
+|---|---|---|
+| 1 | `echo "$x" \| while read` runs the loop in a **subshell** | `fail`'s `exit` killed only the subshell; the script printed **"all discovered devices passed"** and exited **0** |
+| 2 | `fail` called from inside `$( … )` — **the same bug in a second disguise** | printed `FAIL (A2): could not read per-uid byte counters` and exited **0** |
+
+A third was caught before it shipped: `awk … {print s+0}` reports `0` for
+*measured zero* and `0` for *parsed nothing*, which is a counter that can never
+rise. Unmeasurable is now a failure, not a pass.
+
+Also: restore was a `trap … RETURN`, which **does not run on `exit`** — so
+precisely the failing runs would have left a founder's phone in airplane mode.
+Now an `EXIT`/`INT`/`TERM` trap.
+
+**Eleven scenarios against a mock adb**, each verified to fail for *its own
+named cause*: no devices; positive control cannot get egress; airplane mode
+does not take; reads 1 but packets flow; setting unreadable; uid rows
+unparsable; app moved bytes; `ENETUNREACH` in logcat; plus clean passes at 1
+and 3 devices, and a 2-device dirty run.
+
+**⚑ And the mock was itself wrong first** — it wrote a state file and read an
+env var, so three different scenarios all produced a fourth one's message.
+**Three controls were exiting 1 for the wrong reason**, and checking exit codes
+alone would have banked them as green. *A failing check owes an attribution
+exactly as much as a passing one does* — the Convention, which was written
+about greens, generalises to reds.
+
+#### ⚑ A2's D-6 control pair — and the attribution is the finding
+
+Guard **byte-identical** (sha256 `231848c3…` before and after), **one `git add`
+apart**, A2 flips `FAIL` → `ok`. The flip is real; what carries it is not.
+
+Measured with the guard's own file selection:
+
+| alternative | matches |
+|---|---|
+| `airplane-mode\.sh` | the harness |
+| `\bfn +airplane_` | **NONE** |
+| `"airplane"` | **NONE** |
+| `run-airplane` | **NONE** |
+
+**A2's green is carried solely by a FILENAME.** A file of that name containing
+one `echo "please turn the radios off"` produces the identical green — so
+**A2's pattern accepts the exact implementation its own consequence string
+forbids.** It is the last single-element top-level alternation in the manifest,
+the shape gen-8 split out of A7. Tightening proposed to steering *before* the
+harness was written and pending at time of writing; the harness already
+satisfies the proposal (`airplane-mode\.sh` AND `verify_radios_off *\(` AND
+`discover_devices *\(`), so the ruling changes the guard only.
+
+**Not yet run against a real device** — every result above is against a mock.
+`cmd connectivity airplane-mode` and the `dumpsys netstats detail` row format
+are the two things a real phone could still contradict. Queued for the founder
+session.
+
 ### ⚑ THE D-6 GUARD'S CONTROL PAIR IS COMPLETE — and completing it exposed a fourth bug
 
 The pair steering asked for is the point of the exercise: a guard demonstrated
