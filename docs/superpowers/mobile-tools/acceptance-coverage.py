@@ -184,8 +184,29 @@ ACCEPTANCE = {
     # fact with two spellings; the two definition-shaped elements encode
     # steering's two constraints, so the guard can now tell the harness that
     # DRIVES and VERIFIES the radios from one that asks a human to.
+    # ⚠⚠ THE FILENAME CLAUSE IS GONE, AND THE PRINCIPLE IS GENERAL:
+    #
+    #   THIS GUARD READS CONTENTS, SO A CLAUSE NAMING AN ARTIFACT (a filename)
+    #   IS NOT A CONTENT FACT AT ALL. CLAUSES MUST NAME BEHAVIOURS.
+    #
+    # One principle explains both of this entry's pathologies, which looked
+    # like opposite bugs:
+    #
+    #   * BEFORE comment stripping, `airplane-mode\.sh` carried a FALSE GREEN,
+    #     satisfied by usage lines in comments (`#   ./airplane-mode.sh --soak
+    #     60`) -- gen-9 predicted exactly this and did not act on it.
+    #   * AFTER stripping, it carried a FALSE RED: nothing in *code* says its
+    #     own filename, so a complete and verified harness could not go green.
+    #
+    # It was never load-bearing in a useful direction. Replaced by
+    # `verify_egress_works`, which is not merely a repair -- it is the POSITIVE
+    # CONTROL, so A2's green now depends on the clause that makes the suite
+    # mean anything. A probe never demonstrated capable of SUCCEEDING proves
+    # nothing by failing, and without that control "no packet left the device"
+    # is indistinguishable from "the probe is broken", "ping is missing on this
+    # OEM image", or "the network was already down".
     'A2': (
-        [r'airplane-mode\.sh|run-airplane',
+        [r'verify_egress_works *\(',
          r'verify_radios_off *\(',
          r'discover_devices *\('],
         'the airplane-mode suite asserts offline behaviour with nothing to drive '
