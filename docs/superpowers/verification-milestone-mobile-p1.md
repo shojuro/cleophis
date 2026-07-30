@@ -3586,6 +3586,166 @@ also its expected result must carry a trace of its input, or it cannot be read
 at all.** Pre-registering both readings is what converts a soak from "let us
 see what happens" into a measurement.
 
+#### 🔴 …AND THE TRACE THE TABLE ABOVE DEPENDS ON DID NOT EXIST (gen-9, `e9f00e9`)
+
+The table was pre-registered. **Its input was not built.** Four of its five
+rows are verdicts about tok/s — "collapses **and** no notice" is BROKEN, "flat
+**and** no notice" is correctly quiet — and nothing in this app has ever logged
+a rate. `GenStats` was reaching `engine_inproc.rs:569` and being discarded as
+`_stats`. Run as written, the soak could only ever have produced **row five**,
+the uninterpretable outcome the logging exists to eliminate.
+
+This is the asserted-but-unbuilt disease arriving in a **pre-registration**
+rather than in code — the one place nobody thought to point the guard, because
+a pre-registration reads as a plan and this one had already been approved. The
+generalisation worth keeping:
+
+> **Pre-registering a reading does not build the instrument that produces it.**
+> When you write down what a result will mean, name the `file:line` that will
+> emit it — the assertion inventory (D-6 part 3), applied to a founder ask.
+
+Built in `e9f00e9`. Two line kinds on logcat, both `[thermal]`:
+
+| line | cadence | carries |
+|---|---|---|
+| `window` | every `WINDOW_GAPS` gaps (~3 s at the floor rate) | `gaps`, `baseline_tps`, `recent_tps`, `slow_run`, `notified` |
+| `stream` | once per `stream` call | the above **plus** `sink_calls` and `engine_tokens` |
+
+`WINDOW_GAPS` rather than a new constant, so the transcript's resolution *is*
+the detector's; and `-` rather than `0` for a rate the detector is not yet
+using, so "not computed" cannot be misread as "computed as zero".
+
+**Two extra rows the trace adds to the pre-registered table**, registered now
+in the same spirit as the original five:
+
+| observation | verdict |
+|---|---|
+| `sink_calls` and `engine_tokens` diverge by a **stable** fraction | expected — see the correction below; the ratio-based verdict is unaffected |
+| the divergence **changes** across the soak | a **false-positive source**, and the only thing that would ever have shown it |
+
+### 🔬 THE DETECTOR'S STATED MEASUREMENT PREMISE WAS FALSE (gen-9)
+
+`thermal.rs`'s module doc said the sink "**is called once per token** by
+`EngineSession::stream`, before any of that". It is not. `llama.rs`'s
+generation loop calls it only for pieces that survive a filter:
+
+```rust
+let visible = stripper.push(&piece);
+if !visible.is_empty() { sink.on_token(&visible) }
+```
+
+| filter | scope | effect on a gap |
+|---|---|---|
+| empty piece | **every model** — one `encoding_rs` decoder spans the turn, so a multi-byte char straddling two tokens decodes to `""` first | two tokens' time arrives as one gap of ~double the length |
+| `ThinkStripper` | **ChatML/Qwen only** (`strips_think()` is `ChatMl`-only) | a whole `<think>` block produces **zero** sink calls, then bursts |
+
+**The second one is the finding.** The same paragraph rejects `on_delta`
+because `ToolStream` withholds and releases in a burst — and then measures at a
+point that is itself downstream of a withhold-and-burst suppressor, one layer
+further up than anyone looked. The reasoning was right and the survey was
+incomplete.
+
+**Why the detector nevertheless survives, stated precisely so it is not
+over-corrected.** The verdict is a *ratio* of a recent rate to a baseline
+measured through the identical filters, so a **constant** discrepancy cancels
+exactly. What does not cancel is a discrepancy that **changes** between the
+baseline and the window — a reply that turns from ASCII to CJK/emoji, or a
+model that begins emitting `<think>` blocks mid-session — which reads as a
+slowdown with no thermal cause. That is a **false positive**, the outcome §8
+most wants to avoid. `ThinkStripper`'s case is partly self-limiting: a block
+long enough to matter usually exceeds `MAX_GAP_MS` and is dropped as a stall.
+
+Deliberately **measured rather than modelled**: the `stream` trace line prints
+`sink_calls` beside `engine_tokens`, counted independently on the two sides, so
+the real divergence is stated by real hardware instead of by this paragraph.
+It is **not** an assert and must not become one.
+
+**How it was found, which is the reusable part.** Not by review — by writing
+the justification for a reconciliation line before building it, and finding the
+premise it rested on was false. That is the **third** time the
+write-the-justification convention has found something this phase, and the
+first time it has corrected a claim in a document rather than a bug in code.
+
+### ⚑ Q1 — THE THERMAL AFFORDANCE, AND WHY ITS SCOPE IS THE DECISION (gen-9, `e9f00e9`)
+
+gen-8 left the fork deliberately unresolved: `ThermalWatch` is
+`Rc<RefCell<>>`-confined to the inference thread and unreachable from a command.
+
+| | option (a) — shared flag offsets the probe's clock | option (b) — command builds its own `ThermalWatch` |
+|---|---|---|
+| exercises the production probe | yes | **no** |
+| needs a turn in flight | yes, plus ~38 tokens **after** a baseline exists | no |
+| cold-phone, five-second check | no | **yes** |
+
+**Chose (b)** — `chat_thermal_selftest`, replaying a scripted cadence on a
+virtual clock — and (a) was rejected on the merits, not for difficulty:
+**offsetting the clock overwrites the real cadence**, so it proves the sink is
+called *some* number of times while destroying the evidence of *how often*. The
+`[thermal]` trace answers that question better, and answers it during the soak
+where the answer is actually needed.
+
+**The scope, recorded because the scope IS the evidence.** A green proves
+detector arithmetic → `ThermalNotice` payload → `ThermalState` → the
+`"thermal-notice"` event → the frontend listener → §8's copy → the
+prominent-row-then-pill decay, end to end on the real device. It proves
+**nothing** about whether `ThermalProbe::on_token` is wired to the generation
+loop, nor about the `Instant` clock — the command supplies its own timestamps
+precisely so it needs no turn. **A green Q1 must never be read as covering Q2.**
+
+**It would have permanently falsified the UI it verifies.** `ThermalWatch`
+emits only on transitions, so an onset with no route back leaves `ThermalState`
+holding `throttled: true` — which `chat_thermal_state` re-asserts on *every*
+reload. One tap would have pinned "your phone is warming up" to a cold phone
+for the life of the install. It is now a **toggle**, and its direction comes
+from the backend's stored verdict rather than from an argument, because the
+frontend's copy is exactly what gets lost when the renderer dies. Two taps
+demonstrate **both** edges of §8 including the **withdrawal** — the half a soak
+cannot produce on demand, since the phone has to actually cool.
+
+**A naming trap, caught by running the regex rather than reading it.** A7's
+detector clause is `fn +(detect_)?thermal_` and `src-tauri/src` is a SEARCH
+root, so **`fn thermal_selftest` would have satisfied it** — re-contaminating
+the exact clause gen-8 split apart four commits earlier, and manufacturing
+another right-verdict-for-the-wrong-reason. `chat_thermal_selftest` does not
+match. Attribution re-verified after the change: the detector clause matches
+`thermal.rs` **only**.
+
+> Generalises past this incident: **when a guard's pattern is a bare `fn`
+> prefix, every new symbol in its search roots is a candidate to satisfy it.**
+> Check the name against the pattern at the moment of naming — it costs one
+> command, and reading the regex is not the same as running it.
+
+### 🔴 A GREEN DEBUG CHECK WAS BLIND TO THE PROFILE THAT SHIPS (gen-9)
+
+`cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` → **exit 0, zero
+warnings**. The same command with `--release` → **exit 0, six dead-code
+warnings**, because the selftest's only caller is
+`cfg(all(mobile, debug_assertions))` and vanishes in a release build.
+
+This is the ledger's own **"a check's silence is only evidence within its
+competence"** extended from *language* to **profile**. The existing entry
+covers Rust-says-nothing-about-Kotlin; this adds
+**dev-says-nothing-about-release**, and it is the sharper case, because the
+release profile is *the one that ships* and Phase 4 is deferred — so nothing
+would have built it for weeks, and six dead items would have arrived in the
+release APK with a clean dev check on the record.
+
+**Only found because the outcome was predicted first.** The prediction for the
+release run named the six symbols and the cause; running it was a two-minute
+confirmation rather than a discovery. The `--release` check has no home in any
+routine yet — flagged for 5.3's `mobile-check` job.
+
+**Fixed by GATING, NOT SUPPRESSING** — one `#[cfg(any(debug_assertions, test))]`
+on a `mod selftest` declaration, canonical D-3 placement, one encoding.
+Widening the module's `cfg_attr(desktop, allow(dead_code))` was **rejected
+explicitly**: it would switch dead-code checking off for the whole thermal
+module *on the platform that ships*, which is precisely the bare-allow disease
+that hid two genuinely dead items in `tools.rs` and `tool_loop.rs` for an
+entire phase. Six item-scoped allows would have been sound and would have been
+six copies of a subtle cfg — the three-encodings problem in miniature. The
+gate is also the stronger property: **the release binary now contains no path
+capable of faking a thermal notice.**
+
 ### ⚑ THE D-6 GUARD'S CONTROL PAIR IS COMPLETE — and completing it exposed a fourth bug
 
 The pair steering asked for is the point of the exercise: a guard demonstrated
@@ -3667,12 +3827,23 @@ owes you an attribution.**
   absent, and confirm it names that cause specifically.
 
 - **⚑ A CHECK'S SILENCE IS ONLY EVIDENCE WITHIN ITS COMPETENCE — including
-  across languages.** `cargo ndk check` returned exit 0 with zero warnings on a
-  tree whose Android resources would not compile at all (`--` inside an XML
-  comment; aapt2 rejects the whole file). Rust silence says nothing about
-  Kotlin, resources, or the manifest. **Any commit touching `gen/android`
-  needs a gradle compile — `./gradlew :app:compileUniversalDebugKotlin` — not
-  just a cargo check.**
+  across languages AND across PROFILES.** `cargo ndk check` returned exit 0
+  with zero warnings on a tree whose Android resources would not compile at all
+  (`--` inside an XML comment; aapt2 rejects the whole file). Rust silence says
+  nothing about Kotlin, resources, or the manifest. **Any commit touching
+  `gen/android` needs a gradle compile —
+  `./gradlew :app:compileUniversalDebugKotlin` — not just a cargo check.**
+
+  **The profile half, added by gen-9 and structurally identical.** The same
+  `cargo ndk check --all-targets` reported **exit 0, zero warnings** while
+  `--release` on the same tree reported **six dead-code warnings** — items
+  whose only caller is `cfg(all(mobile, debug_assertions))`. Dev silence says
+  nothing about release, and release is the profile that ships. **Any commit
+  adding `debug_assertions`-gated code needs the `--release` check too**, and
+  the trap is worse than the Kotlin one because Phase 4 is deferred, so nothing
+  else would have built that profile for weeks. See the Phase 5 entry; the fix
+  was to *gate* the code out of release rather than *allow* it, since a
+  module-wide allow disables the dead-code check on the shipping platform.
 
   Same episode, second lesson: gradle was run through `| tail -40`, so the
   harness reported the task as **exit 0**, which was `tail`'s status while the
