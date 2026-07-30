@@ -3507,6 +3507,39 @@ in the same slot in a transcript. The documented env block from
 `/home/penguinzyue/cleophis-mobile-logs/mobile-env.sh` so the trap costs one
 round-trip rather than one per generation.
 
+### ⚑ 5.1 — TWO NOTIFICATION GAPS, recorded as distinct items (steering ruling)
+
+The brief said `POST_NOTIFICATIONS` was "already in the manifest". True, and
+**insufficient**: `targetSdk` is 36, and *nothing in this app requests the
+permission at runtime* — there is no `requestPermissions` call anywhere. On
+Android 13+ it is therefore never granted. Steering's ruling was to skip both
+the download notification and the permission request this phase, and to record
+the consequence as **two items, because they have different owners and
+different urgency.**
+
+**(a) The download-complete notification is blocked on a runtime grant.**
+Optional per spec, genuinely blocked, cheap to note. It ships as **one unit
+with the permission ask**, and deliberately not before: steering rejected the
+tempting split (ask at first download now, deliver the notification later) on
+the grounds that **a permission request is a promise** — asking and then not
+redeeming spends the user's trust on a prompt whose payoff never arrives.
+*Ask and redeem together, or do not ask.*
+
+**(b) 🔴 The foreground service's notification is invisible without the grant,
+and that is a PRODUCT finding, not a plumbing note.** This app's whole thesis
+is that you can see what it is doing. Android's persistent foreground-service
+notification is the platform's own mechanism for exactly that — and on every
+device we ship to it is suppressed by default until someone asks. **So today
+the app runs a foreground service the user cannot observe.**
+
+Not urgent: it runs only during generation, and the service works regardless
+(the notification is how the platform makes the service *visible*, not why it
+*works* — the survivable-degradation note in `InferenceService.kt` is correct
+and stays). But *"a privacy-first product with an invisible background
+service"* is a sentence that should never become true by accident. When the
+permission work lands, **(b) is the stronger justification for the ask, not the
+download toast.**
+
 ### ⚑ THE D-6 GUARD'S CONTROL PAIR IS COMPLETE — and completing it exposed a fourth bug
 
 The pair steering asked for is the point of the exercise: a guard demonstrated
@@ -3599,6 +3632,33 @@ owes you an attribution.**
   harness reported the task as **exit 0**, which was `tail`'s status while the
   build had failed. Only the explicitly teed `EXIT=${PIPESTATUS[0]}` showed
   `1`. **Piping a build through anything launders its exit status.**
+
+- **⚑ USE `mobile-tools/run-logged.sh` FOR LONG COMMANDS — this one is a TOOL,
+  not a rule, and the reason is the point.** The laundered-exit-status family
+  reached **six instances in about a day**: a lost gate log; a buffering `tail`
+  whose empty output read as a stalled build; a truncating `head`; `git status
+  --porcelain` returning exit 124 with empty output, byte-identical to a clean
+  tree; a swallowed guard exit; and gradle through `tail` reporting **exit 0 on
+  a failed build**.
+
+  Every one was diagnosed correctly, written up well, and generalised into a
+  rule — **and the next one still arrived.** That is this project's own
+  repeatedly-proven finding turned on itself: *a rule that must be remembered
+  at the moment of use will not be*, because the moment of use is exactly when
+  attention is on something else. Six write-ups did not prevent a seventh; a
+  wrapper does, by making the correct behaviour the default rather than a thing
+  to recall.
+
+  `run-logged.sh <label> -- <command...>` always tees to
+  `cleophis-mobile-logs/`, always exits with `${PIPESTATUS[0]}` rather than the
+  pipeline's, emits PRE/POST provenance in `build-android-apk.sh`'s proven
+  shape (including that only `porcelain_exit 0` licenses "clean"), merges
+  stderr so a failed build's errors are actually in the log, and prints an
+  unanchored warning count as a prompt to look. **Demonstrated capable of
+  failing before being believed:** a command exiting 7 propagates 7 and prints
+  `FAILED`; a command exiting 0 propagates 0. Self-testing it also caught a
+  real bug in itself — the phase argument leaking into the recorded command
+  line, fixed with a `shift`.
 
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
   INVENTORY** (decision D-6, part 3). List every assertion the phase will make
