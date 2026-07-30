@@ -4031,3 +4031,17 @@ Founder ran `adb logcat -d | grep -F "[bridge]"`. Captured output:
 Unblocked by this result: Phase 3.2 (AndroidKeyStore `SecureStore`), 2.2 native completion task 3 (`ConnectivityManager` metered state — note `ACCESS_NETWORK_STATE` is still absent from the manifest, deliberately, until it has a caller) and task 4 (`ACTION_SEND` share sheet).
 
 Note: this entry was appended by steering because the gen-5 agent went offline (spend limit) between starting 3.1 and this capture — the delivery lesson applied by the other party. Whoever resumes should commit it under their own authorship with this provenance note intact.
+
+## 📱 CP3 — PASSED (founder, Galaxy A22, 2026-07-29; captured by steering)
+
+APK `a3fd92dddf1f0f61a19d715b37d310f566539ea271a50754d7e61458690efd24` (built from `0354f6c`, three independent derivations agreeing: build sidecar, steering verification, agent re-hash of the archive).
+
+**Founder result: signed in, force-stopped the app, relaunched — STILL SIGNED IN.**
+
+That closes Phase 3.2 on the Android axis and retires the caveat carried since CP0: *"keyring v3 silently mocks in-memory on unsupported targets, so a force-stop logs the user out."* It is no longer true. The credential is encrypted under a non-exportable AndroidKeyStore AES-256-GCM key, stored in `noBackupFilesDir` (excluded from backup by construction, not by rule), AAD-bound to its slot, and its tag verified on read.
+
+**What this result also proves, which nothing off-device could:** `Cloud::restore` reaches the bridge via `spawn_blocking` — a Tokio blocking-pool thread the JVM has *not* attached — so `attach_current_thread` genuinely attaches and detaches there. The bridge checkpoint ran on the UI thread and got a nested no-op guard; gen-5 flagged that gap explicitly as unclaimed. **A successful decrypt after relaunch is the first exercise of that path.** The gap is now closed by observation rather than by assumption.
+
+**Still uncaptured from this session** (fold into the next founder device run, not a new session): the remaining CP1 items — `[kernels] DOTPROD=1` from logcat, quantified TTFT/tok-s/RSS, the tampered-file integrity probe, and formal Stage-5 4/4. Also unverified by construction: R8/release behaviour (audit item 1b — a green debug checkpoint is fully compatible with a release build that signs the user out on every launch), and the sign-out purge (`no_backup/secure/` empty).
+
+Recorded by steering because no agent was running; whoever resumes should commit it under their own authorship with this provenance note intact.
