@@ -3,9 +3,14 @@
 Written outside the worktree deliberately, so it survives whatever happens to
 the branch or the session.
 
-**State: `mobile/p1-alpha` @ `7bb86b1f6d6d640f2a4cf77a1b6578e6ece10c19`, tree
+**State: `mobile/p1-alpha` @ `f8517f1e73d161391c282b70afb59d3763eac442`, tree
 clean, `porcelain_exit 0`.** Nothing is half-written. Every item below is either
 committed and verified, or explicitly not started.
+
+**5.1 IS CLOSED.** Steering ruled option 1 on the notification question: both
+the download notification and the runtime permission request are deferred, and
+the consequence is recorded as two distinct items in the ledger's Phase 5
+section. Your next task is **A2**, not 5.1.
 
 ---
 
@@ -40,10 +45,20 @@ cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets
 cd src-tauri/gen/android && ./gradlew :app:compileUniversalDebugKotlin
 ```
 
-**Never pipe a build through `tail`/`head`.** I did, and the harness reported a
-*failed* gradle build as task **exit 0** — that was `tail`'s status. Redirect to
-a file, or tee and capture `${PIPESTATUS[0]}`. Also: a piped build writes
-nothing until it finishes, so an empty log is not a stalled build.
+**Never pipe a build through `tail`/`head` — and you no longer have to
+remember that, because there is now a tool:**
+
+```bash
+docs/superpowers/mobile-tools/run-logged.sh ndk-check -- cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets
+docs/superpowers/mobile-tools/run-logged.sh kotlin    -- ./gradlew :app:compileUniversalDebugKotlin --console=plain
+```
+
+It tees, exits with `${PIPESTATUS[0]}` rather than the pipeline's, merges
+stderr, emits PRE/POST provenance, and prints an unanchored warning count.
+**Use it for anything long.** It exists because this family reached six
+instances in a day — the last being a gradle build that reported **exit 0
+while failing**, because that was `tail`'s status. Six correct write-ups did
+not prevent a seventh; the wrapper does.
 
 ## What I completed
 
@@ -81,29 +96,28 @@ patterns too loose to survive it.** Tighten first, widen second, or not at all.
 Steering verified independently and reversed the ruling. Pushing back *before*
 implementing is the behaviour that caught it — do not stop doing that.
 
-## YOUR NEXT TASK — 5.1's last item, and it is BLOCKED ON A DECISION
+## The notification question is SETTLED — do not reopen it
 
-**Do not build the download-complete notification until steering answers.**
+`POST_NOTIFICATIONS` is in the manifest but never requested at runtime, and
+`targetSdk` is 36, so on Android 13+ it is never granted. Steering ruled
+**option 1**: defer both the download notification and the permission request,
+and record two distinct gaps (ledger, Phase 5 section).
 
-The brief says "`POST_NOTIFICATIONS` already in the manifest". True, and
-insufficient: `targetSdk = 36`, and **nothing in the app requests it at
-runtime** (I grepped; there is no `requestPermissions` anywhere). On Android 13+
-it is therefore never granted.
+The reasoning worth carrying, because it will apply again: steering rejected
+splitting them — asking for the permission now and delivering the notification
+later — on the grounds that **a permission request is a promise**. Asking and
+not redeeming spends the user's trust on a prompt whose payoff never arrives.
+*Ask and redeem together, or do not ask.*
 
-- The **foreground service is unaffected in substance** — it still runs and
-  still protects the turn; only its notification is suppressed. Documented in
-  `InferenceService.kt` as survivable, and it genuinely is.
-- A **download notification would post into a void** on every shipping device.
+And gap (b) is the one to remember: **the foreground service's own notification
+is invisible without that grant**, so today the app runs a foreground service
+the user cannot observe. Not urgent — generation-only, and the service works
+regardless — but when the permission work does land, **that** is the
+justification for the ask, not a download toast.
 
-Three options are with steering; my recommendation is (3): build the runtime
-permission request asking at *first download* (contextual, far likelier to be
-granted than a first-launch prompt), and keep the notification as a small
-follow-up. The grant is what unlocks both this and the FGS notification's
-visibility.
+## Your work, in the order steering approved
 
-## Then, in the order steering approved
-
-1. **A2 — airplane-mode suite.** Genuinely greenfield and the most
+1. **A2 — airplane-mode suite. START HERE.** Genuinely greenfield and the most
    straightforward of the three. The guard wants `fn airplane_` / `"airplane"` /
    `airplane-mode.sh` / `run-airplane`. Build it **device-agnostic**, not
    A22-specific: the founder is acquiring a second and third device for 5.4.
