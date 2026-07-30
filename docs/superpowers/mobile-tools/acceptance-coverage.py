@@ -99,12 +99,45 @@ ACCEPTANCE = {
         [r'fn +check_app_update'],
         'the update-path test asserts an update flow that does not exist',
     ),
+    # ⚠ THE GUARD'S FOURTH SELF-INFLICTED BUG -- an OR where every sibling is
+    # an AND, found by gen-8 while running the positive control it was built
+    # for.
+    #
+    # This entry read `[r'fn +(detect_)?thermal_|"thermal-notice"']`: ONE
+    # pattern with a top-level alternation, so EITHER half satisfied A7 on its
+    # own. A1, A4 and A5 all use two-element lists, which the loop below
+    # requires ALL of. A7 was the only item whose two named symbols were folded
+    # into one regex, and the `(detect_)?` group makes that easy to misread as
+    # naming tolerance rather than a third alternative.
+    #
+    # The consequence: a bare `emit("thermal-notice", ...)` with NO DETECTOR AT
+    # ALL turned A7 green. Measured, not theorised -- with the detector present
+    # but uncommitted, `fn +(detect_)?thermal_` matched none of the 80 tracked
+    # evidence files while the emit site alone carried the item to `ok`.
+    #
+    # That is this guard's own disease for the fourth time: satisfiable by less
+    # than the requirement. Runs 1-3 were satisfied by prose, by a TODO, and by
+    # the manifest itself; this one by a stub. And it is the nastiest for the
+    # instrument rather than the code, because it does not produce a wrong
+    # verdict -- A7 is genuinely implemented -- it produces a RIGHT VERDICT FOR
+    # THE WRONG REASON, which would have been banked as "A7 flipped when
+    # thermal detection landed" when the flip was not attributable to the
+    # detector and would have happened with it deleted.
+    #
+    # The docs disagreed and that is how it survived: `acceptance-coverage.md`
+    # banks the failure as "nothing EMITS a throttle notice" (an OR reading),
+    # while the ledger's own second-order finding states the contract as
+    # `fn detect_thermal_*` AND `"thermal-notice"`. The manifest implemented the
+    # weaker of the two. Split now, so the contract is the stricter reading and
+    # the detector has to exist.
     'A7': (
-        [r'fn +(detect_)?thermal_|"thermal-notice"'],
+        [r'fn +(detect_)?thermal_', r'"thermal-notice"'],
         'the soak test asserts a throttle notice no code emits: the suite passes '
         'by asserting nothing. NOTE the two false matches this pattern was '
         'tightened to exclude -- unrelated rate-limiting `throttl`, and comments '
-        'promising the feature in a later phase',
+        'promising the feature in a later phase; and NOTE that the detector and '
+        'the event name are now BOTH required, because the event name alone was '
+        'satisfiable by a stub',
     ),
 }
 

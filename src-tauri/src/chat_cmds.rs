@@ -79,6 +79,45 @@ pub struct ChatCancels {
     >,
 }
 
+/// The latest thermal verdict, so a webview that reloaded can re-ask for it
+/// (hazard H6, acceptance A7). Managed on both platforms so the command
+/// surface stays uniform (D-1); desktop never populates it.
+///
+/// **Why a re-assert path is needed at all, given the event.**
+/// `ThermalWatch` emits only on *transitions*, and it lives on the inference
+/// thread — which outlives the webview. If the WebView renderer is killed
+/// under memory pressure, the frontend loses `state.thermal` while the watch
+/// keeps `notified = true`. `on_token`'s onset branch is guarded by
+/// `!self.notified`, so **no further onset can ever be emitted**: the notice
+/// stays withdrawn for the rest of a hot session. Silent, and permanent until
+/// the device happens to cool.
+///
+/// That is not a hypothetical on the hardware this targets. Rotation is
+/// already covered (`configChanges` includes `orientation|screenSize`), so the
+/// remaining path is renderer death under memory pressure — which is ordinary
+/// on a 4 GB floor device running a local model, and which *correlates with
+/// the very thermal load this feature detects*. It would also corrupt the A7
+/// soak run itself: a founder device session, the scarcest resource on this
+/// track, silently recording a false negative.
+#[derive(Default)]
+pub struct ThermalState {
+    #[cfg(mobile)]
+    inner: std::sync::Mutex<Option<crate::engine_thermal::ThermalNotice>>,
+}
+
+#[cfg(mobile)]
+impl ThermalState {
+    /// Called by the inference thread on every transition, so the stored
+    /// verdict is whatever was last emitted.
+    pub(crate) fn set(&self, notice: crate::engine_thermal::ThermalNotice) {
+        *self.inner.lock().unwrap_or_else(|p| p.into_inner()) = Some(notice);
+    }
+
+    fn get(&self) -> Option<crate::engine_thermal::ThermalNotice> {
+        *self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
 #[cfg(mobile)]
 mod imp {
     use super::*;
@@ -415,4 +454,26 @@ pub fn chat_cancel(request_id: String, app: AppHandle) {
     imp::chat_cancel(request_id, app);
     #[cfg(desktop)]
     let _ = (request_id, app);
+}
+
+/// The current thermal verdict, or `null` if nothing has been decided yet.
+///
+/// A *re-assert* path rather than an event: the frontend calls this once at
+/// boot so a reloaded webview recovers a notice it would otherwise never be
+/// told about again. See [`ThermalState`] for why the event alone is not
+/// enough.
+#[tauri::command]
+pub fn chat_thermal_state(
+    app: AppHandle,
+) -> Result<Option<crate::engine_thermal::ThermalNotice>, String> {
+    #[cfg(mobile)]
+    {
+        use tauri::Manager;
+        return Ok(app.state::<ThermalState>().get());
+    }
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        Err(DESKTOP_REFUSAL.to_string())
+    }
 }

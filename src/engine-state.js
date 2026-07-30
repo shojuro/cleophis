@@ -54,6 +54,19 @@ export const MAX_LAG_MS = 2500;
 /// fast"). A user who is shown nothing here concludes the app is broken.
 export const PREFILL_EXPLAIN_MS = 1200;
 
+/// How long the thermal notice holds the full-width row before shrinking to
+/// the pill.
+///
+/// Throttling is *persistent* — the device stays hot across many turns — so a
+/// permanently prominent banner would be the loudest element on screen for the
+/// rest of the session, for a fact the user has already read. It stays as the
+/// warn-tone pill afterwards, so the state remains visible and honest without
+/// dominating: seen once, then available.
+///
+/// Decayed from a timestamp rather than latched in a variable, so this module
+/// stays a pure function of the facts — the same reason `turn.now` is injected.
+export const THERMAL_PROMINENT_MS = 8000;
+
 const pct = (done, total) => (total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0);
 
 /// Format a byte count, choosing the unit from `basis` rather than from the
@@ -105,6 +118,8 @@ export function describeEngineState({
   downloadActive = false,
   turn = null,
   supported = true,
+  thermal = null,
+  now = null,
 } = {}) {
   // Unsupported hardware outranks everything: no amount of engine state is
   // meaningful on a device that cannot run a model (2.3's supported=false).
@@ -254,6 +269,29 @@ export function describeEngineState({
       detail: 'Reading it into memory. This takes longest the first time.',
       tone: 'busy',
       prominent: true,
+    };
+  }
+
+  // The engine is up and the device is throttling (hazard H6, acceptance A7).
+  //
+  // Ranked here deliberately: below everything that would stop the app working
+  // at all (unsupported hardware, a live download, a failed or absent engine),
+  // and above every "a turn is in flight" state — because when both are true,
+  // the throttle is the one that *explains* what the user is seeing. §8's whole
+  // ask is that slowness arrive with a reason attached instead of as mysterious
+  // degradation, and "Writing…" is exactly the mysterious version.
+  //
+  // It replaces the prefill explanation for the same reason: "the first reply
+  // takes longest" is a true sentence that would be the wrong cause.
+  if (thermal && thermal.throttled) {
+    const shownFor = now != null && thermal.at != null ? now - thermal.at : 0;
+    return {
+      kind: 'thermal',
+      label: 'Your phone is warming up',
+      short: 'Warming up',
+      detail: 'Replies may come more slowly for a while. Nothing is wrong — the chip eases off to protect itself, and it speeds back up as it cools.',
+      tone: 'warn',
+      prominent: shownFor < THERMAL_PROMINENT_MS,
     };
   }
 

@@ -55,16 +55,19 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use std::cell::RefCell;
 use std::ops::ControlFlow;
+use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 
 use kpack_engine::{
     AdapterRole, AdapterSpec, ChatMessage, ChatTemplate, EngineBackend, EngineHandle,
     EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::engine_serve::{ChatTurn, Command, SessionEnd, Waited};
+use crate::engine_thermal::ThermalWatch;
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
 use crate::inference::{Engine, EngineStatus};
@@ -226,6 +229,13 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     // the shutdown) it carries is lost.
     let mut pending: Option<Command> = None;
 
+    // Thermal detection (H6/A7). Created HERE — once per inference thread —
+    // rather than per turn or per session, because that lifetime *is* the
+    // feature: the SoC does not cool down because a reply ended, and a watch
+    // rebuilt each turn would re-baseline against the throttled rate and never
+    // fire. See `engine_thermal`'s module doc.
+    let thermal = Rc::new(RefCell::new(ThermalProbe::new(app.clone())));
+
     loop {
         let cmd = match pending.take() {
             Some(cmd) => cmd,
@@ -253,7 +263,8 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                 // The session borrows `handle`, and `Load` has to `unload()` it,
                 // so the borrow is confined to this expression while the
                 // decision it produces outlives it.
-                let end = serve_one_session(&mut **h, session_config(&tier), turn, &rx);
+                let end =
+                    serve_one_session(&mut **h, session_config(&tier), turn, &rx, &thermal);
                 match end {
                     SessionEnd::Idle => {}
                     SessionEnd::Yield(next) => pending = Some(next),
@@ -341,6 +352,7 @@ fn serve_one_session(
     cfg: SessionConfig,
     first: ChatTurn,
     rx: &Receiver<Command>,
+    thermal: &Rc<RefCell<ThermalProbe>>,
 ) -> SessionEnd {
     let mut session = match handle.session(cfg) {
         Ok(session) => session,
@@ -367,8 +379,14 @@ fn serve_one_session(
         let mut turns = SessionTurns {
             session: &mut *session,
             cancel,
+            thermal: thermal.clone(),
         };
         let result = crate::engine_tool_loop::run(&mut turns, family, convo, &mut on_delta);
+        // Close the thermal turn BEFORE replying, so the next turn's prefill
+        // wait and the user's reading time cannot be measured as one enormous
+        // inter-token gap. Unconditional: a cancelled or failed turn ends just
+        // as much as a successful one.
+        thermal.borrow_mut().turn_ended();
         // A closed reply channel just means the caller gave up; the turn still
         // ran to completion and the session is clean.
         let _ = reply.send(result);
@@ -467,6 +485,56 @@ struct SessionTurns<'a, 's> {
     /// Set by `chat_cancel`. Checked per token, which is what makes cancel feel
     /// immediate rather than arriving at the end of a turn.
     cancel: Arc<AtomicBool>,
+    /// Shared with the inference thread rather than owned, because the thermal
+    /// baseline has to outlive this turn (H6/A7).
+    thermal: Rc<RefCell<ThermalProbe>>,
+}
+
+/// Feeds [`ThermalWatch`] from the live token stream and publishes its verdict.
+///
+/// A clock and an `emit` — that is deliberately all that stays on this side of
+/// the D-3 line. Every judgement about what counts as throttling is
+/// [`crate::engine_thermal`]'s, where the desktop suite runs it.
+struct ThermalProbe {
+    app: AppHandle,
+    /// Monotonic origin. `Instant` rather than wall-clock: a phone that
+    /// re-syncs its clock, or crosses a DST boundary mid-conversation, must not
+    /// be able to manufacture a negative or hour-long inter-token gap.
+    started: std::time::Instant,
+    watch: ThermalWatch,
+}
+
+impl ThermalProbe {
+    fn new(app: AppHandle) -> Self {
+        Self {
+            app,
+            started: std::time::Instant::now(),
+            watch: ThermalWatch::new(),
+        }
+    }
+
+    /// One token was just produced by the sampler.
+    fn on_token(&mut self) {
+        // Truncation is unreachable rather than tolerated: u64 milliseconds is
+        // ~584 million years of uptime.
+        let at_ms = self.started.elapsed().as_millis() as u64;
+        if let Some(notice) = self.watch.on_token(at_ms) {
+            // Stored BEFORE it is emitted, so a webview that reloads between
+            // the two still finds the current verdict when it re-asks. The
+            // watch emits only on transitions and outlives the webview, so
+            // without this a reloaded frontend could never learn it is
+            // throttled — see `chat_cmds::ThermalState`.
+            self.app.state::<crate::chat_cmds::ThermalState>().set(notice);
+            // Emitted on BOTH edges — `throttled` says which — so the UI can
+            // withdraw the notice instead of leaving a warning up for the rest
+            // of the session.
+            let _ = self.app.emit("thermal-notice", notice);
+        }
+    }
+
+    fn turn_ended(&mut self) {
+        self.watch.turn_ended();
+    }
 }
 
 impl TurnSource for SessionTurns<'_, '_> {
@@ -477,10 +545,18 @@ impl TurnSource for SessionTurns<'_, '_> {
     ) -> Result<(), String> {
         let rendered: Vec<ChatMessage> = messages.iter().map(to_chat_message).collect();
         let cancel = self.cancel.clone();
+        let thermal = self.thermal.clone();
         // `ControlFlow::Break` is kpack-engine's cooperative cancel: it stops
         // generation at the next token rather than tearing the session down, so
         // the handle stays reusable for the next turn.
         let mut tokens = |text: &str| -> ControlFlow<()> {
+            // Thermal timing is taken HERE and nowhere downstream (H6/A7).
+            // This closure is called once per token by `EngineSession::stream`;
+            // `on_delta` is on the far side of `ToolStream`, which withholds
+            // text that might be tool syntax and releases it in a burst. Timing
+            // there would measure the suppressor's release schedule and read a
+            // held-back stretch as a stall and its flush as a speed-up.
+            thermal.borrow_mut().on_token();
             sink(text);
             if cancel.load(Ordering::Relaxed) {
                 ControlFlow::Break(())

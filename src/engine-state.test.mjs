@@ -13,6 +13,7 @@ import {
   createReadableSequence,
   MIN_DWELL_MS,
   PREFILL_EXPLAIN_MS,
+  THERMAL_PROMINENT_MS,
 } from './engine-state.js';
 
 /* ---------------- describeEngineState ---------------- */
@@ -244,6 +245,7 @@ test('every state carries a pill-sized short form as well as a row-sized label',
     { download: { phase: 'failed' } },
     { download: { phase: 'cancelled' } },
     { download: { phase: 'downloading', bytesDownloaded: 1, totalBytes: 2 } },
+    { engineStatus: 'Ready', installed: true, thermal: { throttled: true, at: 0 }, now: 0 },
   ];
   for (const c of cases) {
     const s = describeEngineState(c);
@@ -268,6 +270,91 @@ test('the turn states carry short forms too — they are the common case', () =>
   });
   for (const s of [busy, writing, preparing]) {
     assert.ok(s.short && s.short.length <= 16, `${s.kind}: ${s.short}`);
+  }
+});
+
+/* ---------------- the thermal notice (task 5.1, H6, A7) ---------------- */
+
+test('a throttling device is told why, instead of just getting slower', () => {
+  // §8's actual ask: "surface a gentle notice rather than mysterious
+  // degradation". The wording IS the requirement here, the same way the
+  // "no model" copy is.
+  const s = describeEngineState({
+    engineStatus: 'Ready',
+    installed: true,
+    thermal: { throttled: true, baselineTps: 6.4, recentTps: 2.1, at: 0 },
+    now: 0,
+  });
+  assert.equal(s.kind, 'thermal');
+  assert.equal(s.tone, 'warn');
+  assert.equal(s.prominent, true);
+  assert.match(s.label.toLowerCase(), /warming up/);
+  // The reassurance is the point — a warning with no "nothing is wrong" reads
+  // as a fault the user is supposed to act on.
+  assert.match(s.detail.toLowerCase(), /nothing is wrong/);
+});
+
+test('the thermal notice outranks the turn states — it explains them', () => {
+  // Both true at once is the normal case: the device throttles *during*
+  // generation. "Writing…" is the mysterious version of the same moment, and
+  // "the first reply takes longest" would be a true sentence naming the wrong
+  // cause.
+  const writing = describeEngineState({
+    engineStatus: 'Ready', installed: true,
+    turn: { startedAt: 0, firstDeltaAt: 5, now: 10 },
+    thermal: { throttled: true, at: 0 }, now: 10,
+  });
+  const preparing = describeEngineState({
+    engineStatus: 'Ready', installed: true,
+    turn: { startedAt: 0, firstDeltaAt: null, now: PREFILL_EXPLAIN_MS },
+    thermal: { throttled: true, at: 0 }, now: PREFILL_EXPLAIN_MS,
+  });
+  assert.equal(writing.kind, 'thermal');
+  assert.equal(preparing.kind, 'thermal');
+});
+
+test('a withdrawn thermal notice stops being shown', () => {
+  // The backend emits on both edges precisely so this is possible. A notice
+  // that could only be raised would sit on screen for the rest of the session.
+  const s = describeEngineState({
+    engineStatus: 'Ready',
+    installed: true,
+    thermal: { throttled: false, baselineTps: 6.4, recentTps: 6.0, at: 0 },
+    now: 1000,
+  });
+  assert.equal(s.kind, 'ready');
+});
+
+test('the thermal row demotes itself to the pill but stays visible', () => {
+  // Throttling persists for many turns. Holding the full-width row for all of
+  // them would make the loudest element on screen a fact already read; hiding
+  // it entirely would withdraw a notice that is still true.
+  const facts = (now) => ({
+    engineStatus: 'Ready', installed: true,
+    thermal: { throttled: true, at: 0 }, now,
+  });
+  const fresh = describeEngineState(facts(THERMAL_PROMINENT_MS - 1));
+  const settled = describeEngineState(facts(THERMAL_PROMINENT_MS));
+
+  assert.equal(fresh.prominent, true);
+  assert.equal(settled.prominent, false);
+  assert.equal(settled.kind, 'thermal');
+  assert.equal(settled.tone, 'warn');
+});
+
+test('thermal never outranks a state that means the app cannot work at all', () => {
+  // A hot phone is not the headline when there is no model to run, the engine
+  // is down, the hardware is unsupported, or a download is in flight. Ranked
+  // below all four deliberately.
+  const hot = { thermal: { throttled: true, at: 0 }, now: 0 };
+  const cases = [
+    [{ supported: false, ...hot }, 'unsupported'],
+    [{ engineStatus: 'Failed', installed: true, ...hot }, 'failed'],
+    [{ engineStatus: 'NoModel', installed: false, ...hot }, 'no-model'],
+    [{ engineStatus: 'Ready', installed: true, download: { phase: 'verifying' }, ...hot }, 'verifying'],
+  ];
+  for (const [facts, kind] of cases) {
+    assert.equal(describeEngineState(facts).kind, kind);
   }
 });
 

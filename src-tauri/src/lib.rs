@@ -71,6 +71,25 @@ mod engine_tools;
 #[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/tool_loop.rs"]
 mod engine_tool_loop;
+/// Thermal-throttle detection (spec §8, hazard H6, acceptance A7) — the
+/// decision half. Declared here for the same reason as its three neighbours,
+/// and more sharply than any of them: EVERY failure mode of a throttle
+/// detector is silent. One that never fires is indistinguishable from a phone
+/// that never got hot, and one that fires on the wrong thing produces a
+/// reassuring sentence at the wrong moment. Neither raises an error, so a
+/// cross-compile `check` says nothing about either. The clock and the `emit`
+/// stay in `engine_inproc`; the arithmetic is here, where the desktop suite
+/// executes it.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/thermal.rs"]
+mod engine_thermal;
 mod hardware;
 mod inference;
 mod kpack;
@@ -279,6 +298,12 @@ pub fn run() {
             // desktop never populates it.
             app.manage(chat_cmds::ChatCancels::default());
 
+            // The last thermal verdict, so a webview that reloaded can re-ask
+            // rather than wait for a transition that can never come again
+            // (H6/A7). Managed on both platforms for the same uniformity
+            // reason as ChatCancels; desktop never populates it.
+            app.manage(chat_cmds::ThermalState::default());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -333,6 +358,7 @@ pub fn run() {
             chat_cmds::chat_stream,
             chat_cmds::chat_complete,
             chat_cmds::chat_cancel,
+            chat_cmds::chat_thermal_state,
             mobile_native::network_state,
             mobile_native::share_chat
         ])

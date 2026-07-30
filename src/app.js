@@ -2,7 +2,7 @@
 import { CALC_TOOL } from './calc-tool.js';
 import { streamWithTools } from './calc-loop.js';
 import { createTransport, isAndroid } from './transport.js';
-import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS } from './engine-state.js';
+import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMAL_PROMINENT_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
 
@@ -62,7 +62,10 @@ const state = {
   // turn so the prefill wait can be explained from a real signal rather than
   // guessed, and `hw` caches detect_hardware so `supported:false` (task 2.3)
   // can drive the honest "not yet" screen.
-  dlProgress: null, turn: null, hw: null,
+  // `thermal` is the last `thermal-notice` payload (task 5.1, hazard H6): the
+  // backend emits on BOTH edges, so this is set by onset and cleared by
+  // recovery rather than latching a warning nothing withdraws.
+  dlProgress: null, turn: null, hw: null, thermal: null,
   // B4: while a hero dist-catalog download is awaiting a SPECIFIC artifact's
   // terminal event, this holds { path, resolve, reject } so onDownloadProgress
   // routes that artifact's done/failed/cancelled to the sequencing promise
@@ -175,6 +178,17 @@ async function boot() {
       showEngineBanner('Local engine failed: ' + e.payload);
     }
   });
+  // Thermal throttling (task 5.1, hazard H6, acceptance A7). `at` is stamped on
+  // arrival rather than sent by the backend: the payload's job is the verdict,
+  // and the only clock the prominence decay may compare against is the one
+  // `refreshEngineState` reads.
+  await listen('thermal-notice', (e) => {
+    state.thermal = { ...e.payload, at: Date.now() };
+    refreshEngineState();
+    // The row demotes itself to the pill on a timer, and no other event is
+    // guaranteed to arrive while the user simply reads the reply.
+    setTimeout(refreshEngineState, THERMAL_PROMINENT_MS + 30);
+  });
   await listen('download-progress', onDownloadProgress);
   await listen('build-progress', onBuildProgress);
   state.catalog = await invoke('get_catalog');
@@ -190,6 +204,23 @@ async function boot() {
     } catch (_) {}
   }
   try { state.engine = await invoke('engine_info'); } catch (_) {}
+  // Re-assert the thermal verdict (H6/A7). `thermal-notice` fires only on
+  // transitions and the watch outlives this webview, so if the renderer was
+  // killed under memory pressure mid-session there is no future event to
+  // recover from — the backend would sit on `notified = true` forever.
+  //
+  // A re-assert is deliberately NOT news: the user has already been told, and
+  // re-raising the full-width row on every reload would make the loudest
+  // element on screen a fact they read ten minutes ago. Backdating `at` by the
+  // prominence window lands it straight in the pill, still visible and still
+  // honest, using the decay `describeEngineState` already implements rather
+  // than a second code path.
+  if (IS_MOBILE) {
+    try {
+      const t = await invoke('chat_thermal_state');
+      if (t && t.throttled) state.thermal = { ...t, at: Date.now() - THERMAL_PROMINENT_MS };
+    } catch (_) {}
+  }
   // Task 2.2/2.3: ask the device what it can do BEFORE the onboarding funnel,
   // not at sign-in like desktop does. A phone that cannot run a model should
   // be told so before it is walked through account → payment.
@@ -1556,6 +1587,8 @@ function refreshEngineState() {
     downloadActive: state.dl.active,
     turn: state.turn ? { ...state.turn, now: Date.now() } : null,
     supported: state.hw ? state.hw.supported !== false : true,
+    thermal: state.thermal,
+    now: Date.now(),
   });
   engineSeq.push(p);
 }
