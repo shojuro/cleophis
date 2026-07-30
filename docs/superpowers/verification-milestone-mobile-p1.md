@@ -4058,14 +4058,21 @@ of the discriminator table is excluded by observation**, not by arithmetic.
 That is the second consecutive gate where the prediction's value was the
 *names*, not the number.
 
-**POST carried an `M` on the ledger.** Docs-only, verdict unaffected, and
-steering has asked that this be noted rather than relitigated — so, noted.
-The one thing that must not be lost in the noting: this is the **fourth
-consecutive run** whose POST delta happened to be inert. *"The delta happened
-to be inert" is not a property anyone could know in advance*, and recording it
-each time is what keeps it from becoming a precedent. The standing
-recommendation stands unarged: **gate the handshake on `porcelain_exit 0` at
-issuance** — a state either party can verify — rather than on recollection.
+**POST carried an `M` on the ledger.** Docs-only, verdict unaffected. Fourth
+consecutive run whose delta happened to be inert — recorded because *"the
+delta happened to be inert" is not a property anyone could know in advance*,
+and noting it is what keeps it from becoming precedent. **Closed there**: see
+the prophylactic-versus-diagnostic reframe under Conventions, which is the
+useful end of this thread and supersedes arguing the individual instances.
+
+**⚑ AND THE VERDICT STILL DESCRIBES HEAD.** Two commits have landed since
+`5349175` — the A2 swap (a Python guard) and this ledger — and
+`git diff --name-only 5349175 HEAD` matches **no** `.rs`/`.toml`/`.lock`/
+`.kt`/`.js` path. So 387/0 remains attributable to HEAD's Rust, verified by
+running the filter rather than by remembering what was edited. This is the
+check gen-9 ran to keep 366/0 alive, and the reason to re-run it rather than
+inherit the claim is that the claim expires silently: 366/0 *did* describe
+HEAD, right up until it didn't.
 
 ### 5.2 A3 — the Stage-5 adjudicator (gen-10)
 
@@ -4755,6 +4762,45 @@ though it did.
   attributable to that commit's Rust. Third time in a row the delta *happened*
   to be inert. That is now a pattern, and it argues the handshake should gate
   on **`porcelain_exit 0` at issuance**, not on either party's recollection.
+
+- **⚑ THE REFRAME THAT SHOULD HAVE COME THREE INCIDENTS AGO: THE FREEZE IS
+  PROPHYLACTIC, THE PROVENANCE RECORD IS DIAGNOSTIC — AND ONLY ONE OF THEM HAS
+  EVER FAILED.** Steering's, in substance and mostly in its words, and it
+  closes the freeze thread rather than adding a sixth rule to it.
+
+  Count the effort against the results. **Five incidents and five amendments**
+  have gone into the freeze protocol, whose job is to *reduce the chance* a
+  gate run is contaminated. Over the same period the PRE/POST provenance
+  sidecar — whose job is to *detect* contamination — has caught **every one**,
+  including the four where the delta turned out to be inert.
+
+  > **Not once has a contaminated run been believed.** The protocol has been
+  > amended five times; the instrument has never failed.
+
+  So the effort allocation has been backwards, and the fix is not a sixth rule.
+  **My "gate the handshake on `porcelain_exit 0` at issuance" is not really a
+  freeze proposal at all — it is an argument that the provenance record should
+  BE the handshake.** Asking a party to *state* it is frozen is a rule that
+  must be remembered at the moment of use; having the instrument *record* the
+  tree state at both ends is a mechanism. That is the identical move as
+  `run-logged.sh` — six write-ups did not prevent a seventh laundered exit
+  status, and a wrapper did — arriving in coordination rather than in tooling.
+
+  **The general form:** *when a protocol keeps needing amendments and an
+  instrument keeps catching what the protocol misses, harden the instrument.*
+  An amendment is a promise about future attention, and this branch's most
+  repeatedly-proven finding is that attention is the thing that will not be
+  there.
+
+  **The counterpoint, kept so this is not read as "drop the freeze"** —
+  steering's instruction is explicitly to keep the handshake, and it is right.
+  Diagnostic means *after the fact*. That is cheap here because a contaminated
+  desktop gate costs one re-run; it would **not** be cheap for a founder
+  device session, where the run is the scarce resource and detecting
+  contamination afterwards means it is simply gone. **Prophylaxis earns its
+  keep in proportion to what a wasted run costs**, which is precisely why the
+  three-device gate deserves more ceremony than a Windows suite does, and the
+  Windows suite deserves less than it has been getting.
 
 - **⚑ A CONVENTION RECORDED BECAUSE IT *WORKED* — steering names the BRANCH,
   never the commit.** Nearly every entry in this section was written after a
