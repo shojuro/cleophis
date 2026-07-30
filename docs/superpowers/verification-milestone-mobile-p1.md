@@ -3572,6 +3572,34 @@ owes you an attribution.**
 
 ## Conventions
 
+- **⚑ A PASSING CHECK STILL OWES YOU AN ATTRIBUTION.** Ask *which clause
+  carried the verdict*, not merely whether the verdict was right. A green can
+  be correct for the wrong reason, and that is strictly harder to catch than a
+  wrong verdict, because nothing looks amiss — the item really is implemented,
+  the check really does pass, and the causal link between them is the only
+  thing missing.
+
+  This applies to **every** green on this branch, gate runs included. The
+  instance that produced it: A7 flipped to `ok` on the strength of an `emit`
+  call while the entire detector was invisible to the guard, and the pair would
+  have been banked as "A7 flipped when thermal detection landed" when it would
+  have flipped identically with the detector deleted. The countermeasure is
+  cheap — run the check against a state where only the *suspected* cause is
+  absent, and confirm it names that cause specifically.
+
+- **⚑ A CHECK'S SILENCE IS ONLY EVIDENCE WITHIN ITS COMPETENCE — including
+  across languages.** `cargo ndk check` returned exit 0 with zero warnings on a
+  tree whose Android resources would not compile at all (`--` inside an XML
+  comment; aapt2 rejects the whole file). Rust silence says nothing about
+  Kotlin, resources, or the manifest. **Any commit touching `gen/android`
+  needs a gradle compile — `./gradlew :app:compileUniversalDebugKotlin` — not
+  just a cargo check.**
+
+  Same episode, second lesson: gradle was run through `| tail -40`, so the
+  harness reported the task as **exit 0**, which was `tail`'s status while the
+  build had failed. Only the explicitly teed `EXIT=${PIPESTATUS[0]}` showed
+  `1`. **Piping a build through anything launders its exit status.**
+
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
   INVENTORY** (decision D-6, part 3). List every assertion the phase will make
   and name the `file:line` that satisfies it, or mark it **MISSING**. One page,
@@ -3598,6 +3626,16 @@ owes you an attribution.**
   | A5 backup-leak | `backup_rules.xml` + `data_extraction_rules.xml` `root`/`device_root`; test procedure in `release-config-audit.md` §4 | rule present, **test MISSING** |
   | A6 update path | Phase-4 gated | **not checkable** |
   | A7 thermal soak | *nothing* — 5.1 must create `fn detect_thermal_*` and emit `"thermal-notice"` | **MISSING** |
+
+  **Successor row (2026-07-30, after 5.1).** The snapshot above is deliberately
+  left as taken — an inventory that silently updates itself is a snapshot that
+  lies about when it was made, which is this ledger's own perishable-evidence
+  rule applied to its own tables. What changed since:
+
+  | acceptance | satisfied by | state |
+  |---|---|---|
+  | A7 thermal soak | `engine_inproc/thermal.rs` `detect_thermal_collapse`/`thermal_recovered`; `"thermal-notice"` emitted in `engine_inproc.rs`; notice copy in `engine-state.js` | **built** at `7550f23`, desktop-verified 359/0 |
+  | A3 Stage-5 probes | still *nothing in the app*. `crates/kpack-engine/examples/probe.rs` defines the four probes but is a CLI, is not in-app, has **no pass/fail logic**, and is outside the guard's SEARCH roots | **MISSING** — and the guard now asks for `fn probe_verdict`, not the prompt text |
 
 - **A `docs(` prefix can hide a code change.** Commit `6299dc3` is prefixed
   `docs(` but also carries the `DESKTOP_REFUSAL` change; the body says so, but
@@ -4067,6 +4105,55 @@ would have passed it green while the founder could not find the engine state at
 all. **The guard catches absence; only the inventory catches inert presence.**
 Part 3 is not optional, and this script's existence must not be allowed to
 argue it away.
+
+**The same blind spot, second confirmed instance — now in the test
+infrastructure layer.** The guard checks that a runner **exists**, and
+**existence is not execution**. A1's suite (`crates/kpack-embed/tests/
+build_determinism.rs`) is already written, `#[ignore]`d, and skips with a
+message when the GGUF is absent — so a CI step that invokes it would satisfy
+A1's patterns while never running a single assertion. Stated at full strength
+because it is this instrument turned on itself:
+
+> **The acceptance item that warns about unexecuted suites can itself be
+> satisfied by an unexecuted suite.**
+
+This is `#chatStatusPill` (defined vs. reachable-and-doing-something) arriving
+one layer up, which makes it a **boundary of the instrument** rather than a new
+surprise each time it appears. The consequence for 5.2: A1's runner must **fail
+loudly when the model is absent, never skip**, so a determinism gate that has
+never run is a red build rather than a green one. Steering's ruling is to let
+A1 sit *red-because-unexecuted* rather than *green-because-a-runner-exists* —
+a red that accurately says "this gate has never run" is worth more than either
+alternative, and it keeps the CI-model decision live rather than foreclosed.
+
+**And the fourth bug's sibling finding: A3 never complied with the banner the
+manifest states in capitals.** Run 2's fix — *patterns must be definition-
+shaped, not topic words* — was written into the file and then not applied to an
+entry three lines below it. `fake[- ]entity` and `medical` are topic words. It
+survived only because the one file containing them sits outside the SEARCH
+roots, so a correct red was being produced by accident. That is gen-6's own
+heading — **a rule you have written down is not a rule you automatically
+apply** — recurring *inside the document that states the rule*, which is the
+strongest available argument that the fix has to be structural. Hence the
+schema note now at the top of the manifest, distinguishing a LIST (AND, across
+distinct evidence) from ALTERNATION (OR, across spellings of the same
+evidence).
+
+**A near miss worth recording because the reasoning generalises.** Steering's
+first ruling was that the missing SEARCH root made A3 a *false red* — the
+guard's first failure in the opposite direction. Measured before implementing:
+`probe.rs` matches both topic words, is a CLI binary with `fn main()`, is not
+in-app (§11's actual requirement), and has no pass/fail logic. Widening the
+roots would therefore have turned a **correct red into a false green**, and
+banked a fifth bug into the record that was not real. Ruling reversed on the
+evidence. The rule extracted, which outlives this entry:
+
+> **The fix for a coverage gap is not to widen coverage under patterns too
+> loose to survive it.** Tighten first, widen second, or not at all.
+
+So the record stands at **four failures, all in the same direction —
+satisfiable by less than the requirement — with one root cause.** That is more
+coherent, and more actionable, than a symmetry that was not there.
 
 ### D-5 — Mobile divergence keys on a platform CLASS, never on viewport width
 

@@ -37,6 +37,29 @@ criteria were unnamed prose, referred to as "the §11 kill-restore test". *A
 mapping cannot be checked mechanically when one side has no name.* Giving them
 **A1–A7** is the enabling change; nothing else was possible without it.
 
+## ⚑ The manifest is CANONICAL; this document cites it and must not restate it
+
+Adopted after bug 4, whose root cause was **D-4 arriving inside the guard's own
+documentation**: A7's contract had two homes — this file said "nothing *emits* a
+notice" (an OR), the ledger said detector **and** event name (an AND) — and the
+executable manifest quietly implemented the weaker one. Nobody compared them,
+because nothing marked either as authoritative.
+
+So, from here:
+
+- **`acceptance-coverage.py`'s `ACCEPTANCE` dict is the single source of truth**
+  for what satisfies each item. It is the only statement that is *executed*, so
+  it is the only one that cannot drift from behaviour.
+- **This document and the ledger explain WHY, cite the manifest for WHAT, and
+  never paraphrase a pattern.** Where a contract must be discussed, name the
+  item (`A7`) and point at the dict; do not re-describe its patterns in prose.
+- Run transcripts quoted below are **historical records of output**, not
+  restatements of contract, and are left exactly as printed.
+
+The general form, which is not specific to this script: **a fact with two homes
+and no canonical link will drift, and the drift is invisible precisely because
+both homes look authoritative.** Pick one, and make the other cite it.
+
 ## Mechanism
 
 `ACCEPTANCE = {id: (evidence patterns, consequence-if-missing)}`, deliberately

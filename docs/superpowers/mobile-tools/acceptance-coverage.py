@@ -69,6 +69,25 @@ ROOT = Path(__file__).resolve().parents[3]
 # by accident. A useful side effect: the manifest is now a CONTRACT. Each
 # pattern names the exact symbol the implementing phase must create, so 5.1
 # knows what will turn A7 green before it writes a line.
+# ⚠⚠ THE SCHEMA'S OWN DISTINCTION, STATED BECAUSE IT WAS ONCE VIOLATED SILENTLY.
+#
+#   A LIST means AND      -- "all of these DISTINCT pieces of evidence exist".
+#                            `['fn checkpoint_partial', 'fn finalize_partial']`
+#                            is two different things that must BOTH be built.
+#
+#   ALTERNATION means OR  -- "any of these SPELLINGS of the SAME piece of
+#                            evidence". A2's `"airplane"|airplane-mode\.sh|
+#                            run-airplane` is legitimately that: one harness,
+#                            three plausible names for it.
+#
+# Bug 4 was A7 using alternation to join TWO GENUINELY DIFFERENT pieces of
+# evidence -- a detector and an event name -- which silently made it an OR, so
+# the event name alone satisfied it and a stub with no detector passed. The two
+# forms look identical in a diff and mean opposite things.
+#
+# Before adding or editing an entry, ask: are these the same fact spelled
+# differently, or different facts? Same fact -> one element with alternation.
+# Different facts -> separate elements.
 ACCEPTANCE = {
     'A1': (
         [r'cargo test -p kpack-embed', r'build_determinism'],
@@ -80,10 +99,32 @@ ACCEPTANCE = {
         'the airplane-mode suite asserts offline behaviour with nothing to drive '
         'it -- A2 would be satisfied by a human remembering to turn radios off',
     ),
+    # ⚠ THIS ENTRY NEVER COMPLIED WITH THE BANNER TWELVE LINES ABOVE IT, and
+    # that is its own finding. `fake[- ]entity` and `medical` are TOPIC WORDS --
+    # exactly what run-2's fix prohibited in capitals -- and the prohibition was
+    # written here and then not applied to a sibling entry three lines away.
+    # "A rule you have written down is not a rule you automatically apply",
+    # recurring inside the document that states it.
+    #
+    # What made it survive: `crates/kpack-engine/examples/probe.rs` DOES define
+    # the four probes verbatim and DOES match both topic words -- but it is
+    # outside SEARCH, so the loose patterns never had anything to match and A3
+    # read red for the right reason by accident. Widening the roots without
+    # fixing this first would have turned A3 green on a CLI example that is
+    # neither in-app (§11's actual requirement) nor adjudicable (it prints
+    # transcripts and has no pass/fail logic at all). The roots were not the
+    # bug; they were the only thing masking it.
+    #
+    # So the patterns now name what 5.2 must BUILD, per the manifest-as-contract
+    # principle: a probe with a machine-checkable VERDICT, reachable from the
+    # app. A file that merely quotes the four prompts no longer satisfies A3.
     'A3': (
-        [r'fake[- ]entity', r'medical'],
-        'the Stage-5 probes exist only as prose: a probe set nobody can run '
-        'cannot fail, so "4/4" means whatever the reader wants it to',
+        [r'fn +probe_verdict', r'"stage5"'],
+        'the Stage-5 probes exist only as prose, or exist as a transcript '
+        'printer with no pass/fail: a probe set that cannot FAIL is not a '
+        'gate, so "4/4" means whatever the reader wants it to. NOTE the '
+        'patterns deliberately name a verdict function rather than the probe '
+        'text -- quoting the prompts is not implementing the gate',
     ),
     'A4': (
         [r'fn +checkpoint_partial', r'fn +finalize_partial'],
@@ -153,6 +194,23 @@ NOT_CHECKABLE = {
 # Implementation and runners ONLY. Prose is deliberately excluded -- see below.
 SEARCH = ['src-tauri/src', 'src', 'src-tauri/gen/android/app/src/main',
           'docs/superpowers/mobile-tools', '.github/workflows']
+
+# ⚑ KNOWN COVERAGE LIMIT, recorded as SCOPE rather than as a bug.
+#
+# These roots are the APP and its runners. Real implementation code lives
+# outside them -- `crates/kpack-engine/examples/probe.rs` is 183 lines of
+# working probe harness this script has never looked at, and `crates/*/tests/`
+# holds the determinism suite A1 names.
+#
+# That is not a defect to be fixed by widening: an acceptance item asks whether
+# the SHIPPING APP implements a requirement, and code in a crate example is not
+# the app. But it does mean a green here has not searched everywhere evidence
+# could live, and a red here is not proof nothing exists anywhere.
+#
+# The rule that follows, learned the expensive way in A3: WIDENING COVERAGE IS
+# ONLY SAFE ONCE THE PATTERNS ARE TIGHT ENOUGH TO SURVIVE IT. Adding a root
+# under topic-word patterns converts a correct red into a false green. Tighten
+# first, widen second, or not at all.
 
 # ⚠ THE GUARD'S OWN FIRST BUG, fixed here and recorded because it is the exact
 # failure the guard was built to catch.
