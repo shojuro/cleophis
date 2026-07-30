@@ -21,7 +21,32 @@ committing; `git log --oneline main..HEAD` is the authority:
 | `9d9479e` | A2 tightened to a three-element AND + the contents-not-paths correction |
 | *this one* | handoff |
 
-## ⚠ START HERE — RULINGS ARRIVED. A3 IS YOUR FIRST BUILD; A1 IS STILL OPEN
+## ⚠ YOUR FIRST ACT: `libclang-dev`, then run the determinism suite
+
+Steering asked me to run it; **it could not be executed here**, and the reason
+is an environment gap rather than a result:
+
+```
+ggml.h:211:10: fatal error: 'stdbool.h' file not found   (bindgen, exit 101)
+```
+
+This machine is provisioned to **cross-compile to Android only**. `cargo ndk`
+supplies the NDK `--sysroot` so bindgen works for aarch64; a **host** build has
+no sysroot, there is no system LLVM, and `LIBCLANG_PATH` points at a Python
+package's clang that ships **no builtin headers**. `sudo apt install
+libclang-dev` is the fix — the CI workflow already does exactly that.
+
+**I deliberately did not work around it** by pointing
+`BINDGEN_EXTRA_CLANG_ARGS` at the NDK's headers. This suite's whole claim is
+bit-exactness, so **a determinism result from an improvised toolchain is
+evidence about the improvisation.** Report "never run anywhere" rather than a
+number nobody can reproduce.
+
+**It remains the cheapest unretired unknown on this branch**: the GGUF is
+present, and nobody has established that the suite passes *anywhere*. Do it
+before A3 — if it fails, everything about A1's wiring is premature.
+
+## RULINGS — ALL FOUR ANSWERED. A3 IS YOUR FIRST BUILD
 
 All four requests came back at once, late. Current status:
 
@@ -32,9 +57,9 @@ All four requests came back at once, late. Current status:
 2. **A2 tightening: APPROVED and LANDED** (`9d9479e`), with control pair.
 3. **A3: APPROVED IN SUBSTANCE, with both questions answered and one hole to
    close. This is your first build.** See below — everything you need is here.
-4. **A1: STILL UNRESOLVED.** Steering said "then A1(a)" without addressing the
-   conflict I raised. **Do not start it until they rule** — the conflict is
-   real and is described below.
+4. **A1: RULED** — tighten the pattern to require the **CI workflow's
+   invocation**, not a script's existence. Do not adopt the result-artifact
+   route. Details below.
 
 **A standing rule arrived that supersedes part of your brief: steering names
 the BRANCH, never the commit. Read HEAD yourself at orientation and before any
@@ -80,7 +105,17 @@ adjudication; never fold it into a pass or a fail.
 because your argument was right, or because you pushed?"** That is exactly the
 distinction the machine cannot make, which is why probe 3 is human-confirmed.
 
-## 🔴 A1 — why it is unbuilt, and the conflict to take to steering
+## 🔴 A1 — RULED by steering. Do not adopt the execution-artifact route
+
+**The ruling, verbatim in substance: read the requirement literally. A1 says
+determinism *CI*, so the requirement is the WORKFLOW INVOCATION, not a script.
+Tighten A1's pattern to require the CI workflow to invoke the suite.** Then a
+runner may exist without faking green, A1 stays red for the true reason (CI
+does not run it, pending the founder's model-hosting decision), and the
+perishable result-artifact idea never enters the manifest. My three options
+were all worse; this one makes the pattern match what the sentence asks for.
+
+### …and the conflict that produced the ruling, for context
 
 Steering's ruling is *"let A1 sit **red-because-unexecuted** rather than
 **green-because-a-runner-exists**."* But A1's guard patterns are

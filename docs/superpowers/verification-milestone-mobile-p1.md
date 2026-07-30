@@ -3763,6 +3763,51 @@ the device. Commits after it (`8ac76c5`, `0284302`, `675227c`) touch no
 compiled input — one shell script and two documents — so **366/0 still
 describes the Rust at HEAD.**
 
+### 🔴 A1 — the determinism suite CANNOT BE EXECUTED in this environment (gen-9)
+
+Steering asked for one cheap act: run the suite locally once, since the 118 MB
+GGUF is present and **nobody has ever established that it passes anywhere.**
+It did not run, and the reason is worth more than the attempt.
+
+```
+ggml.h:211:10: fatal error: 'stdbool.h' file not found
+thread 'main' panicked at third_party/llama-cpp-sys-2/build.rs:555:10:
+  Failed to generate bindings: ClangDiagnostic(...)
+== exit status: 101 ==
+```
+
+**This is an ENVIRONMENT failure, not a verdict on determinism** — the eighth
+instance of the absent-result family, and the same shape as `cargo ndk`'s
+"Could not find any NDK": it occupies the slot in a transcript where a code
+verdict would go and is not one. **"The determinism suite failed" would be a
+false statement.**
+
+**The diagnosis, which is the useful part.** This machine is provisioned to
+**cross-compile to Android and nothing else**. `cargo ndk` passes the NDK
+`--sysroot`, which supplies clang's builtin headers, so `llama-cpp-sys-2`
+bindgen succeeds for aarch64 — it built cleanly twice today. A **host** build
+has no sysroot, and there is no system LLVM (`/usr/lib/llvm-*` absent,
+`libclang-dev` not installed) while `LIBCLANG_PATH` points at a Python
+package's bundled `clang` that **ships no builtin headers at all**. So the host
+toolchain has a `libclang.so` and no headers to go with it.
+
+**Deliberately NOT worked around.** Pointing `BINDGEN_EXTRA_CLANG_ARGS` at the
+NDK's clang include directory would probably have produced a build. It was
+rejected: **this suite's entire claim is bit-exactness, and a bit-determinism
+result obtained under an improvised toolchain is evidence about the
+improvisation.** A determinism verdict is only meaningful under a toolchain
+someone else can reproduce. Better to report that the gate has never run
+anywhere than to report a number nobody can stand behind.
+
+> **The general form: when the check is about reproducibility, the environment
+> is part of the claim.** For most suites a hacked toolchain that compiles is
+> good enough; for this one it invalidates the result it produces.
+
+**The fix is one apt install** (`libclang-dev`, as `.github/workflows/
+mobile-check.yml` already does for its own job) — cheap, but it is a machine
+provisioning change and it sits underneath the founder's unmade model-hosting
+decision, so it is surfaced rather than performed.
+
 ### 5.2 A2 — the airplane-mode harness (gen-9, `8ac76c5`)
 
 `docs/superpowers/mobile-tools/airplane-mode.sh`. Both steering constraints:
@@ -4138,8 +4183,21 @@ owes you an attribution.**
   mean, **name the `file:line` that will emit it** — the assertion inventory
   applied to a founder ask rather than to code.
 
-- **⚑ AN INDEPENDENT VERIFICATION THAT RE-RUNS THE SAME WRONG INSTRUMENT
-  REPRODUCES THE WRONG ANSWER WITH MORE CONFIDENCE.** Gen-9 reported that A2's
+- **⚑ AN INDEPENDENT VERIFICATION THAT RE-RUNS THE SAME INSTRUMENT IS NOT A
+  SECOND OPINION** — *steering's incident, recorded at its own request and in
+  its own words: "I have 'verified independently' perhaps a dozen times on this
+  branch; that phrase is now only honest when the second check uses a DIFFERENT
+  MECHANISM than the first."*
+
+  **Operational form: to verify a claim about a tool's behaviour, READ THE
+  TOOL — do not re-derive its behaviour in a reimplementation, because a
+  reimplementation shares your assumptions by construction.** Steering closed
+  the incident by reading `haystack()` rather than running anything, which is
+  the practice the rule names.
+
+  The original statement of it, kept because the wording is the argument:
+  **an independent verification that re-runs the same wrong instrument
+  reproduces the wrong answer with more confidence.** Gen-9 reported that A2's
   green was carried by a *filename*; steering checked it independently and
   confirmed it; **both were wrong**, because the measuring script searched
   `path or contents` while the guard searches contents only. Two agreements are
