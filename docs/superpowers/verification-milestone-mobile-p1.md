@@ -3746,6 +3746,23 @@ six copies of a subtle cfg — the three-encodings problem in miniature. The
 gate is also the stronger property: **the release binary now contains no path
 capable of faking a thermal notice.**
 
+#### Q1 gate: **GREEN** (at `ceabbdc`, protocol v2) — 366/0, exact
+
+Predicted **359 → 366** with the discriminator stated in advance: 366 means the
+7 new tests executed on the target; **359 would have meant `mod selftest` was
+cfg'd out of the test build** — the `test` half of its gate failing — and the
+affordance therefore untested; any other number unaccounted for. Result:
+**366 passed / 0 failed, zero warnings**, with five selftest test-names
+observed by name, so the 359 branch is excluded *by observation* rather than by
+arithmetic.
+
+Two things this gate does **not** cover, stated because they are easy to
+assume: it is the desktop suite, so it says nothing about the `--release`
+aarch64 profile (checked separately, exit 0 / zero warnings), and nothing about
+the device. Commits after it (`8ac76c5`, `0284302`, `675227c`) touch no
+compiled input — one shell script and two documents — so **366/0 still
+describes the Rust at HEAD.**
+
 ### 5.2 A2 — the airplane-mode harness (gen-9, `8ac76c5`)
 
 `docs/superpowers/mobile-tools/airplane-mode.sh`. Both steering constraints:
@@ -3802,23 +3819,63 @@ about greens, generalises to reds.
 Guard **byte-identical** (sha256 `231848c3…` before and after), **one `git add`
 apart**, A2 flips `FAIL` → `ok`. The flip is real; what carries it is not.
 
-Measured with the guard's own file selection:
+A2 was the **last single-element top-level alternation** in the manifest — the
+shape gen-8 split out of A7 — and it was found by *auditing the siblings after
+that split*, not by a failure. Every other entry had been revisited; this one
+never was. **When one member of a family is fixed, check the whole family: the
+fix does not propagate itself.**
 
-| alternative | matches |
+#### 🔴 …and the mechanism I first reported was WRONG, as was steering's check of it
+
+The original entry said *"A2's green is carried solely by a FILENAME"*, and
+steering independently verified and confirmed it. **Both were wrong, in the
+same way, for the same reason.**
+
+`haystack()` appends `read_text()` and nothing else: **the guard searches file
+CONTENTS only and never matches a path.** The measuring script that produced
+the filename claim tested `pattern.search(path) or pattern.search(content)` —
+and the path half was *the measurer's own invention*, not the guard's
+behaviour. Steering's check re-ran the same reasoning and reproduced the same
+answer.
+
+> **An independent verification that re-runs the same wrong instrument
+> reproduces the wrong answer with more confidence. It is not a second
+> opinion.** The only check that would have caught this is reading what the
+> guard actually does with a path — which took one `grep`, after two people had
+> already agreed.
+
+**What was actually true:** the old pattern was satisfiable by any tracked
+file whose *contents* contain the quoted topic word `"airplane"` — measured:
+`/// the "airplane" suite is coming in 5.2` matches — or the literal
+`airplane-mode.sh` / `run-airplane`. That is the ordinary bug-4 defect,
+satisfiable by a promise in a comment. It is **not** the more dramatic
+"satisfiable by naming a file". Corrected in both homes, because a wrong
+mechanism in a ledger is worse than no entry.
+
+**The tightening was unaffected** — the three-element AND is the right fix for
+the real defect as well as for the imagined one, which is luck rather than
+method and is recorded as such.
+
+#### The tightened contract, and its control pair (steering-approved)
+
+```python
+'A2': ([r'airplane-mode\.sh|run-airplane',   # the runner, two spellings of one fact
+        r'verify_radios_off *\(',            # machine-verified precondition
+        r'discover_devices *\('], …)         # discovered, not assumed
+```
+
+| control | result |
 |---|---|
-| `airplane-mode\.sh` | the harness |
-| `\bfn +airplane_` | **NONE** |
-| `"airplane"` | **NONE** |
-| `run-airplane` | **NONE** |
+| tightened guard, harness untracked | **FAIL**, naming all three clauses |
+| one `git add`, guard byte-identical (sha256 `4a6021f6…`) | **ok** |
+| **the decisive one:** a three-line `echo "Please enable airplane mode"` stub tracked at the exact path `airplane-mode.sh`, real harness gone | old pattern: **ok** — green on the forbidden implementation. Tightened: **FAIL** |
 
-**A2's green is carried solely by a FILENAME.** A file of that name containing
-one `echo "please turn the radios off"` produces the identical green — so
-**A2's pattern accepts the exact implementation its own consequence string
-forbids.** It is the last single-element top-level alternation in the manifest,
-the shape gen-8 split out of A7. Tightening proposed to steering *before* the
-harness was written and pending at time of writing; the harness already
-satisfies the proposal (`airplane-mode\.sh` AND `verify_radios_off *\(` AND
-`discover_devices *\(`), so the ruling changes the guard only.
+The third row is what makes the AND load-bearing rather than decorative. **The
+first attempt at it was invalid** — the stub was named `airplane-mode-stub.sh`,
+which does not contain the substring `airplane-mode.sh`, so it never
+reproduced the defect and the "old pattern" arm came back red. A negative
+control whose known-bad input is not actually bad proves nothing, and it looks
+exactly like a pass.
 
 **Not yet run against a real device** — every result above is against a mock.
 `cmd connectivity airplane-mode` and the `dumpsys netstats detail` row format
@@ -4067,6 +4124,59 @@ owes you an attribution.**
   The practical consequence is not "write better protocols up front" — that has
   been tried three times here. It is to expect a fourth gap, and to treat any
   protocol that has never been violated as **untested rather than sound.**
+
+- **⚑ PRE-REGISTERING A READING DOES NOT BUILD THE INSTRUMENT THAT PRODUCES
+  IT.** *Recorded at steering's request and attributed to steering by name:
+  steering wrote the A7 soak's five readings and never asked what would produce
+  them.* Four of the five are verdicts about tokens/sec, and nothing in the app
+  had ever logged a rate — so the soak that was called "pre-registered" could
+  only ever have produced row five, the uninterpretable one.
+
+  This belongs **beside D-6** because it is D-6's exact disease outside the
+  guard's reach: an acceptance criterion nothing implements, living in a
+  document the guard will never scan. When you write down what a result will
+  mean, **name the `file:line` that will emit it** — the assertion inventory
+  applied to a founder ask rather than to code.
+
+- **⚑ AN INDEPENDENT VERIFICATION THAT RE-RUNS THE SAME WRONG INSTRUMENT
+  REPRODUCES THE WRONG ANSWER WITH MORE CONFIDENCE.** Gen-9 reported that A2's
+  green was carried by a *filename*; steering checked it independently and
+  confirmed it; **both were wrong**, because the measuring script searched
+  `path or contents` while the guard searches contents only. Two agreements are
+  not a second opinion when both run the same reasoning. The check that would
+  have caught it was reading what the guard does with a path — one `grep`,
+  after two people had already agreed. See the A2 section.
+
+- **⚑ WHEN A COST IS QUOTED AS A PERCENTAGE, RESTATE IT IN ABSOLUTE TERMS
+  BEFORE DECIDING.** A3's control arms were surfaced as "+75% of founder device
+  time", which sounded like a real trade. In absolute terms it is seven prompts
+  at ~8 tok/s — **under a minute**, less than connecting the phone. The
+  percentage was true and the framing was misleading, and the author of the
+  framing was the one misled by it.
+
+- **⚑ FREEZE PROTOCOL — THE FOURTH GAP, found within hours of gen-8 predicting
+  a fourth gap.** Rule 3 said *"do not start a gate until the frozen party has
+  acknowledged"* and never said **who issues first**. So steering waited for an
+  acknowledgement and gen-9 waited for a freeze — **a polite deadlock, with
+  both parties following the rule correctly.**
+
+  **Amendment: the freezer ISSUES, the frozen party ACKNOWLEDGES, the freezer
+  then STARTS. The freeze takes effect on ISSUANCE, not on acknowledgement —
+  the acknowledgement proves receipt, it does not create the state.**
+
+  Two riders, both from the same incident. **(a)** A statement of the frozen
+  state *is* an acknowledgement — steering accepted "nothing written since
+  `ceabbdc`; tree clean" as the ACK, because it asserts exactly the state the
+  handshake exists to establish. The ritual word is not the point; the verified
+  state is. **(b)** A file was *created* during the frozen gate
+  (`airplane-mode.sh`, untracked, appearing in POST provenance). Inert — not a
+  compiled input, and it postdated the compile — so the verdict stood. Recorded
+  anyway, because "the delta happened to be inert" is the same luck the third
+  incident ran on, and noting it is what keeps it from being a precedent.
+
+  Gen-8's line **"treat any protocol that has never been violated as untested
+  rather than sound"** was vindicated faster than anyone expected. **Expect a
+  fifth gap.**
 
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
   INVENTORY** (decision D-6, part 3). List every assertion the phase will make

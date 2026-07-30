@@ -94,10 +94,57 @@ ACCEPTANCE = {
         'the determinism gate is claimed but no runner invokes it -- CI would be '
         'green without ever having run the suite it is named for',
     ),
+    # ⚠ BUG 4's SHAPE, FIFTH AND LAST INSTANCE -- found by auditing the siblings
+    # after A7's split, not by a failure.
+    #
+    # This entry read `[r'\bfn +airplane_|"airplane"|airplane-mode\.sh|
+    # run-airplane']`: ONE element with a top-level alternation, exactly what
+    # gen-8 split out of A7. Every other entry had been revisited since; this
+    # one never was. THE LESSON IS THE AUDIT: when one member of a family is
+    # fixed, check the whole family, because the fix does not propagate itself.
+    #
+    # THE MECHANISM, corrected -- and TWO PEOPLE GOT IT WRONG THE SAME WAY
+    # FIRST, which is why it is spelled out here.
+    #
+    # `haystack()` below appends `read_text()` and NOTHING ELSE: the guard
+    # searches file CONTENTS ONLY and never matches a path. Both the original
+    # write-up and steering's independent check concluded "the filename
+    # matches" -- because the measuring script tested `pattern.search(path) or
+    # pattern.search(content)`, and the path half was the measurer's own
+    # invention, not the guard's behaviour. An independent verification that
+    # re-runs the same wrong instrument reproduces the wrong answer with more
+    # confidence; it is not a second opinion.
+    #
+    # What was ACTUALLY satisfiable: any tracked file whose CONTENTS contain
+    # the quoted topic word `"airplane"`, or the literal `airplane-mode.sh` /
+    # `run-airplane`. Measured: `/// the "airplane" suite is coming in 5.2`
+    # matches. So the defect is the ordinary bug-4 one -- an alternation where
+    # every sibling entry is an AND, satisfiable by a promise in a comment --
+    # and NOT the more dramatic "satisfiable by naming a file". A stub named
+    # `airplane-mode.sh` passes only if its own text mentions one of those
+    # strings, which a usage line usually would, but that is a weaker and
+    # different claim.
+    #
+    # The tightening is unaffected: the three-element AND was the right fix for
+    # the real defect as well as for the imagined one.
+    #
+    # Split into three elements the loop requires ALL of. The filename stays one
+    # fact with two spellings; the two definition-shaped elements encode
+    # steering's two constraints, so the guard can now tell the harness that
+    # DRIVES and VERIFIES the radios from one that asks a human to.
     'A2': (
-        [r'\bfn +airplane_|"airplane"|airplane-mode\.sh|run-airplane'],
+        [r'airplane-mode\.sh|run-airplane',
+         r'verify_radios_off *\(',
+         r'discover_devices *\('],
         'the airplane-mode suite asserts offline behaviour with nothing to drive '
-        'it -- A2 would be satisfied by a human remembering to turn radios off',
+        'it -- A2 would be satisfied by a human remembering to turn radios off. '
+        'NOTE the three elements are ALL required: a runner ALONE is what the '
+        'old single-alternation pattern accepted, and a runner that prints '
+        '"please enable airplane mode" IS the failure named here rather than a '
+        'near miss. `verify_radios_off` is the machine-verified precondition -- '
+        'an unverifiable precondition makes the whole suite a check that cannot '
+        'fail -- and `discover_devices` is what keeps the harness from assuming '
+        'a serial when the 5.4 gate needs three phones',
     ),
     # ⚠ THIS ENTRY NEVER COMPLIED WITH THE BANNER TWELVE LINES ABOVE IT, and
     # that is its own finding. `fake[- ]entity` and `medical` are TOPIC WORDS --
