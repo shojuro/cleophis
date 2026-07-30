@@ -3540,6 +3540,52 @@ service"* is a sentence that should never become true by accident. When the
 permission work lands, **(b) is the stronger justification for the ask, not the
 download toast.**
 
+### ⚑ A7 THERMAL SOAK — the founder ask, with BOTH READINGS PRE-REGISTERED
+
+The problem, and the reason this needs a design rather than a caution: **the
+detector is deliberately biased toward false negatives**, so a soak that
+produces no notice is a *possible correct result*. Run naively, the founder
+spends twenty minutes on a hot phone and we cannot distinguish "working, and
+correctly quiet" from "broken, and silent" — the outcome is uninterpretable and
+the scarcest resource on this track is spent for nothing.
+
+Steering's split, which fixes it by making the two unknowns **fail
+differently**:
+
+**Question 1 — does the notice PIPELINE work? (cold phone, five seconds)**
+
+A debug-only affordance injects a synthetic slowdown into the detector's input.
+If the notice appears, then detection → event → UI copy is proven end to end,
+on any device, with no heat required. This converts one of the two unknowns
+into a check that can be run before the soak even starts, and it is worth more
+than any amount of soak transcript because its outcome is unambiguous in both
+directions.
+
+⚠ **Scope of that evidence, stated so it is not over-read:** a synthetic
+injection proves the *decision and presentation* path. It does **not** prove
+that `on_token` is genuinely called once per token at the raw sampler sink —
+that wiring is only exercised by real generation. Question 2 is what covers it.
+
+**Question 2 — does REAL throttling get detected? (hot phone, ~20 minutes)**
+
+Only a hot phone answers this, and it is interpretable **only if the transcript
+carries the input signal alongside the decision.** So: log raw tokens/sec
+continuously through the soak. The readings, registered *before* the run:
+
+| observation | verdict |
+|---|---|
+| tok/s visibly collapses **and** no notice | **BROKEN**, provably |
+| tok/s stays flat **and** no notice | **correctly quiet**, provably |
+| notice fires, rates in the payload match the logged collapse | **working** |
+| notice fires while logged tok/s is flat | **false positive** — worse than silence, since it teaches the user to ignore the real one |
+| silence with **no** trace | the uninterpretable outcome — *this is what the logging exists to eliminate* |
+
+The general rule this is an instance of, and the reason it belongs in the
+ledger rather than only in the founder ask: **a test whose negative result is
+also its expected result must carry a trace of its input, or it cannot be read
+at all.** Pre-registering both readings is what converts a soak from "let us
+see what happens" into a measurement.
+
 ### ⚑ THE D-6 GUARD'S CONTROL PAIR IS COMPLETE — and completing it exposed a fourth bug
 
 The pair steering asked for is the point of the exercise: a guard demonstrated
@@ -3659,6 +3705,46 @@ owes you an attribution.**
   `FAILED`; a command exiting 0 propagates 0. Self-testing it also caught a
   real bug in itself — the phase argument leaking into the recorded command
   line, fixed with a `shift`.
+
+- **⚑ FREEZE PROTOCOL — now THREE rules, because the third incident had a
+  different cause from the first two.** Recorded by gen-8, in its own words, at
+  steering's request.
+
+  **The two established halves.** (1) *The party under freeze holds
+  unconditionally* — an approval or an obviously-good idea arriving mid-freeze
+  takes effect at **thaw**, never on arrival. (2) **Steering's, added here:**
+  *a freeze message carries the freeze and nothing actionable.* Rulings wait
+  for the thaw message. Both prior breaches happened because work arrived
+  inside the message that ordered the hold, so the second rule removes the
+  temptation the first rule requires resisting.
+
+  **What actually happened this time, stated precisely, because an inaccurate
+  incident record is worse than none.** The gate ran at `616ee1b` and its POST
+  provenance was **not clean**: `M verification-milestone-mobile-p1.md`,
+  `?? run-logged.sh`. Those edits are real and they are mine. But **the freeze
+  message and the thaw message were delivered to me in the same batch, at the
+  start of the turn *after* the edits** — commits at 12:34:04 and 12:35:37
+  against a gate that began at 616ee1b (12:29:04). No freeze was in effect from
+  my side at any point while I was editing; I did not receive one and hold it,
+  and the previous freeze I did receive I held correctly and reported holding.
+
+  So this was **a delivery race, not a compliance failure**, and it exposes a
+  gap neither existing rule covers: *a freeze that races with in-flight work is
+  unenforceable, and a broadcast is not a barrier.*
+
+  **(3) THE FIX — a freeze needs a HANDSHAKE, not an announcement.** Steering
+  must not start a gate run until the frozen party has **acknowledged** the
+  freeze. Then "was the tree frozen?" is answerable from the record instead of
+  inferred from timing, an unacknowledged freeze is visibly unfrozen rather
+  than silently raced, and the POST-provenance surprise cannot recur. This is
+  the same move as every other fix on this branch: convert a rule that depends
+  on timing nobody controls into a mechanism that fails loudly.
+
+  **Why the verdict still stood, and why that is luck rather than method.** The
+  delta was a ledger edit and an untracked script — no compiled input — so
+  359/0 remains attributable to `616ee1b`'s code. **"The delta happened to be
+  inert" is not a property anyone could have known in advance**, which is
+  precisely why the handshake is worth more than the care of either party.
 
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
   INVENTORY** (decision D-6, part 3). List every assertion the phase will make
