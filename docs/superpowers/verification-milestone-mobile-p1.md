@@ -3876,12 +3876,30 @@ The original entry said *"A2's green is carried solely by a FILENAME"*, and
 steering independently verified and confirmed it. **Both were wrong, in the
 same way, for the same reason.**
 
-`haystack()` appends `read_text()` and nothing else: **the guard searches file
-CONTENTS only and never matches a path.** The measuring script that produced
-the filename claim tested `pattern.search(path) or pattern.search(content)` —
-and the path half was *the measurer's own invention*, not the guard's
-behaviour. Steering's check re-ran the same reasoning and reproduced the same
-answer.
+**The primary exhibit is a DIFFERENTIAL RESULT, and it is stronger than either
+party's reading of the source.** In a single run, with a three-line
+`echo "Please enable airplane mode"` stub tracked at exactly
+`docs/superpowers/mobile-tools/airplane-mode.sh` and the real harness removed:
+
+| instrument | verdict on the same tree, the same instant |
+|---|---|
+| the measuring script (`path OR contents`) | **`ok`** — hit: `airplane-mode.sh` |
+| **the guard itself** | **`FAIL`**, reporting `airplane-mode\.sh\|run-airplane` as **not matched** |
+
+If paths were searched, that clause could not have been reported missing — the
+path literally contains the string. **Two instruments, one tree, opposite
+answers: the discrepancy localises the error to the instrument that disagrees
+with the artifact**, without needing to know in advance which one is wrong.
+That is the shape to reach for when two readings conflict.
+
+**The source confirms the mechanism, second.** `haystack()` appends
+`read_text()` and nothing else — `rel` is used only to filter by suffix,
+exclude the guard's own path, and open the file — so **the guard searches file
+CONTENTS only and never matches a path.** The measuring script tested
+`pattern.search(path) or pattern.search(content)`, and the path half was *the
+measurer's own invention*. Steering's check re-ran the same reasoning and
+reproduced the same answer; it closed the incident only once it read line 315
+instead.
 
 > **An independent verification that re-runs the same wrong instrument
 > reproduces the wrong answer with more confidence. It is not a second
