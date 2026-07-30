@@ -13,7 +13,7 @@ Four times on this branch, a test or acceptance criterion asserted behaviour
 
 | # | the assertion | what existed |
 |---|---|---|
-| 1 | **A7** soak: "throttle notice fires appropriately" | nothing detects throttling or emits a notice — *still true today*; 5.1 builds it |
+| 1 | **A7** soak: "throttle notice fires appropriately" | nothing detected throttling or emitted a notice — true when written, **closed by 5.1 at `7550f23`** |
 | 2 | **A4** kill-restore: "transcript intact, no corruption" | nothing flushed partial turns until 1.4 |
 | 3 | **A5** backup-leak: "DB absent from the backup set" | exclusion rules naming four directories the data is not in |
 | 4 | §2 download policy: unmetered default + charge notice | absent entirely until the 2.2 native completions |
@@ -76,11 +76,12 @@ A guard first run *after* the gap is closed is a guard nobody has seen fail.
 When 5.1 lands the notice, the same command must flip A7 green **with no edit
 to the guard** — that pair is the proof.
 
-## 🔬 The guard caught two of its own bugs on its first two runs
+## 🔬 The guard caught four of its own bugs
 
-Recorded because they are the same failure the guard exists to prevent,
-committed by the guard, which is the strongest possible argument for the
-demonstrated-capable-of-failing rule.
+Three on its first three runs; the fourth while running the positive control it
+was built for. Recorded because they are the same failure the guard exists to
+prevent, committed by the guard, which is the strongest possible argument for
+the demonstrated-capable-of-failing rule.
 
 **Run 1 — prose counted as implementation.** The first version searched
 `docs/` and every `.md`. It reported **A7 implemented** while nothing
@@ -120,6 +121,54 @@ search space is self-satisfying**, and the moment that becomes true may be a
 A useful side effect of the run-2 fix: **the manifest became a contract.** Each
 pattern names the exact symbol the implementing phase must create, so 5.1 knows
 what will turn A7 green before writing a line.
+
+**Run 4 — an OR where every sibling is an AND: a green that was right for the
+wrong reason.** Found by gen-8 while running the positive control this guard
+was built for. A7's entry was one pattern with a top-level alternation,
+`[r'fn +(detect_)?thermal_|"thermal-notice"']`, so **either half satisfied it
+alone** — while A1, A4 and A5 use two-element lists the guard requires *all* of.
+A bare `emit("thermal-notice", …)` with no detector whatsoever turned A7 green.
+Measured, not theorised: with the detector written but still untracked,
+`fn +(detect_)?thermal_` matched **none** of the 80 tracked evidence files and
+the emit site alone carried A7 to `ok`.
+
+**Why this is the nastiest for the instrument, though the mildest for the
+code.** Runs 1–3 produced *wrong verdicts*. Run 4 produced a **right verdict for
+the wrong reason** — A7 was genuinely implemented, so nothing looked amiss — and
+the control pair would have been banked as "A7 flipped when thermal detection
+landed" when the flip **was not attributable to the detector and would have
+happened with it deleted.** A contaminated positive control is worse than a
+missing one, because it retires the question.
+
+**How it survived: this document and the ledger disagreed.** The line above
+banks A7's failure as "nothing *emits* a throttle notice" — an OR reading —
+while the ledger's second-order finding states the contract as
+`fn detect_thermal_*` **and** `"thermal-notice"`. The manifest implemented the
+weaker of the two and nobody compared them. Fixed by splitting A7 into two
+required patterns, a strict tightening that cannot turn anything green that was
+red.
+
+The generalisation: **a passing check still owes you an attribution.** Ask
+*which clause carried the verdict*, not merely whether the verdict was right.
+Run 3's lesson was that a check can become self-satisfying at a `git add`;
+run 4's is that a check can be satisfiable by strictly less than the requirement
+it names, and no amount of staring at a green run will show it.
+
+## The pair is complete — the guard is now a proven instrument
+
+Recorded because the whole design rests on it: a guard demonstrated only failing
+is plausible; one demonstrated failing **and** passing, across a change that
+should move it and with nothing else different, is proven.
+
+| # | state | A7 |
+|---|---|---|
+| negative | tightened guard, detector written but **untracked**, HEAD `5b17981` | **FAIL** — missing `fn +(detect_)?thermal_` *only* |
+| positive | **byte-identical guard**, detector committed, HEAD `7550f23` | **ok** |
+
+The two runs differ by **one `git add`** and nothing else; `git diff` on the
+guard between them returns empty. The negative run naming *only* the detector
+pattern — while `"thermal-notice"` already matched — is the direct proof the AND
+is load-bearing, since the old OR would have passed that exact state.
 
 ## What it deliberately does not do
 

@@ -3412,6 +3412,164 @@ for the reason attached to it.** When a documented cause has never been
 exercised — because nobody ever needed the conclusion to be false — it has
 never been tested at all.
 
+## Phase 5 — hardening, harnesses, CI
+
+### 5.1 Thermal-throttle detection — DONE (commit `7550f23`, spec §8 / H6 / A7)
+
+**Attribution, because this project records who produced evidence.** Gen-7
+authored `engine_inproc/thermal.rs` and its 13 tests, then died to an
+infrastructure failure with the work uncommitted. Gen-8 audited it, found two
+gaps, closed both, and committed. The module doc is preserved verbatim — its
+reasoning is the expensive part.
+
+**The design.** The *decision* half lives where the tests run (D-3); the cfg
+keeps only a clock and an `emit`. Inter-token gaps are measured at the **raw
+sampler sink, not at `on_delta`** — `on_delta` is downstream of `ToolStream`,
+which withholds possible tool syntax and releases it in bursts, so timing there
+measures the suppressor's release schedule and reads a held-back stretch as a
+stall and its flush as a speed-up. The baseline is per-*watch*, not per-turn,
+and that is the whole design: a per-turn baseline re-measures against the
+already-throttled rate, reports a healthy device forever, compiles cleanly and
+passes every single-turn test. `the_baseline_survives_a_turn_boundary` pins it.
+Prefill, idle and stalls are excluded structurally rather than by threshold.
+Constants are biased toward false negatives on purpose — a notice that fires
+wrongly teaches the user to ignore the one that fires rightly.
+
+**Surfaced, not attempted:** `PowerManager.getCurrentThermalStatus()` would
+corroborate the signal, but needs API 29+, a new Kotlin class over the JNI
+bridge and a device checkpoint — and on mid-range hardware, precisely the floor
+devices this matters on, OEMs frequently leave the thermal HAL unwired so it
+returns `NONE` on a phone that is visibly throttling. It could confirm this
+signal; it could not replace it.
+
+#### 🔬 A predicted-zero-warnings gate that came back with one, and a real bug behind it
+
+Gen-8 predicted **exit 0, zero warnings** for the inherited tree and got exit 0
+with **one**:
+
+```
+warning: method `throttled` is never used
+   --> src-tauri/src/engine_inproc/thermal.rs:221:19
+```
+
+**The D-3 amendment caught it, and the novelty is that it caught it
+prospectively.** 1.3/1.4 found a dead method and a dead constructor
+*retrospectively*, when bare allows were tightened to cfg'd ones. Here a module
+authored *with* the canonical placement caught its own dead method at the moment
+of authoring, because the allow is `cfg_attr(desktop, …)` and the dead-code
+check therefore stayed live on the platform the code actually ships to. A bare
+allow would have hidden this in exactly the way the `check-mobile-build.sh` D-3
+audit exists to prevent.
+
+And the warning was not cosmetic. `throttled()`'s own doc promised a caller —
+"lets the caller re-assert state to a webview that reloaded" — that nobody
+built, which is the asserted-but-unbuilt disease in miniature, inside the very
+feature D-6 was built to police. Behind it sat a genuine silent bug: the watch
+emits **only on transitions** and lives on the inference thread, which
+**outlives the webview**. If the WebView renderer is killed under memory
+pressure, the frontend loses `state.thermal` while the watch keeps
+`notified = true`, and the onset branch's `!self.notified` guard means **no
+further onset can ever be emitted** — the notice is gone for the rest of a hot
+session. Rotation is already covered (`configChanges` includes
+`orientation|screenSize`), so the live path is renderer death under memory
+pressure: ordinary on a 4 GB floor device running a local model, and
+*correlated with the very thermal load the feature detects*. It would also
+silently void the A7 soak run — a founder device session, the scarcest resource
+on this track — by recording a false negative.
+
+Closed with `chat_thermal_state`, a boot-time re-assert mirroring the
+`ChatCancels` managed-state precedent (D-1: shared invoke surface, desktop
+refuses). `throttled()` is now `cfg(test)`: the re-assert publishes the whole
+`ThermalNotice`, because the rates are what a bug report and the soak run need,
+and a bare bit would throw them away. A re-assert deliberately arrives
+**non-prominent** — backdated by `THERMAL_PROMINENT_MS` so it lands in the pill
+rather than re-raising the full-width row for a fact the user already read.
+
+**Verification** (gen-8, all re-run *after* both completions):
+
+| check | result |
+|---|---|
+| `cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets` | exit 0, **zero** warnings (unanchored `grep -i warning`) |
+| `npm test` | **81/81**, 0 fail (76 baseline + 5 thermal) |
+| `thermal.rs` | 13 `#[test]`, which run on the **desktop** target by design |
+
+Desktop-suite prediction for the next gate: **346 → 359**. Discriminating: 359
+means the 13 tests executed on the target; **346 means the module was cfg'd out
+of the desktop build and D-3's entire purpose was defeated** — the cfg-stripped
+test-module trap this ledger already names once; any other number is
+unaccounted for.
+
+**A tooling instance of "an absent result is not a negative finding."**
+Gen-8's first `cargo ndk` invocation returned **exit 1, "Could not find any
+NDK"** — an environment failure that looks nothing like a code verdict but sits
+in the same slot in a transcript. The documented env block from
+`mobile-dev-setup.md` is now saved at
+`/home/penguinzyue/cleophis-mobile-logs/mobile-env.sh` so the trap costs one
+round-trip rather than one per generation.
+
+### ⚑ THE D-6 GUARD'S CONTROL PAIR IS COMPLETE — and completing it exposed a fourth bug
+
+The pair steering asked for is the point of the exercise: a guard demonstrated
+failing *and* passing is a proven instrument; one demonstrated only failing is
+a plausible one. Completing it found the guard's **fourth self-inflicted bug**,
+in the same family as the first three.
+
+**What happened, in order:**
+
+| # | state | A7 | note |
+|---|---|---|---|
+| 1 | gen-6, original guard, no thermal code | **FAIL** | the banked negative control |
+| 2 | gen-8, original guard, thermal work **uncommitted** | **ok** | ⚠ the finding |
+| 3 | gen-8 splits A7's regex into two required patterns | — | guard tightened |
+| 4 | gen-8, tightened guard, detector still untracked | **FAIL** | *fresh* negative control, HEAD `5b17981` |
+| 5 | gen-8 commits `7550f23` | — | tree clean, `porcelain_exit 0` |
+| 6 | gen-8, **byte-identical guard** to step 4 | **ok** | positive control, HEAD `7550f23` |
+
+**Step 2 is the bug.** A7's entry was `[r'fn +(detect_)?thermal_|"thermal-notice"']`
+— *one* pattern with a top-level alternation, where A1, A4 and A5 all use
+two-element lists that the guard requires **all** of. So either half satisfied
+A7 alone. Measured with the guard's own file-selection logic rather than a
+re-implementation:
+
+```
+detector definition   fn +(detect_)?thermal_    matches: NONE
+event name            "thermal-notice"          matches: ['src-tauri/src/engine_inproc.rs']
+thermal.rs tracked?   NO -- untracked, invisible to the guard
+```
+
+**A bare `emit("thermal-notice", …)` with no detector at all turned A7 green.**
+
+**Why this one is the nastiest for the instrument, though not for the code.**
+Runs 1–3 produced *wrong verdicts* — prose, a TODO, and the manifest satisfying
+themselves. This one produces a **right verdict for the wrong reason**: A7 is
+genuinely implemented, so nothing looks amiss, and the pair would have been
+banked as "A7 flipped when thermal detection landed" when the flip was **not
+attributable to the detector and would have happened with it deleted**. A
+contaminated positive control is worse than a missing one, because it retires
+the question.
+
+**How it survived: the two documents disagreed.**
+`docs/ops/acceptance-coverage.md:71` banks the failure as "nothing **emits** a
+throttle notice" — an OR reading. This ledger's own second-order finding states
+the contract as `fn detect_thermal_*` **and** `"thermal-notice"`. The manifest
+implemented the weaker of the two, and nobody compared them.
+
+**The fix and why the pair is now clean.** Split into
+`[r'fn +(detect_)?thermal_', r'"thermal-notice"']` — a strict tightening that
+cannot turn anything green that was red. Step 4's failure names **only** the
+detector pattern as missing while `"thermal-notice"` still matches, which is the
+direct proof the AND is load-bearing: the old OR would have passed that exact
+state. Steps 4 and 6 differ by **one `git add`** and nothing else — the guard
+was byte-identical, confirmed by `git diff` returning empty.
+
+**The general form, which outlives this script:** *a check can be satisfiable
+by less than the requirement it names, and the symptom is not a red that should
+be green — it is a green that is right for the wrong reason.* The only way to
+see it is to ask **which** clause carried the verdict, not whether the verdict
+was correct. Run 3's lesson was that the moment a check becomes self-satisfying
+may be a `git add` rather than an edit; run 4's is that **a passing check still
+owes you an attribution.**
+
 ## Conventions
 
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
