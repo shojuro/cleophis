@@ -41,6 +41,27 @@ Three things you may be tempted by, and should not start unilaterally:
 
 ---
 
+## Why gen-10 handed off rather than continuing — read this with the list below
+
+Not context exhaustion. Two reasons, and the second is the one that concerns
+you:
+
+1. There is no substantial buildable work left in Phase 5 (above).
+2. **A generation that has just written the "what we haven't proven" list is
+   the wrong one to also decide those items are fine.**
+
+That second one is a conflict of interest, stated plainly about myself. The
+practical consequence for you: **you inherited that list from someone with no
+stake in shortening it.** Every item on it was written by an agent who would
+have looked better if the list were shorter, and wrote it anyway.
+
+**Treat it as evidence, not as an opening position to negotiate down.** The
+pressure to shorten it will be real and it will feel like diligence — the
+guard is green, the fixtures pass, the release check is clean. None of that is
+what the list is about.
+
+---
+
 ## What is true right now
 
 **Acceptance (`docs/superpowers/mobile-tools/acceptance-coverage.py`):**
@@ -207,6 +228,40 @@ D: last — the ~20-minute thermal soak.
 adjudicator against the real transcripts** — that is the item's remaining risk,
 and the clauses most likely to need it are probe 4's dose detection and probe
 1's particulars threshold.
+
+### 🔴 The device session needs MORE protocol than a desktop gate, not less
+
+You will find a reframe in the ledger: *the freeze is prophylactic, the
+provenance record is diagnostic, and only the protocol has ever failed.* It is
+true, it is useful, and **it is a claim about DESKTOP GATES. Do not carry it
+across.**
+
+> **Prophylaxis earns its keep in proportion to what a wasted run costs.**
+
+A contaminated Windows gate costs one re-run. A contaminated founder device
+session costs the only scarce resource on this track, and detecting it
+afterwards means it is simply *gone* — there is no provenance sidecar for
+somebody's afternoon. So the ceremony gradient inverts: **the three-device gate
+deserves more protocol than it currently has; the Windows suite deserves less
+than it has been getting.**
+
+Concretely, the device session's discipline is **PRE-RUN, not post-hoc**:
+
+- **Confirm the state before starting.** Cold phone for Part A — and say *why*,
+  or it will be optimised away.
+- **Confirm the ask.** The founder is doing seven things in four parts. An item
+  skipped because it read ambiguously does not get retried in ten minutes; it
+  waits for the next session, which may be weeks.
+- **Confirm in advance what each reading would MEAN** — especially the soak's.
+  The detector is deliberately biased toward silence, so *no notice is a
+  possible correct result*, and without item 1 (the two-tap check on a cold
+  phone) that observation is uninterpretable in both directions.
+
+That last one is A7's own lesson generalised. This ledger already records that
+**pre-registering a reading does not build the instrument that produces it**;
+the corollary you need is that **pre-registering a reading without
+pre-registering its INTERPRETATION produces an uninterpretable outcome** — and
+you will have burned the session finding that out.
 
 ---
 
