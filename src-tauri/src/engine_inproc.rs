@@ -67,7 +67,7 @@ use kpack_engine::{
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::engine_serve::{ChatTurn, Command, SessionEnd, Waited};
-use crate::engine_thermal::ThermalWatch;
+use crate::engine_thermal::{ThermalWatch, WINDOW_GAPS};
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
 use crate::inference::{Engine, EngineStatus};
@@ -502,6 +502,13 @@ struct ThermalProbe {
     /// be able to manufacture a negative or hour-long inter-token gap.
     started: std::time::Instant,
     watch: ThermalWatch,
+    /// How many times the generation loop has called this sink. Compared
+    /// against the engine's own `GenStats::generated_tokens` at the end of each
+    /// stream — see [`ThermalProbe::stream_ended`].
+    sink_calls: u64,
+    /// Gap count at the last emitted trace line, so a call that measures no gap
+    /// (a stall, or a turn's first token) cannot re-print the previous one.
+    last_traced_gaps: usize,
 }
 
 impl ThermalProbe {
@@ -510,6 +517,8 @@ impl ThermalProbe {
             app,
             started: std::time::Instant::now(),
             watch: ThermalWatch::new(),
+            sink_calls: 0,
+            last_traced_gaps: 0,
         }
     }
 
@@ -518,6 +527,7 @@ impl ThermalProbe {
         // Truncation is unreachable rather than tolerated: u64 milliseconds is
         // ~584 million years of uptime.
         let at_ms = self.started.elapsed().as_millis() as u64;
+        self.sink_calls += 1;
         if let Some(notice) = self.watch.on_token(at_ms) {
             // Stored BEFORE it is emitted, so a webview that reloads between
             // the two still finds the current verdict when it re-asks. The
@@ -530,11 +540,67 @@ impl ThermalProbe {
             // of the session.
             let _ = self.app.emit("thermal-notice", notice);
         }
+
+        // One line per window's worth of gaps — ~3 s at the floor rate, which
+        // makes the soak transcript a readable time series rather than 6000
+        // per-token lines, and keeps this off the per-token path to a syscall
+        // every sixteenth token. The cadence is `WINDOW_GAPS` rather than a new
+        // constant so the trace's resolution is the detector's own.
+        let t = self.watch.trace();
+        if t.gaps > 0 && t.gaps != self.last_traced_gaps && t.gaps % WINDOW_GAPS == 0 {
+            self.last_traced_gaps = t.gaps;
+            eprintln!("[thermal] window {}", fmt_trace(&t));
+        }
     }
 
     fn turn_ended(&mut self) {
         self.watch.turn_ended();
     }
+
+    /// One `stream` call finished. `engine_tokens` is the engine's own count.
+    ///
+    /// **The reconciliation is the point, and it is a measurement rather than
+    /// an assertion.** `sink_calls` and `generated_tokens` are counted
+    /// independently — this side counts calls, `llama.rs` counts sampled
+    /// non-EOG tokens — so their difference is the exact quantity the detector's
+    /// premise depends on and which no comment can settle: the generation loop
+    /// calls this sink only for tokens whose piece survives `ThinkStripper` and
+    /// is non-empty, so `sink <= engine` always, and the gap is UTF-8
+    /// continuations plus any stripped `<think>` block.
+    ///
+    /// It is not an `assert` and must not become one. A divergence is expected;
+    /// what matters to the soak is whether it is *stable*, because the verdict
+    /// is a ratio and a constant discrepancy cancels out of it. A divergence
+    /// that moves between the baseline and the window is a false-positive
+    /// source, and this line is the only thing that would show it.
+    fn stream_ended(&mut self, before: u64, engine_tokens: usize) {
+        let sink = self.sink_calls.saturating_sub(before);
+        eprintln!(
+            "[thermal] stream sink_calls={sink} engine_tokens={engine_tokens} {}",
+            fmt_trace(&self.watch.trace())
+        );
+    }
+
+    fn sink_calls(&self) -> u64 {
+        self.sink_calls
+    }
+}
+
+/// One trace line's body. `-` for a number the detector is not yet using, so a
+/// reader never mistakes "not computed" for "computed as zero" — the same
+/// absent-result rule this project applies to command output.
+fn fmt_trace(t: &crate::engine_thermal::ThermalTrace) -> String {
+    fn tps(v: Option<f64>) -> String {
+        v.map_or_else(|| "-".to_string(), |x| format!("{x:.2}"))
+    }
+    format!(
+        "gaps={} baseline_tps={} recent_tps={} slow_run={} notified={}",
+        t.gaps,
+        tps(t.baseline_tps),
+        tps(t.recent_tps),
+        t.slow_run,
+        t.notified
+    )
 }
 
 impl TurnSource for SessionTurns<'_, '_> {
@@ -564,10 +630,22 @@ impl TurnSource for SessionTurns<'_, '_> {
                 ControlFlow::Continue(())
             }
         };
-        self.session
-            .stream(&rendered, &mut tokens)
-            .map(|_stats| ())
-            .map_err(|e| e.to_string())
+        // Snapshot before the stream so the reconciliation covers exactly this
+        // call. The tool loop runs several streams per user-visible turn, and a
+        // per-turn total would blur them together — which is the granularity
+        // the divergence question needs, since a tool round-trip is one of the
+        // things that changes it.
+        let before = self.thermal.borrow().sink_calls();
+        let out = self.session.stream(&rendered, &mut tokens);
+        // Only on success: a failed stream has no trustworthy token count, and
+        // logging a reconciliation against a partial one would put a fake
+        // divergence into the soak transcript.
+        if let Ok(stats) = &out {
+            self.thermal
+                .borrow_mut()
+                .stream_ended(before, stats.generated_tokens);
+        }
+        out.map(|_stats| ()).map_err(|e| e.to_string())
     }
 
     fn cancelled(&self) -> bool {

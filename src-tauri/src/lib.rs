@@ -359,6 +359,7 @@ pub fn run() {
             chat_cmds::chat_complete,
             chat_cmds::chat_cancel,
             chat_cmds::chat_thermal_state,
+            chat_cmds::chat_thermal_selftest,
             mobile_native::network_state,
             mobile_native::share_chat,
             mobile_native::set_screen_privacy

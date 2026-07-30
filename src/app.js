@@ -220,6 +220,16 @@ async function boot() {
       const t = await invoke('chat_thermal_state');
       if (t && t.throttled) state.thermal = { ...t, at: Date.now() - THERMAL_PROMINENT_MS };
     } catch (_) {}
+    // Q1: reveal the throttle-notice selftest, but only where it exists. The
+    // probe runs the command with `run: false`, which changes nothing and emits
+    // nothing — a release build's body is compiled out and refuses, so the
+    // button never appears there. Feature-detected rather than inferred from a
+    // build flag the frontend would have to be told about separately, which is
+    // the two-homes-for-one-fact trap D-4 is about.
+    try {
+      await invoke('chat_thermal_selftest', { run: false });
+      document.documentElement.classList.add('is-debug');
+    } catch (_) {}
   }
   // Re-apply the stored FLAG_SECURE preference (§5.3). Window flags do not
   // survive a process restart, so a stored `on` that is never re-applied is the
@@ -2647,6 +2657,32 @@ $('screenPrivacyBtn').addEventListener('click', async () => {
   const next = !screenPrivacyOn();
   try { localStorage.setItem(SCREEN_PRIVACY_KEY, next ? '1' : '0'); } catch (_) {}
   await applyScreenPrivacy(next);
+});
+// Q1 (H6/A7): replay a synthetic slowdown so the founder can see the throttle
+// notice on a COLD phone in about a second, before the ~20-minute soak starts.
+//
+// Like the privacy toggle this leaves the menu open, and for a sharper reason:
+// the notice appears behind the menu, so closing it is the only way the result
+// is visible. The label carries the outcome because a failure here MUST be
+// legible — "no notice appeared" is precisely the reading Q1 exists to
+// disambiguate, so an error has to say so rather than look like nothing
+// happening. Same rule as the Rust side returning `Err` instead of `None`.
+$('thermalSelftestBtn').addEventListener('click', async () => {
+  const btn = $('thermalSelftestBtn');
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  try {
+    const n = await invoke('chat_thermal_selftest', { run: true });
+    // The label names the EDGE, because the command toggles: a second tap
+    // withdraws the notice, and a button that read "Fired" both times would
+    // make the two indistinguishable.
+    const edge = n.throttled ? 'Raised' : 'Cleared';
+    btn.textContent = `${edge} · ${n.recentTps.toFixed(1)} of ${n.baselineTps.toFixed(1)} tok/s`;
+  } catch (e) {
+    btn.textContent = 'FAILED — see logcat';
+    console.error('thermal selftest:', e);
+  }
+  btn.disabled = false;
 });
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];

@@ -69,6 +69,15 @@ nav.top button.active{color:var(--teal)}
    `.mobile-only`, whose `display:grid` would override this item's `display:block`. */
 #screenPrivacyBtn{display:none}
 .is-mobile #screenPrivacyBtn{display:block}
+/* Q1 debug affordance (H6/A7). Hidden in EVERY build by default and revealed
+   only when `chat_thermal_selftest` answers its availability probe — which a
+   release build never does, because the body is compiled out. Two independent
+   guards: the command refuses and the button is absent, so neither a stale
+   cached asset nor a missed cfg can put a debug control in a shipped menu.
+   Platform CLASS per D-5, and its own rule rather than `.mobile-only`, whose
+   `display:grid` would override this item's `display:block`. */
+#thermalSelftestBtn{display:none}
+.is-mobile.is-debug #thermalSelftestBtn{display:block}
 .profilemenu-item.danger{color:var(--heavy)}
 .profilemenu-item.danger:hover{background:rgba(226,104,95,.12)}
 /* offline-auth: sign-up password-strength meter */

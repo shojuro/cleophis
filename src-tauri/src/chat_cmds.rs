@@ -494,3 +494,105 @@ pub fn chat_thermal_state(
         Err(DESKTOP_REFUSAL.to_string())
     }
 }
+
+/// **Q1 — the debug-only throttle-notice pipeline check** (hazard H6,
+/// acceptance A7).
+///
+/// `run: false` is an availability probe: it answers whether this build has the
+/// affordance, changes nothing and emits nothing. The frontend calls it once at
+/// boot to decide whether to show the button, so a release APK never presents a
+/// control that would only refuse.
+///
+/// `run: true` **toggles**: it raises the notice if none is up and withdraws it
+/// if one is. That is what keeps the affordance from falsifying the UI it
+/// verifies — see [`crate::engine_thermal::synthetic_recovery`] — and it means
+/// two taps demonstrate both edges of §8, including the withdrawal, which a
+/// soak cannot produce on demand.
+///
+/// # Why this exists
+///
+/// The A7 soak is a ~20-minute session on a hot phone, and the detector is
+/// deliberately biased toward false negatives — so a soak that produces no
+/// notice is a *possible correct result*. Run on its own it cannot distinguish
+/// "working, and correctly quiet" from "broken, and silent", and the outcome is
+/// uninterpretable. Steering's split makes the two unknowns fail differently:
+/// this answers *does the notice pipeline work at all?* before the soak starts,
+/// on a cold phone, in about a second.
+///
+/// # ⚠ EVIDENCE SCOPE — decided deliberately, and it is narrower than it looks
+///
+/// Two implementations were available. This is the one that **builds its own
+/// [`crate::engine_thermal::ThermalWatch`]** and feeds it a scripted cadence on
+/// a virtual clock. The rejected alternative was a shared flag offsetting
+/// `ThermalProbe`'s clock during a live turn, which would also have exercised
+/// the production probe.
+///
+/// **What a green here proves:** the detector's arithmetic, the
+/// [`crate::engine_thermal::ThermalNotice`] payload and its rates, the
+/// [`ThermalState`] store, the `"thermal-notice"` event, the frontend listener,
+/// §8's copy, and the prominent-row-then-pill decay — end to end, on the real
+/// device, in the real app.
+///
+/// **What it does NOT prove, and must never be read as proving:** that
+/// `ThermalProbe::on_token` is called from the generation loop at all, or that
+/// its `Instant` clock behaves. This command supplies its own timestamps
+/// precisely so it needs no turn in flight, and that is the same reason it
+/// cannot speak for the wiring.
+///
+/// **Why that gap is acceptable here.** The rejected alternative would have
+/// covered the wiring only weakly — offsetting the clock *overwrites* the real
+/// cadence, so it proves the sink is called some number of times and destroys
+/// the evidence of how often. The `[thermal]` trace covers it properly instead,
+/// by logging `sink_calls` against the engine's independent
+/// `GenStats::generated_tokens` during the soak itself, which is where the
+/// answer is actually needed. It also costs the founder nothing: option (a)
+/// needed a live turn plus ~38 tokens of generation after a baseline existed,
+/// which is not a five-second check on a cold phone.
+#[tauri::command]
+pub fn chat_thermal_selftest(
+    run: bool,
+    app: AppHandle,
+) -> Result<Option<crate::engine_thermal::ThermalNotice>, String> {
+    #[cfg(all(mobile, debug_assertions))]
+    {
+        use tauri::{Emitter, Manager};
+        if !run {
+            return Ok(None);
+        }
+        let state = app.state::<ThermalState>();
+        // TOGGLE, and the direction comes from the BACKEND's stored verdict
+        // rather than from an argument. The frontend's copy is the thing that
+        // gets lost when the renderer dies — which is the entire reason
+        // `ThermalState` exists — so letting the caller say which edge to emit
+        // would reintroduce the desynchronisation this is meant to survive.
+        //
+        // `?` on purpose: a script that cannot fire is a red, not a silence.
+        // "No notice appeared" is the one reading Q1 exists to disambiguate, so
+        // a failure must arrive as a message rather than as nothing happening.
+        let currently_throttled = state.get().is_some_and(|n| n.throttled);
+        let notice = if currently_throttled {
+            crate::engine_thermal::selftest::synthetic_recovery()?
+        } else {
+            crate::engine_thermal::selftest::synthetic_collapse()?
+        };
+        // Stored before emitted, in the production order — see `ThermalState`.
+        state.set(notice);
+        let _ = app.emit("thermal-notice", notice);
+        return Ok(Some(notice));
+    }
+    #[cfg(not(all(mobile, debug_assertions)))]
+    {
+        let _ = (run, app);
+        // Two refusals, not one, because they mean different things to whoever
+        // reads the bug report: the wrong platform, versus the right platform
+        // and a release build. Inlined rather than named as consts — a const is
+        // live in exactly one of these configurations and dead in the other,
+        // which is a dead-code allow to get wrong for no benefit.
+        #[cfg(desktop)]
+        return Err(DESKTOP_REFUSAL.to_string());
+        #[cfg(not(desktop))]
+        return Err("the thermal selftest is a debug-build affordance and is \
+                    compiled out of release builds"
+            .to_string());
+    }
+}

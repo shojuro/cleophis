@@ -31,8 +31,47 @@
 //! that measures the suppressor's release schedule, and would read a held-back
 //! stretch as a stall and its flush as a speed-up — a throughput signal
 //! reconstructed from the wrong side of a buffer. The sink in
-//! `SessionTurns::turn` is called once per token by `EngineSession::stream`,
-//! before any of that, and it is the only place the real cadence is visible.
+//! `SessionTurns::turn` is upstream of all of that, and it is the closest to
+//! the real cadence anything in this process can see.
+//!
+//! ## ⚠ CORRECTION (gen-9): it is once per VISIBLE token, not once per token
+//!
+//! The paragraph above originally ended "is called once per token by
+//! `EngineSession::stream`". **That is false**, and the way it is false is the
+//! same mechanism the paragraph rejects `on_delta` for. `llama.rs`'s generation
+//! loop calls the sink only when the piece survives two filters:
+//!
+//! ```text
+//! let visible = stripper.push(&piece);
+//! if !visible.is_empty() { sink.on_token(&visible) }   // llama.rs
+//! ```
+//!
+//! 1. **Empty pieces, on every model.** `token_to_piece` shares one
+//!    `encoding_rs` decoder across the turn so a multi-byte character may
+//!    straddle two tokens; the first of the pair decodes to `""` and is never
+//!    sunk. So `sink_calls <= generated_tokens` *always*, and the two tokens'
+//!    time arrives as one gap of roughly double the length.
+//! 2. **`ThinkStripper`, on ChatML/Qwen only** (`strips_think()` is
+//!    `ChatMl`-only). A `<think>` block produces **no** sink calls at all, then
+//!    the first visible token after `</think>` carries the whole block as one
+//!    gap. This is a withhold-and-burst suppressor — categorically the same
+//!    thing as `ToolStream`, one layer further up than gen-7 looked.
+//!
+//! **Why the detector survives this, and where it does not.** Both filters
+//! inflate gaps, but the verdict is a *ratio* of a recent rate to a baseline
+//! measured through the identical filters, so a **constant** discrepancy
+//! cancels and the detector is unaffected. What does not cancel is a
+//! discrepancy that *changes* between baseline and window: a reply that turns
+//! from ASCII to CJK/emoji, or a model that starts emitting `<think>` blocks
+//! mid-session, looks like a slowdown with no thermal cause — a **false
+//! positive**, the outcome §8 most wants to avoid. `ThinkStripper`'s case is
+//! partly self-limiting: a block long enough to matter usually exceeds
+//! [`MAX_GAP_MS`] and is dropped as a stall.
+//!
+//! This is **measured rather than modelled** by the A7 soak: `ThermalProbe`
+//! logs `sink_calls` beside `GenStats::generated_tokens`, which the engine
+//! counts independently, so the transcript states the real divergence on real
+//! hardware instead of leaving it to this comment. See [`ThermalTrace`].
 //!
 //! # Three things that are NOT throttling, each excluded deliberately
 //!
@@ -209,6 +248,35 @@ pub(crate) struct ThermalWatch {
     last_at: Option<u64>,
     slow_run: usize,
     notified: bool,
+    /// Gaps that reached the measurement path — i.e. that survived the
+    /// [`MAX_GAP_MS`] stall filter. Counted for [`ThermalTrace`] only; nothing
+    /// in the verdict reads it.
+    gaps_seen: usize,
+}
+
+/// A read-only snapshot of what the watch currently believes, for the A7 soak
+/// transcript.
+///
+/// **This exists because of the pre-registered soak's own reading table.** Four
+/// of its five rows are verdicts about the *input* — "tok/s visibly collapses
+/// and no notice" is BROKEN, "tok/s stays flat and no notice" is correctly
+/// quiet — and the fifth, "silence with no trace", is the uninterpretable
+/// outcome the trace exists to eliminate. Without a logged rate the soak cannot
+/// distinguish any of them, so the notice alone is not a result.
+///
+/// The numbers are the ones the detector *actually decided on*, not a
+/// re-derivation: `recent_tps` is `None` until the window is full, which is
+/// exactly when [`ThermalWatch::on_token`] starts consulting it. A trace that
+/// computed a rate the detector was not yet using would show a collapse the
+/// verdict is not entitled to see, and the reader would call it a bug.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ThermalTrace {
+    pub gaps: usize,
+    pub baseline_tps: Option<f64>,
+    /// `None` until [`WINDOW_GAPS`] gaps are held — the detector's own gate.
+    pub recent_tps: Option<f64>,
+    pub slow_run: usize,
+    pub notified: bool,
 }
 
 impl ThermalWatch {
@@ -253,6 +321,7 @@ impl ThermalWatch {
         if gap > MAX_GAP_MS {
             return None;
         }
+        self.gaps_seen += 1;
 
         if self.skipped < WARMUP_SKIP_GAPS {
             self.skipped += 1;
@@ -315,10 +384,185 @@ impl ThermalWatch {
     pub(crate) fn turn_ended(&mut self) {
         self.last_at = None;
     }
+
+    /// What this watch currently believes — for the soak transcript, never for
+    /// a decision. See [`ThermalTrace`].
+    pub(crate) fn trace(&self) -> ThermalTrace {
+        ThermalTrace {
+            gaps: self.gaps_seen,
+            baseline_tps: self.baseline_tps,
+            recent_tps: (self.recent.len() >= WINDOW_GAPS)
+                .then(|| rate(self.recent.iter().copied())),
+            slow_run: self.slow_run,
+            notified: self.notified,
+        }
+    }
 }
+
+/// The Q1 debug affordance's decision half.
+///
+/// # GATED, NOT SUPPRESSED — and the gate had to be found by building release
+///
+/// Everything in here exists only where its caller does:
+/// `chat_cmds::chat_thermal_selftest`'s body is `cfg(all(mobile,
+/// debug_assertions))`, so in a **release** build these six items have no
+/// caller at all. `cargo ndk check` (dev profile) is blind to that and reported
+/// exit 0 with zero warnings; the same check with `--release` produced six
+/// dead-code warnings — **in the configuration that actually ships.**
+///
+/// The tempting fix is to widen this module's `cfg_attr(desktop,
+/// allow(dead_code))` to cover mobile-release. That is precisely the bare-allow
+/// disease D-3's amendment documents: it would switch dead-code checking off
+/// for the *whole* thermal module on the shipping platform, which is what hid
+/// two genuinely dead items in `tools.rs` and `tool_loop.rs` for an entire
+/// phase. An allow scoped to these six would be sound but is six copies of a
+/// subtle cfg, and a rule with several encodings cannot be checked by looking.
+///
+/// So the affordance is **compiled out** instead, one gate in canonical
+/// placement on the `mod` declaration — the same call D-3's table already made
+/// for `ToolOutcome::is_err` and `LoopMessage::user`. A debug-only affordance
+/// that is absent from release is also the stronger property: the shipped
+/// binary cannot contain a path that fakes a thermal notice.
+///
+/// `test` is in the gate beside `debug_assertions` so the suite still runs
+/// these under `cargo test --release`, where `debug_assertions` is off.
+#[cfg(any(debug_assertions, test))]
+pub(crate) mod selftest {
+        use super::*;
+
+    /// The healthy cadence the Q1 selftest replays. 200 ms/token = 5 tok/s, which
+    /// is the floor device's measured rate (CP1), so the baseline in the emitted
+    /// payload is a number the founder recognises rather than an invented one.
+    pub(super) const SELFTEST_HEALTHY_GAP_MS: u64 = 200;
+
+    /// The throttled cadence: a third of healthy. H6's own number is a halving, so
+    /// this clears [`COLLAPSE_RATIO`] with margin and the script does not sit on
+    /// the threshold it is trying to demonstrate.
+    pub(super) const SELFTEST_SLOW_GAP_MS: u64 = 600;
+
+    /// Cap on the slow phase, so a script that can no longer fire terminates and
+    /// says so instead of looping.
+    pub(super) const SELFTEST_MAX_SLOW_GAPS: usize = 400;
+
+    /// Replay a synthetic healthy→throttled cadence and return the onset notice.
+    ///
+    /// **This is the Q1 affordance's decision half, and it is here rather than in
+    /// the command for the same reason the detector is (D-3): its failure mode is
+    /// silent.** A script that quietly stops firing — because a constant moved, or
+    /// because someone retuned [`COLLAPSE_RATIO`] — would turn the founder's
+    /// five-second pipeline check into a five-second nothing, and "no notice
+    /// appeared" is precisely the reading Q1 exists to make unambiguous. So it runs
+    /// in the desktop suite on every gate, and it returns `Err` rather than `None`
+    /// so the two ways of producing no notice cannot be confused.
+    ///
+    /// The clock is virtual: `at_ms` values are handed in, nothing sleeps, and the
+    /// whole replay costs microseconds. The founder's phone does not have to be hot,
+    /// or even warm.
+    ///
+    /// ⚠ **Evidence scope — what a green from this does NOT cover.** It exercises
+    /// [`ThermalWatch`] and everything downstream of it (payload → managed state →
+    /// `"thermal-notice"` → the frontend's §8 copy). It says **nothing** about
+    /// whether `ThermalProbe::on_token` is wired to the generation loop at all,
+    /// nor about the `Instant` clock that feeds it in production — this function
+    /// supplies its own timestamps precisely so it need not run one. That wiring is
+    /// only exercised by real generation, and it is what the `[thermal]` trace and
+    /// Q2's soak cover. **A green Q1 must never be read as covering Q2.**
+    pub(crate) fn synthetic_collapse() -> Result<ThermalNotice, String> {
+        replay_to_onset(
+            SELFTEST_HEALTHY_GAP_MS,
+            SELFTEST_SLOW_GAP_MS,
+            SELFTEST_MAX_SLOW_GAPS,
+        )
+        .map(|(_, _, notice)| notice)
+    }
+
+    /// The matching *recovery*: collapse first, then speed back up until the notice
+    /// is withdrawn.
+    ///
+    /// **This is not a nice-to-have, it is what stops the affordance from lying.**
+    /// [`ThermalWatch`] emits only on transitions, so an onset with no way back
+    /// leaves `ThermalState` holding `throttled: true` — and `chat_thermal_state`
+    /// re-asserts that on every webview reload, so a founder who tapped the button
+    /// once would see "Your phone is warming up" for the rest of the install, on a
+    /// cold phone, with no way to clear it short of reinstalling. A debug
+    /// affordance that permanently falsifies the UI it was built to verify is
+    /// worse than no affordance.
+    ///
+    /// It also earns its keep as evidence: the withdrawal edge is the half of §8
+    /// that has never been seen on a device, and a soak cannot demonstrate it on
+    /// demand — the phone has to actually cool down.
+    pub(crate) fn synthetic_recovery() -> Result<ThermalNotice, String> {
+        let (mut watch, mut clock, onset) = replay_to_onset(
+            SELFTEST_HEALTHY_GAP_MS,
+            SELFTEST_SLOW_GAP_MS,
+            SELFTEST_MAX_SLOW_GAPS,
+        )?;
+        debug_assert!(onset.throttled);
+
+        for _ in 0..SELFTEST_MAX_SLOW_GAPS {
+            clock += SELFTEST_HEALTHY_GAP_MS;
+            if let Some(n) = watch.on_token(clock) {
+                return Ok(n);
+            }
+        }
+
+        Err(format!(
+            "selftest: the notice never withdrew after {SELFTEST_MAX_SLOW_GAPS} \
+             gaps back at {SELFTEST_HEALTHY_GAP_MS} ms/token — a notice that cannot \
+             be withdrawn stays up for the rest of the session"
+        ))
+    }
+
+    /// Drive a fresh watch from healthy to a sustained collapse, handing back the
+    /// watch and clock so a caller can keep going.
+    ///
+    /// The cadences are parameters **only** so the suite can run it with
+    /// `slow == healthy` and prove the no-notice branch is reachable. Without that,
+    /// every assertion about this script would be an assertion that it fires, and a
+    /// script that fired unconditionally — the one failure that would make Q1 a
+    /// check that cannot fail — would pass all of them.
+    pub(super) fn replay_to_onset(
+        healthy_gap_ms: u64,
+        slow_gap_ms: u64,
+        max_slow: usize,
+    ) -> Result<(ThermalWatch, u64, ThermalNotice), String> {
+        let mut watch = ThermalWatch::new();
+        let mut clock = 0u64;
+
+        // Past the skipped gaps, a full baseline, and a full window — all healthy,
+        // so the baseline the collapse is judged against is the healthy rate. This
+        // mirrors the tests' `warmed()` helper deliberately: the script and the
+        // suite exercise the same entry state.
+        for _ in 0..(WARMUP_SKIP_GAPS + BASELINE_GAPS + WINDOW_GAPS + 1) {
+            clock += healthy_gap_ms;
+            if let Some(n) = watch.on_token(clock) {
+                return Err(format!(
+                    "selftest: the healthy phase fired a notice ({n:?}) — a steady \
+                     {healthy_gap_ms} ms/token cadence is being read as a collapse, \
+                     so the constants no longer describe a healthy device"
+                ));
+            }
+        }
+
+        for _ in 0..max_slow {
+            clock += slow_gap_ms;
+            if let Some(n) = watch.on_token(clock) {
+                return Ok((watch, clock, n));
+            }
+        }
+
+        Err(format!(
+            "selftest: no notice after {max_slow} gaps at {slow_gap_ms} ms/token \
+             against a {healthy_gap_ms} ms/token baseline — the detector did not \
+             fire on a collapse it should have caught"
+        ))
+    }
+
+} // mod selftest
 
 #[cfg(test)]
 mod tests {
+    use super::selftest::*;
     use super::*;
 
     /// Feed `n` tokens spaced `gap_ms` apart, collecting every notice.
@@ -531,6 +775,124 @@ mod tests {
         // No baseline is never a finding in either direction.
         assert!(!detect_thermal_collapse(0.0, 0.0));
         assert!(!thermal_recovered(0.0, 100.0));
+    }
+
+    // ---- The Q1 selftest script -------------------------------------------
+
+    /// The affordance's whole promise: tap it on a cold phone, get an onset.
+    #[test]
+    fn the_selftest_script_produces_an_onset() {
+        let n = synthetic_collapse().expect("the script must fire");
+        assert!(n.throttled, "Q1 must produce an ONSET, not a recovery: {n:?}");
+        // The rates must be the scripted ones, or the notice the founder sees
+        // describes something other than what the script did.
+        assert!((n.baseline_tps - 5.0).abs() < 0.2, "baseline {n:?}");
+        assert!((n.recent_tps - 1.667).abs() < 0.2, "recent {n:?}");
+        // And they must be a collapse by the same predicate production uses.
+        assert!(detect_thermal_collapse(n.baseline_tps, n.recent_tps));
+    }
+
+    /// **The negative control for the script itself.** A cadence that never
+    /// slows must reach the no-notice branch. Without this the suite only ever
+    /// proves the script *can* fire, which a script that fires unconditionally
+    /// would also satisfy — and that script is exactly the broken Q1: a check
+    /// that cannot fail, reporting a healthy pipeline on a device where the
+    /// detector is dead.
+    #[test]
+    fn the_selftest_script_stays_silent_when_nothing_slows_down() {
+        let err = replay_to_onset(200, 200, SELFTEST_MAX_SLOW_GAPS)
+            .err()
+            .expect("a flat cadence must not produce a notice");
+        assert!(err.contains("did not fire"), "wrong branch: {err}");
+    }
+
+    /// The two no-notice branches must be distinguishable. An affordance whose
+    /// failures all read alike sends the founder back with "it didn't work".
+    #[test]
+    fn the_selftests_two_failures_say_different_things() {
+        let flat = replay_to_onset(200, 200, 64).err().expect("flat must not fire");
+        let slow = replay_to_onset(3_000, 3_000, 64).err().expect("also must not fire");
+        assert!(flat.contains("200 ms/token"), "{flat}");
+        assert!(slow.contains("3000 ms/token"), "{slow}");
+    }
+
+    /// **The affordance must clean up after itself.** An onset with no
+    /// withdrawal leaves `ThermalState` holding `throttled: true`, which
+    /// `chat_thermal_state` re-asserts on every reload — one tap would pin
+    /// "your phone is warming up" to a cold device permanently.
+    #[test]
+    fn the_selftest_can_withdraw_the_notice_it_raised() {
+        let n = synthetic_recovery().expect("the recovery script must fire");
+        assert!(!n.throttled, "the second edge must be a WITHDRAWAL: {n:?}");
+        assert!(thermal_recovered(n.baseline_tps, n.recent_tps), "{n:?}");
+    }
+
+    /// The pair must be a round trip: raise, then clear, with the same baseline
+    /// in both payloads. A recovery quoting a different baseline would mean the
+    /// two edges came from different watches, and the UI would be withdrawing a
+    /// notice it never raised.
+    #[test]
+    fn the_selftests_two_edges_agree_on_the_baseline() {
+        let onset = synthetic_collapse().expect("onset");
+        let recovery = synthetic_recovery().expect("recovery");
+        assert!(onset.throttled && !recovery.throttled);
+        assert!(
+            (onset.baseline_tps - recovery.baseline_tps).abs() < f64::EPSILON,
+            "onset {onset:?} vs recovery {recovery:?}"
+        );
+    }
+
+    // ---- The soak trace ---------------------------------------------------
+
+    /// The trace must report the number the DETECTOR used, which means no
+    /// recent rate until the window is full.
+    #[test]
+    fn the_trace_withholds_a_rate_the_detector_is_not_using_yet() {
+        let mut w = ThermalWatch::new();
+        let mut clock = 0u64;
+
+        assert_eq!(w.trace().gaps, 0);
+        assert_eq!(w.trace().baseline_tps, None);
+        assert_eq!(w.trace().recent_tps, None);
+
+        // Enough for the baseline but not to fill the window.
+        feed(&mut w, &mut clock, WARMUP_SKIP_GAPS + BASELINE_GAPS + 1, 200);
+        let t = w.trace();
+        assert!(t.baseline_tps.is_some(), "baseline should exist by now: {t:?}");
+        assert_eq!(t.recent_tps, None, "the window is not full yet: {t:?}");
+
+        feed(&mut w, &mut clock, WINDOW_GAPS, 200);
+        let t = w.trace();
+        let recent = t.recent_tps.expect("a full window must report a rate");
+        assert!((recent - 5.0).abs() < 0.2, "{t:?}");
+        assert!(!t.notified);
+    }
+
+    /// Stalls are excluded from the verdict, so they must be excluded from the
+    /// count too — a trace that counted them would show gaps the rates were
+    /// never computed from, and the soak reader would find the arithmetic
+    /// impossible to reconcile.
+    #[test]
+    fn the_traces_gap_count_excludes_stalls() {
+        let mut w = ThermalWatch::new();
+        let mut clock = 0u64;
+
+        // A gap needs two tokens, so n tokens produce n-1 gaps. Written as
+        // `- 1` rather than as the literal 9 because this off-by-one is the
+        // whole reason prefill is excluded structurally, and a bare number
+        // here would read as arbitrary.
+        feed(&mut w, &mut clock, 10, 200);
+        assert_eq!(w.trace().gaps, 10 - 1, "the first token has no predecessor");
+
+        clock += MAX_GAP_MS + 5_000;
+        assert!(w.on_token(clock).is_none());
+        assert_eq!(w.trace().gaps, 9, "a stall is not a measured gap");
+
+        // The first token of a turn is not a gap either.
+        w.turn_ended();
+        clock += 1_000;
+        assert!(w.on_token(clock).is_none());
+        assert_eq!(w.trace().gaps, 9, "a turn's first token is not a gap");
     }
 
     /// Guards the `max(1)` floor in [`rate`]. A naive `0.0` fallback would
