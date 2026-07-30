@@ -4020,6 +4020,30 @@ was correct. Run 3's lesson was that the moment a check becomes self-satisfying
 may be a `git add` rather than an edit; run 4's is that **a passing check still
 owes you an attribution.**
 
+### ⚑ 5.2 GATE: **GREEN — 385/0, zero warnings, at `f9ecfe1`** (prediction exact)
+
+Predicted 366 + 19 = **385**, and the prediction's value is not the arithmetic
+— it is that **all 19 fixtures were observed BY NAME**
+(`engine_probes::adjudicate::tests::…`), so the 366 branch of the discriminator
+table is excluded *by observation* rather than by subtraction. A suite landing
+on a predicted number proves the new tests executed on the target; the same
+number arriving unpredicted proves nothing.
+
+Two names steering singled out, both worth recording:
+`brief_fabrication_fails_where_a_length_test_would_pass_it` executing on the
+target is the specific proof that the hole steering found in the design is
+closed **in the shipped crate** rather than only in the scratch harness the
+mutations ran in; and `a_missing_arm_is_undecided_never_a_pass` was the test
+steering says it would have asked for.
+
+**POST was not clean** (`M acceptance-coverage.py`) — see the fourth and fifth
+freeze gaps under Conventions. Inert with respect to the verdict: a Python
+guard is not a compiled input and HEAD held at `f9ecfe1` at both ends.
+
+⚠ **385/0 already does not describe HEAD.** Three commits since touch compiled
+input — the comment-strip, probe 4's split (+2 fixtures) and the ledger — so the
+current expectation is **387**, and that gate has not been run.
+
 ### 5.2 A3 — the Stage-5 adjudicator (gen-10)
 
 `src-tauri/src/engine_inproc/probes.rs` (the judgement, pure, D-3) plus
@@ -4352,12 +4376,35 @@ without `-s`, so the fix is demonstrated by the run rather than read off the
 diff. The old script against the same mock with three devices prints
 `no device` and then issues serial-less commands.
 
-Also removed: the hero systemPrompt line ended `|| echo 'You are a helpful,
-honest tutor.'`, so a moved catalog produced a **different system prompt** and
-the run continued looking normal. Isolated and shown both ways. Stage-5
-transcripts gathered like that would be compared against in-app ones as though
-they were the same gate — which is exactly the labelling §11 A3 asks for and
-`Verdict::stack` now provides on the other side.
+#### 🔴 The silent systemPrompt fallback — a defect whose consequence was the MIS-CALIBRATION OF A FUTURE TEST
+
+Recorded as its own finding at steering's instruction, and **not as a script
+bug**, because filing it as one would lose what makes it expensive.
+
+The line ended `|| echo 'You are a helpful, honest tutor.'`. A moved catalog, a
+JSON error or a missing `python3` therefore produced a **different system
+prompt**, and the run continued looking exactly like a real one — no warning,
+no marker in the transcript, correct exit status.
+
+**What that costs is not a failed run; it is a poisoned reference.** These CLI
+transcripts are the ground truth the founder will calibrate A3's adjudicator
+against. The behavioural adapter is trained to answer to the catalog prompt, so
+a substituted one produces *plausible but differently-shaped* replies — and
+every threshold, word list and clause in `probes.rs` would then be tuned to
+match a configuration no user ever runs. **A probe suite calibrated against a
+silently-wrong prompt is worse than no calibration**, because it carries the
+authority of having been checked.
+
+It also has no natural discovery path. A wrong prompt does not crash, the
+transcripts read fine, and the adjudicator tuned to them would *pass* — the
+error surfaces only when real users get answers the gate said were good.
+
+Now `|| { FATAL; exit 1; }`, isolated and shown both ways: the old line yields
+the substitute, the new one refuses. It is the same principle as
+`Verdict::stack` labelling a reduced stack on the in-app side, and the same
+principle as §11 A3's own sentence — *a probe run against a reduced stack is a
+different gate and is labeled as such.* Here the reduction was invisible, which
+is the only reason it needed a fix rather than a label.
 
 A2 re-measured, since `discover_devices` and the literal `airplane-mode.sh` now
 appear in a second file: with the harness untracked A2 still goes **FAIL**,
@@ -4636,6 +4683,55 @@ though it did.
   not a second opinion when both run the same reasoning. The check that would
   have caught it was reading what the guard does with a path — one `grep`,
   after two people had already agreed. See the A2 section.
+
+- **⚑ FREEZE PROTOCOL — THE FIFTH GAP: AN ACKNOWLEDGEMENT CANNOT PRECEDE THE
+  FREEZE IT ACKNOWLEDGES.** Gen-8 said to expect a fourth and gen-9 found it
+  within hours; here are the fourth and fifth together, from one gate run.
+
+  **The fourth is steering's and steering named it first**, which is the part
+  worth copying: *a freeze message must not contain rulings AT ALL, not even
+  labelled as context.* The message that froze the tree also carried three
+  rulings I had been waiting on, and said "nothing actionable until thaw" in
+  the same breath. **A ruling in hand is actionable by construction**, so the
+  label asks the reader to hold a decision they are already able to act on.
+  Rule 2 was violated in spirit while being quoted in letter. Second time the
+  same author has done it, and the amendment is theirs.
+
+  **The fifth is structural and neither party did anything wrong.** My gate
+  request ended *"You issue, I acknowledge, you start"* — the correct order,
+  stated. It also reported a verified clean state, and rider (a) says **a
+  statement of the frozen state counts as an acknowledgement**. So a readiness
+  statement made *before* issuance can be read as the ACK that rule 3 waits
+  for, which collapses the handshake into a single message from one party.
+
+  > **An ACK is a claim about a moment, and a moment before the freeze existed
+  > is the wrong moment.** Rider (a) needs the qualifier it never had: *a
+  > statement of frozen state is an acknowledgement only if it POSTDATES the
+  > issuance.*
+
+  **The disputed part, recorded from both sides rather than settled by rank.**
+  POST was not clean: `M acceptance-coverage.py`. Steering's reading is that my
+  side is "smaller but real". My account, offered so whoever holds the records
+  can check it rather than as a defence: **the FREEZE and THAW messages were
+  delivered to me in the same batch**, at the start of one turn, so no freeze
+  was ever live from my side — I did not receive one and continue. The edit in
+  POST is the comment-stripping work that **the immediately preceding message
+  explicitly ordered** ("STRIP THE COMMENTS… Proceed with tasks 2–4"). If
+  steering's transcript shows the freeze was issued *before* that instruction,
+  the breach is mine and should be recorded as mine.
+
+  This is the gen-8 incident's exact shape — freeze and thaw arriving in one
+  batch — which makes it a **recurring delivery property, not an accident**.
+  And the reason to write it down rather than concede: this ledger's own note
+  that *the cheap failure is the agent agreeing to be agreeable, after which
+  the record is permanently wrong in the direction that flatters whoever spoke
+  last.*
+
+  **Why the verdict still stands, and again it is luck**: a Python guard is not
+  a compiled input and HEAD held at `f9ecfe1` both ends, so 385/0 remains
+  attributable to that commit's Rust. Third time in a row the delta *happened*
+  to be inert. That is now a pattern, and it argues the handshake should gate
+  on **`porcelain_exit 0` at issuance**, not on either party's recollection.
 
 - **⚑ A CONVENTION RECORDED BECAUSE IT *WORKED* — steering names the BRANCH,
   never the commit.** Nearly every entry in this section was written after a
