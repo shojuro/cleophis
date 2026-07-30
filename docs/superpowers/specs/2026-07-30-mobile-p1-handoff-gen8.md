@@ -229,9 +229,15 @@ wants one coherent session. Currently queued:
      not start a gate until the frozen party has acknowledged. A gate ran here
      against a tree I was still editing, because the freeze and thaw messages
      reached me in one batch *after* the edits. That was a delivery race, not a
-     compliance failure, and no rule about diligence can fix it. **Acknowledge
-     freezes explicitly**, so the record answers "was it frozen?" instead of
-     leaving it inferred from timestamps.
+     compliance failure — steering later confirmed from its own transcript
+     that the gate was launched *before* the freeze message was sent, so the
+     freeze did not yet exist. No rule about diligence can fix that.
+     **Acknowledge freezes explicitly**, so the record answers "was it
+     frozen?" instead of leaving it inferred from timestamps.
+
+  Each of the three was found by being violated, and each looked like the whole
+  problem until the next one appeared. Treat a protocol that has never been
+  violated as untested, not as sound.
 - Digests full-length, never retyped. `CARGO_TARGET_DIR` WSL-native.
 - Commit convention `feat(mobile-p1)` / `fix(mobile-p1)`, ending:
   `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`

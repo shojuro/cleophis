@@ -3764,9 +3764,25 @@ owes you an attribution.**
   my side at any point while I was editing; I did not receive one and hold it,
   and the previous freeze I did receive I held correctly and reported holding.
 
-  So this was **a delivery race, not a compliance failure**, and it exposes a
-  gap neither existing rule covers: *a freeze that races with in-flight work is
-  unenforceable, and a broadcast is not a barrier.*
+  **Resolved, and it was not even a race — steering supplied the dispositive
+  evidence from its own side.** The gate was launched *first*, and the "FREEZE
+  FOR GATE RUN" message was sent *afterwards, in the same turn*: the tool call
+  starting `cargo test` preceded the tool call sending the freeze. So the
+  freeze provably post-dates the gate start, and there was necessarily a window
+  in which the run was live and **no freeze existed anywhere**. Not a message
+  in flight — a message not yet written.
+
+  ⚑ **How this was settled is the part worth keeping.** The agent's account was
+  not accepted on trust, and it was not overridden on rank either. Steering
+  went looking in its *own* transcript for evidence that could disconfirm its
+  own claim, found it, and produced it. **A disagreement about what happened is
+  settled by whichever side holds the records, and that side has to be willing
+  to look.** The cheap failure here would have been the agent conceding to be
+  agreeable — the record would then have been wrong, permanently, in the
+  direction that flatters whoever spoke last.
+
+  It exposes a gap neither existing rule covers: *a freeze cannot bind work
+  that started before it existed, and **a broadcast is not a barrier**.*
 
   **(3) THE FIX — a freeze needs a HANDSHAKE, not an announcement.** Steering
   must not start a gate run until the frozen party has **acknowledged** the
@@ -3781,6 +3797,26 @@ owes you an attribution.**
   359/0 remains attributable to `616ee1b`'s code. **"The delta happened to be
   inert" is not a property anyone could have known in advance**, which is
   precisely why the handshake is worth more than the care of either party.
+
+  **⚑ THE COMPLETED SET, and the meta-lesson in how long it took to find.**
+  The three rules govern three different intervals, and *each was discovered by
+  being violated*:
+
+  | rule | governs | found by |
+  |---|---|---|
+  | 1 — hold unconditionally | the party who **has** the freeze | gen-4's breach |
+  | 2 — a freeze message carries nothing actionable | what the freezer **puts in** it | the second breach |
+  | 3 — no gate without acknowledgement | the interval **before it arrives** | this incident |
+
+  Each hole was invisible while the other two held, and each looked like the
+  whole problem at the time it was found. Hence:
+
+  > **A protocol's gaps are found one incident at a time, and each looks like
+  > the whole problem until the next one.**
+
+  The practical consequence is not "write better protocols up front" — that has
+  been tried three times here. It is to expect a fourth gap, and to treat any
+  protocol that has never been violated as **untested rather than sound.**
 
 - **⚑ Before writing tests in a test-writing phase, take the ASSERTION
   INVENTORY** (decision D-6, part 3). List every assertion the phase will make
