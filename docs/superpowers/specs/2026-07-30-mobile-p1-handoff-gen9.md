@@ -3,8 +3,14 @@
 Written outside the worktree first, deliberately, so it survives the branch and
 the session.
 
-**State: `mobile/p1-alpha` @ `0284302`, tree clean, `porcelain_exit 0`.** Nothing
-half-written. Four commits this generation, all verified before committing:
+**State: branch `mobile/p1-alpha`, tree clean, `porcelain_exit 0`. READ HEAD
+YOURSELF** — this document deliberately does not state one, because the rule
+adopted this session is that a commit hash in a message is a fact with two
+homes and drifts. (This header originally named a HEAD and was stale within
+the hour, which is the rule catching its own author.)
+
+Nothing half-written. Six commits this generation, all verified before
+committing; `git log --oneline main..HEAD` is the authority:
 
 | commit | what |
 |---|---|
@@ -12,6 +18,8 @@ half-written. Four commits this generation, all verified before committing:
 | `ceabbdc` | ledger: Q1's scope, the false premise, the profile blind spot |
 | `8ac76c5` | A2 airplane-mode harness |
 | `0284302` | ledger: A2's evidence |
+| `9d9479e` | A2 tightened to a three-element AND + the contents-not-paths correction |
+| *this one* | handoff |
 
 ## ⚠ START HERE — RULINGS ARRIVED. A3 IS YOUR FIRST BUILD; A1 IS STILL OPEN
 
