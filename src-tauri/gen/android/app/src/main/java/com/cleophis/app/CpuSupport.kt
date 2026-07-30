@@ -24,6 +24,33 @@ import java.nio.ByteOrder
  * library is compiled at. This exists so that getting that wrong costs a
  * message instead of a crash.
  *
+ * ## 🔴 THIS GATE HANDLES CRASHES, NOT CUSTOMERS (founder ruling, 2026-07-31)
+ *
+ * Stated here because this is where the wrong conclusion is cheapest to reach:
+ * *"ARMv8.0 devices are handled — the gate catches them."* **They are not.** A
+ * blocked phone is a user who downloaded the app and cannot run it. The gate
+ * converts a SIGILL into a sentence; it does not convert a non-customer into a
+ * customer, and **it is explicitly NOT an acceptable product answer for ARMv8.0.**
+ *
+ * The founder's frame makes this structural rather than a matter of polish. The
+ * target market is ~600M users on budget phones that incumbents ignore, and
+ * on-device inference is the only architecture whose per-token serving cost for
+ * that segment is zero. **The budget tier is not one architecture:** the Galaxy
+ * A22 (Dimensity 700, Cortex-A76) is a budget phone *with* dotprod; the Galaxy
+ * A51 (Exynos 9611, Cortex-A73) is a budget phone *without* it. Both halves are
+ * the market. So neither single-arch build serves it —
+ *
+ *   * `armv8.2-a+dotprod` **crashed** the A51 half (measured, exit 132);
+ *   * `armv8-a` — what ships today — **runs everywhere and leaves the A22 half
+ *     slower than its silicon allows.**
+ *
+ * Shipping baseline is therefore settled and correct, and it is a floor rather
+ * than a destination. The real answer is **runtime dispatch** (one binary, CPU
+ * variant chosen at load), which is a SCHEDULED item and not a deferred maybe.
+ * Until it lands, every ARMv8.0 device this gate blocks is a lost customer that
+ * the baseline build would have served — which is precisely why the gate must
+ * never be cited as the reason old devices are covered.
+ *
  * ## Measured, not hypothetical
  *
  * A Galaxy A51 (SM-A515F, Exynos 9611, Cortex-A73 + A53, ARMv8.0) runs the
@@ -157,9 +184,21 @@ object CpuSupport {
         null
     }
 
-    /** Is this process running the 64-bit ARM library at all? */
-    private fun isArm64(): Boolean =
-        Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("arm64") == true
+    /**
+     * Is **this process** 64-bit ARM?
+     *
+     * `os.arch` and not `Build.SUPPORTED_ABIS`, deliberately. SUPPORTED_ABIS is
+     * a property of the DEVICE; `os.arch` is a property of the running process.
+     * They differ exactly where it would hurt: a 64-bit-capable phone running
+     * the app 32-bit still reports `arm64-v8a` first, and a 32-bit process's
+     * `/proc/self/auxv` has 8-byte entries rather than 16 — so the parser below
+     * would read a valid-looking word out of misaligned data and adjudicate
+     * against it. Wrong in the silent direction.
+     *
+     * It also excludes x86_64 emulators, whose HWCAP word means something else
+     * entirely and would otherwise be tested against ARM feature bits.
+     */
+    private fun isArm64(): Boolean = System.getProperty("os.arch") == "aarch64"
 
     /**
      * What is missing, for the screen and for logcat. Empty means the app may
