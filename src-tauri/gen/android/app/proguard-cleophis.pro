@@ -48,3 +48,28 @@
 #   ShareSheet    — the export button does nothing at all.
 -keep class com.cleophis.app.NetworkPolicy { *; }
 -keep class com.cleophis.app.ShareSheet { *; }
+
+# Phase 5.1's inference foreground service. The class itself is referenced from
+# AndroidManifest.xml, so R8 keeps the CLASS on its own — but the manifest says
+# nothing about `start`/`stop`, which are Kotlin companion statics invoked only
+# from Rust across JNI. Without this rule the shrinker removes exactly those two
+# and leaves a service that exists and can never be started.
+#
+# Release-only symptom, and a nasty one to attribute: generation is no longer
+# protected by a foreground service, so on a memory-pressured device Android
+# kills the app mid-turn. That presents as "long replies sometimes crash on
+# cheap phones" — indistinguishable from an OOM in the engine, which is where
+# anyone would look first. The debug build never shows it, because
+# isMinifyEnabled is false for debug and the service starts fine there.
+-keep class com.cleophis.app.InferenceService { *; }
+-keep class com.cleophis.app.InferenceService$Companion { *; }
+
+# Phase 5.1's FLAG_SECURE toggle. Same JNI-only reachability as the rest.
+#
+# Release-only symptom, and the one on this list where the failure is a PRIVACY
+# failure rather than a functional one: the toggle appears in settings, the user
+# turns it on, the app reports it on -- and the window flag is never set, so app
+# content still appears in the app switcher and screenshots still work. The user
+# is told they are protected and is not. Nothing in the UI can detect this,
+# because the frontend owns the preference and the platform owns the effect.
+-keep class com.cleophis.app.ScreenPrivacy { *; }

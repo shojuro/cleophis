@@ -221,6 +221,10 @@ async function boot() {
       if (t && t.throttled) state.thermal = { ...t, at: Date.now() - THERMAL_PROMINENT_MS };
     } catch (_) {}
   }
+  // Re-apply the stored FLAG_SECURE preference (§5.3). Window flags do not
+  // survive a process restart, so a stored `on` that is never re-applied is the
+  // worst of both worlds: the toggle reads On and the window is not secure.
+  await applyScreenPrivacy(screenPrivacyOn());
   // Task 2.2/2.3: ask the device what it can do BEFORE the onboarding funnel,
   // not at sign-in like desktop does. A phone that cannot run a model should
   // be told so before it is walked through account → payment.
@@ -234,6 +238,40 @@ async function boot() {
     const s = await invoke('restore_session');
     if (s.signedIn) await applySession(s);
   } catch (_) { /* signed-out boot is fine */ }
+}
+
+/* ---------------- screen privacy (FLAG_SECURE, spec §5.3) ---------------- */
+
+// Stored on the DEVICE, not the account. This describes one phone — the one you
+// hand to other people — so syncing it would turn a per-device precaution into a
+// global setting and quietly enable it on a laptop nobody else touches.
+const SCREEN_PRIVACY_KEY = 'cleophis.screenPrivacy';
+
+/// Default OFF (§5.3: screenshots are the user's right). A missing key, an
+/// unreadable store, and an explicit "off" all mean the same thing, so they all
+/// return false rather than being distinguished into a third state.
+function screenPrivacyOn() {
+  try { return localStorage.getItem(SCREEN_PRIVACY_KEY) === '1'; } catch (_) { return false; }
+}
+
+/// Push the preference to the platform and reflect it in the menu.
+///
+/// The label carries the state rather than a checkmark glyph, because this menu
+/// is a list of actions and a toggle that looks identical to "Sign out" would be
+/// pressed by accident. `aria-pressed` is what actually tells a screen reader it
+/// is a toggle.
+async function applyScreenPrivacy(on) {
+  const btn = $('screenPrivacyBtn');
+  if (btn) {
+    btn.textContent = 'Hide in app switcher · ' + (on ? 'On' : 'Off');
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  if (!IS_MOBILE) return;
+  // A failure here is silent on purpose but NOT ignored: the catch keeps a
+  // bridge error from breaking boot, and the eprintln on the Rust side is what
+  // a device log shows. There is deliberately no "privacy enabled" toast — a
+  // confirmation the app cannot actually verify would be worse than none.
+  try { await invoke('set_screen_privacy', { secure: on }); } catch (_) {}
 }
 
 /* ---------------- compatibility ---------------- */
@@ -2601,6 +2639,14 @@ $('billingBtn').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
+});
+// The FLAG_SECURE toggle (§5.3). Deliberately does NOT close the profile menu:
+// every other item here is a one-shot action, but this one has state, and
+// closing the menu would hide the only feedback that the tap did anything.
+$('screenPrivacyBtn').addEventListener('click', async () => {
+  const next = !screenPrivacyOn();
+  try { localStorage.setItem(SCREEN_PRIVACY_KEY, next ? '1' : '0'); } catch (_) {}
+  await applyScreenPrivacy(next);
 });
 [['li-email', 'li-pass', 'doLogin'], ['cr-email', 'cr-pass', 'cr-nick', 'doCreate']].forEach((group) => {
   const btn = group[group.length - 1];

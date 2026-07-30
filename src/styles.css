@@ -63,6 +63,12 @@ nav.top button.active{color:var(--teal)}
 .profilemenu-item{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);
   font-size:14px;padding:9px 10px;border-radius:8px}
 .profilemenu-item:hover{background:var(--surface2)}
+/* 5.1 FLAG_SECURE toggle — Android only, since no desktop window manager has an
+   equivalent and `set_screen_privacy` refuses off Android. Keyed on the platform
+   CLASS per D-5, never on viewport width. Gated with its own rule rather than
+   `.mobile-only`, whose `display:grid` would override this item's `display:block`. */
+#screenPrivacyBtn{display:none}
+.is-mobile #screenPrivacyBtn{display:block}
 .profilemenu-item.danger{color:var(--heavy)}
 .profilemenu-item.danger:hover{background:rgba(226,104,95,.12)}
 /* offline-auth: sign-up password-strength meter */

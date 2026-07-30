@@ -116,6 +116,46 @@ KOTLIN_EXPECTED = {
         ['shareFile'],
         'the export button does nothing at all',
     ),
+    # ⚠ METHOD LIST DELIBERATELY EMPTY, and the reason generalises.
+    #
+    # The obvious entry here is `['start', 'stop']`. It would be a check that
+    # can never fail: this is a byte-search scoped to the dex holding the class,
+    # and `start`/`stop` are among the most common strings in ANY dex --
+    # Thread.start, Animator.start, a hundred framework methods. The needle
+    # would be found in every build, including one where R8 had stripped the
+    # companion entirely.
+    #
+    # That is the same failure this script's own header records for `describe`,
+    # and the same shape as the acceptance guard's topic-word patterns: evidence
+    # that a *promise* can satisfy. So the discriminating check is the companion
+    # class descriptor below, which is unique to this app and disappears exactly
+    # when the keep rule fails.
+    'com/cleophis/app/InferenceService': (
+        [],
+        'the service class is gone from the dex, so nothing can start it and '
+        'generation runs unprotected',
+    ),
+    # The real assertion. `start`/`stop` are Kotlin companion statics, so if R8
+    # drops the companion this descriptor vanishes while `InferenceService`
+    # itself survives -- the manifest references the service class, which keeps
+    # the class but says nothing about its companion.
+    'com/cleophis/app/InferenceService$Companion': (
+        [],
+        'the companion holding start/stop was stripped, so generation runs '
+        'with NO foreground service and Android kills the app mid-turn under '
+        'memory pressure -- which presents as "long replies sometimes crash on '
+        'cheap phones", looks like an engine OOM, and never reproduces in debug',
+    ),
+    # `apply` is as generic a dex string as `start`/`stop` -- Kotlin emits it on
+    # every lambda -- so the class descriptor is again the only honest check.
+    'com/cleophis/app/ScreenPrivacy': (
+        [],
+        'the FLAG_SECURE toggle is inert: settings show it ON, the user '
+        'believes app content is hidden from the app switcher, and it is not. '
+        'The only PRIVACY failure on this list, and undetectable from the UI '
+        'because the frontend owns the preference and the platform owns the '
+        'effect',
+    ),
 }
 
 dex = {i.filename: z.read(i.filename) for i in infos

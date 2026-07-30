@@ -1,11 +1,18 @@
-//! The two Android shims 2.2 left unfinished: the download network policy's
-//! fact source, and share-sheet export.
+//! The two Android shims 2.2 left unfinished — the download network policy's
+//! fact source and share-sheet export — plus, from 5.1, the inference
+//! foreground service's start/stop.
 //!
-//! Both reach Kotlin through `android_bridge::with_app_class`, the JNI entry
-//! path proven on device in the native chunk and given a single home in 3.2.
-//! Neither of these is the first thing over that bridge, which is exactly the
+//! All three reach Kotlin through `android_bridge::with_app_class`, the JNI
+//! entry path proven on device in the native chunk and given a single home in
+//! 3.2. None of them is the first thing over that bridge, which is exactly the
 //! sequencing the bridge-first decision bought: a failure here has one
 //! candidate cause, not two.
+//!
+//! The 5.1 addition is deliberately **not** a command. Nothing in the frontend
+//! decides when a turn is running, so exposing it to the invoke surface would
+//! create a second, wrong source of truth for a lifetime `chat_stream` already
+//! owns. It is called from there and nowhere else, which is why the D-1
+//! discussion below covers only the two commands.
 //!
 //! # Both commands live on the SHARED invoke surface (decision D-1)
 //!
@@ -79,6 +86,42 @@ pub async fn network_state(app: AppHandle) -> Result<crate::net_state::NetState,
     #[cfg(not(target_os = "android"))]
     {
         let _ = app;
+        Err(DESKTOP_REFUSAL.to_string())
+    }
+}
+
+/// Hide or show app content in the app switcher (`FLAG_SECURE`) — spec §5.3.
+///
+/// **Default OFF**, decided in the frontend where the preference lives.
+/// Screenshots are the user's right, so this is opt-in; §5.3's immigration-
+/// paperwork user turns it on with one tap. Nothing here defaults anything —
+/// this applies whatever it is told, and a build that never calls it is a build
+/// with screenshots allowed, which is the correct behaviour.
+///
+/// Idempotent, and safe to call on every boot to re-apply a stored preference:
+/// window flags do not accumulate.
+#[tauri::command]
+pub async fn set_screen_privacy(secure: bool, app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        crate::android_bridge::with_app_class(
+            "com.cleophis.app.ScreenPrivacy",
+            |env, class, activity| {
+                env.call_static_method(
+                    class,
+                    "apply",
+                    "(Landroid/content/Context;Z)V",
+                    &[activity.into(), secure.into()],
+                )
+                .map(|_| ())
+                .map_err(|e| format!("apply: {e}"))
+            },
+        )
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (secure, app);
         Err(DESKTOP_REFUSAL.to_string())
     }
 }
@@ -194,3 +237,49 @@ mod imp {
     // logic that CAN be got wrong silently lives in `super::pure`, where the
     // desktop suite executes it.
 }
+
+/// Promote or demote the inference foreground service around a turn (spec §8,
+/// hazards H4/H5).
+///
+/// Called only from `chat_stream`, whose lifetime *is* the condition being
+/// signalled. `true` on the way in, `false` on the way out, on every exit path
+/// including cancel and error.
+///
+/// # Failure is logged and swallowed, deliberately
+///
+/// If the promotion fails — the bridge is not up, the notification cannot be
+/// posted, the OS refuses the start — the turn still generates. It is merely
+/// killable under memory pressure, which is precisely the behaviour every build
+/// before 5.1 had. Aborting a reply the user is watching because a *status-bar
+/// notification* could not be posted would trade a real answer for a
+/// housekeeping detail. So this reports and continues, and the log line names
+/// the method so a device log distinguishes "never promoted" from "promoted and
+/// then killed anyway" — two very different bugs that look identical from the
+/// transcript.
+#[cfg(all(mobile, target_os = "android"))]
+pub(crate) fn inference_service(running: bool) {
+    let method = if running { "start" } else { "stop" };
+    let outcome = crate::android_bridge::with_app_class(
+        "com.cleophis.app.InferenceService",
+        |env, class, activity| {
+            env.call_static_method(
+                class,
+                method,
+                "(Landroid/content/Context;)V",
+                &[activity.into()],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("{method}: {e}"))
+        },
+    );
+    if let Err(e) = outcome {
+        eprintln!("[fgs] InferenceService.{method} failed: {e}");
+    }
+}
+
+/// iOS keeps generation alive while the app is foregrounded (spec §8), so there
+/// is no service to start. Present so `chat_stream` has one unconditional call
+/// rather than a `cfg` at the call site, where the risk is forgetting one of a
+/// matched pair.
+#[cfg(all(mobile, not(target_os = "android")))]
+pub(crate) fn inference_service(_running: bool) {}

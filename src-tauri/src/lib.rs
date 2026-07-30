@@ -360,7 +360,8 @@ pub fn run() {
             chat_cmds::chat_cancel,
             chat_cmds::chat_thermal_state,
             mobile_native::network_state,
-            mobile_native::share_chat
+            mobile_native::share_chat,
+            mobile_native::set_screen_privacy
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

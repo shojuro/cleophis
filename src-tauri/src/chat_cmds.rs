@@ -274,6 +274,18 @@ mod imp {
         let cancel = app.state::<ChatCancels>().begin(&request_id);
         let id = request_id.clone();
 
+        // Foreground service up for the duration of the turn (spec §8, H4/H5),
+        // so Android does not kill generation mid-reply under memory pressure.
+        // Paired with the `false` beside the cancel-registry teardown below —
+        // the one place that already runs on every exit path.
+        //
+        // `chat_complete` is deliberately NOT wrapped. Its callers are
+        // auto-title and analysis: short, not user-visible, and capable of
+        // firing just after the user backgrounds the app — which is exactly
+        // when Android 12+ forbids starting a foreground service. A crash there
+        // would trade a real restriction for a title nobody is waiting for.
+        crate::mobile_native::inference_service(true);
+
         // Checkpointing needs a signed-in account and a chat to write into.
         // Without both, generation still streams — it just is not recoverable,
         // which is the honest degradation rather than a refusal.
@@ -323,6 +335,11 @@ mod imp {
         // cancelled — a stale entry would let a later `chat_cancel` with a
         // recycled id flip a flag nobody is watching.
         app.state::<ChatCancels>().end(&id);
+        // Same "always" argument, which is why the demotion lives here rather
+        // than in the success arm: a foreground service left running after a
+        // cancelled or failed turn is a permanent notification for work that
+        // stopped, and the user has no way to clear it.
+        crate::mobile_native::inference_service(false);
 
         match result {
             Ok(outcome) => {
