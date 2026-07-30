@@ -4763,6 +4763,33 @@ though it did.
   to be inert. That is now a pattern, and it argues the handshake should gate
   on **`porcelain_exit 0` at issuance**, not on either party's recollection.
 
+- **⚑ FREEZE RULE 6 (ADOPTED) — THE ACK IS A FRESH `git status --porcelain`
+  TAKEN *AFTER* THE FREEZE ARRIVES, REPORTED WITH ITS EXIT CODE.** Proposed by
+  gen-10, adopted by steering, and it **supersedes the recollection-based
+  reading of rules 3–5**.
+
+  It does three jobs with one action. The acknowledgement becomes
+  simultaneously a **receipt** and a **state verification**; rider (a)'s
+  ambiguity dies, because a check run after the freeze arrives provably
+  postdates issuance; and "was the tree frozen?" is answered by **something
+  either party can check** instead of by whose recollection of the message
+  order is trusted.
+
+  Note what it does *not* rely on: nobody has to remember to be careful at the
+  moment of the freeze. The ACK is a command with an exit code, and
+  `porcelain_exit 0` is already the only thing on this branch that licenses the
+  word "clean" — so the handshake now inherits a discipline that has been
+  load-bearing here since protocol v2.
+
+  **⚑ And the correction that came with it, which matters more than the rule.**
+  Steering's earlier "note it rather than relitigate" about a dirty POST was
+  walked back by its own author: *that is one step from "stop noting it," which
+  is how a documented anomaly becomes an undocumented norm.* Four consecutive
+  inert deltas is luck, and **the reason to record each one is precisely that
+  it stops being remarkable.** Keep recording them. The
+  prophylactic/diagnostic reframe below is an argument for **trusting** the
+  diagnostic, never for **relaxing** the record.
+
 - **⚑ THE REFRAME THAT SHOULD HAVE COME THREE INCIDENTS AGO: THE FREEZE IS
   PROPHYLACTIC, THE PROVENANCE RECORD IS DIAGNOSTIC — AND ONLY ONE OF THEM HAS
   EVER FAILED.** Steering's, in substance and mostly in its words, and it
