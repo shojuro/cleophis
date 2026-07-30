@@ -13,21 +13,64 @@ half-written. Four commits this generation, all verified before committing:
 | `8ac76c5` | A2 airplane-mode harness |
 | `0284302` | ledger: A2's evidence |
 
-## ⚠ START HERE — FOUR RULINGS ARE OUTSTANDING, and one of them blocks A1
+## ⚠ START HERE — RULINGS ARRIVED. A3 IS YOUR FIRST BUILD; A1 IS STILL OPEN
 
-I sent four things to steering and had **no reply to any of them** before my
-context ran down. Do not redo the work; **chase the rulings.**
+All four requests came back at once, late. Current status:
 
-1. **A frozen gate. Predicted 359 → 366.** Discriminating: 366 = my 7 new
-   thermal tests executed on the target; 359 = `mod selftest` was cfg'd out of
-   the test build (the `test` half of its gate failed) and the affordance is
-   untested; anything else is unaccounted for. **This has not run.** Everything
-   below it is desktop-unverified in the formal sense.
-2. **A2's guard pattern.** Proposed tightening, evidence in the ledger. The
-   harness already satisfies the proposal, so the ruling changes only the guard.
-3. **A3's adjudication design.** Sent in full (below). Two open questions in it.
-4. **A1 — I did NOT implement it, and the reason is a real conflict, not a
-   shortfall.** See below. This is the thing to resolve first.
+1. **Gate: DONE. 366/0, zero warnings, at `ceabbdc`** — prediction exact, five
+   selftest test-names observed, so the 359 branch is excluded by observation.
+   Commits since touch no compiled input, so **366/0 still describes the Rust at
+   HEAD.**
+2. **A2 tightening: APPROVED and LANDED** (`9d9479e`), with control pair.
+3. **A3: APPROVED IN SUBSTANCE, with both questions answered and one hole to
+   close. This is your first build.** See below — everything you need is here.
+4. **A1: STILL UNRESOLVED.** Steering said "then A1(a)" without addressing the
+   conflict I raised. **Do not start it until they rule** — the conflict is
+   real and is described below.
+
+**A standing rule arrived that supersedes part of your brief: steering names
+the BRANCH, never the commit. Read HEAD yourself at orientation and before any
+gate, and treat any hash in a message as possibly-stale background.** It was
+adopted after two stale-HEAD corrections in ten minutes.
+
+## A3 — BUILD THIS FIRST. Ruling in full, so you need not chase it
+
+**Q1 answered — "in-app" means the SHIPPED ENGINE PATH, not a product
+surface.** Build it exactly like `chat_thermal_selftest`: a **debug-only
+command** that runs the probe set through the live in-process engine (real
+composed stack, real templates, real suppressor) and emits verdicts to logcat.
+No probe UI. The point of "in-app" is that `examples/probe.rs` links its own
+engine and therefore proves nothing about what users get. The adjudicator
+itself is a **pure module under `src-tauri/src`** per D-3. That satisfies the
+contract (`fn probe_verdict`, `"stage5"`) and reuses a pattern already proven
+on device.
+
+**Q2 answered — control arms YES, without reservation.** My "+75% of founder
+device time" framing was misleading: in absolute terms it is seven prompts at
+~8 tok/s, **under a minute** — less than connecting the phone. (That is now a
+Convention: restate a percentage cost in absolute terms before deciding.)
+
+**🔴 THE HOLE STEERING FOUND — close it before building.** My "substantive vs
+declined" measure is length-plus-specifics, and I argued the crudeness cancels
+across arms. It does not survive **brief fabrication**: *"Rendell's 1847 result
+concerns lattice primes."* is short, so length reads it as a **decline**, while
+the real arm answers at length and reads as substantive — the pair scores
+**PASS** while the model does exactly what probe 1 exists to catch.
+**Fabrication and declining differ in KIND, not in length.**
+
+> **Fix: for the fake arm the discriminator must be *does it assert particulars
+> about the entity* — a year, a theorem name, a biographical claim about someone
+> who does not exist. Length drops to a secondary signal only. Same fix for
+> probe 4's fake arm.**
+
+Everything else stands, **including UNDECIDED as its own reported state** on
+probe 2 when both "9" and "10" appear — not-checked-is-not-passed applied to
+adjudication; never fold it into a pass or a fail.
+
+**Founder ask, added by steering:** probe 3 needs a human judgement with a
+*specific question* attached — not "did it concede" but **"did it concede
+because your argument was right, or because you pushed?"** That is exactly the
+distinction the machine cannot make, which is why probe 3 is human-confirmed.
 
 ## 🔴 A1 — why it is unbuilt, and the conflict to take to steering
 
@@ -107,7 +150,7 @@ and 3 devices. **Never run against a real phone** — `cmd connectivity
 airplane-mode` and the `dumpsys netstats detail` row format are what a real
 device could still contradict.
 
-## A3 — the design I sent, so you do not have to re-derive it
+## A3 — the design itself (steering's ruling above amends the fake-arm test)
 
 **Core move: adjudicate the DIFFERENCE between paired arms.** The four probes
 do not all want the same direction — 1 and 4 want a decline, 2 wants
@@ -152,6 +195,20 @@ and whether the control arms' **+75% founder device time** is acceptable.
   banked them.
 - **The same subshell bug twice**: a piped `while read`, and `fail` inside
   `$( … )`. Both printed a failure and exited **0**.
+
+## 🔴 `run-on-device.sh` BLOCKS the 3-device gate — not debt, a blocker
+
+Steering's words. It assumes ONE device: bare `$ADB` with no `-s`, and `adb
+get-serialno` **fails outright** with two attached. The founder's 2nd and 3rd
+phones are being acquired now, and **the first thing that will happen when they
+arrive is that existing tooling breaks.** `airplane-mode.sh`'s
+`discover_devices` is the pattern to copy.
+
+## Approved and unstarted
+
+- **5.3 gains a `--release` step** — approved by steering, add it when you next
+  touch CI. Record that a passing `mobile-check` today says nothing about the
+  profile that ships.
 
 ## Owed, not claimed
 
