@@ -329,6 +329,87 @@ EVIDENCE_SUFFIXES = ('.rs', '.js', '.mjs', '.kt', '.xml', '.py', '.sh', '.toml',
                      '.json', '.pro', '.gradle', '.kts', '.yml', '.yaml')
 
 
+# ⚠⚠⚠ THE GUARD'S SIXTH BUG, AND THE FIRST FIX AIMED AT THE CORPUS RATHER THAN
+# THE PATTERN.
+#
+# Run 2's conclusion was "make patterns definition-shaped so prose cannot
+# satisfy them". That was WRONG, and the measurement that shows it is blunt:
+# with `probes.rs` replaced by THREE LINES OF DOC COMMENT and no implementation
+# whatsoever, this guard printed `ok  A3 implemented`. The clauses were carried
+# by `/// The probe set these verdicts came from -- "stage5"` and
+# `/// ...requires alongside `fn probe_verdict``.
+#
+# A doc comment that quotes a symbol is prose that satisfies a
+# definition-shaped pattern, because **a pattern cannot distinguish quoting
+# from defining -- both are text.** Five previous fixes all sharpened the
+# expression, and the defect kept recurring through new doors. Hence:
+#
+#   WHEN A MATCHER CANNOT DISTINGUISH TWO THINGS, FIX THE CORPUS, NOT THE
+#   PATTERN.
+#
+# Stripping NARROWS the corpus, which is why it is safe where widening the
+# SEARCH roots was not: removing text is monotone -- it can only turn `ok` into
+# `FAIL`, never `FAIL` into `ok` -- so it cannot manufacture a false green.
+# Any item that flips was falsely green, and each flip is its own finding.
+#
+# ── AND THE THINGS IT DELIBERATELY DOES NOT DO ───────────────────────────────
+#
+#   * `#` IS NOT A COMMENT IN RUST. `#[cfg(...)]`, `#[test]`, `#[cfg_attr(...)]`
+#     are attributes and attributes are legitimate evidence -- D-3's dead-code
+#     allows are attributes. The comment marker is per-language for that reason
+#     and `.rs` lists only `//`.
+#   * TRAILING COMMENTS SURVIVE. `let url = "https://x";` would lose real code
+#     to the `//` inside a string literal, and telling the two apart needs a
+#     tokenizer per language rather than a rule. Line-leading only.
+#   * A block comment's body is dropped by tracking `/* … */` STATE, not by
+#     matching a leading `*`. A bare leading-`*` rule would delete
+#     `*self.inner.lock().unwrap() = Some(notice);` -- real code in
+#     `chat_cmds.rs` today.
+#
+# ⚑ THE RESIDUAL, STATED SO NOBODY READS THE FIX AS TOTAL: a clause is still
+# satisfiable by a TRAILING comment (`fn foo() {} // fn probe_verdict`). That is
+# accepted, not overlooked -- doc comments are the common case and the one that
+# was measured biting, and closing the trailing case costs a per-language
+# tokenizer. Measured and reported rather than quietly left.
+LINE_COMMENTS = {
+    '.rs': ('//',), '.kt': ('//',), '.js': ('//',), '.mjs': ('//',),
+    '.kts': ('//',), '.gradle': ('//',),
+    '.py': ('#',), '.sh': ('#',), '.yml': ('#',), '.yaml': ('#',),
+    '.toml': ('#',), '.pro': ('#',),
+}
+BLOCK_COMMENTS = {
+    '.rs': ('/*', '*/'), '.kt': ('/*', '*/'), '.js': ('/*', '*/'),
+    '.mjs': ('/*', '*/'), '.kts': ('/*', '*/'), '.gradle': ('/*', '*/'),
+    '.xml': ('<!--', '-->'),
+}
+
+
+def strip_comments(text: str, suffix: str) -> str:
+    """Drop line-leading comments and block-comment bodies. See the note above
+    for the three things this deliberately leaves alone."""
+    line_marks = LINE_COMMENTS.get(suffix, ())
+    block = BLOCK_COMMENTS.get(suffix)
+    out, in_block = [], False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if in_block:
+            if block and block[1] in line:
+                in_block = False
+                out.append(line.split(block[1], 1)[1])
+            continue
+        if block and stripped.startswith(block[0]):
+            rest = stripped[len(block[0]):]
+            if block[1] in rest:
+                out.append(rest.split(block[1], 1)[1])
+            else:
+                in_block = True
+            continue
+        if any(stripped.startswith(m) for m in line_marks):
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+
 def files_by_root() -> dict:
     """root -> the CONTENTS of every tracked implementation file under it.
 
@@ -370,9 +451,11 @@ def files_by_root() -> dict:
             if (ROOT / rel).resolve() == Path(__file__).resolve():
                 continue
             try:
-                by_root[root].append((ROOT / rel).read_text(errors='ignore'))
+                text = (ROOT / rel).read_text(errors='ignore')
             except (OSError, UnicodeDecodeError):
                 continue
+            # Comments are not implementation. See `strip_comments`.
+            by_root[root].append(strip_comments(text, Path(rel).suffix))
     return by_root
 
 
