@@ -505,3 +505,24 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
    could clip under a large scale factor (the chat title and the pill)
    ellipsize rather than overflow. */
 
+
+/* --- Triage route banners (Phase 2) ---------------------------------------
+   Product-owned text, ABOVE the model's words and never inside them: the
+   banner says what the product decided the reply routes to, so it must not be
+   mistakable for a sentence the model wrote. Each paints its own background so
+   it reads at a glance on the assistant bubble, and `--provisional` is the one
+   drawn from the streamed prefix — same copy, visibly unfinished, replaced by
+   the verdict's own banner when the reply lands.
+   `.msg` is `white-space:pre-wrap`, which is what keeps the space between the
+   title and the line without a margin. */
+.triage-banner{display:block;margin:0 0 6px;padding:6px 10px;border-radius:8px;font-size:13px;line-height:1.3}
+.triage-banner b{letter-spacing:.04em}
+.triage-banner--emergency{background:#7f1d1d;color:#fff}
+.triage-banner--clinician{background:#1e3a8a;color:#fff}
+.triage-banner--self_care{background:#14532d;color:#fff}
+.triage-banner--out_of_scope{background:#3f3f46;color:#fff}
+.triage-banner--provisional{opacity:.7;border:1px dashed rgba(255,255,255,.6)}
+/* The health worker's confirmation (Task 8 renders these). */
+.triage-confirm{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.triage-confirm select{padding:4px 6px}
+.triage-confirmed{margin-top:6px;font-size:12px;color:var(--muted)}
