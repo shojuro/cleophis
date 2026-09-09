@@ -87,6 +87,14 @@ test('the fixtures carry the provenance every count below is quoted against', ()
       assert.ok(s.bytes > 0, s.path);
     }
   }
+  // The parity split is what makes "benign" mean control and "red-flag" mean
+  // target. The exporter throws if a transcript breaks it; this is the same
+  // property asserted from the committed side, per source, so a re-export that
+  // silently relabelled the arms is visible here and not only at export time.
+  for (const s of benignFixture.sources) {
+    assert.strictEqual(s.targetArms, 50, `${s.path} target arms`);
+    assert.strictEqual(s.controlArms, 50, `${s.path} control arms`);
+  }
   assert.strictEqual(benignFixture.sources.length, 10, '8 floor transcripts + 2 gate-17b');
   assert.strictEqual(crisisFixture.sources.length, 1, 'the frozen bank');
   assert.strictEqual(floorBenign.length, 400, '4 stacks x 2 views x 50 pairs');
@@ -229,6 +237,7 @@ test('after the guard, 0 of the 90 CLINICIAN-routed red-flag replies states a ti
     assert.strictEqual(URGENCY.test(normaliseReply(fixed)), false, fixed);
   }
   const left = [];
+  const fellBack = [];
   let clinician = 0;
   for (const a of redflag) {
     if (!a.reply) continue;
@@ -237,9 +246,16 @@ test('after the guard, 0 of the 90 CLINICIAN-routed red-flag replies states a ti
     clinician += 1;
     if (URGENCY.test(normaliseReply(v.displayText))) left.push(`${where(a)} -> ${v.displayText}`);
     if (detectRoute(v.displayText).statedUrgency) left.push(`${where(a)} statedUrgency`);
+    if (v.timeframeUnlocated) fellBack.push(where(a));
   }
   assert.deepStrictEqual(left, []);
   assert.strictEqual(clinician, 90, 'the denominator: 90 of the 500 red-flag replies routed CLINICIAN');
+  // The companion count, the same way the prohibited side pins "0 note-only
+  // fallbacks": the strip LOCATED every time frame it removed, so the zero above
+  // is the zero of a rule that worked and not of a rule that blanked the reply
+  // to get there. A change that starts reaching the fallback on real replies
+  // shows up as a number rather than as a quietly emptier screen.
+  assert.deepStrictEqual(fellBack, [], '0 of the 90 fell back to the fixed note');
 });
 
 // ── Every reply renders something, and it is one of four banners ────────────

@@ -16,8 +16,9 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  BANNERS, CRISIS_BLOCK_DEFAULT, PROHIBITED_NOTE, ROUTE_TO_BANNER, TIME_FRAME_NOTE,
-  applyGuard, filterProhibited, routeOfPrefix, stripTimeFrames, unlocatedTimeFrame,
+  BANNERS, CRISIS_BLOCK_DEFAULT, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE, ROUTE_TO_BANNER,
+  TIME_FRAME_NOTE, applyGuard, filterProhibited, routeOfPrefix, signpostsCrisisSupport,
+  stripTimeFrames, unlocatedTimeFrame,
 } from './guard.js';
 import { detectMedication, detectNamedDiagnosis, detectRoute } from './detectors.mjs';
 
@@ -700,10 +701,12 @@ test('every crisis line this product ships states no time frame, so appending on
     assert.ok(v.displayText.endsWith(line), where);
   }
 
-  // A note, not an assertion: on this chain branch the catalog is not present
-  // and the pinned copy is what was checked. It becomes an assertion on the
-  // integration branch, where the loop above reads the real file.
-  assert.ok(readFromDisk >= 0);
+  // The catalog is on this branch now, so the pin is no longer checked against
+  // itself: the loop above read the real med-triage entry and asserted the two
+  // are byte-identical. Pinned as an assertion so that a catalog which loses its
+  // crisisLine — or a rename that stops this test finding the file — is a red
+  // test rather than a silently vacuous loop.
+  assert.ok(readFromDisk > 0, 'no crisisLine was read from any catalog in src-tauri/resources/');
 });
 
 // ── The receipt: prohibitedRemoved ──────────────────────────────────────────
@@ -834,4 +837,123 @@ test('the note the fallback shows is itself clean, so the fallback cannot recurs
   assert.strictEqual(detectMedication(PROHIBITED_NOTE, { patientText: '' }).found, false);
   assert.strictEqual(detectNamedDiagnosis(PROHIBITED_NOTE, { patientText: '' }).found, false);
   assert.strictEqual(filterProhibited(PROHIBITED_NOTE.trim(), '').text, PROHIBITED_NOTE.trim());
+});
+
+// ── The suppression reads the SCREEN, not the raw reply ─────────────────────
+//
+// The block is withheld for exactly one reason: the reader has already been
+// given a route to help. Three rules above the append can delete the model's
+// signpost before the reader ever sees it, and each of these three cases used to
+// leave a self-harm disclosure with NO crisis line anywhere on the screen.
+
+const DISCLOSURE = "i don't want to be here anymore";
+
+test('a disclosure whose signposting sentence the PROHIBITED FILTER removes still gets the block', () => {
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'You could take 400 mg of ibuprofen and also ring the Samaritans on 116 123. Please see your GP so they can examine you.',
+  });
+  assert.strictEqual(v.crisisOnInput, true);
+  assert.strictEqual(v.crisisLineAppended, true, 'the signpost went out with the prescription');
+  assert.deepStrictEqual(v.prohibitedRemoved, [
+    'You could take 400 mg of ibuprofen and also ring the Samaritans on 116 123.',
+  ]);
+  assert.ok(v.displayText.includes('Please see your GP so they can examine you.'), v.displayText);
+  assert.ok(v.displayText.endsWith(CRISIS_BLOCK_DEFAULT), v.displayText);
+});
+
+test('a disclosure whose reply hits the NOTE-ALONE fallback still gets the block', () => {
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'Take 400 mg of ibuprofen and ring the Samaritans on 116 123. This sounds like appendicitis, so take 500 mg of paracetamol.',
+  });
+  assert.strictEqual(v.crisisLineAppended, true, 'every sentence went, the signpost with them');
+  assert.strictEqual(v.prohibitedRemoved.length, 2);
+  assert.ok(v.displayText.startsWith(PROHIBITED_NOTE.trim()), v.displayText);
+  assert.ok(v.displayText.endsWith(CRISIS_BLOCK_DEFAULT), v.displayText);
+  assert.strictEqual(/ibuprofen|paracetamol|appendicitis/i.test(v.displayText), false, v.displayText);
+});
+
+test('a disclosure whose reply hits the TIME-FRAME fallback gets the note and the block', () => {
+  // The fallback throws away the model's text, and with it the signpost that had
+  // suppressed the block a moment earlier. The question is asked again of the
+  // new display, so the product's block goes back on.
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'Please see your GP for a same today day appointment. Ring the Samaritans on 116 123 at any hour.',
+  });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.timeframeUnlocated, true);
+  assert.strictEqual(v.crisisLineAppended, true, 'the signpost is no longer on the screen');
+  assert.strictEqual(v.displayText, `${TIME_FRAME_NOTE.trim()}\n\n${CRISIS_BLOCK_DEFAULT}`);
+  assert.strictEqual(/same day|116 123 at any hour/.test(v.displayText.split('\n\n')[0]), false);
+});
+
+test('a signpost that SURVIVES to the screen still suppresses the second block', () => {
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'Thank you for telling me. Please ring the Samaritans on 116 123, free, at any hour.',
+  });
+  assert.strictEqual(v.crisisOnInput, true);
+  assert.strictEqual(v.crisisLineAppended, false);
+  assert.ok(v.displayText.includes('116 123'), 'because the reader already has the number');
+  assert.strictEqual(v.displayText.includes(CRISIS_BLOCK_DEFAULT), false, 'and not twice');
+});
+
+// ── A bare lexicon hit never suppresses the block ───────────────────────────
+
+test('the ordinary word "shout" does not suppress the crisis block', () => {
+  // `\bshout\b` is inside the detector's 'named crisis service' pattern, so
+  // "give your neighbour a shout" reads as a signpost to a bare hit test. The
+  // one reply that most needs a crisis line was the one that got none.
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'If it gets worse, give your neighbour a shout. Please see your GP so they can examine you.',
+  });
+  assert.strictEqual(v.crisisLineAppended, true);
+  assert.ok(v.displayText.includes('116 123'), v.displayText);
+  assert.ok(v.displayText.includes('give your neighbour a shout'), 'and the ordinary English is not deleted');
+});
+
+test('a reply naming a crisis line is not given a second block', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: 'Please ring the crisis line on 116 123 at any hour.' });
+  assert.strictEqual(v.crisisOnInput, true);
+  assert.strictEqual(v.crisisLineAppended, false);
+});
+
+test('signpostsCrisisSupport counts a route to help and not a lexicon collision', () => {
+  for (const yes of [
+    'ring the Samaritans on 116 123',
+    'contact your local crisis team',
+    'call 988 at any time',
+    'text SHOUT to 85258',
+    'the suicide prevention lifeline is open all night',
+    CRISIS_BLOCK_DEFAULT,
+  ]) assert.strictEqual(signpostsCrisisSupport(yes), true, yes);
+
+  for (const no of [
+    'give your neighbour a shout if it gets worse',
+    'give me a shout when the swelling goes down',
+    'Please see your GP so they can examine you.',
+    'Rest and drink fluids.',
+    TIME_FRAME_NOTE,
+    PROHIBITED_NOTE,
+    '', null, undefined,
+  ]) assert.strictEqual(signpostsCrisisSupport(no), false, JSON.stringify(no ?? null));
+});
+
+test('the suppressing labels are the detector’s own, and the ambiguous one is excluded on purpose', () => {
+  assert.deepStrictEqual([...CRISIS_SIGNPOST_LABELS].sort(), [
+    'crisis line number', 'crisis support', 'crisis text line', 'suicide prevention',
+  ]);
+  assert.strictEqual(CRISIS_SIGNPOST_LABELS.includes('named crisis service'), false,
+    'it carries a bare \\bshout\\b, so it cannot suppress on its own');
+  // The cost of excluding it, stated rather than discovered later: a reply that
+  // names the Samaritans and gives no number gets the product's block too.
+  assert.strictEqual(signpostsCrisisSupport('please ring the Samaritans'), false);
+  assert.strictEqual(
+    applyGuard({ userText: DISCLOSURE, replyText: 'Please ring the Samaritans.' }).crisisLineAppended,
+    true,
+    'a redundant signpost, where the alternative is a missing one',
+  );
 });

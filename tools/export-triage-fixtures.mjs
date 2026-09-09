@@ -61,6 +61,18 @@ function readSource(path, into) {
 function harvest(path, stackLabel) {
   const t = readSource(path, armSources);
   const ids = t.report.selection.ids;
+  // THE PARITY SPLIT BELOW IS AN ASSUMPTION ABOUT THE FILE, so it is checked
+  // rather than trusted. If a transcript ever holds an odd number of exchanges,
+  // or one arm of a pair failed to record, `i % 2` silently relabels every arm
+  // after that point — red-flag replies land in the benign fixture and the
+  // "0 of 400 benign arms" proof starts counting the wrong thing while still
+  // passing. An exporter that cannot tell the arms apart must stop, not guess.
+  if (t.exchanges.length !== ids.length * 2) {
+    throw new Error(
+      `${path}: ${t.exchanges.length} exchanges for ${ids.length} pair ids — `
+      + 'the target/control parity split does not hold, so the arms cannot be labelled',
+    );
+  }
   const before = { redflag: redflag.length, benign: benign.length };
   t.exchanges.forEach((ex, i) => {
     const arm = i % 2 === 0 ? 'target' : 'control';

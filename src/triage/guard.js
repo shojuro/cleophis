@@ -198,6 +198,49 @@ export function routeOfPrefix(text) {
   return detectRoute(text).route;
 }
 
+// WHICH OF THE DETECTOR'S SIGNPOST LABELS COUNT AS "THE READER ALREADY HAS A
+// ROUTE TO HELP". `detectCrisisResponse` returns `signposted` as a list of its
+// own labels, and they are not equally strong evidence:
+//
+//   'crisis line number'   988, 116 123, 1737, 13 11 14 — a number to call
+//   'crisis support'       "crisis line/team/service/helpline/counsellor"
+//   'crisis text line'     "text SHOUT", "text HOME"
+//   'suicide prevention'   the phrase itself
+//   'named crisis service' Samaritans, Papyrus, Crisis Text Line — AND `\bshout\b`
+//
+// The last one is the defect. Its pattern carries a bare `\bshout\b`, so "give
+// your neighbour a shout if it gets worse" is ordinary English that reads as a
+// named crisis service, and a `signposted.length > 0` test lets it SUPPRESS the
+// product's crisis block. That is the worst direction available: the one reply
+// that most needs a crisis line is the one that gets none.
+//
+// So the ambiguous label does not count on its own. The cost of that choice is a
+// reply naming the Samaritans WITHOUT a number getting the product's block as
+// well — a redundant signpost, where the alternative is a missing one. R18's
+// cost asymmetry decides it, and the ruling says the same: fail toward a second
+// block.
+//
+// Widened from the detector's OWN label vocabulary, never from a second copy of
+// its lexicon — the vendored file is not forked, only asked.
+export const CRISIS_SIGNPOST_LABELS = Object.freeze([
+  'crisis line number', 'crisis support', 'crisis text line', 'suicide prevention',
+]);
+
+/**
+ * Has this text already given the reader a route to crisis help?
+ *
+ * NOT `handling`, deliberately, though `detectCrisisResponse` offers it. Its
+ * CRISIS_SUPPORT and SIGNPOST_ONLY values are ranked BELOW `TRIAGED`, and every
+ * reply this product shows is a triage reply — so a model that routes the
+ * medical complaint AND signposts a crisis line comes back `TRIAGED`, and a
+ * `handling`-based test would read a real signpost as no signpost at all. The
+ * labels are the part of the detector that answers the question asked here.
+ */
+export function signpostsCrisisSupport(text) {
+  const { signposted } = detectCrisisResponse(String(text ?? ''));
+  return signposted.some((label) => CRISIS_SIGNPOST_LABELS.includes(label));
+}
+
 /**
  * Does the text about to be shown STILL state a time frame it should not?
  *
@@ -281,10 +324,20 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
   // rewrites, and a check that ran before the append would be the only rule
   // looking for a time frame, looking at text that is not what a person sees.
   // Anything Task 4 adds to `display` belongs above that check for that reason.
+  //
+  // THE SUPPRESSION READS THE SCREEN, NOT THE RAW REPLY. The block is withheld
+  // only because the reader has ALREADY been given a route to help — so the
+  // question is about the text they will be given, and three rules above this
+  // one can delete the model's signpost before it gets there: the prohibited
+  // filter can take out the sentence that carried it, the note-alone fallback
+  // takes out every sentence, and the time-frame fallback below discards the
+  // model's text entirely. Deciding from `raw` answers a question about a reply
+  // that no longer exists, and it fails in the one direction R15 says it must
+  // not: no crisis line at the moment it matters.
   const crisisOnInput = detectCrisisStatement(userText).found;
-  const crisisLineAppended = crisisOnInput && detectCrisisResponse(raw).signposted.length === 0;
-  const withCrisisBlock = (text) => (crisisLineAppended ? `${text}\n\n${crisisLine}` : text);
-  display = withCrisisBlock(display);
+  const crisisDue = () => crisisOnInput && !signpostsCrisisSupport(display);
+  let crisisLineAppended = crisisDue();
+  if (crisisLineAppended) display = `${display}\n\n${crisisLine}`;
 
   // THE SCREEN CHECK, LAST, on the finished text — see `unlocatedTimeFrame` for
   // why it asks about the screen rather than about what the strip removed. True
@@ -298,10 +351,21 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
   // operator's signal to reword their crisis line. This module does not solve a
   // bad crisis line by removing a self-harm signpost.
   //
+  // AND THE QUESTION IS ASKED AGAIN, because this fallback throws away the
+  // model's text — including a signpost that had suppressed the block a moment
+  // ago. Re-asking of the new display puts the product's block back: the only
+  // reason to withhold it was a signpost that is no longer on the screen.
+  //
   // TIME_FRAME_NOTE carries a leading space because it is written as a suffix;
   // `tidy` takes it off when it stands by itself.
   const timeframeUnlocated = unlocatedTimeFrame(routing.route, display);
-  if (timeframeUnlocated) display = withCrisisBlock(tidy(TIME_FRAME_NOTE));
+  if (timeframeUnlocated) {
+    display = tidy(TIME_FRAME_NOTE);
+    if (crisisDue()) {
+      display = `${display}\n\n${crisisLine}`;
+      crisisLineAppended = true;
+    }
+  }
 
   return {
     route: routing.route,
