@@ -45,3 +45,35 @@ test('PARITY: the triage catalog entry\'s systemPrompt matches its pinned finger
   assert.ok(entry, 'catalog.triage.json has a med-triage entry (Task 9)');
   assert.strictEqual(promptFingerprint(entry.systemPrompt), entry.promptFingerprint);
 });
+
+test('a supervised entry that pins NO fingerprint is a loud error, never a silent send', () => {
+  // A prompt nobody can check is not the prompt the gate was run under. It
+  // throws in the same shape as a mismatch, so the send path surfaces both the
+  // same way — see `isPromptMismatch` in prompt-fingerprint.js.
+  const entry = { supervised: true, systemPrompt: 'You are a triage assistant.', greeting: '' };
+  assert.throws(
+    () => assembleMessages({ entry, groundedPrompt: null, sent: [], ungroundedNote: NOTE, fingerprint: promptFingerprint }),
+    /prompt fingerprint missing/,
+  );
+});
+
+test('history reaches the model as {role, content} and nothing else, on both paths', () => {
+  // `sent` is a window over the app's own message objects. They carry the row
+  // id, replayed citations/calculations and — on a supervised turn — the whole
+  // guard verdict including `rawReply`. None of that is prompt content.
+  const history = [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'a', id: 9, citations: [{ docTitle: 'd' }], calculations: [{ expression: '1+1' }], guard: { rawReply: 'a, within 2 days', detectorsSha: 'abc' } },
+  ];
+  for (const entry of [
+    { supervised: false, systemPrompt: 'tutor', greeting: 'Hi!' },
+    { supervised: true, systemPrompt: 'triage', greeting: 'Hi!' },
+  ]) {
+    const { messages } = assembleMessages({ entry, groundedPrompt: null, sent: history, ungroundedNote: NOTE });
+    for (const m of messages) assert.deepStrictEqual(Object.keys(m), ['role', 'content'], `${entry.supervised}`);
+    assert.strictEqual(JSON.stringify(messages).includes('rawReply'), false);
+    assert.strictEqual(JSON.stringify(messages).includes('docTitle'), false);
+  }
+  // ...and the caller's own array is untouched.
+  assert.strictEqual(history[1].id, 9);
+});

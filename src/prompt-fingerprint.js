@@ -90,13 +90,14 @@ export function promptFingerprint(text) {
 
 /**
  * Is this the throw `prompt-assembly.js` makes when the prompt about to be
- * sent is not the prompt the gate was run under?
+ * sent is not one the gate can be said to have been run under?
  *
- * Matched by message because `prompt-assembly.js` is not this task's file to
- * change. The send path needs to tell this apart from a transport failure:
- * a fetch that failed is a retry chip, and a prompt that drifted is a refusal
- * to send at all.
+ * Two cases, one answer: the prompt does not match the pin (MISMATCH), or the
+ * supervised entry pins nothing to match against (MISSING). Both are a refusal
+ * to send, and the send path needs to tell either apart from a transport
+ * failure — a fetch that failed is a retry chip, and a prompt that cannot be
+ * vouched for is not sent at all.
  */
 export function isPromptMismatch(err) {
-  return /prompt fingerprint mismatch/i.test(String(err?.message ?? err ?? ''));
+  return /prompt fingerprint (mismatch|missing)/i.test(String(err?.message ?? err ?? ''));
 }
