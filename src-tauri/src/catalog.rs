@@ -354,16 +354,22 @@ mod tests {
             h.adapter_file.is_some(),
             "triage hero must declare an adapter file"
         );
-        assert!(
-            h.sha256.as_deref().map(|s| s.len() == 64).unwrap_or(false),
-            "triage base must carry a 64-hex sha256"
+        // Both hashes come from ONE rung of the v3 gate manifests, which is why
+        // they are pinned here as literals rather than described: the base is
+        // `base_q4_sha256` and the adapter is `adapter_gguf_sha256` of the
+        // `Qwen3-1.7B-armb-v3` stack in ~/cleophas-triage's
+        // work/gate-17b, work/gate-17b-v7 and work/m4-prompt-ab
+        // run-manifest.json. A device serving a different pair is not serving
+        // the stack any triage number was measured on.
+        assert_eq!(
+            h.sha256.as_deref(),
+            Some("25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3"),
+            "base must be the v3 gate rung's base_q4_sha256"
         );
-        assert!(
-            h.adapter_sha256
-                .as_deref()
-                .map(|s| s.len() == 64)
-                .unwrap_or(false),
-            "triage adapter must carry a 64-hex sha256"
+        assert_eq!(
+            h.adapter_sha256.as_deref(),
+            Some("5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20"),
+            "adapter must be the v3 gate rung's adapter_gguf_sha256"
         );
         assert!(h.adapter_id.is_some());
         // No `tiers` block: the triage entry is one pinned pair, so

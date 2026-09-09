@@ -6,7 +6,7 @@ import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMA
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
 import { assembleMessages } from './prompt-assembly.js';
-import { belowMinTier, minTierNotice } from './min-tier.js';
+import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -363,7 +363,10 @@ const TIER_OPTS = [
   { mode: 'high', label: 'Large · 8B', sub: '≈4.8 GB · most capable' },
 ];
 function tierSelectorHtml(m) {
-  if (!m.real || !(state.mine.has(m.id) || state.dl.installed)) return '';
+  // P2.9: also renders nothing for an entry with no `tiers` block. The options
+  // below ARE that block; without it the selector would offer three models the
+  // entry does not have.
+  if (!tierSelectorApplies(m, { owned: state.mine.has(m.id), installed: state.dl.installed })) return '';
   const ts = state.tierSel || { mode: 'auto', effectiveTier: 'mid', switchAvailable: true, nextChangeAt: null };
   const opts = TIER_OPTS.map((o) => {
     const active = ts.mode === o.mode;
