@@ -55,6 +55,7 @@ embedded_covers!(
     "drug-interactions.webp",
     "ecg.webp",
     "intro-python.webp",
+    "med-triage.webp",
     "neurosurg.webp",
     "sat-prep.webp",
     "socratic-tutor.webp",
