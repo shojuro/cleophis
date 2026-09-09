@@ -169,10 +169,19 @@
 //! both persisted the reply, so a supervised turn ended up as TWO assistant
 //! rows — the checkpointer's finished partial and the front end's insert.
 //! `append_message` now UPGRADES this chat's in-flight partial row when the
-//! appended role is `assistant`, so the front end's call (the only one that
-//! carries the guard verdict) lands ON the row the checkpointer already
-//! holds. A desktop append, where nothing ever checkpoints, finds no
-//! partial row and inserts exactly as before.
+//! appended role is `assistant`, so an append arriving while the turn is
+//! still in flight lands ON the row the checkpointer already holds. A
+//! desktop append, where nothing ever checkpoints, finds no partial row and
+//! inserts exactly as before.
+//!
+//! That upgrade is not enough on its own for the mobile path, because
+//! `chat_cmds`'s `settle` FINALIZES the checkpoint row (clearing `partial`)
+//! before it sends the `Done` event that hands the front end the reply — so
+//! when the verdict finally exists there is no in-flight row left to find.
+//! `Done` therefore carries the finalized row's id, and the front end calls
+//! [`ConvStore::attach_guard`] on that id instead of appending a second
+//! row. The two together mean exactly one assistant row per turn on either
+//! platform, whichever call arrives with the verdict.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -997,6 +1006,80 @@ impl ConvStore {
         Ok(())
     }
 
+    /// Write the guard's verdict onto a row the stream ALREADY persisted.
+    ///
+    /// This is the mobile path's attachment point, not `append_message`:
+    /// `chat_cmds`'s `settle` finalizes the checkpoint row (clearing
+    /// `partial`) before the `Done` event that hands the front end the
+    /// reply, so by the time the verdict exists there is no in-flight row
+    /// left to upgrade — see the module doc comment's "One assistant row
+    /// per turn" section. `Done` carries the finalized row's id and the
+    /// front end attaches the verdict to THAT row rather than appending a
+    /// second one.
+    ///
+    /// Never inserts. Refused, with an error naming the reason, when the
+    /// row is not in this account's database, is not an assistant reply,
+    /// or already carries a verdict from a DIFFERENT detector build — a
+    /// verdict is attached once, and silently replacing one pinned to
+    /// another `detectorsSha` would break the audit trail the export
+    /// depends on. A repeat carrying the SAME `detectorsSha` is the same
+    /// verdict, so it is accepted as a benign retry (a dropped IPC
+    /// response, say) and leaves the row holding exactly `guard`.
+    ///
+    /// The confirmation columns are not touched: the health worker's
+    /// decision is [`Self::confirm_route`]'s business, never the guard's.
+    pub fn attach_guard(
+        &self,
+        user_id: &str,
+        message_id: i64,
+        guard: Value,
+    ) -> Result<MessageInfo, String> {
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+
+        // Read, check and write under ONE lock acquisition, so two attaches
+        // racing on the same row cannot both pass the "no verdict yet" check.
+        let sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1");
+        let existing = conn
+            .query_row(&sql, params![message_id], message_from_row)
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(existing) = existing else {
+            // Per-account databases: an id from another account is simply
+            // not here, which is this same error rather than a leak.
+            return Err(format!("no message with id {message_id} in this account"));
+        };
+        if existing.role != "assistant" {
+            return Err(format!(
+                "message {message_id} is a {} turn; only an assistant reply carries a guard verdict",
+                existing.role
+            ));
+        }
+        if let Some(prior) = existing.guard.as_ref() {
+            let prior_sha = detectors_sha(prior);
+            let next_sha = detectors_sha(&guard);
+            if prior_sha != next_sha {
+                return Err(format!(
+                    "message {message_id} already carries a guard verdict from detectors {}; \
+                     refusing to replace it with one from {}",
+                    prior_sha.unwrap_or("(none)"),
+                    next_sha.unwrap_or("(none)")
+                ));
+            }
+        }
+
+        conn.execute(
+            "UPDATE messages SET guard = ?1 WHERE id = ?2",
+            params![guard.to_string(), message_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(MessageInfo {
+            guard: Some(guard),
+            ..existing
+        })
+    }
+
     /// One JSON line per guarded assistant message, paired with the user
     /// turn that preceded it — the triage override log the clinical review
     /// reads. `chat_id: None` exports every chat of this account.
@@ -1205,6 +1288,14 @@ fn chat_from_row(row: &rusqlite::Row) -> rusqlite::Result<ChatInfo> {
         model_id: row.get(8)?,
         adapter_ids,
     })
+}
+
+/// The detector build a verdict is pinned to, or `None` when it carries no
+/// pin. Read defensively (`get`/`as_str`) rather than deserialized: this is
+/// the FRONT END's guard JSON exactly as it was stored, and a verdict with
+/// no pin must compare equal to another with no pin, not fail.
+fn detectors_sha(guard: &Value) -> Option<&str> {
+    guard.get("detectorsSha").and_then(Value::as_str)
 }
 
 fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
@@ -1748,6 +1839,25 @@ pub async fn confirm_route(message_id: i64, route: String, app: AppHandle) -> Re
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
+/// Attaches the guard's verdict to the assistant row the stream already
+/// persisted — the mobile path's attachment point, where the row id comes
+/// from `ChatEvent::Done`. Async + `spawn_blocking` like every other
+/// command in this module: SQLite I/O must not run on the IPC thread.
+#[tauri::command]
+pub async fn attach_guard(
+    message_id: i64,
+    guard: Value,
+    app: AppHandle,
+) -> Result<MessageInfo, String> {
+    let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ConvStore>()
+            .attach_guard(&user_id, message_id, guard)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
 /// Writes the triage override log (JSONL) to `path`, the user's own OS save
 /// choice — the same write shape as `export_chat_to_file`, and the same
 /// reasoning for one command that both formats AND writes: the only file
@@ -1980,6 +2090,126 @@ mod tests {
         let msgs = store.get_chat(USER, chat.id).unwrap().messages;
         assert_eq!(msgs.len(), 2);
         assert!(msgs.iter().any(|m| m.role == "assistant" && m.partial));
+    }
+
+    /// The mobile attachment point: the stream has already persisted and
+    /// FINALIZED the reply, so the verdict is written onto that row — no
+    /// second assistant row appears.
+    #[test]
+    fn attach_guard_writes_the_verdict_onto_a_finalized_row_and_creates_none() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+        // Exactly what `chat_cmds`'s stream does: checkpoint, then finalize
+        // BEFORE the front end ever hears about the turn.
+        let row = store
+            .checkpoint_partial(USER, chat.id, "Call 999 no")
+            .unwrap();
+        store
+            .finalize_partial(USER, row, "Call 999 now.", None, None)
+            .unwrap();
+        let before = store.get_chat(USER, chat.id).unwrap().messages.len();
+
+        let updated = store
+            .attach_guard(
+                USER,
+                row,
+                json!({"route": "EMERGENCY", "detectorsSha": "abc"}),
+            )
+            .unwrap();
+        assert_eq!(updated.id, row);
+        assert_eq!(updated.guard.as_ref().unwrap()["route"], "EMERGENCY");
+        assert!(
+            !updated.partial,
+            "attaching must not re-open a finished row"
+        );
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), before, "attaching must never insert a row");
+        assert_eq!(msgs.iter().filter(|m| m.role == "assistant").count(), 1);
+        assert_eq!(msgs[1].guard.as_ref().unwrap()["detectorsSha"], "abc");
+        assert_eq!(msgs[1].content, "Call 999 now.");
+    }
+
+    /// A verdict is attached ONCE. A repeat from the same detector build is
+    /// a benign retry; one from a different build is refused, because
+    /// silently replacing it would break the export's audit trail.
+    #[test]
+    fn attach_guard_is_idempotent_for_one_sha_and_refuses_a_different_one() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let m = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Call 999 now.",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        store
+            .attach_guard(
+                USER,
+                m.id,
+                json!({"route": "EMERGENCY", "detectorsSha": "abc"}),
+            )
+            .unwrap();
+        let again = store
+            .attach_guard(
+                USER,
+                m.id,
+                json!({"route": "EMERGENCY", "detectorsSha": "abc"}),
+            )
+            .unwrap();
+        assert_eq!(again.guard.as_ref().unwrap()["route"], "EMERGENCY");
+
+        let err = store
+            .attach_guard(
+                USER,
+                m.id,
+                json!({"route": "SELF_CARE", "detectorsSha": "def"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("abc") && err.contains("def"), "{err}");
+        // ...and the stored verdict is the FIRST one, untouched.
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[0].guard.as_ref().unwrap()["route"], "EMERGENCY");
+        assert_eq!(back[0].guard.as_ref().unwrap()["detectorsSha"], "abc");
+    }
+
+    #[test]
+    fn attach_guard_refuses_a_user_turn_and_an_id_this_account_does_not_have() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let u = store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+
+        let err = store
+            .attach_guard(USER, u.id, json!({"route": "EMERGENCY"}))
+            .unwrap_err();
+        assert!(err.contains("user"), "{err}");
+        assert!(store.get_chat(USER, chat.id).unwrap().messages[0]
+            .guard
+            .is_none());
+
+        // Per-account databases: another account's row id is simply not in
+        // this account's database, and attaching to it is a clean error.
+        let err = store
+            .attach_guard("acct-b", u.id, json!({"route": "EMERGENCY"}))
+            .unwrap_err();
+        assert!(err.contains(&u.id.to_string()), "{err}");
     }
 
     #[test]
