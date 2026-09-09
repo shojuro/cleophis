@@ -393,7 +393,41 @@ mod tests {
             "the general tile pins no model file"
         );
         assert!(t.adapter_file.is_none());
+        // A marketing card is not a supervised entry. Tasks 5 and 6 add FE
+        // readers gated on `supervised === true`; a reader that keys on it
+        // without also checking `real` would otherwise apply triage behaviour
+        // inside the TUTOR app, because this tile ships in the tutor build.
+        // The launchable entry in catalog.triage.json is the only supervised
+        // one, and this asserts the tile is not a second answer to that.
+        assert!(!t.supervised, "the general tile is not a supervised entry");
+        assert_eq!(t.crisis_line, None);
+        assert_eq!(t.prompt_fingerprint, None);
+        assert_eq!(t.sampling, None);
+        assert_eq!(t.tools, None);
+        // `minTier` stays: it is a property of the model the card advertises,
+        // and the drawer reads it to decide whether to offer the card at all.
+        assert_eq!(t.min_tier.as_deref(), Some("low"));
         assert_eq!(hero(&entries).unwrap().id, "socratic-tutor");
+    }
+
+    /// Exactly one entry across BOTH shipped catalogs declares itself
+    /// supervised, and it is the one that is launchable.
+    #[test]
+    fn only_the_launchable_triage_hero_is_supervised() {
+        let general = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        assert!(
+            !general.iter().any(|e| e.supervised),
+            "no entry in the tutor catalog is supervised"
+        );
+
+        let triage = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let supervised: Vec<&str> = triage
+            .iter()
+            .filter(|e| e.supervised)
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(supervised, vec!["med-triage"]);
+        assert!(triage.iter().find(|e| e.supervised).unwrap().real);
     }
 
     /// The tutor hero's behaviour must be byte-identical after P2.9: no

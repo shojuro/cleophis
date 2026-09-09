@@ -6,7 +6,11 @@ import { belowMinTier, minTierNotice, tierSelectorApplies, TIER_RANK } from './m
 
 const catalog = (name) =>
   JSON.parse(readFileSync(new URL(`../src-tauri/resources/${name}`, import.meta.url)));
-const heroOf = (entries) => entries.find((e) => e.real && e.modelFile);
+// The FRONTEND's hero predicate, not Rust's. `app.js`'s `heroEntry()` is
+// `state.catalog.find((m) => m.real)` — no `modelFile` requirement — and the
+// frontend is the code under test here. The two agree on both shipped
+// catalogs; pinning the wrong one would test agreement that nothing relies on.
+const heroOf = (entries) => entries.find((e) => e.real);
 
 // ------------------------------------------------------------- the rule
 

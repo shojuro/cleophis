@@ -137,12 +137,31 @@ restore_catalog() {
     echo "== variant: resources/catalog.json restored =="
   fi
 }
+# Self-heal a swap that was never restored. `restore_catalog` cannot run on
+# SIGKILL or a WSL shutdown, which leaves the triage catalog installed as
+# `catalog.json` with a stale backup beside it. Without this check the NEXT
+# triage build's backup `cp` would copy the TRIAGE content over the good
+# backup and make the swap permanent -- for every later build, tutor ones
+# included. So the check runs for both variants, not just triage: a tutor
+# build starting after a killed triage build is exactly the case that would
+# otherwise ship the wrong catalog silently. Restoring unconditionally is safe
+# because this script is the only writer of that backup, and it only ever
+# holds the tutor catalog.
+if [ -f "$CAT.tutor.bak" ]; then
+  echo "== variant: stale $CAT.tutor.bak found -- a previous build did not restore =="
+  restore_catalog
+fi
+
 if [ "$VARIANT" = "triage" ]; then
   cp "$CAT" "$CAT.tutor.bak"
-  cp "$ROOT/src-tauri/resources/catalog.triage.json" "$CAT"
+  # Armed BEFORE the catalog is overwritten, not after both copies: if the
+  # second `cp` fails partway (a full disk), `set -e` must not exit with a
+  # half-written triage catalog installed and no trap to put the tutor one
+  # back.
   trap restore_catalog EXIT
   trap 'restore_catalog; exit 130' INT
   trap 'restore_catalog; exit 143' TERM
+  cp "$ROOT/src-tauri/resources/catalog.triage.json" "$CAT"
   echo "== variant: triage (catalog.triage.json swapped in for this build) =="
 fi
 

@@ -188,12 +188,15 @@ mod imp {
     /// unaffected.
     fn to_loop_messages(app: &AppHandle, wire: Vec<WireMessage>) -> Vec<LoopMessage> {
         let mut out: Vec<LoopMessage> = Vec::with_capacity(wire.len() + 1);
-        let preamble = if crate::inference::hero_tools_enabled(app) {
+        // Both arms are `&'static str` — `tools_preamble` returns one, and the
+        // off arm must too, or the `if` fails to unify (E0308). Every use below
+        // (`format!`, `is_empty`, `trim_start`) works on `&str` unchanged.
+        let preamble: &'static str = if crate::inference::hero_tools_enabled(app) {
             crate::engine_tools::tools_preamble(tool_family(
                 crate::engine_inproc::current_template(app),
             ))
         } else {
-            String::new()
+            ""
         };
 
         let mut injected = false;
