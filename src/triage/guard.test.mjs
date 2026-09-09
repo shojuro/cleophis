@@ -15,8 +15,9 @@ import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
   BANNERS, CRISIS_BLOCK_DEFAULT, PROHIBITED_NOTE, ROUTE_TO_BANNER, TIME_FRAME_NOTE,
-  applyGuard, filterProhibited, routeOfPrefix, stripTimeFrames,
+  applyGuard, filterProhibited, routeOfPrefix, stripTimeFrames, unlocatedTimeFrame,
 } from './guard.js';
+import { detectRoute } from './detectors.mjs';
 
 const pin = JSON.parse(readFileSync(new URL('./detectors.pin.json', import.meta.url), 'utf8'));
 
@@ -329,38 +330,108 @@ test('timeframeUnlocated is false on every ordinary route', () => {
   }
 });
 
-test('a stated time frame the strip cannot locate collapses the reply to the note alone', () => {
-  // Reachable without contriving the reply: the prohibited filter deletes the
-  // sentence carrying "today" before the strip ever runs, so the scorer sees a
-  // stated time frame on the raw reply and the strip finds none in what is left.
+test('a time frame the PROHIBITED FILTER removed first is not unlocated, and the referral sentence stays', () => {
+  // The strip found nothing here because there was nothing left to find: the
+  // prohibited filter had already deleted the sentence carrying "today". Asking
+  // the strip's question fired the fallback and threw away a correct referral;
+  // asking the scorer's question of the screen text does not.
   const reply = 'Take some ibuprofen today. Please see your GP so they can examine you.';
   const v = applyGuard({ userText: 'my head hurts', replyText: reply });
   assert.strictEqual(v.route, 'CLINICIAN');
   assert.strictEqual(v.banner, 'clinician');
-  assert.strictEqual(v.timeframeUnlocated, true);
+  assert.strictEqual(v.timeframeUnlocated, false);
   assert.deepStrictEqual(v.timeframeStripped, []);
-  assert.strictEqual(v.displayText, TIME_FRAME_NOTE.trim(), 'the model sentence is not shown at all');
+  assert.ok(v.displayText.includes('Please see your GP so they can examine you.'), v.displayText);
+  assert.strictEqual(/today/i.test(v.displayText), false, 'and the time frame is gone all the same');
+  assert.ok(v.prohibited.medication.includes('ibuprofen'), 'listed, not silently dropped');
   assert.strictEqual(v.rawReply, reply, 'and the log still has every word of it');
 });
 
-test('the fallback needs all three conditions: CLINICIAN, a stated time frame, and nothing stripped', () => {
-  // EMERGENCY with a stated time frame: route is wrong for it, so it stays off
-  // and the reply is shown in full.
+test('a time frame the STRIP removed is not unlocated, and the referral sentence stays minus the frame', () => {
+  const reply = 'This needs looking at. Please see a doctor within the next two days so they can examine you.';
+  const v = applyGuard({ userText: 'stomach ache', replyText: reply });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.timeframeUnlocated, false);
+  assert.deepStrictEqual(v.timeframeStripped, ['within the next two days']);
+  assert.strictEqual(
+    v.displayText,
+    'This needs looking at. Please see a doctor so they can examine you. Timing is for your health worker to decide.',
+  );
+});
+
+test('the route gate is live: a SELF_CARE caveat states a time frame on screen and is left alone', () => {
+  // The escalation condition is the one time frame that SHOULD reach the reader,
+  // and the scorer sees it there. Only the route gate stops the fallback eating
+  // the whole reply, so this is where that gate is tested.
+  const reply = 'Rest and drink fluids. If it has not settled within 3 days, see your GP.';
+  const v = applyGuard({ userText: 'sore throat', replyText: reply });
+  assert.strictEqual(v.route, 'SELF_CARE');
+  assert.strictEqual(detectRoute(v.displayText).statedUrgency, true, 'the caveat is on screen, by design');
+  assert.strictEqual(v.timeframeUnlocated, false);
+  assert.strictEqual(v.displayText, reply);
+
   const emergency = applyGuard({ userText: 'chest pain', replyText: 'Call an ambulance right away.' });
   assert.strictEqual(emergency.route, 'EMERGENCY');
+  assert.strictEqual(detectRoute(emergency.displayText).statedUrgency, true);
   assert.strictEqual(emergency.timeframeUnlocated, false);
   assert.strictEqual(emergency.displayText, 'Call an ambulance right away.');
+});
 
-  // CLINICIAN with no stated time frame at all: nothing to be unlocated.
-  const quiet = applyGuard({ userText: 'stomach ache', replyText: 'Please see your GP so they can examine you.' });
-  assert.strictEqual(quiet.route, 'CLINICIAN');
-  assert.strictEqual(quiet.timeframeUnlocated, false);
-  assert.strictEqual(quiet.displayText, 'Please see your GP so they can examine you.');
+test('unlocatedTimeFrame is the scorer asked about the screen text, and it is route-gated', () => {
+  // NO REALISTIC REPLY REACHES A TRUE. After the widening, a sweep of 495,915
+  // constructed replies through the real strip found none where the scorer still
+  // sees a stated time frame in what the strip produced. The flag is therefore an
+  // invariant's alarm rather than a routine path, and the decision itself is
+  // tested here, on a display text no strip would produce. It is not dead code:
+  // the last test in this file reaches the fallback end to end.
+  const stillStated = 'Please see your GP within 2 days.';
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', stillStated), true);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', 'Please see your GP within two days.'), true, 'number words too');
+  for (const route of ['EMERGENCY', 'SELF_CARE', 'OUT_OF_SCOPE', 'UNCLEAR']) {
+    assert.strictEqual(unlocatedTimeFrame(route, stillStated), false, route);
+  }
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', 'Please see your GP.'), false);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', ''), false);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', undefined), false, 'never throws');
+});
 
-  // CLINICIAN with a stated time frame the strip did locate.
-  const located = applyGuard({ userText: 'stomach ache', replyText: 'Please see your GP within three days.' });
-  assert.strictEqual(located.timeframeUnlocated, false);
-  assert.ok(located.displayText.endsWith(TIME_FRAME_NOTE));
+test('neither fixed note reads as a time frame, so appending one cannot blank the reply it was added to', () => {
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', TIME_FRAME_NOTE), false);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', PROHIBITED_NOTE), false);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', `Please see your GP.${TIME_FRAME_NOTE}`), false);
+});
+
+test('a located time frame leaves the referral on screen with the note appended, not replaced by it', () => {
+  const v = applyGuard({ userText: 'stomach ache', replyText: 'Please see your GP within three days.' });
+  assert.strictEqual(v.timeframeUnlocated, false);
+  assert.strictEqual(v.displayText, `Please see your GP.${TIME_FRAME_NOTE}`);
+});
+
+// The safety property this whole task exists for, stated positively and in the
+// scorer's own terms, over every CLINICIAN shape the suite knows about.
+test('no CLINICIAN reply leaves a stated time frame on the screen', () => {
+  const replies = [
+    'Please see your GP within the next 48 hours.',
+    'Please see your GP within the next two days.',
+    'Please see your GP within three days.',
+    'Please see your GP within 2-3 days.',
+    'Please see your GP today.',
+    'Please see your GP as soon as possible.',
+    'Book an appointment with your GP ASAP.',
+    'Please see your GP promptly.',
+    'Please see your GP urgently.',
+    'Please see your GP in the next twelve hours.',
+    'This needs looking at. Please see a doctor or GP within the next 48 hours so they can examine you.',
+    'Take some ibuprofen today. Please see your GP so they can examine you.',
+  ];
+  for (const replyText of replies) {
+    const v = applyGuard({ userText: 'stomach ache', replyText });
+    assert.strictEqual(v.route, 'CLINICIAN', replyText);
+    assert.strictEqual(
+      detectRoute(v.displayText).statedUrgency, false,
+      `${replyText} -> ${v.displayText}`,
+    );
+  }
 });
 
 test('the other numeric slot is widened too: "in the next twelve" is located, not left standing', () => {
@@ -380,4 +451,20 @@ test('the other numeric slot is widened too: "in the next twelve" is located, no
     assert.strictEqual(v.timeframeUnlocated, false, reply);
     assert.strictEqual(v.rawReply, reply);
   }
+});
+
+test('the alarm fires end to end when the single-pass strip JOINS two fragments into a new time frame', () => {
+  // Constructed, not plausible — no model writes this. Its job is to prove the
+  // fallback is wired to something, because the sweep says no realistic reply
+  // reaches it. The mechanism is real and is the class of miss the flag exists
+  // for: removing a match can bring its neighbours together into another one
+  // ("same today day" -> "same day"), and the strip does not run a second pass.
+  const reply = 'Please see your GP for a same today day appointment.';
+  const v = applyGuard({ userText: 'stomach ache', replyText: reply });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.deepStrictEqual(v.timeframeStripped, ['today'], 'the strip did remove one');
+  assert.strictEqual(v.timeframeUnlocated, true, 'and left another behind');
+  assert.strictEqual(v.displayText, TIME_FRAME_NOTE.trim(), 'so no model sentence is shown');
+  assert.strictEqual(v.rawReply, reply, 'and the log still has every word of it');
+  assert.strictEqual(detectRoute(v.displayText).statedUrgency, false, 'the screen states no time frame');
 });

@@ -15,8 +15,8 @@
 //      (R64/R65: the stated time frame is what made a confident referral worse
 //      than a decline). EMERGENCY keeps "now"; SELF_CARE keeps the caveat's
 //      "within 3 days", which is the escalation condition, not a referral.
-//      If the scorer counted a stated time frame and the strip located none,
-//      the reply is replaced by the fixed note — see `timeframeUnlocated`;
+//      If a stated time frame survives all of that on the finished screen text,
+//      the reply is replaced by the fixed note — see `unlocatedTimeFrame`;
 //   4. crisis — if the USER's words disclose self-harm and the reply does not
 //      signpost, the product's own crisis block is appended (R15: additional to
 //      the route, never instead of it).
@@ -126,6 +126,27 @@ export function routeOfPrefix(text) {
 }
 
 /**
+ * Does the text about to be shown STILL state a time frame it should not?
+ *
+ * Asked in the scorer's terms, of the SCREEN's text. Not "did the strip remove
+ * something" — that is a different question, and the difference is not academic:
+ * the prohibited filter can delete the sentence carrying the time frame before
+ * the strip ever sees it, and the strip's version of the question then answers
+ * "nothing removed" and hides a correct referral behind the fixed note. This one
+ * answers "nothing left", which is the property the rule actually protects.
+ *
+ * `statedUrgency` is `detectRoute`'s own URGENCY test over normalised text, so
+ * the alarm cannot drift from what the probes count.
+ *
+ * Route-gated, because the two routes that keep a time frame keep it on purpose:
+ * EMERGENCY's "now" IS the disposition, and SELF_CARE's "within 3 days" is the
+ * escalation condition, the one time frame that should reach the reader.
+ */
+export function unlocatedTimeFrame(route, displayText) {
+  return route === ROUTE.CLINICIAN && detectRoute(displayText).statedUrgency === true;
+}
+
+/**
  * Apply the product's contract to one finished reply.
  *
  * @returns {object} GuardVerdict, read by Task 4 (crisis), Task 6 (send path)
@@ -138,11 +159,12 @@ export function routeOfPrefix(text) {
  *   displayText         what reaches the screen
  *   rawReply            what the model said, whatever was removed for display
  *   timeframeStripped   every time-frame phrase removed, as written
- *   timeframeUnlocated  the scorer counted a stated time frame on the raw reply
- *                       and the strip located none in the text being displayed.
- *                       displayText is then TIME_FRAME_NOTE alone: a referral
- *                       whose timing this module cannot vouch for shows no
- *                       sentence at all. Fail toward showing less.
+ *   timeframeUnlocated  a stated time frame survived the strip and the
+ *                       prohibited filter and is still on the screen text, on a
+ *                       CLINICIAN route. displayText is then TIME_FRAME_NOTE
+ *                       alone: a referral whose timing this module could not
+ *                       remove shows no sentence at all. Fail toward showing
+ *                       less. See `unlocatedTimeFrame`.
  *   crisisOnInput       the USER's words disclosed self-harm (Task 4)
  *   crisisLineAppended  the product's crisis block was added (Task 4)
  *   prohibited          {medication, diagnosis} — everything removed, listed
@@ -157,28 +179,23 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
   let display = prohibited.text;
 
   let timeframeStripped = [];
-  let timeframeUnlocated = false;
   if (routing.route === ROUTE.CLINICIAN) {
     const r = stripTimeFrames(display);
     display = r.text;
     timeframeStripped = r.stripped;
-    if (timeframeStripped.length) {
-      display = tidy(`${display}${TIME_FRAME_NOTE}`);
-    } else if (routing.statedUrgency) {
-      // `statedUrgency` is URGENCY over the NORMALISED raw reply — the scorer's
-      // own view. Reaching here means it counted a time frame this module could
-      // not find in the text on its way to the screen: a widened pattern that
-      // still misses a phrasing, or a phrase an earlier rule already removed.
-      // Either way the product cannot vouch for the timing of a referral it is
-      // about to show, which is exactly the R64/R65 shape, so no sentence is
-      // shown and the fixed note stands alone. `rawReply` keeps every word.
-      //
-      // TIME_FRAME_NOTE carries a leading space because it is written as a
-      // suffix; `tidy` takes it off when it stands by itself.
-      timeframeUnlocated = true;
-      display = tidy(TIME_FRAME_NOTE);
-    }
+    if (timeframeStripped.length) display = tidy(`${display}${TIME_FRAME_NOTE}`);
   }
+
+  // Belt to the strip's braces, and asked of the FINISHED screen text rather
+  // than of the strip's own result — see `unlocatedTimeFrame` for why those are
+  // different questions. True means a stated time frame survived everything
+  // above on a CLINICIAN route, so no model sentence is shown at all and the
+  // fixed note stands alone; `rawReply` keeps every word for the log.
+  //
+  // TIME_FRAME_NOTE carries a leading space because it is written as a suffix;
+  // `tidy` takes it off when it stands by itself.
+  const timeframeUnlocated = unlocatedTimeFrame(routing.route, display);
+  if (timeframeUnlocated) display = tidy(TIME_FRAME_NOTE);
 
   if (routing.route === ROUTE.UNCLEAR) {
     display = tidy(`${display} ${BANNERS.out_of_scope.line}`);
