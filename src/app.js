@@ -6,6 +6,7 @@ import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMA
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
 import { assembleMessages } from './prompt-assembly.js';
+import { belowMinTier, minTierNotice } from './min-tier.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -399,6 +400,12 @@ function openDrawer(id) {
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const gib = (heroBytes / 2 ** 30).toFixed(2);
   const waitingLabel = 'Waiting for payment… (click to cancel)';
+  // P2.9: an entry may declare the lowest device tier it runs acceptably on.
+  // Below it the Get / Download control is REPLACED by a line saying so —
+  // replaced rather than disabled, because a dead button invites a second tap
+  // and explains nothing. Entries without a `minTier` (every entry today but
+  // the triage one) are untouched.
+  const belowMin = belowMinTier(effectiveTier(), m.minTier);
   const btnLabel = m.real
     ? (!installed
         ? (state.pay.modelId === m.id
@@ -433,7 +440,9 @@ function openDrawer(id) {
       <div class="spec"><div class="k">Eval</div><div class="v">${escapeHtml(m.eval) || '—'}</div></div>
     </div>
     <div class="dlrow">
-      <button class="btn primary block" id="dlBtn">${btnLabel}</button>
+      ${belowMin
+        ? `<div class="dlline mono" id="minTierLine" style="display:block;font-size:12.5px;color:var(--muted)">${escapeHtml(minTierNotice(m.minTier))}</div>`
+        : `<button class="btn primary block" id="dlBtn">${btnLabel}</button>`}
       <div class="prog" id="prog"><i></i></div>
       <div class="dlline mono" id="dlLine" style="display:none;font-size:12.5px;color:var(--muted);margin-top:8px"></div>
       <div class="installed" id="installedMsg">${check} Installed — runs offline on your device</div>
@@ -449,7 +458,8 @@ function openDrawer(id) {
   $('scrim').classList.add('show'); $('drawer').classList.add('show');
   $('drawer').setAttribute('aria-hidden', 'false');
   if (installed && !m.real) $('installedMsg').style.display = 'flex';
-  $('dlBtn').onclick = () => runGetFlow(m, $('dlBtn'));
+  // The button is absent entirely when the device is below the entry's floor.
+  if (!belowMin) $('dlBtn').onclick = () => runGetFlow(m, $('dlBtn'));
   if (showRenewLine) {
     const renewEl = $('renewLine');
     renewEl.onclick = () => startCheckoutFlow(m, renewEl);
