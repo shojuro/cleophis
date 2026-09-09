@@ -98,24 +98,46 @@ export function stripTimeFrames(text) {
   return { text: tidy(out), stripped };
 }
 
+// The filter iterates, so it needs a stop. Four is a bound, not a budget: the
+// 1,000-reply sweep settles inside two, and a text that still trips after four
+// is one this module has stopped understanding — which is the case the note-alone
+// fallback exists for, not a case to keep grinding at.
+const MAX_FILTER_PASSES = 4;
+
 /**
  * Drop every sentence that names a medication (dose, route, frequency or an
  * introduced drug) or a diagnosis. Sentence-level on purpose: the detectors
  * report findings, not character offsets, and a whole sentence is the
  * smallest unit whose removal cannot leave half a prescription behind.
  *
- * TWO PASSES, BECAUSE THE DETECTOR'S QUESTION IS ABOUT THE WHOLE REPLY.
+ * IT ITERATES, BECAUSE THE DETECTOR'S QUESTION IS ABOUT THE WHOLE REPLY.
  * `detectMedication` cancels R7's carve-out on a dose, route or frequency found
  * ANYWHERE in the reply — its own header gives the reason: "Ibuprofen is an
  * anti-inflammatory. Have it every six hours." prescribes across a full stop,
  * and a clause-local rule excuses the name and then never sees the schedule.
  * A filter that asks the question one sentence at a time inherits that hole
- * exactly: neither sentence trips alone, and the text it hands back does. Pass 1
- * removes the sentences that are prohibited by themselves; pass 2 runs only when
- * what is left still trips, and rebuilds it a sentence at a time, keeping a
- * sentence only if the text INCLUDING it is still clean. The returned text is
- * therefore clean by construction rather than by inference — the last thing pass
- * 2 accepted is the string it returns.
+ * exactly: neither sentence trips alone, and the text it hands back does.
+ *
+ * So each pass removes (a) every sentence prohibited by itself and then, if what
+ * survives STILL trips as a whole, (b) BOTH HALVES of every pair that trips
+ * together. Both halves, not the cheaper one: a prescription split across a full
+ * stop is one act, the reader is no better served by the half of it that names
+ * the drug, and this module's rule is to fail toward showing less.
+ *
+ * THE LOOP TESTS THE STRING IT IS ABOUT TO RETURN, not the sentences it kept.
+ * That is the difference between clean by construction and clean by inference:
+ * the returned text is `kept` joined AND `PROHIBITED_NOTE` appended AND run
+ * through `tidy`, so the only question worth asking is of that string. If it is
+ * clean, it is returned; if not, another pass runs. If four passes do not settle
+ * it, or a pass stops making progress, the display becomes the note ALONE and
+ * the receipt lists every sentence — no model text reaches a screen this module
+ * could not clear.
+ *
+ * @returns {{text: string, removed: string[], medication: string[], diagnosis: string[]}}
+ *   `removed` is the RECEIPT: the exact sentences taken out of the display, in
+ *   the order they were written. `medication`/`diagnosis` are the REASON: what
+ *   the detectors objected to in the whole raw reply. The two are different
+ *   views on purpose — see the verdict's `prohibited` note in `applyGuard`.
  *
  * Found on real data: floors/Qwen3-4B locked-heldout ENT-09, the single leak in
  * the 1,000-reply sweep, where a dosage form in one sentence was un-excused by
@@ -124,37 +146,50 @@ export function stripTimeFrames(text) {
 export function filterProhibited(text, patientText = '') {
   const med = detectMedication(text, { patientText });
   const dx = detectNamedDiagnosis(text, { patientText });
-  if (!med.found && !dx.found) return { text: String(text), medication: [], diagnosis: [] };
+  const reason = {
+    medication: [...med.drugs, ...med.classes, ...med.doses, ...med.routes, ...med.frequencies],
+    diagnosis: dx.names,
+  };
+  if (!med.found && !dx.found) return { text: String(text), removed: [], ...reason };
 
   const trips = (s) => detectMedication(s, { patientText }).found
     || detectNamedDiagnosis(s, { patientText }).found;
 
-  let kept = [];
-  let removed = 0;
-  for (const sentence of String(text).match(SENTENCES) ?? []) {
-    const s = sentence.trim();
-    if (!s) continue;
-    if (trips(s)) removed += 1; else kept.push(s);
-  }
-
-  // Pass 2. Rare — one reply in a thousand — so it costs nothing on the ordinary
-  // path, and the sentence it drops is the one that turned an identification
-  // into a prescription, which is the half R7 says is the violation.
-  if (kept.length > 1 && trips(kept.join(' '))) {
-    const acc = [];
-    for (const s of kept) {
-      if (trips([...acc, s].join(' '))) removed += 1; else acc.push(s);
-    }
-    kept = acc;
-  }
-
-  let out = kept.join(' ');
-  if (removed) out = tidy(`${out}${PROHIBITED_NOTE}`);
-  return {
-    text: out,
-    medication: [...med.drugs, ...med.classes, ...med.doses, ...med.routes, ...med.frequencies],
-    diagnosis: dx.names,
+  const sentences = (String(text).match(SENTENCES) ?? []).map((s) => s.trim()).filter(Boolean);
+  // One mask over the ORIGINAL sentences, so the receipt comes out in the order
+  // a reader would have met them however many passes it took to get there.
+  const cut = sentences.map(() => false);
+  const liveIdx = () => sentences.map((_, i) => i).filter((i) => !cut[i]);
+  const cutCount = () => cut.filter(Boolean).length;
+  const receipt = () => sentences.filter((_, i) => cut[i]);
+  const assemble = () => {
+    const body = sentences.filter((_, i) => !cut[i]).join(' ');
+    return cutCount() ? tidy(`${body}${PROHIBITED_NOTE}`) : body;
   };
+
+  for (let pass = 0; pass < MAX_FILTER_PASSES; pass += 1) {
+    const before = cutCount();
+    for (const i of liveIdx()) if (trips(sentences[i])) cut[i] = true;
+
+    const idx = liveIdx();
+    if (idx.length > 1 && trips(idx.map((i) => sentences[i]).join(' '))) {
+      for (const a of idx) {
+        for (const b of idx) {
+          if (a === b) continue;
+          if (trips(`${sentences[a]} ${sentences[b]}`)) { cut[a] = true; cut[b] = true; }
+        }
+      }
+    }
+
+    const out = assemble();
+    if (!trips(out)) return { text: out, removed: receipt(), ...reason };
+    // A pass that removed nothing will remove nothing next time either: the
+    // finding is one no pair reaches, so iterating again is not the answer.
+    if (cutCount() === before) break;
+  }
+
+  cut.fill(true);
+  return { text: tidy(PROHIBITED_NOTE), removed: receipt(), ...reason };
 }
 
 /** The route the streamed prefix resolves to, for the provisional banner. */
@@ -206,16 +241,18 @@ export function unlocatedTimeFrame(route, displayText) {
  *                       less. See `unlocatedTimeFrame`.
  *   crisisOnInput       the USER's words disclosed self-harm (Task 4)
  *   crisisLineAppended  the product's crisis block was added (Task 4)
- *   prohibited          {medication, diagnosis} — what the detectors objected
- *                       to in the RAW reply, which is why anything was removed.
- *                       READ IT AS THE REASON, NOT AS THE RECEIPT: the two
- *                       differ in the reply-scoped case, where the finding is
- *                       named by one sentence ("spray") and cancelled by
- *                       deleting another (the schedule beside it), so the phrase
- *                       listed can be one still on screen and the sentence
- *                       removed can be one that named nothing by itself. The
- *                       receipt a reader gets is PROHIBITED_NOTE; the receipt an
- *                       auditor gets is `rawReply`, which keeps every word
+ *   prohibited          {medication, diagnosis} — the REASON: what the detectors
+ *                       objected to in the RAW reply, which is why anything was
+ *                       removed. A phrase listed here can still be on screen
+ *                       (the reply-scoped case cancels a finding by deleting a
+ *                       different sentence), so it does not answer "what was
+ *                       taken out" — `prohibitedRemoved` does
+ *   prohibitedRemoved   the RECEIPT: the exact sentences taken out of the
+ *                       display, in the order they were written. Task 8 renders
+ *                       this list; the pair reads as "removed THESE sentences
+ *                       BECAUSE the detectors found THAT". Empty when nothing
+ *                       was removed, and every sentence when the filter had to
+ *                       fall back to showing PROHIBITED_NOTE alone
  *   detectorsSha        the pin all of the above was decided by
  */
 export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_BLOCK_DEFAULT } = {}) {
@@ -277,6 +314,7 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
     crisisOnInput,
     crisisLineAppended,
     prohibited: { medication: prohibited.medication, diagnosis: prohibited.diagnosis },
+    prohibitedRemoved: prohibited.removed,
     detectorsSha: pin.sha256,
   };
 }

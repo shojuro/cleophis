@@ -110,7 +110,8 @@ test('the four banner strings and the two notes are fixed text', () => {
 test('the verdict carries every key Tasks 4, 6 and 7 read, on every route', () => {
   const expected = [
     'banner', 'crisisLineAppended', 'crisisOnInput', 'detectorsSha', 'displayText',
-    'prohibited', 'rawReply', 'route', 'timeframeStripped', 'timeframeUnlocated', 'why',
+    'prohibited', 'prohibitedRemoved', 'rawReply', 'route', 'timeframeStripped',
+    'timeframeUnlocated', 'why',
   ];
   const replies = [
     'Call 999 now. Do not drive yourself.',
@@ -178,7 +179,7 @@ test('the strip is scoped to CLINICIAN: an EMERGENCY reply keeps "straight away"
 test('filterProhibited is a no-op on a reply that names no medication and no condition', () => {
   const clean = 'Please see a doctor so they can examine you.';
   assert.deepStrictEqual(filterProhibited(clean, 'my stomach hurts'), {
-    text: clean, medication: [], diagnosis: [],
+    text: clean, removed: [], medication: [], diagnosis: [],
   });
 });
 
@@ -703,4 +704,134 @@ test('every crisis line this product ships states no time frame, so appending on
   // and the pinned copy is what was checked. It becomes an assertion on the
   // integration branch, where the loop above reads the real file.
   assert.ok(readFromDisk >= 0);
+});
+
+// ── The receipt: prohibitedRemoved ──────────────────────────────────────────
+//
+// `prohibited` is the REASON (what the detectors objected to in the raw reply);
+// `prohibitedRemoved` is the RECEIPT (the sentences actually taken out). They
+// answer different questions, and the reply-scoped case is where the difference
+// stops being pedantic: the phrase named can be one still on screen, and the
+// sentence removed can be one that named nothing by itself.
+
+test('a single-sentence removal yields one receipt entry, equal to the sentence', () => {
+  const bad = 'Take 400 mg of ibuprofen every six hours.';
+  const v = applyGuard({
+    userText: 'my head hurts',
+    replyText: `This needs looking at. ${bad} Please see your GP.`,
+  });
+  assert.deepStrictEqual(v.prohibitedRemoved, [bad]);
+  assert.ok(v.prohibited.medication.includes('ibuprofen'), 'and the reason names the drug');
+  assert.ok(v.displayText.includes('This needs looking at.'), v.displayText);
+  assert.ok(v.displayText.includes('Please see your GP.'), v.displayText);
+});
+
+test('a named diagnosis leaves the sentence that named it in the receipt', () => {
+  const v = applyGuard({ userText: 'ache moved to the bottom right', replyText: 'This sounds like appendicitis. Go to A&E now.' });
+  assert.deepStrictEqual(v.prohibitedRemoved, ['This sounds like appendicitis.']);
+  assert.deepStrictEqual(v.prohibited.diagnosis, ['appendicitis']);
+  assert.ok(v.displayText.startsWith('Go to A&E now.'));
+});
+
+test('the split-prescription case puts BOTH sentences in the receipt while the reason names the phrase', () => {
+  // The ENT-09 shape. One act written across a full stop, so both halves go: the
+  // reader is no better served by the half that names the drug, and this module
+  // fails toward showing less.
+  const dosageForm = 'Saline nasal drops or spray: these can help loosen mucus.';
+  const schedule = 'You can use them 2-3 times a day.';
+  const v = applyGuard({ userText: 'my daughter has a blocked runny nose', replyText: `${dosageForm} ${schedule}` });
+  assert.deepStrictEqual(v.prohibitedRemoved, [dosageForm, schedule], 'in the order they were written');
+  assert.ok(v.prohibited.medication.includes('spray'), JSON.stringify(v.prohibited));
+  assert.strictEqual(/spray|times a day/i.test(v.displayText), false, v.displayText);
+  assert.strictEqual(v.rawReply, `${dosageForm} ${schedule}`, 'and the log still has every word of it');
+});
+
+test('a clean reply carries an empty receipt, and the receipt is always an array', () => {
+  for (const [userText, replyText] of [
+    ['sore throat', 'Rest and drink fluids.'],
+    ['crushing chest pain', 'Call 999 now. Do not drive yourself.'],
+    ['x', 'Hmm.'],
+    ['', ''],
+  ]) {
+    const v = applyGuard({ userText, replyText });
+    assert.deepStrictEqual(v.prohibitedRemoved, [], replyText);
+  }
+});
+
+test('the receipt reads back as the difference between the raw reply and the display', () => {
+  const reply = 'This sounds like appendicitis. Take 400 mg of ibuprofen every six hours. Please see your GP.';
+  const v = applyGuard({ userText: 'my stomach hurts', replyText: reply });
+  for (const sentence of v.prohibitedRemoved) {
+    assert.ok(v.rawReply.includes(sentence), `${sentence} is not in the raw reply`);
+    assert.strictEqual(v.displayText.includes(sentence), false, `${sentence} is still on screen`);
+  }
+  assert.strictEqual(v.prohibitedRemoved.length, 2, 'both prohibited sentences, and only those');
+});
+
+// ── The filter reaches a fixpoint, or shows the note alone ──────────────────
+//
+// The belt to the sentence filter's braces, and the prohibited-content twin of
+// `timeframeUnlocated`. The loop tests the STRING IT IS ABOUT TO RETURN — body,
+// note and `tidy` included — rather than the sentences it kept, so "clean" is a
+// property of what a person sees and not an inference from what was deleted.
+
+test('what filterProhibited returns is clean by construction, whatever it was given', () => {
+  const patient = 'my head hurts and my daughter has a blocked nose';
+  for (const reply of [
+    'Saline nasal drops or spray: these can help loosen mucus. You can use them 2-3 times a day.',
+    'Take 400 mg of ibuprofen every six hours. See your GP.',
+    'This sounds like appendicitis. Go to A&E now.',
+    'Ibuprofen is an anti-inflammatory. Ask your pharmacist.',
+    'Rest and drink fluids.',
+    'Use a saline spray. Take paracetamol 500 mg. This sounds like sinusitis. See your GP.',
+    'Take one tablet twice a day.',
+    '',
+    'Hmm.',
+  ]) {
+    const r = filterProhibited(reply, patient);
+    assert.strictEqual(detectMedication(r.text, { patientText: patient }).found, false, reply);
+    assert.strictEqual(detectNamedDiagnosis(r.text, { patientText: patient }).found, false, reply);
+    assert.ok(Array.isArray(r.removed), reply);
+    for (const s of r.removed) assert.ok(reply.includes(s), `${s} is not from ${reply}`);
+  }
+});
+
+test('a reply the filter cannot clear shows the note ALONE, and the receipt lists every sentence', () => {
+  // Constructed: every sentence prohibited by itself, so nothing survives. This
+  // is the fallback's ordinary shape — the bounded-loop exit is the same
+  // outcome by a different road, and both end at "no model sentence is shown".
+  const sentences = ['Take 400 mg of ibuprofen every six hours.', 'This sounds like appendicitis.'];
+  const reply = sentences.join(' ');
+  const r = filterProhibited(reply, 'my stomach hurts');
+  assert.strictEqual(r.text, PROHIBITED_NOTE.trim(), r.text);
+  assert.deepStrictEqual(r.removed, sentences);
+
+  // Through applyGuard the route is still read from the RAW reply, and this one
+  // names no disposition — so the reader gets the note AND the out-of-scope
+  // signpost, which is the whole point of UNCLEAR never rendering a blank.
+  const v = applyGuard({ userText: 'my stomach hurts', replyText: reply });
+  assert.strictEqual(v.route, 'UNCLEAR');
+  assert.ok(v.displayText.startsWith(PROHIBITED_NOTE.trim()), v.displayText);
+  assert.ok(v.displayText.includes(BANNERS.out_of_scope.line), v.displayText);
+  assert.deepStrictEqual(v.prohibitedRemoved, sentences);
+  assert.strictEqual(/ibuprofen|400 mg|appendicitis/i.test(v.displayText), false, v.displayText);
+  assert.strictEqual(v.rawReply, reply, 'the log still has every word of it');
+});
+
+test('the fallback shows the note alone on a reply that DID name a disposition', () => {
+  // The same fallback where the route is known, so nothing is appended after it:
+  // the banner carries the disposition and the screen carries no model sentence.
+  const reply = 'This sounds like appendicitis, so please see your GP. Take 400 mg of ibuprofen every six hours.';
+  const v = applyGuard({ userText: 'my stomach hurts', replyText: reply });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.banner, 'clinician');
+  assert.strictEqual(v.displayText, PROHIBITED_NOTE.trim(), v.displayText);
+  assert.strictEqual(v.prohibitedRemoved.length, 2);
+  assert.ok(v.displayText.trim().length > 0, 'and it is never a blank screen');
+});
+
+test('the note the fallback shows is itself clean, so the fallback cannot recurse', () => {
+  assert.strictEqual(detectMedication(PROHIBITED_NOTE, { patientText: '' }).found, false);
+  assert.strictEqual(detectNamedDiagnosis(PROHIBITED_NOTE, { patientText: '' }).found, false);
+  assert.strictEqual(filterProhibited(PROHIBITED_NOTE.trim(), '').text, PROHIBITED_NOTE.trim());
 });

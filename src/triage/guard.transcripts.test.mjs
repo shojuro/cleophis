@@ -151,7 +151,15 @@ test('on all 39 crisis items that fire, the block is ADDITIONAL to the route and
 
 // ── Prohibited content over every saved reply ───────────────────────────────
 
-test('after the guard, 0 of the 1,000 saved replies carries a medication, a dose or a named diagnosis', () => {
+// THE SCREEN CHECK FOR PROHIBITED CONTENT, asked of the FINAL display text —
+// the prohibited-content twin of `timeframeUnlocated`. This proof used to be
+// statistical: a thousand replies happened to come out clean. It is now
+// structural, because `filterProhibited` iterates until the string it is about
+// to return is clean or shows PROHIBITED_NOTE alone. What the thousand replies
+// buy is the evidence that the guarantee survives the two steps that run AFTER
+// the filter — the time-frame strip and the crisis-block append — neither of
+// which the filter can see.
+test('after the guard, 0 of the 1,000 saved replies carries a medication, a dose or a named diagnosis on the FINAL screen text', () => {
   assert.strictEqual(saved.length, 1000);
   const leaks = [];
   let scanned = 0;
@@ -164,6 +172,29 @@ test('after the guard, 0 of the 1,000 saved replies carries a medication, a dose
   }
   assert.deepStrictEqual(leaks, []);
   assert.strictEqual(scanned, 1000, 'every saved reply is non-empty, so none was skipped');
+});
+
+test('the receipt is honest on all 1,000: every sentence it lists came from the raw reply and is off the screen', () => {
+  const wrong = [];
+  let sentencesRemoved = 0;
+  for (const a of saved) {
+    const v = verdictOf(a);
+    sentencesRemoved += v.prohibitedRemoved.length;
+    for (const s of v.prohibitedRemoved) {
+      if (!v.rawReply.includes(s)) wrong.push(`${where(a)}: receipt entry not in rawReply`);
+      if (v.displayText.includes(s)) wrong.push(`${where(a)}: receipt entry still on screen`);
+    }
+  }
+  assert.deepStrictEqual(wrong, []);
+  assert.strictEqual(sentencesRemoved, 811, 'sentences removed across the corpus — re-pin on a re-export');
+});
+
+test('no saved reply is emptied by the filter: 0 of the 1,000 fall back to the note alone', () => {
+  // The fallback is real and unit-tested, and on transcripts from four model
+  // sizes it never fires. Pinned so that a change which starts blanking real
+  // replies is visible as a number rather than felt as a worse product.
+  const blanked = saved.filter((a) => verdictOf(a).displayText.startsWith(PROHIBITED_NOTE.trim()));
+  assert.deepStrictEqual(blanked.map(where), []);
 });
 
 test('the filter did real work: it removed prohibited content from 481 of the 1,000 saved replies', () => {
