@@ -267,18 +267,27 @@ mod imp {
         })
     }
 
-    /// The registered type for one JSON object per line, which is exactly
-    /// what `export_triage_log` writes.
+    /// **`text/plain`, not `application/x-ndjson`** — the accurate type, which
+    /// this was first written as, loses to the type that actually reaches a
+    /// destination.
     ///
-    /// The bridge does not constrain this: `ShareSheet.shareFile` takes the
-    /// MIME as a `String` and puts it straight on the `ACTION_SEND` intent
-    /// (`ShareSheet.kt`), so there is no accepted-types list to fall outside
-    /// of. The consequence of naming it accurately is that a target which
-    /// cannot open NDJSON does not offer itself in the chooser — which is
-    /// the correct outcome for a file that is not a document, and better
-    /// than `text/plain` inviting every note app to open an audit log it
-    /// will render as one long line.
-    const TRIAGE_LOG_MIME: &str = "application/x-ndjson";
+    /// The bridge constrains nothing: `ShareSheet.shareFile` takes the MIME as
+    /// a `String` and puts it straight on the `ACTION_SEND` intent
+    /// (`ShareSheet.kt`), so either value works as far as this code is
+    /// concerned. **The Android chooser is what decides**, and it offers only
+    /// targets that registered for the type. Files, Drive and every mail app
+    /// register for `text/plain`; almost nothing registers for
+    /// `application/x-ndjson`, so naming the format precisely risks a chooser
+    /// with no targets in it — an export button that opens an empty sheet and
+    /// gives a health worker nowhere to send the audit log. A note app
+    /// rendering the file as one long line is a cosmetic cost; an empty
+    /// chooser is a dead feature.
+    ///
+    /// **The `.jsonl` extension is what carries the format**, and it survives
+    /// the share: `ShareSheet` hands over a FileProvider URI for the file this
+    /// module named, so whatever receives it stores `…-triage-log.jsonl`. The
+    /// clinical review opens the file by name, not by MIME.
+    const TRIAGE_LOG_MIME: &str = "text/plain";
 
     /// Written and shared exactly like `share_chat`'s file — same cache
     /// directory (already covered by the FileProvider's cache-path root, so
