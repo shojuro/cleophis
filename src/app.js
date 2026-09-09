@@ -14,6 +14,12 @@ import {
   bannerKey, bannerText, canSendInChat, entryForChat, persistAssistantTurn, persistFailurePlan,
   provisionalStep, replayMessage, shouldGroundTurn, titlePlan,
 } from './triage-turn.js';
+// Task 8: the health worker's decision on a supervised reply, and the audit
+// log's way out. Gated on the same `supervised === true` as everything above.
+import {
+  TRIAGE_EXPORT_LABEL, confirmRequest, confirmResult, confirmState, offersTriageExport,
+  receiptLabel, routeLabel, triageExportPlan,
+} from './triage-confirm.js';
 import { isPromptMismatch, promptFingerprint } from './prompt-fingerprint.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
@@ -1130,6 +1136,21 @@ async function refreshChatList() {
   renderSidebar();
 }
 
+// A CHAT's own catalog entry, from its stored `modelId` — never the entered
+// model. The export menu is per row, and whether a chat has a triage log is a
+// question about that chat, not about whichever card was last tapped. Passing
+// no fallback is the point: a chat whose model this catalog no longer lists is
+// not supervised by inheritance.
+function chatEntryOf(chat) { return entryForChat(state.catalog, chat); }
+
+// The ChatInfo behind a sidebar row id, from whichever list rendered it (a live
+// search renders `searchResults`, everything else `chats`).
+function chatById(id) {
+  return (state.sidebar.searchResults || []).find((c) => c.id === id)
+    || state.sidebar.chats.find((c) => c.id === id)
+    || null;
+}
+
 // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete/
 // archive/move/export are static labels, not interpolated user data.
 // `opts.nested` indents a row under a folder header.
@@ -1137,6 +1158,13 @@ function chatRowHtml(c, opts) {
   const nested = opts && opts.nested;
   const moveOpen = state.sidebar.moveMenuFor === c.id;
   const exportOpen = state.sidebar.exportMenuFor === c.id;
+  // Task 8: the triage override log, offered only for a supervised chat — and
+  // only where there is somewhere to put the file (see `triageExportPlan` for
+  // why that is desktop-only today). A module constant with no markup in it,
+  // escaped anyway so this template has one rule and no exceptions.
+  const triageExport = offersTriageExport({ supervised: chatEntryOf(c)?.supervised === true, isMobile: IS_MOBILE })
+    ? `<button class="movemenu-item" data-act="export-triage">${escapeHtml(TRIAGE_EXPORT_LABEL)}</button>`
+    : '';
   return `
     <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}${nested ? ' nested' : ''}${c.archived ? ' is-archived' : ''}" data-id="${c.id}">
       <span class="chatrow-title">${escapeHtml(c.title)}</span>
@@ -1157,6 +1185,7 @@ function chatRowHtml(c, opts) {
             <button class="movemenu-item" data-act="export-to" data-format="markdown">Markdown</button>
             <button class="movemenu-item" data-act="export-to" data-format="json">JSON</button>
             <button class="movemenu-item" data-act="export-to" data-format="txt">Plain text</button>
+            ${triageExport}
           </div>
         </span>
         <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
@@ -1328,6 +1357,10 @@ async function openChat(id) {
     // tutor chat re-hydrates exactly as it did before.
     guard: msg.guard || undefined,
     confirmedRoute: msg.confirmedRoute || undefined,
+    // The store's own clock for that confirmation. It reaches the screen only
+    // here: `confirm_route` returns nothing, so a confirmation made in this
+    // session shows its route without a time until the chat is reopened.
+    confirmedAt: msg.confirmedAt || undefined,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
     // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
     // convstore's MessageInfo `#[serde(rename_all = "camelCase")]`) as
@@ -1448,12 +1481,18 @@ function rebuildChatDom() {
     // A withheld reply shows nothing of its own, its sources and its
     // calculations included: they are provenance for text that is not on
     // screen.
-    appendBubble(
+    const el = appendBubble(
       msg.role, view.text,
       view.withheld ? undefined : msg.citations,
       view.withheld ? undefined : msg.calculations,
       view.banner,
     );
+    // Task 8: the confirmation block, and the receipt of what the guard
+    // changed. A row already confirmed comes back LOCKED rather than blank —
+    // `confirmState` reads `confirmedRoute`/`confirmedAt` off the row `openChat`
+    // re-hydrated — and a withheld row (no verdict) has no route to confirm, so
+    // it renders nothing at all.
+    renderConfirm(el, msg, supervised);
   }
   updateContextDivider();
 }
@@ -1612,6 +1651,156 @@ function renderCalculations(afterEl, calcs) {
   box.appendChild(list);
   afterEl.insertAdjacentElement('afterend', box);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
+}
+
+// The removal receipt (Task 8): what the guard took out of this reply and what
+// it put in. The same collapsed-disclosure grammar as renderCitations/
+// renderCalculations immediately above, and for the same reason — it is
+// provenance for the bubble it hangs under, not part of the reply.
+//
+// Every row quotes the MODEL's own sentences, so textContent only, never
+// innerHTML. `receiptRows` decides what the rows say; this only writes them.
+function receiptEl(receipt) {
+  const box = document.createElement('div');
+  box.className = 'triage-receipt';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'receipttoggle';
+  toggle.textContent = receiptLabel(receipt.count, false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = receiptLabel(receipt.count, open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'receiptlist';
+  for (const row of receipt.rows) {
+    const el = document.createElement('div');
+    el.className = 'receipt-row';
+    el.textContent = row;
+    list.appendChild(el);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+// A recorded confirmation carries the store's own clock (`now_iso()`), which is
+// an RFC 3339 string. Shown in the reader's locale; left as written if it is
+// anything this build cannot parse, because the audit value is the timestamp,
+// not the formatting.
+function formatConfirmedAt(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+}
+
+// The health worker holds the decision (spec §2, non-goals). Nothing is "final"
+// until Confirm or Change route is pressed, and the choice is written to the
+// message row through Task 7's `confirm_route` so the export can say whether the
+// model was overridden.
+//
+// A CONFIRMATION IS AN ACT AND IS NEVER INFERRED. It exists only after that
+// command has resolved; the controls disable themselves for the round trip so
+// one tap cannot become two writes, and come back if it fails.
+//
+// Drawn only for a SUPERVISED chat — asked of the chat's own entry, the same
+// question `rebuildChatDom` asks about withholding, never of the entered model.
+// `confirmState` owns every decision here (which controls, what the picker
+// offers, what the receipt says); this function only writes them, and re-renders
+// itself after a successful write so the locked state on screen is drawn by the
+// same code that draws a reopened chat's.
+//
+// Idempotent: any block already in this bubble is removed first, so it is safe
+// to call again as the row id lands and again as the confirmation does.
+function renderConfirm(bubbleEl, msg, supervised) {
+  const st = confirmState({ supervised, message: msg });
+  // Removed even when nothing replaces it, so a re-render can never leave a
+  // stale block behind whatever the new state turns out to be.
+  bubbleEl.querySelector('.triage-actions')?.remove();
+  if (!st.render) return null;
+
+  const box = document.createElement('div');
+  // `is-locked` is a styling hook and it earns its place. Rendered without it,
+  // a confirmed reply kept a teal `.btn.primary` that `:disabled` merely dimmed
+  // — still the most legible control in the bubble, still inviting a press, on
+  // the one reply where pressing does nothing. Found by screenshotting the page
+  // and looking at it; every bounds assertion above it passed.
+  box.className = `triage-actions${st.controls === 'locked' ? ' is-locked' : ''}`;
+
+  if (st.controls !== 'none') {
+    const row = document.createElement('div');
+    row.className = 'triage-confirm';
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    // The primary weight belongs to an action that is still open. Once the
+    // decision is recorded, `.triage-confirmed` below is what should carry it.
+    confirm.className = st.controls === 'locked' ? 'btn' : 'btn primary';
+    confirm.textContent = `Confirm: ${routeLabel(st.modelRoute)}`;
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'Route');
+    for (const o of st.options) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      opt.selected = o.selected;
+      select.appendChild(opt);
+    }
+    const change = document.createElement('button');
+    change.type = 'button';
+    change.className = 'btn';
+    change.textContent = 'Change route';
+    const enable = (on) => { confirm.disabled = !on; select.disabled = !on; change.disabled = !on; };
+
+    const commit = async (route) => {
+      const req = confirmRequest({ message: msg, route });
+      if (!req) return; // no row to write against, or a route the store refuses
+      enable(false);
+      let info;
+      try {
+        info = await invoke(req.command, req.args);
+      } catch (e) {
+        // Nothing was recorded, so nothing on screen may say it was. The
+        // controls come back and the health worker can try again.
+        enable(true);
+        showEngineBanner(`Could not record the route: ${e}`);
+        return;
+      }
+      const recorded = confirmResult(info, route);
+      msg.confirmedRoute = recorded.confirmedRoute;
+      msg.confirmedAt = recorded.confirmedAt;
+      renderConfirm(bubbleEl, msg, supervised);
+    };
+    // Listeners exist only while the decision is open. A locked row is a
+    // record, and a record with a live handler on it is one stray programmatic
+    // click away from overwriting the health worker's own answer.
+    if (st.controls === 'locked') {
+      enable(false);
+    } else {
+      confirm.addEventListener('click', () => commit(st.modelRoute));
+      change.addEventListener('click', () => commit(select.value));
+    }
+
+    row.append(confirm, select, change);
+    box.appendChild(row);
+  }
+
+  if (st.statusText) {
+    const done = document.createElement('div');
+    done.className = 'triage-confirmed';
+    done.textContent = st.statusText;
+    // The store's timestamp, once the chat has been reopened and read it back
+    // — `confirm_route` itself returns nothing today (see `confirmResult`).
+    if (st.confirmedAt) {
+      const when = document.createElement('span');
+      when.className = 'triage-confirmed-at';
+      when.textContent = ` · ${formatConfirmedAt(st.confirmedAt)}`;
+      done.appendChild(when);
+    }
+    box.appendChild(done);
+  }
+
+  box.appendChild(receiptEl(st.receipt));
+  bubbleEl.appendChild(box);
   return box;
 }
 
@@ -2238,6 +2427,13 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
         renderCalculations(bubble, calculations);
       }
       state.chat.messages.push(msg);
+      // Task 8: the receipt goes up NOW, with the reply it describes. The
+      // Confirm/Change controls cannot — they are written against a row id that
+      // only exists once the persist below has resolved, so `confirmState`
+      // returns `controls: 'none'` here and the `.then` re-renders. A persist
+      // that never lands leaves exactly this: the receipt, no controls, which
+      // is the honest state of a reply that was guarded but not recorded.
+      renderConfirm(bubble, msg, supervised);
     } else {
       bubble.remove();
     }
@@ -2285,7 +2481,14 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
       // worker's route confirmation is written against (Task 8).
       if (isActive && info && info.id) {
         const last = state.chat.messages[state.chat.messages.length - 1];
-        if (last && last.role === 'assistant' && last.content === display) last.id = info.id;
+        if (last && last.role === 'assistant' && last.content === display) {
+          last.id = info.id;
+          // Task 8: NOW the confirmation has a row to be written against, so
+          // the controls can be drawn. `supervised` here is the entry that
+          // produced this reply — the same one the guard ran under, and (by
+          // `canSendInChat`) the same one the chat belongs to.
+          renderConfirm(bubble, last, supervised);
+        }
       }
       refreshChatList(); // updated_at bump reorders the sidebar
     }).catch((e) => {
@@ -2816,6 +3019,8 @@ $('chatList').addEventListener('click', async (e) => {
     } else if (act === 'export-to') {
       const titleEl = row.querySelector('.chatrow-title');
       await exportChat(id, titleEl ? titleEl.textContent : 'chat', actBtn.dataset.format);
+    } else if (act === 'export-triage') {
+      await exportTriageLog(id);
     }
     return;
   }
@@ -2876,6 +3081,49 @@ async function exportChat(id, title, format) {
   try {
     await invoke('export_chat_to_file', { id, format, path });
     showToast('Exported to ' + path);
+  } catch (e) {
+    showToast(String(e));
+  }
+}
+
+// Task 8: the triage override log — one JSON line per guarded reply, carrying
+// the raw reply, the text that was shown, the verdict, the health worker's
+// confirmed route and the detector pin. It is the clinical review's artefact,
+// not a transcript, which is why it is its own entry beside the three chat
+// formats rather than a fourth format of `exportChat`.
+//
+// Deliberately the SAME shape as `exportChat` immediately above: pick a
+// destination, hand it to the command, say where it went. The front end formats
+// nothing — every byte is `convstore::export_triage_log`'s, and reshaping it
+// here would put a second definition of the audit record in the app.
+//
+// The supervised check is made AGAIN here, not just when the menu entry was
+// rendered: the sidebar can be re-fetched between a render and a click.
+async function exportTriageLog(chatId) {
+  state.sidebar.exportMenuFor = null;
+  renderSidebar();
+
+  const plan = triageExportPlan({
+    supervised: chatEntryOf(chatById(chatId))?.supervised === true,
+    isMobile: IS_MOBILE,
+    chatId,
+  });
+  if (plan.kind !== 'save') {
+    if (plan.message) showToast(plan.message);
+    return;
+  }
+
+  let path;
+  try {
+    path = await window.__TAURI__.dialog.save({ defaultPath: plan.defaultPath, filters: plan.filters });
+  } catch (e) {
+    showToast(String(e));
+    return;
+  }
+  if (path == null) return; // cancelled
+  try {
+    await invoke(plan.command, { ...plan.args, path });
+    showToast('Triage log exported to ' + path);
   } catch (e) {
     showToast(String(e));
   }
