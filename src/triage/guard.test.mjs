@@ -107,7 +107,7 @@ test('the four banner strings and the two notes are fixed text', () => {
 test('the verdict carries every key Tasks 4, 6 and 7 read, on every route', () => {
   const expected = [
     'banner', 'crisisLineAppended', 'crisisOnInput', 'detectorsSha', 'displayText',
-    'prohibited', 'rawReply', 'route', 'timeframeStripped', 'why',
+    'prohibited', 'rawReply', 'route', 'timeframeStripped', 'timeframeUnlocated', 'why',
   ];
   const replies = [
     'Call 999 now. Do not drive yourself.',
@@ -238,4 +238,146 @@ test("the user's own words reach the filter, so a drug they raised is not treate
   assert.deepStrictEqual(v.prohibited.medication, []);
   assert.strictEqual(v.displayText, reply);
   assert.deepStrictEqual(filterProhibited(reply, '').medication, ['ibuprofen'], 'and it does read as an introduction with no patient text');
+});
+
+// ── A time frame written as a number word is still a time frame ─────────────
+//
+// URGENCY's numeric branch is \d+-only. The detectors never notice, because they
+// match against normaliseReply's output, where NUMBER_WORDS has already turned
+// "two" into "2". The guard matches the reply AS WRITTEN — it has to, it removes
+// text a person will read — so it widens that one branch with the detectors' own
+// exported list. One definition of a number word, not two.
+
+test('a time frame written as a number word is stripped and listed exactly as written', () => {
+  const r = stripTimeFrames('Please see your GP within the next two days.');
+  assert.deepStrictEqual(r.stripped, ['within the next two days']);
+  assert.strictEqual(r.text, 'Please see your GP.');
+});
+
+test('the number word need not follow "the next"', () => {
+  const r = stripTimeFrames('Please see your GP within three days.');
+  assert.deepStrictEqual(r.stripped, ['within three days']);
+  assert.strictEqual(r.text, 'Please see your GP.');
+});
+
+test('widening the branch did not cost the digit form, the range form or either mixed', () => {
+  for (const [reply, phrase] of [
+    ['Please see your GP within the next 48 hours.', 'within the next 48 hours'],
+    ['Please see your GP within 2-3 days.', 'within 2-3 days'],
+    ['Please see your GP within two-three days.', 'within two-three days'],
+    ['Please see your GP Within Two Days.', 'Within Two Days'],
+  ]) {
+    const r = stripTimeFrames(reply);
+    assert.deepStrictEqual(r.stripped, [phrase], reply);
+    assert.strictEqual(r.text, 'Please see your GP.', reply);
+  }
+});
+
+test('a number word that is not a time frame is left alone', () => {
+  for (const clean of [
+    'Two of the symptoms you describe need looking at. Please see your GP.',
+    'One side of the rash is spreading. Please see your GP.',
+    'Both of you should rest for a bit.',
+  ]) {
+    assert.deepStrictEqual(stripTimeFrames(clean), { text: clean, stripped: [] }, clean);
+  }
+});
+
+test('a CLINICIAN reply stating a number-word time frame loses it and gets the note once', () => {
+  const v = applyGuard({
+    userText: 'the ache moved to the bottom right',
+    replyText: 'This needs looking at. Please see a doctor within the next two days.',
+  });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.deepStrictEqual(v.timeframeStripped, ['within the next two days']);
+  assert.strictEqual(/two days/i.test(v.displayText), false);
+  assert.ok(v.displayText.endsWith(TIME_FRAME_NOTE), v.displayText);
+  assert.strictEqual(v.displayText.split(TIME_FRAME_NOTE).length, 2);
+  assert.strictEqual(v.timeframeUnlocated, false, 'it was located, so the fallback stays off');
+});
+
+// The invariant the widening buys, pinned so a later URGENCY change cannot take
+// it back silently: on the phrasings the scorer counts, the strip finds one.
+test('every phrasing the scorer counts as a stated time frame is one the strip can locate', () => {
+  const phrasings = [
+    'See your GP within the next 48 hours.', 'See your GP within the next two days.',
+    'See your GP within three days.', 'See your GP within 2-3 days.',
+    'See your GP within two-three days.', 'See your GP within one week.',
+    'See your GP today.', 'See your GP tomorrow.', 'See your GP this week.',
+    'See your GP as soon as possible.', 'Book an appointment ASAP.',
+    'See your GP promptly.', 'See your GP urgently.', 'Ask for a same-day appointment.',
+  ];
+  for (const reply of phrasings) {
+    assert.strictEqual(applyGuard({ replyText: reply }).timeframeUnlocated, false, reply);
+    assert.ok(stripTimeFrames(reply).stripped.length > 0, reply);
+  }
+});
+
+// ── timeframeUnlocated: the belt to the strip's braces ──────────────────────
+
+test('timeframeUnlocated is false on every ordinary route', () => {
+  for (const replyText of [
+    'Call 999 now. Do not drive yourself.',
+    'Call an ambulance straight away. Do not drive yourself.',
+    'Please see your GP within the next 48 hours.',
+    'This needs looking at. Please see your GP so they can examine you.',
+    'Rest and drink fluids. If it has not settled within 3 days, see your GP.',
+    'Hmm.',
+    '',
+  ]) {
+    assert.strictEqual(applyGuard({ userText: 'sore throat', replyText }).timeframeUnlocated, false, JSON.stringify(replyText));
+  }
+});
+
+test('a stated time frame the strip cannot locate collapses the reply to the note alone', () => {
+  // Reachable without contriving the reply: the prohibited filter deletes the
+  // sentence carrying "today" before the strip ever runs, so the scorer sees a
+  // stated time frame on the raw reply and the strip finds none in what is left.
+  const reply = 'Take some ibuprofen today. Please see your GP so they can examine you.';
+  const v = applyGuard({ userText: 'my head hurts', replyText: reply });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.banner, 'clinician');
+  assert.strictEqual(v.timeframeUnlocated, true);
+  assert.deepStrictEqual(v.timeframeStripped, []);
+  assert.strictEqual(v.displayText, TIME_FRAME_NOTE.trim(), 'the model sentence is not shown at all');
+  assert.strictEqual(v.rawReply, reply, 'and the log still has every word of it');
+});
+
+test('the fallback needs all three conditions: CLINICIAN, a stated time frame, and nothing stripped', () => {
+  // EMERGENCY with a stated time frame: route is wrong for it, so it stays off
+  // and the reply is shown in full.
+  const emergency = applyGuard({ userText: 'chest pain', replyText: 'Call an ambulance right away.' });
+  assert.strictEqual(emergency.route, 'EMERGENCY');
+  assert.strictEqual(emergency.timeframeUnlocated, false);
+  assert.strictEqual(emergency.displayText, 'Call an ambulance right away.');
+
+  // CLINICIAN with no stated time frame at all: nothing to be unlocated.
+  const quiet = applyGuard({ userText: 'stomach ache', replyText: 'Please see your GP so they can examine you.' });
+  assert.strictEqual(quiet.route, 'CLINICIAN');
+  assert.strictEqual(quiet.timeframeUnlocated, false);
+  assert.strictEqual(quiet.displayText, 'Please see your GP so they can examine you.');
+
+  // CLINICIAN with a stated time frame the strip did locate.
+  const located = applyGuard({ userText: 'stomach ache', replyText: 'Please see your GP within three days.' });
+  assert.strictEqual(located.timeframeUnlocated, false);
+  assert.ok(located.displayText.endsWith(TIME_FRAME_NOTE));
+});
+
+test('the other numeric slot is widened too: "in the next twelve" is located, not left standing', () => {
+  // URGENCY has two \d+ slots and both are widened. This one is the `in the next
+  // N` branch, which carries no unit of its own — so the strip leaves the unit
+  // orphaned ("... your GP hours."). That is URGENCY's shape, not this module's,
+  // it predates the widening on the digit form, and it is written up in the
+  // report. What is asserted here is the safety property: the time frame is
+  // located, listed as written, and gone from the screen.
+  for (const [reply, phrase] of [
+    ['Please see your GP in the next twelve hours.', 'in the next twelve'],
+    ['Please see your GP in the next 12 hours.', 'in the next 12'],
+  ]) {
+    const v = applyGuard({ userText: 'stomach ache', replyText: reply });
+    assert.deepStrictEqual(v.timeframeStripped, [phrase], reply);
+    assert.strictEqual(/in the next/i.test(v.displayText), false, reply);
+    assert.strictEqual(v.timeframeUnlocated, false, reply);
+    assert.strictEqual(v.rawReply, reply);
+  }
 });
