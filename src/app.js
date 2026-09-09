@@ -5,6 +5,7 @@ import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMAL_PROMINENT_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
+import { assembleMessages } from './prompt-assembly.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -1898,8 +1899,17 @@ async function sendCompletion(userText) {
     // history budget — sources + kept history still stay within n_ctx.
     // Short chats are unaffected: windowMessages returns the whole list
     // (droppedCount 0), so behavior is byte-identical to before.
-    const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
+    const { system: sys } = assembleMessages({
+      entry: m, groundedPrompt, sent: [], ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+    });
     const win = windowMessages(state.chat.messages, sys, m.greeting, engineWindow(state.engine));
+    // Assembled again with the windowed history now that `sys` (and thus the
+    // budget it leaves for history) is known — see windowMessages above. For
+    // a supervised entry this drops the greeting turn entirely; its tokens
+    // were still budgeted by windowMessages (a few dozen tokens of slack).
+    const assembled = assembleMessages({
+      entry: m, groundedPrompt, sent: win.sent, ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+    });
     // One turn, described once for both platforms (task 2.1). On desktop this
     // lands in `calc-loop.js`, which owns the fetch/SSE-parse/tool-execute/
     // resubmit cycle end to end and is Tauri/DOM-free by design; on Android it
@@ -1917,11 +1927,7 @@ async function sendCompletion(userText) {
       // ignores it; `cache_prompt: true` is how the sidecar does the same job.
       chatId: turnChatId,
       baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'assistant', content: m.greeting },
-        ...win.sent,
-      ],
+      messages: assembled.messages,
       tools: [CALC_TOOL],
       runCalc: (expression) => invoke('calc', { expression }),
       onDelta: (d) => {
