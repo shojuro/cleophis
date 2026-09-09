@@ -10,7 +10,10 @@ import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js'
 // The product's contract on a supervised reply (Phase 2). Every use below is
 // gated on `entry.supervised === true`; the tutor never reaches any of it.
 import { applyGuard } from './triage/guard.js';
-import { bannerKey, bannerText, persistAssistantTurn, provisionalStep, titlePlan } from './triage-turn.js';
+import {
+  bannerKey, bannerText, chatIsSupervised, persistAssistantTurn, persistFailurePlan,
+  provisionalStep, replayMessage, shouldGroundTurn, titlePlan,
+} from './triage-turn.js';
 import { isPromptMismatch, promptFingerprint } from './prompt-fingerprint.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
@@ -1406,8 +1409,23 @@ function rebuildChatDom() {
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
   // .calculations (Task 7) replays the same way, from `messages.tool_calls`.
+  // Phase 2: in a supervised chat an assistant row with NO verdict is withheld
+  // — see `replayMessage`. That covers a partial row left by a killed turn, a
+  // row whose `attach_guard` never landed, and any other producer that did not
+  // pass through the guard. The greeting bubble above is UI, not a stored
+  // message, and is deliberately outside this loop.
+  const supervised = chatIsSupervised({ supervised: !!(m && m.supervised), messages: state.chat.messages });
   for (const msg of state.chat.messages) {
-    appendBubble(msg.role, msg.content, msg.citations, msg.calculations, msg.guard);
+    const view = replayMessage({ supervised, role: msg.role, content: msg.content, guard: msg.guard });
+    // A withheld reply shows nothing of its own, its sources and its
+    // calculations included: they are provenance for text that is not on
+    // screen.
+    appendBubble(
+      msg.role, view.text,
+      view.withheld ? undefined : msg.citations,
+      view.withheld ? undefined : msg.calculations,
+      view.banner,
+    );
   }
   updateContextDivider();
 }
@@ -1426,20 +1444,26 @@ function bannerEl(banner, provisional = false) {
   el.className = `triage-banner triage-banner--${key}${provisional ? ' triage-banner--provisional' : ''}`;
   const title = document.createElement('b');
   title.textContent = b.title;
-  const line = document.createElement('span');
-  line.textContent = ` ${b.line}`;
-  el.append(title, line);
+  el.append(title);
+  // The `unverified` banner is a title and nothing else; every route banner
+  // carries a line. Appending an empty span would leave a stray space in a
+  // `pre-wrap` bubble.
+  if (b.line) {
+    const line = document.createElement('span');
+    line.textContent = ` ${b.line}`;
+    el.append(line);
+  }
   return el;
 }
 
-// `guard` is a supervised reply's verdict (Phase 2) — absent on every tutor
-// turn, and on every user turn, which is what keeps this function's behaviour
-// for those byte-identical to what it was.
-function appendBubble(role, text, citations, calculations, guard) {
+// `banner` is a banner KEY (Phase 2) — one of the four routes, or the
+// `unverified` one. Absent on every tutor turn and on every user turn, which is
+// what keeps this function's behaviour for those byte-identical to what it was.
+function appendBubble(role, text, citations, calculations, banner) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
-  if (guard) el.prepend(bannerEl(guard.banner));
+  if (banner) el.prepend(bannerEl(banner));
   $('chatMessages').appendChild(el);
   if (citations && citations.length) renderCitations(el, citations);
   if (calculations && calculations.length) renderCalculations(el, calculations);
@@ -1858,8 +1882,14 @@ async function sendCompletion(userText) {
   // rag_query BEFORE touching the model. When no packs are attached this
   // whole block is skipped and everything below runs exactly as it did
   // before A4 — same fetch, same SSE parsing, same system message.
+  //
+  // Phase 2: NEVER for a supervised entry, however many packs are attached.
+  // Grounding replaces the one thing Task 5 pins — the catalog's systemPrompt
+  // as the only system content — and it carries a second unguarded producer
+  // with it: the scripted `noEvidence` refusal below is written into the
+  // transcript and persisted without ever passing through `applyGuard`.
   let groundedPrompt = null, groundedCitations = null;
-  if (state.chat.packPaths.length > 0) {
+  if (shouldGroundTurn({ supervised, packCount: state.chat.packPaths.length })) {
     const query = state.chat.messages[state.chat.messages.length - 1]?.content;
     if (query != null) {
       bubble.textContent = 'Searching your packs…';
@@ -1870,6 +1900,9 @@ async function sendCompletion(userText) {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
+        // No `turn` argument: this bail-out carries no content, so it reaches
+        // no guard, no persist and no title. Grounding is off for a supervised
+        // entry anyway, so this line is unreachable from one.
         if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
@@ -1890,6 +1923,7 @@ async function sendCompletion(userText) {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
+      // Same as above: no content, so no `turn` is needed and none is passed.
       if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Adapter v2: when the contract adapter is composed on this tier, it is
@@ -2007,11 +2041,13 @@ async function sendCompletion(userText) {
         // so the strip decision is always re-made against the full prefix.
         const view = stripLeadingThink(acc);
         bubble.textContent = view;
-        // Supervised only, and only until a route resolves: the detectors read
-        // the whole prefix, so asking again after the banner is up would be
-        // work per token for an answer that cannot change.
-        if (supervised && !provisionalEl) {
-          const step = provisionalStep({ supervised, alreadyShown: false, prefixText: view, elapsedMs: performance.now() - sentAt });
+        // Supervised only. `provisionalEl` IS the state machine's
+        // `alreadyShown`, so once a route resolves `provisionalStep` returns
+        // early and never reads the prefix again — the detectors read the whole
+        // of it, which would otherwise be work per token for an answer that
+        // cannot change. The tutor is stopped by the gate before the call.
+        if (supervised) {
+          const step = provisionalStep({ supervised, alreadyShown: !!provisionalEl, prefixText: view, elapsedMs: performance.now() - sentAt });
           if (step.banner) {
             provisionalEl = bannerEl(step.banner, true);
             console.log(step.log);
@@ -2185,8 +2221,15 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
     guard: verdict,
     messageId: turn ? turn.messageId : null,
   });
+  //
+  // AND A FAILED PERSIST IS NOT ALWAYS SILENT. A failed `append_message` is —
+  // nothing was written and nothing is left behind, which is the app's existing
+  // degrade-gracefully contract. A failed `attach_guard` is not: the row is
+  // already there, holding the model's RAW reply, so saying nothing would
+  // persist the unguarded text and show it on the next open. Retried once, then
+  // said out loud. `persistFailurePlan` owns that decision and is tested.
   if (persist) {
-    invoke(persist.command, persist.args).then((info) => {
+    const attempt = (n) => invoke(persist.command, persist.args).then((info) => {
       // The row id, kept on the in-memory message: it is what the health
       // worker's route confirmation is written against (Task 8).
       if (isActive && info && info.id) {
@@ -2194,7 +2237,17 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
         if (last && last.role === 'assistant' && last.content === display) last.id = info.id;
       }
       refreshChatList(); // updated_at bump reorders the sidebar
-    }).catch(() => {});
+    }).catch((e) => {
+      const plan = persistFailurePlan({ command: persist.command, attempt: n, error: e });
+      if (plan.action === 'ignore') return;
+      console.log(plan.log);
+      if (plan.action === 'retry') { attempt(n + 1); return; }
+      // The bubble is left exactly as it is. `display` was computed here, from
+      // this reply, and is still what the guard decided to show — the failure
+      // is that it was not RECORDED, not that it cannot be trusted.
+      showEngineBanner(plan.message);
+    });
+    attempt(1);
   }
   // §7 S7-5: fire-and-forget the title for this turn — do NOT await it (it
   // must never gate the composer restore above, which already ran).

@@ -13,7 +13,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { BANNERS } from './triage/guard.js';
-import { bannerKey, bannerText, persistAssistantTurn, provisionalStep, supervisedTitle, titlePlan } from './triage-turn.js';
+import { assembleMessages } from './prompt-assembly.js';
+import { windowMessages } from './context-window.js';
+import { createTransport } from './transport.js';
+import {
+  ATTACH_FAILED_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
+  bannerKey, bannerText, chatIsSupervised, persistAssistantTurn, persistFailurePlan,
+  provisionalStep, replayMessage, shouldGroundTurn, supervisedTitle, titlePlan,
+} from './triage-turn.js';
 
 /* ---------------- the banner shown above a reply ---------------- */
 
@@ -199,4 +206,180 @@ test('TUTOR IDENTITY: no provisional banner is ever computed for an unsupervised
 
 test('TUTOR IDENTITY: the tutor is still titled by the model', () => {
   assert.deepStrictEqual(titlePlan({ supervised: false, source: 'explain photosynthesis' }), { kind: 'model' });
+});
+
+/* ---------------- a persist that fails is never silent (round 1, I1) ------- */
+
+test('a failed attach_guard is retried once, then surfaced — never swallowed', () => {
+  // The row `settle` finalized holds the RAW reply. If `attach_guard` fails and
+  // nothing says so, that raw reply is what is persisted, what a reopened chat
+  // shows, and what the export omits: the guard silently fails toward showing
+  // MORE than it decided to show.
+  const first = persistFailurePlan({ command: 'attach_guard', attempt: 1, error: 'database is locked' });
+  assert.strictEqual(first.action, 'retry');
+  assert.strictEqual(first.log, '[triage] attach_guard failed database is locked');
+
+  const second = persistFailurePlan({ command: 'attach_guard', attempt: 2, error: 'database is locked' });
+  assert.strictEqual(second.action, 'surface');
+  assert.strictEqual(second.message, ATTACH_FAILED_NOTICE);
+  assert.strictEqual(second.message, 'This reply could not be verified and was not recorded — ask again');
+  assert.strictEqual(second.log, '[triage] attach_guard failed database is locked');
+});
+
+test('the error is read off an Error object as well as a bare string', () => {
+  const e = persistFailurePlan({ command: 'attach_guard', attempt: 2, error: new Error('no message with id 4') });
+  assert.strictEqual(e.log, '[triage] attach_guard failed no message with id 4');
+});
+
+test('TUTOR IDENTITY: a failed append_message stays silent, exactly as it always was', () => {
+  // The degrade-gracefully contract: a chat whose `create_chat` or
+  // `append_message` failed keeps working locally and says nothing. That is the
+  // tutor's behaviour today and this task does not change it — and it is not
+  // the same failure, because a failed append leaves no raw reply behind.
+  for (const attempt of [1, 2, 3]) {
+    const plan = persistFailurePlan({ command: 'append_message', attempt, error: 'nope' });
+    assert.deepStrictEqual(plan, { action: 'ignore', log: null, message: null });
+  }
+});
+
+/* ---------------- an unguarded reply in a supervised chat (round 1, I2) ---- */
+
+test('a supervised assistant row with NO verdict is withheld behind an Unverified reply banner', () => {
+  // A partial row from a killed turn, a row whose `attach_guard` never landed,
+  // any other producer: it reaches `rebuildChatDom` as an ordinary bubble with
+  // the model's own words and no banner at all, which is the one thing a
+  // supervised reply may never be. Fail toward showing less.
+  const view = replayMessage({ supervised: true, role: 'assistant', content: 'Take 400mg of ibuprofen.', guard: null });
+  assert.deepStrictEqual(view, {
+    banner: 'unverified',
+    text: 'This reply was not verified by the safety check and is not shown.',
+    withheld: true,
+  });
+  assert.strictEqual(view.text, UNVERIFIED_TEXT);
+  assert.strictEqual(view.banner, UNVERIFIED_BANNER);
+});
+
+test('the Unverified banner has its own copy and its own colour, and is not one of the four routes', () => {
+  assert.strictEqual(bannerKey('unverified'), 'unverified');
+  assert.strictEqual(bannerText('unverified').title, 'Unverified reply');
+  for (const route of ['emergency', 'clinician', 'self_care', 'out_of_scope']) {
+    assert.notStrictEqual(bannerText('unverified').title, bannerText(route).title);
+  }
+});
+
+test('a supervised reply WITH a verdict renders its own banner and its own display text', () => {
+  const guard = { banner: 'clinician', route: 'CLINICIAN', displayText: 'See a clinician.' };
+  assert.deepStrictEqual(
+    replayMessage({ supervised: true, role: 'assistant', content: 'See a clinician.', guard }),
+    { banner: 'clinician', text: 'See a clinician.', withheld: false },
+  );
+});
+
+test('a user turn in a supervised chat is never withheld and never bannered', () => {
+  assert.deepStrictEqual(
+    replayMessage({ supervised: true, role: 'user', content: 'he is short of breath', guard: null }),
+    { banner: null, text: 'he is short of breath', withheld: false },
+  );
+});
+
+test('TUTOR IDENTITY: an unguarded reply in an unsupervised chat renders its own content, unbannered', () => {
+  assert.deepStrictEqual(
+    replayMessage({ supervised: false, role: 'assistant', content: 'Because the derivative is zero.', guard: null }),
+    { banner: null, text: 'Because the derivative is zero.', withheld: false },
+  );
+});
+
+test('a chat that holds a verdict is supervised even when another model is the one entered', () => {
+  // `openChat` does not re-point `state.chat.model` at the chat's own model, so
+  // a triage chat opened from the sidebar while the tutor is entered would
+  // otherwise answer "not supervised" and render its unguarded rows in full.
+  assert.strictEqual(chatIsSupervised({ supervised: false, messages: [{ role: 'user' }, { role: 'assistant', guard: { banner: 'emergency' } }] }), true);
+  assert.strictEqual(chatIsSupervised({ supervised: true, messages: [] }), true);
+  assert.strictEqual(chatIsSupervised({ supervised: false, messages: [{ role: 'assistant' }] }), false);
+  assert.strictEqual(chatIsSupervised({}), false);
+});
+
+/* ---------------- the producer, closed (round 1, I2) ---------------------- */
+
+test('a supervised turn never grounds, however many packs are attached', () => {
+  // Task 5's rule: the supervised system content is the catalog prompt and
+  // nothing else. A grounded turn replaces it with the RAG prompt and the
+  // no-evidence path appends a scripted refusal that no guard ever sees — both
+  // are unguarded producers, and both are simply off here.
+  assert.strictEqual(shouldGroundTurn({ supervised: true, packCount: 3 }), false);
+  assert.strictEqual(shouldGroundTurn({ supervised: true, packCount: 0 }), false);
+});
+
+test('TUTOR IDENTITY: an unsupervised turn grounds exactly when packs are attached', () => {
+  assert.strictEqual(shouldGroundTurn({ supervised: false, packCount: 1 }), true);
+  assert.strictEqual(shouldGroundTurn({ supervised: false, packCount: 0 }), false);
+  assert.strictEqual(shouldGroundTurn({}), false);
+});
+
+/* -------- TUTOR IDENTITY: the wire payload, end to end (round 1, I3) ------ */
+
+// `windowMessages` hands `assembleMessages` the SAME message objects the app
+// keeps in `state.chat.messages`, and those objects now carry `id` — and, on a
+// supervised turn, the whole `guard` blob including `rawReply`. A spread would
+// put every one of those fields on the wire: a different `chat_stream` payload
+// for the tutor than before this task, and a supervised turn re-sending each
+// earlier raw reply to the model. This is the test that says it does not.
+function wirePayload({ entry, messages }) {
+  const invoke = (() => {
+    const calls = [];
+    const f = async (cmd, args) => { calls.push({ cmd, args }); if (cmd === 'chat_stream') args.onEvent.onmessage?.({ event: 'done', data: { content: '', calculations: [] } }); };
+    f.calls = calls;
+    return f;
+  })();
+  const t = createTransport({
+    mobile: true,
+    invoke,
+    Channel: class { set onmessage(f) { this._f = f; } get onmessage() { return this._f; } },
+    newRequestId: () => 'req-1',
+  });
+  const { system: sys } = assembleMessages({ entry, groundedPrompt: null, sent: [], ungroundedNote: ' NOTE' });
+  const win = windowMessages(messages, sys, entry.greeting, 4096);
+  const assembled = assembleMessages({ entry, groundedPrompt: null, sent: win.sent, ungroundedNote: ' NOTE' });
+  t.streamTurn({ chatId: 1, messages: assembled.messages, onDelta: () => {} });
+  return invoke.calls.find((c) => c.cmd === 'chat_stream').args.messages;
+}
+
+test('TUTOR IDENTITY: chat_stream carries {role, content} and nothing else', () => {
+  const entry = { supervised: false, systemPrompt: 'You are a tutor.', greeting: 'Hi!' };
+  const sent = wirePayload({
+    entry,
+    messages: [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1', id: 42, citations: [{ docTitle: 'd' }], calculations: [{ expression: '1+1', display: '2' }] },
+      { role: 'user', content: 'q2' },
+    ],
+  });
+  assert.deepStrictEqual(sent, [
+    { role: 'system', content: 'You are a tutor. NOTE' },
+    { role: 'assistant', content: 'Hi!' },
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'q2' },
+  ]);
+  for (const m of sent) assert.deepStrictEqual(Object.keys(m), ['role', 'content']);
+});
+
+test('a supervised turn never re-sends an earlier reply\'s verdict to the model', () => {
+  const entry = { supervised: true, systemPrompt: 'You are a triage assistant.', greeting: 'Describe…' };
+  const sent = wirePayload({
+    entry,
+    messages: [
+      { role: 'user', content: 'chest pain' },
+      { role: 'assistant', content: 'Go now.', id: 7, guard: { route: 'EMERGENCY', rawReply: 'Go now, within 10 minutes.', detectorsSha: 'abc' } },
+      { role: 'user', content: 'and now?' },
+    ],
+  });
+  assert.deepStrictEqual(sent, [
+    { role: 'system', content: 'You are a triage assistant.' },
+    { role: 'user', content: 'chest pain' },
+    { role: 'assistant', content: 'Go now.' },
+    { role: 'user', content: 'and now?' },
+  ]);
+  assert.strictEqual(JSON.stringify(sent).includes('rawReply'), false);
+  assert.strictEqual(JSON.stringify(sent).includes('within 10 minutes'), false);
 });

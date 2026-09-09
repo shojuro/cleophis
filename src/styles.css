@@ -526,3 +526,8 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .triage-confirm{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
 .triage-confirm select{padding:4px 6px}
 .triage-confirmed{margin-top:6px;font-size:12px;color:var(--muted)}
+/* The fifth banner is not a disposition: it is the product saying this reply
+   never went through the guard, so nothing can be claimed for it. The app's own
+   warning colour, so it cannot be read as one of the four routes. It carries a
+   title and no line, which is why `bannerEl` omits the empty span. */
+.triage-banner--unverified{background:var(--amber);color:var(--amber-ink)}

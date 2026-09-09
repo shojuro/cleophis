@@ -1,6 +1,6 @@
 // src/triage-turn.js — the send path's supervised decisions, out of the DOM.
 //
-// Task 6 wires the guard into `app.js`. Most of that is DOM writing, but four
+// Task 6 wires the guard into `app.js`. Most of that is DOM writing, but the
 // decisions in it are worth arguing about and none of them need a document:
 //
 //   1. which banner a key names, and what happens to a key nobody recognises;
@@ -9,13 +9,33 @@
 //   3. how a finished assistant turn is persisted — attach or append — which
 //      is the difference between one row and two;
 //   4. what titles a supervised chat, given that its title must not come from
-//      a second, un-gated model call.
+//      a second, un-gated model call;
+//   5. what happens when that persist FAILS, which is the difference between
+//      a recorded verdict and a silently unguarded raw reply;
+//   6. how a stored message renders when the chat is reopened — in particular
+//      an assistant row that carries no verdict at all;
+//   7. whether the turn grounds, which for a supervised entry is never.
 //
 // They live here so `node --test src/` covers them, and so the tutor's
 // identity is a test rather than a claim: every function takes `supervised`
 // (or a verdict) explicitly and returns the same thing it returned before this
 // task when that flag is false.
 import { BANNERS, ROUTE_TO_BANNER, routeOfPrefix } from './triage/guard.js';
+
+/**
+ * A fifth banner, and the only one that is NOT a disposition.
+ *
+ * `guard.js` owns the four the detectors can produce, and this module does not
+ * edit that file. This one is the product saying it has nothing to show: the
+ * reply reaching the screen never went through the guard, so no route can be
+ * claimed for it. Kept here, beside the rule that raises it.
+ */
+export const UNVERIFIED_BANNER = 'unverified';
+export const UNVERIFIED_TEXT = 'This reply was not verified by the safety check and is not shown.';
+const ALL_BANNERS = Object.freeze({
+  ...BANNERS,
+  [UNVERIFIED_BANNER]: Object.freeze({ title: 'Unverified reply', line: '' }),
+});
 
 /**
  * The banner key to render, normalised.
@@ -27,12 +47,12 @@ import { BANNERS, ROUTE_TO_BANNER, routeOfPrefix } from './triage/guard.js';
  * class and the copy from ever disagreeing, since both are built from this.
  */
 export function bannerKey(key) {
-  return Object.prototype.hasOwnProperty.call(BANNERS, key) ? key : 'out_of_scope';
+  return Object.prototype.hasOwnProperty.call(ALL_BANNERS, key) ? key : 'out_of_scope';
 }
 
 /** The product copy for a banner key; an unknown key claims the least. */
 export function bannerText(key) {
-  return BANNERS[bannerKey(key)];
+  return ALL_BANNERS[bannerKey(key)];
 }
 
 /**
@@ -133,4 +153,81 @@ export function titlePlan({ supervised = false, source = null } = {}) {
   if (!supervised) return { kind: 'model' };
   const title = supervisedTitle(source);
   return title ? { kind: 'fixed', title } : { kind: 'none' };
+}
+
+/**
+ * Does this turn go through the pack/RAG path?
+ *
+ * Never, for a supervised entry, however many packs are attached. Task 5's rule
+ * is that the supervised system content is the catalog's `systemPrompt` and
+ * nothing else — and grounding replaces exactly that. Two unguarded producers
+ * come off with it: the grounded prompt (a different gate wearing the same
+ * name) and the scripted `noEvidence` refusal, which is written straight into
+ * the transcript and persisted without ever passing through `applyGuard`.
+ */
+export function shouldGroundTurn({ supervised = false, packCount = 0 } = {}) {
+  return !supervised && packCount > 0;
+}
+
+/**
+ * What to do when persisting the finished turn failed.
+ *
+ * ONLY `attach_guard` is surfaced, and the asymmetry is the point. When
+ * `append_message` fails nothing is written, which is the app's existing
+ * degrade-gracefully contract and leaves nothing behind. When `attach_guard`
+ * fails the row is already there — `settle` finalized it with the model's RAW
+ * reply — so a swallowed failure persists the unguarded text, shows it on the
+ * next open, and drops the turn out of the export. That is the guard failing
+ * toward showing MORE than it decided to show, silently.
+ *
+ * Retried once, because the realistic cause is a locked database rather than a
+ * rejected verdict. Then said out loud. The display text stays on screen either
+ * way: it was computed here and is still what this reply routes to.
+ *
+ * @returns {{action: 'ignore'|'retry'|'surface', log: string|null, message: string|null}}
+ */
+export const ATTACH_FAILED_NOTICE = 'This reply could not be verified and was not recorded — ask again';
+
+export function persistFailurePlan({ command = '', attempt = 1, error = '' } = {}) {
+  if (command !== 'attach_guard') return { action: 'ignore', log: null, message: null };
+  const log = `[triage] attach_guard failed ${String(error?.message ?? error ?? '')}`;
+  return attempt < 2
+    ? { action: 'retry', log, message: null }
+    : { action: 'surface', log, message: ATTACH_FAILED_NOTICE };
+}
+
+/**
+ * Is the chat on screen a supervised one?
+ *
+ * `entry.supervised` is the answer, EXCEPT that `openChat` does not re-point
+ * `state.chat.model` at the chat it opens — so a triage chat picked from the
+ * sidebar while the tutor is the entered model would answer "no" and render its
+ * unguarded rows in full. A transcript that holds a verdict is a supervised
+ * transcript whatever the library is showing, and this widening can only ever
+ * withhold more.
+ */
+export function chatIsSupervised({ supervised = false, messages = [] } = {}) {
+  return !!supervised || messages.some((m) => m && m.guard);
+}
+
+/**
+ * How one stored message renders when a chat is reopened.
+ *
+ * THE ROW THIS EXISTS FOR: an assistant row in a supervised chat with no
+ * verdict on it. A partial row left by a killed turn, a row whose
+ * `attach_guard` never landed, a row from any producer that did not go through
+ * `applyGuard` — each reaches `rebuildChatDom` as an ordinary bubble carrying
+ * the model's own words with no banner at all, which is the one thing a
+ * supervised reply may never be. Its content is withheld and replaced by the
+ * fixed note; `rawReply` is not lost, because the row itself still holds the
+ * text and the export still reads it.
+ *
+ * @returns {{banner: string|null, text: string, withheld: boolean}}
+ */
+export function replayMessage({ supervised = false, role = 'assistant', content = '', guard = null } = {}) {
+  if (guard) return { banner: guard.banner, text: content, withheld: false };
+  if (supervised && role === 'assistant') {
+    return { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true };
+  }
+  return { banner: null, text: content, withheld: false };
 }
