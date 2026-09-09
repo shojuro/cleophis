@@ -10,7 +10,9 @@
 //   1. route — detectRoute on the raw reply, before any rewrite, so the banner
 //      reflects what the model said, not what we left of it;
 //   2. prohibited content — sentences naming a medication, dose, route,
-//      frequency or diagnosis are removed (fail toward showing less);
+//      frequency or diagnosis are removed (fail toward showing less), and what
+//      is left is re-asked as a whole, because the detectors' question is about
+//      the whole reply and a prescription can be written across a full stop;
 //   3. time frames — on a CLINICIAN route only, every URGENCY match is removed
 //      (R64/R65: the stated time frame is what made a confident referral worse
 //      than a decline). EMERGENCY keeps "now"; SELF_CARE keeps the caveat's
@@ -101,19 +103,51 @@ export function stripTimeFrames(text) {
  * introduced drug) or a diagnosis. Sentence-level on purpose: the detectors
  * report findings, not character offsets, and a whole sentence is the
  * smallest unit whose removal cannot leave half a prescription behind.
+ *
+ * TWO PASSES, BECAUSE THE DETECTOR'S QUESTION IS ABOUT THE WHOLE REPLY.
+ * `detectMedication` cancels R7's carve-out on a dose, route or frequency found
+ * ANYWHERE in the reply — its own header gives the reason: "Ibuprofen is an
+ * anti-inflammatory. Have it every six hours." prescribes across a full stop,
+ * and a clause-local rule excuses the name and then never sees the schedule.
+ * A filter that asks the question one sentence at a time inherits that hole
+ * exactly: neither sentence trips alone, and the text it hands back does. Pass 1
+ * removes the sentences that are prohibited by themselves; pass 2 runs only when
+ * what is left still trips, and rebuilds it a sentence at a time, keeping a
+ * sentence only if the text INCLUDING it is still clean. The returned text is
+ * therefore clean by construction rather than by inference — the last thing pass
+ * 2 accepted is the string it returns.
+ *
+ * Found on real data: floors/Qwen3-4B locked-heldout ENT-09, the single leak in
+ * the 1,000-reply sweep, where a dosage form in one sentence was un-excused by
+ * "2-3 times a day" in another.
  */
 export function filterProhibited(text, patientText = '') {
   const med = detectMedication(text, { patientText });
   const dx = detectNamedDiagnosis(text, { patientText });
   if (!med.found && !dx.found) return { text: String(text), medication: [], diagnosis: [] };
-  const kept = [];
+
+  const trips = (s) => detectMedication(s, { patientText }).found
+    || detectNamedDiagnosis(s, { patientText }).found;
+
+  let kept = [];
   let removed = 0;
   for (const sentence of String(text).match(SENTENCES) ?? []) {
     const s = sentence.trim();
     if (!s) continue;
-    const bad = detectMedication(s, { patientText }).found || detectNamedDiagnosis(s, { patientText }).found;
-    if (bad) removed += 1; else kept.push(s);
+    if (trips(s)) removed += 1; else kept.push(s);
   }
+
+  // Pass 2. Rare — one reply in a thousand — so it costs nothing on the ordinary
+  // path, and the sentence it drops is the one that turned an identification
+  // into a prescription, which is the half R7 says is the violation.
+  if (kept.length > 1 && trips(kept.join(' '))) {
+    const acc = [];
+    for (const s of kept) {
+      if (trips([...acc, s].join(' '))) removed += 1; else acc.push(s);
+    }
+    kept = acc;
+  }
+
   let out = kept.join(' ');
   if (removed) out = tidy(`${out}${PROHIBITED_NOTE}`);
   return {
@@ -172,7 +206,16 @@ export function unlocatedTimeFrame(route, displayText) {
  *                       less. See `unlocatedTimeFrame`.
  *   crisisOnInput       the USER's words disclosed self-harm (Task 4)
  *   crisisLineAppended  the product's crisis block was added (Task 4)
- *   prohibited          {medication, diagnosis} — everything removed, listed
+ *   prohibited          {medication, diagnosis} — what the detectors objected
+ *                       to in the RAW reply, which is why anything was removed.
+ *                       READ IT AS THE REASON, NOT AS THE RECEIPT: the two
+ *                       differ in the reply-scoped case, where the finding is
+ *                       named by one sentence ("spray") and cancelled by
+ *                       deleting another (the schedule beside it), so the phrase
+ *                       listed can be one still on screen and the sentence
+ *                       removed can be one that named nothing by itself. The
+ *                       receipt a reader gets is PROHIBITED_NOTE; the receipt an
+ *                       auditor gets is `rawReply`, which keeps every word
  *   detectorsSha        the pin all of the above was decided by
  */
 export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_BLOCK_DEFAULT } = {}) {
