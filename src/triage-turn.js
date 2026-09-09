@@ -13,8 +13,11 @@
 //   5. what happens when that persist FAILS, which is the difference between
 //      a recorded verdict and a silently unguarded raw reply;
 //   6. how a stored message renders when the chat is reopened — in particular
-//      an assistant row that carries no verdict at all;
-//   7. whether the turn grounds, which for a supervised entry is never.
+//      an assistant row that carries no verdict at all, and WHICH entry that
+//      question is answered from, since the open chat and the entered model
+//      routinely disagree;
+//   7. whether the turn grounds, which for a supervised entry is never;
+//   8. whether the entered model may answer in the chat that is open at all.
 //
 // They live here so `node --test src/` covers them, and so the tutor's
 // identity is a test rather than a claim: every function takes `supervised`
@@ -197,17 +200,53 @@ export function persistFailurePlan({ command = '', attempt = 1, error = '' } = {
 }
 
 /**
- * Is the chat on screen a supervised one?
+ * The catalog entry a stored chat BELONGS to.
  *
- * `entry.supervised` is the answer, EXCEPT that `openChat` does not re-point
- * `state.chat.model` at the chat it opens — so a triage chat picked from the
- * sidebar while the tutor is the entered model would answer "no" and render its
- * unguarded rows in full. A transcript that holds a verdict is a supervised
- * transcript whatever the library is showing, and this widening can only ever
- * withhold more.
+ * `openChat` opens any chat from the sidebar without re-pointing
+ * `state.chat.model`, so the entered model and the open chat's model routinely
+ * disagree — in both directions. Rendering a transcript is a question about the
+ * chat, so it is answered from the chat's own `modelId` here, and the entered
+ * model is only the fallback for a chat whose model this catalog no longer
+ * lists.
+ *
+ * (The first attempt at this asked "is a supervised model entered, or does this
+ * transcript hold a verdict?". The second term made a tutor chat carrying one
+ * stray triage row look supervised, and the first withheld every reply in an
+ * ordinary tutor chat opened while triage happened to be entered. The chat's
+ * own entry is the question that has an answer.)
  */
-export function chatIsSupervised({ supervised = false, messages = [] } = {}) {
-  return !!supervised || messages.some((m) => m && m.guard);
+export function entryForChat(catalog, chat, enteredModel = null) {
+  const id = chat && chat.modelId;
+  const found = id ? (catalog ?? []).find((e) => e && e.id === id) : null;
+  return found ?? enteredModel ?? null;
+}
+
+export const FOREIGN_CHAT_NOTICE = 'This chat belongs to a different assistant — start a new chat for the triage assistant.';
+
+/**
+ * May the entered model answer in the chat that is open?
+ *
+ * The guard follows the ENTERED model, because that is the model that answers —
+ * and that is exactly why a supervised model must not answer in someone else's
+ * chat. Sending would write a guarded triage row, banner and verdict and audit
+ * line, into a tutor conversation; the export would then carry a triage
+ * disposition from a chat nobody triaged in.
+ *
+ * A chat that names NO model is refused rather than assumed. Refusing costs the
+ * health worker a new chat. Assuming files a triage reply somewhere nobody can
+ * account for. An absent chat record is not that case: there is no chat yet,
+ * and the first message creates one with this model's id.
+ *
+ * An unsupervised entered model is allowed everywhere, as it always was.
+ *
+ * @returns {{allowed: boolean, message: string|null}}
+ */
+export function canSendInChat({ entered = null, chat = null } = {}) {
+  if (!entered || entered.supervised !== true) return { allowed: true, message: null };
+  if (chat == null || chat.modelId == null) return { allowed: true, message: null };
+  return chat.modelId === entered.id
+    ? { allowed: true, message: null }
+    : { allowed: false, message: FOREIGN_CHAT_NOTICE };
 }
 
 /**

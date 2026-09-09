@@ -11,7 +11,7 @@ import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js'
 // gated on `entry.supervised === true`; the tutor never reaches any of it.
 import { applyGuard } from './triage/guard.js';
 import {
-  bannerKey, bannerText, chatIsSupervised, persistAssistantTurn, persistFailurePlan,
+  bannerKey, bannerText, canSendInChat, entryForChat, persistAssistantTurn, persistFailurePlan,
   provisionalStep, replayMessage, shouldGroundTurn, titlePlan,
 } from './triage-turn.js';
 import { isPromptMismatch, promptFingerprint } from './prompt-fingerprint.js';
@@ -65,7 +65,12 @@ const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
   mine: new Set(), lapsed: new Set(), chatBlocked: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
-  chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
+  // `model` is the ENTERED model — the one that answers. `entry`/`modelId` are
+  // the OPEN CHAT's, which is not the same thing: `openChat` opens any chat
+  // from the sidebar without re-pointing `model`. Rendering a transcript asks
+  // the chat's entry; answering in it asks the entered model. Both track
+  // `chatId` and are set by `setChatOwner` wherever it is.
+  chat: { model: null, entry: null, modelId: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
   dl: { installed: false, partBytes: 0, active: false },
   // Task 2.2 engine-state inputs. `dlProgress` is the last download-progress
   // payload (null when no download is in flight), `turn` times the in-flight
@@ -1273,6 +1278,14 @@ function clearChatSearch() {
   renderSidebar();
 }
 
+// Phase 2: record which model the chat now on screen BELONGS to. Called
+// wherever `state.chat.chatId` is assigned, so the two can never drift — a
+// stale `entry` would decide, wrongly, whether an unverified reply is withheld.
+function setChatOwner(entry, modelId) {
+  state.chat.entry = entry ?? null;
+  state.chat.modelId = modelId ?? null;
+}
+
 // Clears the message DOM back to just the model's greeting, without
 // touching state.chat.chatId — callers (newChat, delete-active-chat,
 // enterChat on a model switch) each decide what chatId should be first.
@@ -1296,6 +1309,10 @@ async function openChat(id) {
   }
   const { chat, messages } = detail;
   state.chat.chatId = chat.id;
+  // The chat's OWN entry, not the entered one: this may be any chat in the
+  // sidebar, and whether an unverified reply is withheld is a question about
+  // the chat rather than about which card was last tapped.
+  setChatOwner(entryForChat(state.catalog, chat, state.chat.model), chat.modelId);
   state.chat.packPaths = chat.mountedPacks || [];
   // Re-hydrate into the same {role, content, citations?} shape sendMessage/
   // finishStream push locally, so rebuildChatDom's replay logic (below)
@@ -1346,6 +1363,7 @@ async function newChat() {
     chatId = chat.id;
   } catch (_) { /* persistence failed — still hand back a clean local chat */ }
   state.chat.chatId = chatId;
+  setChatOwner(m, m?.id ?? null); // created with the entered model's id, above
   resetChatDom();
   await refreshChatList();
 }
@@ -1378,6 +1396,10 @@ function enterChat(m) {
     state.chat.messages = [];
   }
   state.chat.model = m;
+  // A chat that is open stays whosever it is — re-entering a card must not
+  // re-attribute a transcript. Only the unsaved chat this leaves behind (the
+  // model switch above, a first entry, a deleted active chat) belongs to `m`.
+  if (state.chat.chatId == null) setChatOwner(m, null);
   $('chatModelName').textContent = m.name;
   $('chatCover').src = m.coverUrl;
   rebuildChatDom();
@@ -1414,7 +1436,13 @@ function rebuildChatDom() {
   // row whose `attach_guard` never landed, and any other producer that did not
   // pass through the guard. The greeting bubble above is UI, not a stored
   // message, and is deliberately outside this loop.
-  const supervised = chatIsSupervised({ supervised: !!(m && m.supervised), messages: state.chat.messages });
+  //
+  // Asked of the CHAT's entry, never of the entered model. A row that carries a
+  // verdict renders it either way; only the withholding of an unguarded row
+  // turns on this, and getting it from `state.chat.model` withholds every reply
+  // in an ordinary tutor chat that happens to be open while triage is entered.
+  const chatEntry = state.chat.entry || m;
+  const supervised = !!(chatEntry && chatEntry.supervised);
   for (const msg of state.chat.messages) {
     const view = replayMessage({ supervised, role: msg.role, content: msg.content, guard: msg.guard });
     // A withheld reply shows nothing of its own, its sources and its
@@ -1773,10 +1801,27 @@ function pulseCost() {
   c.classList.add('pulse');
 }
 
+// Phase 2: may the ENTERED model answer in the chat that is open? A supervised
+// one answers only in its own chats — sending elsewhere would file a guarded
+// triage row, verdict and audit line and all, into someone else's conversation.
+// Asked in both entry points from one pure decision, so they cannot disagree:
+// here, before the user's text is taken from them, and again at the top of
+// `sendCompletion`, which is also where a retry chip arrives.
+function sendPermit() {
+  return canSendInChat({
+    entered: state.chat.model,
+    // No record yet means no chat yet: the first message creates one, with the
+    // entered model's id.
+    chat: state.chat.chatId == null ? null : { modelId: state.chat.modelId },
+  });
+}
+
 function sendMessage() {
   const input = $('chatInput');
   const text = input.value.trim();
   if (!text || state.chat.streaming) return;
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
   input.value = '';
   state.chat.messages.push({ role: 'user', content: text });
   appendBubble('user', text);
@@ -1787,6 +1832,11 @@ function sendMessage() {
 // call sendCompletion() bare to replay an already-pushed/already-persisted
 // user turn, which must NOT be persisted a second time.
 async function sendCompletion(userText) {
+  // BEFORE ANY INVOKE, and before the streaming latch below, so a refusal
+  // leaves no composer state to restore. The retry chips reach this function
+  // directly, which is why the check is here as well as in `sendMessage`.
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
   // Streaming guard set SYNCHRONOUSLY, before any await below — otherwise a
   // second rapid Send could slip past sendMessage's `state.chat.streaming`
   // check (read synchronously there) and race a second sendCompletion call
@@ -1869,6 +1919,7 @@ async function sendCompletion(userText) {
         // it's non-null here someone else already won the race.
         if (state.chat.chatId == null) {
           state.chat.chatId = turnChatId;
+          setChatOwner(m, m?.id ?? null); // create_chat above used this id
           refreshChatList();
         }
       } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
@@ -2245,7 +2296,11 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
       // The bubble is left exactly as it is. `display` was computed here, from
       // this reply, and is still what the guard decided to show — the failure
       // is that it was not RECORDED, not that it cannot be trusted.
-      showEngineBanner(plan.message);
+      //
+      // A screen write, so `isActive` gates it like every other one in this
+      // function: a banner naming a reply the user has navigated away from
+      // points at nothing on screen.
+      if (isActive) showEngineBanner(plan.message);
     });
     attempt(1);
   }
@@ -2726,6 +2781,7 @@ $('chatList').addEventListener('click', async (e) => {
       if (state.chat.chatId === id) {
         state.chat.aborter?.abort();
         state.chat.chatId = null;
+        setChatOwner(state.chat.model, null); // back to this model's clean chat
         resetChatDom();
       }
       await refreshChatList();
@@ -2842,6 +2898,7 @@ $('signOutBtn').addEventListener('click', async () => {
   state.chat.model = null;
   state.chat.packPaths = [];
   state.chat.chatId = null;
+  setChatOwner(null, null);
   $('chatList').innerHTML = '';
   // §7 S7-2b: the sidebar's folder/archive/search UI is per-account too —
   // drop it here so the next sign-in (possibly a different account) starts

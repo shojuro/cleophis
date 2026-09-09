@@ -17,8 +17,8 @@ import { assembleMessages } from './prompt-assembly.js';
 import { windowMessages } from './context-window.js';
 import { createTransport } from './transport.js';
 import {
-  ATTACH_FAILED_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
-  bannerKey, bannerText, chatIsSupervised, persistAssistantTurn, persistFailurePlan,
+  ATTACH_FAILED_NOTICE, FOREIGN_CHAT_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
+  bannerKey, bannerText, canSendInChat, entryForChat, persistAssistantTurn, persistFailurePlan,
   provisionalStep, replayMessage, shouldGroundTurn, supervisedTitle, titlePlan,
 } from './triage-turn.js';
 
@@ -289,14 +289,88 @@ test('TUTOR IDENTITY: an unguarded reply in an unsupervised chat renders its own
   );
 });
 
-test('a chat that holds a verdict is supervised even when another model is the one entered', () => {
-  // `openChat` does not re-point `state.chat.model` at the chat's own model, so
-  // a triage chat opened from the sidebar while the tutor is entered would
-  // otherwise answer "not supervised" and render its unguarded rows in full.
-  assert.strictEqual(chatIsSupervised({ supervised: false, messages: [{ role: 'user' }, { role: 'assistant', guard: { banner: 'emergency' } }] }), true);
-  assert.strictEqual(chatIsSupervised({ supervised: true, messages: [] }), true);
-  assert.strictEqual(chatIsSupervised({ supervised: false, messages: [{ role: 'assistant' }] }), false);
-  assert.strictEqual(chatIsSupervised({}), false);
+/* ---------------- whose chat is this? (round 2) --------------------------- */
+
+const TUTOR = Object.freeze({ id: 'socratic-tutor', systemPrompt: 'tutor', greeting: 'Hi!' });
+const TRIAGE = Object.freeze({ id: 'med-triage', supervised: true, systemPrompt: 'triage', greeting: 'Describe...' });
+const CATALOG = Object.freeze([TUTOR, TRIAGE]);
+
+test('a chat is rendered by the entry it BELONGS to, not by the one that happens to be entered', () => {
+  assert.strictEqual(entryForChat(CATALOG, { modelId: 'socratic-tutor' }, TRIAGE), TUTOR);
+  assert.strictEqual(entryForChat(CATALOG, { modelId: 'med-triage' }, TUTOR), TRIAGE);
+});
+
+test('a chat whose model is not in this catalog falls back to the entered model', () => {
+  assert.strictEqual(entryForChat(CATALOG, { modelId: 'a-model-that-was-removed' }, TUTOR), TUTOR);
+  assert.strictEqual(entryForChat(CATALOG, { modelId: '' }, TRIAGE), TRIAGE);
+  assert.strictEqual(entryForChat(CATALOG, null, TRIAGE), TRIAGE);
+  assert.strictEqual(entryForChat([], { modelId: 'x' }, null), null);
+});
+
+test('THE ROUND-1 REGRESSION: triage entered, a TUTOR chat opened — nothing is withheld', () => {
+  // Round 1 asked "does this transcript hold a verdict, or is a supervised
+  // model entered?", and the second term is true here for a chat that has
+  // nothing to do with the triage assistant. Every tutor reply was withheld.
+  const entry = entryForChat(CATALOG, { modelId: 'socratic-tutor' }, TRIAGE);
+  const supervised = entry.supervised === true;
+  assert.strictEqual(supervised, false);
+  for (const content of ['q', 'Because the derivative is zero.']) {
+    assert.deepStrictEqual(
+      replayMessage({ supervised, role: 'assistant', content, guard: null }),
+      { banner: null, text: content, withheld: false },
+    );
+  }
+});
+
+test('tutor entered, a TRIAGE chat opened — unguarded rows are withheld, guarded rows keep their banner', () => {
+  const entry = entryForChat(CATALOG, { modelId: 'med-triage' }, TUTOR);
+  const supervised = entry.supervised === true;
+  assert.strictEqual(supervised, true);
+  assert.deepStrictEqual(
+    replayMessage({ supervised, role: 'assistant', content: 'Take 400mg of ibuprofen.', guard: null }),
+    { banner: 'unverified', text: UNVERIFIED_TEXT, withheld: true },
+  );
+  assert.deepStrictEqual(
+    replayMessage({ supervised, role: 'assistant', content: 'Go now.', guard: { banner: 'emergency' } }),
+    { banner: 'emergency', text: 'Go now.', withheld: false },
+  );
+  assert.deepStrictEqual(
+    replayMessage({ supervised, role: 'user', content: 'chest pain', guard: null }),
+    { banner: null, text: 'chest pain', withheld: false },
+  );
+});
+
+/* ---------------- a supervised assistant answers only its own chats ------- */
+
+test('a supervised model refuses to answer in a chat that belongs to another assistant', () => {
+  // The guard follows the ENTERED model, because that is the model that
+  // answers. So sending in a foreign chat would write a guarded triage row into
+  // a tutor conversation. The refusal is the fix; retitling the chat is not.
+  const no = canSendInChat({ entered: TRIAGE, chat: { modelId: 'socratic-tutor' } });
+  assert.strictEqual(no.allowed, false);
+  assert.strictEqual(no.message, FOREIGN_CHAT_NOTICE);
+  assert.strictEqual(no.message, 'This chat belongs to a different assistant — start a new chat for the triage assistant.');
+});
+
+test('a supervised model answers in its own chat, and in one that does not exist yet', () => {
+  assert.deepStrictEqual(canSendInChat({ entered: TRIAGE, chat: { modelId: 'med-triage' } }), { allowed: true, message: null });
+  // No chat record yet: the first message creates one, with this model's id.
+  assert.deepStrictEqual(canSendInChat({ entered: TRIAGE, chat: null }), { allowed: true, message: null });
+  assert.deepStrictEqual(canSendInChat({ entered: TRIAGE, chat: {} }), { allowed: true, message: null });
+});
+
+test('a chat that names no model at all is refused, not assumed', () => {
+  // An empty `model_id` is a chat this cannot attribute. Refusing costs a new
+  // chat; assuming writes a triage row somewhere nobody can account for.
+  assert.strictEqual(canSendInChat({ entered: TRIAGE, chat: { modelId: '' } }).allowed, false);
+});
+
+test('TUTOR IDENTITY: an unsupervised model sends in any chat, exactly as it always did', () => {
+  for (const chat of [null, {}, { modelId: '' }, { modelId: 'med-triage' }, { modelId: 'socratic-tutor' }]) {
+    assert.deepStrictEqual(canSendInChat({ entered: TUTOR, chat }), { allowed: true, message: null });
+  }
+  assert.deepStrictEqual(canSendInChat({ entered: null, chat: { modelId: 'x' } }), { allowed: true, message: null });
+  assert.deepStrictEqual(canSendInChat({}), { allowed: true, message: null });
 });
 
 /* ---------------- the producer, closed (round 1, I2) ---------------------- */
