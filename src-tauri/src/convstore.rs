@@ -146,6 +146,33 @@
 //! touches the flag either way (it only ever CONSUMES the `1` state, never
 //! sets or clears it). Migrated the same defensive way as `model_id`/
 //! `adapter_ids` above.
+//!
+//! ## Supervised triage (P2.1 / P2.5)
+//! A `supervised` catalog entry's replies pass through the product guard
+//! (`src/triage/guard.js`) before they are shown, and three `messages`
+//! columns keep that audit trail: `guard` (the verdict as JSON — route,
+//! banner, the RAW reply, what was stripped, the detector pin),
+//! `confirmed_route` and `confirmed_at` (the health worker's decision, via
+//! [`ConvStore::confirm_route`]). All three are `NULL` for every ordinary
+//! message, so nothing about the tutor hero's rows changes — including
+//! their IPC payloads, since all three are `skip_serializing_if`-skipped
+//! when absent, exactly like `partial`. Migrated the same defensive way as
+//! the `chats` columns above.
+//!
+//! The verdict is stored, never recomputed: the human's confirmation lands
+//! in its own columns rather than overwriting `guard`, which is what lets
+//! [`ConvStore::export_triage_log`] report `overridden` (the confirmed
+//! route differing from the model's) at all.
+//!
+//! ### One assistant row per turn
+//! On mobile the front end's `append_message` and the Rust checkpointer
+//! both persisted the reply, so a supervised turn ended up as TWO assistant
+//! rows — the checkpointer's finished partial and the front end's insert.
+//! `append_message` now UPGRADES this chat's in-flight partial row when the
+//! appended role is `assistant`, so the front end's call (the only one that
+//! carries the guard verdict) lands ON the row the checkpointer already
+//! holds. A desktop append, where nothing ever checkpoints, finds no
+//! partial row and inserts exactly as before.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -181,7 +208,10 @@ CREATE TABLE IF NOT EXISTS messages (
   citations TEXT,
   tool_calls TEXT,
   created_at TEXT NOT NULL,
-  partial INTEGER NOT NULL DEFAULT 0
+  partial INTEGER NOT NULL DEFAULT 0,
+  guard TEXT,
+  confirmed_route TEXT,
+  confirmed_at TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(title, content);
 ";
@@ -195,7 +225,8 @@ const CHAT_COLUMNS: &str = "id, folder_id, title, created_at, updated_at, pinned
 /// Column list shared by every `messages` read query — same rationale as
 /// `CHAT_COLUMNS`.
 const MESSAGE_COLUMNS: &str =
-    "id, role, content, citations, tool_calls, created_at, partial";
+    "id, role, content, citations, tool_calls, created_at, partial, guard, confirmed_route, \
+     confirmed_at";
 
 /// Where a fresh per-account database is opened from — see
 /// [`ConvStore::conn_for`].
@@ -361,6 +392,13 @@ impl ConvStore {
     /// SQLite accepts on a `NOT NULL ADD COLUMN` and backfills into every
     /// existing row — and backfilling `partial = 0` is exactly right, since
     /// every message written before this column existed was a completed one.
+    ///
+    /// The three supervised-triage columns (`guard`/`confirmed_route`/
+    /// `confirmed_at`, see the module doc comment's "Supervised triage"
+    /// section) migrate the same way. All three are nullable with no
+    /// `DEFAULT`, so an existing row backfills to `NULL` — which reads back
+    /// as `None` and is exactly right: a message written before the guard
+    /// existed carries no verdict and no health-worker confirmation.
     fn migrate_messages_columns(conn: &Connection) -> Result<(), String> {
         let mut existing = std::collections::HashSet::new();
         {
@@ -380,6 +418,21 @@ impl ConvStore {
                 [],
             )
             .map_err(|e| e.to_string())?;
+        }
+        for (name, ddl) in [
+            ("guard", "ALTER TABLE messages ADD COLUMN guard TEXT"),
+            (
+                "confirmed_route",
+                "ALTER TABLE messages ADD COLUMN confirmed_route TEXT",
+            ),
+            (
+                "confirmed_at",
+                "ALTER TABLE messages ADD COLUMN confirmed_at TEXT",
+            ),
+        ] {
+            if !existing.contains(name) {
+                conn.execute(ddl, []).map_err(|e| e.to_string())?;
+            }
         }
         Ok(())
     }
@@ -785,6 +838,15 @@ impl ConvStore {
 
     /// Inserts the message, bumps the parent chat's `updated_at` (spec
     /// §7.4), and syncs `chat_fts` (see the module doc comment).
+    ///
+    /// `guard` is the product guard's verdict for a supervised reply (see
+    /// [`MessageInfo::guard`]); `None` for every ordinary message, which is
+    /// every message the tutor hero ever writes.
+    ///
+    /// An ASSISTANT append UPGRADES this chat's in-flight partial row when
+    /// one exists rather than inserting a second row — see the module doc
+    /// comment's "Supervised triage" section for the double-write this
+    /// closes.
     pub fn append_message(
         &self,
         user_id: &str,
@@ -793,17 +855,79 @@ impl ConvStore {
         content: &str,
         citations: Option<Value>,
         tool_calls: Option<Value>,
+        guard: Option<Value>,
     ) -> Result<MessageInfo, String> {
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
         let now = now_iso();
         let citations_json = citations.as_ref().map(|v| v.to_string());
         let tool_calls_json = tool_calls.as_ref().map(|v| v.to_string());
+        let guard_json = guard.as_ref().map(|v| v.to_string());
+
+        // The mobile checkpointer may already hold this turn as a partial row.
+        // Upgrade it rather than writing a second assistant row (the front end
+        // and the Rust checkpointer both persisted the reply before this, so a
+        // supervised turn landed twice). `created_at` is deliberately left as
+        // the checkpoint's — the turn was created when generation started, and
+        // returning the row's own value keeps this result equal to what the
+        // next `get_chat` reads back.
+        if role == "assistant" {
+            let partial: Option<(i64, String)> = conn
+                .query_row(
+                    "SELECT id, created_at FROM messages WHERE chat_id = ?1 AND partial = 1 \
+                     ORDER BY id DESC LIMIT 1",
+                    params![chat_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if let Some((id, created_at)) = partial {
+                conn.execute(
+                    "UPDATE messages SET content = ?1, citations = ?2, tool_calls = ?3, \
+                     guard = ?4, partial = 0 WHERE id = ?5",
+                    params![content, citations_json, tool_calls_json, guard_json, id],
+                )
+                .map_err(|e| e.to_string())?;
+
+                conn.execute(
+                    "UPDATE chats SET updated_at = ?1 WHERE id = ?2",
+                    params![now, chat_id],
+                )
+                .map_err(|e| e.to_string())?;
+
+                conn.execute(
+                    "UPDATE chat_fts SET content = content || ' ' || ?1 WHERE rowid = ?2",
+                    params![content, chat_id],
+                )
+                .map_err(|e| e.to_string())?;
+
+                return Ok(MessageInfo {
+                    id,
+                    role: role.to_string(),
+                    content: content.to_string(),
+                    citations,
+                    tool_calls,
+                    created_at,
+                    partial: false,
+                    guard,
+                    confirmed_route: None,
+                    confirmed_at: None,
+                });
+            }
+        }
 
         conn.execute(
-            "INSERT INTO messages (chat_id, role, content, citations, tool_calls, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![chat_id, role, content, citations_json, tool_calls_json, now],
+            "INSERT INTO messages (chat_id, role, content, citations, tool_calls, created_at, guard)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                chat_id,
+                role,
+                content,
+                citations_json,
+                tool_calls_json,
+                now,
+                guard_json
+            ],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
@@ -830,7 +954,109 @@ impl ConvStore {
             // `append_message` writes finished messages only; in-flight turns
             // go through `checkpoint_partial`.
             partial: false,
+            guard,
+            // A verdict is confirmed later, by the health worker, through
+            // `confirm_route` — never at append time.
+            confirmed_route: None,
+            confirmed_at: None,
         })
+    }
+
+    // ---- Supervised triage (P2.1 / P2.5) ------------------------------
+
+    /// The four routes the triage contract defines. `confirm_route` accepts
+    /// nothing else, so a typo from the front end is a clean error rather
+    /// than a fifth route silently entering the export.
+    const ROUTES: [&str; 4] = ["EMERGENCY", "CLINICIAN", "SELF_CARE", "OUT_OF_SCOPE"];
+
+    /// The health worker's decision on a supervised reply. Only assistant
+    /// rows carry a route; only the four contract routes are accepted.
+    ///
+    /// Recording a route never rewrites the model's own verdict — that
+    /// stays in `guard` — so the export can always show both and say
+    /// whether the human overrode the machine.
+    pub fn confirm_route(&self, user_id: &str, message_id: i64, route: &str) -> Result<(), String> {
+        if !Self::ROUTES.contains(&route) {
+            return Err(format!(
+                "unknown route {route}; expected one of {}",
+                Self::ROUTES.join(", ")
+            ));
+        }
+        let conn = self.conn_for(user_id)?;
+        let conn = conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE messages SET confirmed_route = ?1, confirmed_at = ?2 \
+                 WHERE id = ?3 AND role = 'assistant'",
+                params![route, now_iso(), message_id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("no assistant message with id {message_id}"));
+        }
+        Ok(())
+    }
+
+    /// One JSON line per guarded assistant message, paired with the user
+    /// turn that preceded it — the triage override log the clinical review
+    /// reads. `chat_id: None` exports every chat of this account.
+    ///
+    /// Takes no lock of its own: every read goes through `get_chat`/
+    /// `list_chats`, which each take and release the per-account
+    /// connection lock themselves.
+    pub fn export_triage_log(&self, user_id: &str, chat_id: Option<i64>) -> Result<String, String> {
+        let chats: Vec<ChatInfo> = match chat_id {
+            Some(id) => vec![self.get_chat(user_id, id)?.chat],
+            None => self.list_chats(user_id)?,
+        };
+        let mut out = String::new();
+        for chat in chats {
+            let detail = self.get_chat(user_id, chat.id)?;
+            let mut last_user: Option<String> = None;
+            for m in detail.messages {
+                if m.role == "user" {
+                    last_user = Some(m.content.clone());
+                    continue;
+                }
+                // Only a guarded reply is an audit row; an ordinary
+                // assistant turn (and any partial left by a kill) is not.
+                let Some(guard) = m.guard.as_ref() else {
+                    continue;
+                };
+                let model_route = guard
+                    .get("route")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("UNCLEAR")
+                    .to_string();
+                let overridden = m
+                    .confirmed_route
+                    .as_deref()
+                    .map(|c| c != model_route)
+                    .unwrap_or(false);
+                let line = serde_json::json!({
+                    "chat_id": chat.id,
+                    "message_id": m.id,
+                    "created_at": m.created_at,
+                    "user_text": last_user.clone().unwrap_or_default(),
+                    "raw_reply": guard.get("rawReply").cloned().unwrap_or(Value::Null),
+                    "display_text": m.content,
+                    "model_route": model_route,
+                    "banner": guard.get("banner").cloned().unwrap_or(Value::Null),
+                    "timeframe_stripped": guard.get("timeframeStripped").cloned().unwrap_or(Value::Null),
+                    "crisis_line_appended": guard.get("crisisLineAppended").cloned().unwrap_or(Value::Null),
+                    "prohibited": guard.get("prohibited").cloned().unwrap_or(Value::Null),
+                    "confirmed_route": m.confirmed_route,
+                    "confirmed_at": m.confirmed_at,
+                    "overridden": overridden,
+                    "detectors_sha": guard.get("detectorsSha").cloned().unwrap_or(Value::Null),
+                    "model_id": chat.model_id,
+                    "adapter_ids": chat.adapter_ids,
+                });
+                out.push_str(&line.to_string());
+                out.push('\n');
+            }
+        }
+        Ok(out)
     }
 
     // ---- Search -----------------------------------------------------
@@ -984,6 +1210,7 @@ fn chat_from_row(row: &rusqlite::Row) -> rusqlite::Result<ChatInfo> {
 fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
     let citations_json: Option<String> = row.get(3)?;
     let tool_calls_json: Option<String> = row.get(4)?;
+    let guard_json: Option<String> = row.get(7)?;
     Ok(MessageInfo {
         id: row.get(0)?,
         role: row.get(1)?,
@@ -992,6 +1219,11 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
         tool_calls: tool_calls_json.and_then(|s| serde_json::from_str(&s).ok()),
         created_at: row.get(5)?,
         partial: row.get::<_, i64>(6)? != 0,
+        // Same defensive read as `citations`/`tool_calls`: an unparseable
+        // verdict reads as `None` rather than failing the whole chat open.
+        guard: guard_json.and_then(|s| serde_json::from_str(&s).ok()),
+        confirmed_route: row.get(8)?,
+        confirmed_at: row.get(9)?,
     })
 }
 
@@ -1195,6 +1427,21 @@ pub struct MessageInfo {
     /// byte-identical to what they were before this column existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// The product guard's verdict on a supervised reply (`src/triage/
+    /// guard.js`): route, banner, the raw reply, what was stripped, the
+    /// detector pin. `None` for every ordinary message — and skipped when
+    /// `None`, so an unguarded message's payload stays byte-identical to
+    /// what it was before this column existed (same rule as `partial`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Value>,
+    /// The health worker's confirmed route, once chosen; `overridden` in the
+    /// export is `confirmed_route != guard.route`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_route: Option<String>,
+    /// When that confirmation was recorded (`now_iso()`), set by
+    /// [`ConvStore::confirm_route`] alongside `confirmed_route`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1424,17 +1671,13 @@ pub async fn append_message(
     content: String,
     citations: Option<Value>,
     tool_calls: Option<Value>,
+    guard: Option<Value>,
     app: AppHandle,
 ) -> Result<MessageInfo, String> {
     let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>().append_message(
-            &user_id,
-            chat_id,
-            &role,
-            &content,
-            citations,
-            tool_calls,
+            &user_id, chat_id, &role, &content, citations, tool_calls, guard,
         )
     })
     .await
@@ -1490,6 +1733,44 @@ pub async fn export_chat_to_file(
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
+/// Records the health worker's route for one supervised reply. `route` is
+/// a plain string over IPC (the four contract routes), validated in
+/// [`ConvStore::confirm_route`] — an unknown one is a clean error, never a
+/// stored value.
+#[tauri::command]
+pub async fn confirm_route(message_id: i64, route: String, app: AppHandle) -> Result<(), String> {
+    let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ConvStore>()
+            .confirm_route(&user_id, message_id, &route)
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
+/// Writes the triage override log (JSONL) to `path`, the user's own OS save
+/// choice — the same write shape as `export_chat_to_file`, and the same
+/// reasoning for one command that both formats AND writes: the only file
+/// this can write is `path`, and the only content is `export_triage_log`'s
+/// own deterministic output. `chat_id: None` exports every chat of the
+/// signed-in account.
+#[tauri::command]
+pub async fn export_triage_log_to_file(
+    chat_id: Option<i64>,
+    path: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    let user_id = current_user_id(&app).ok_or_else(|| "Sign in to export.".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let content = app
+            .state::<ConvStore>()
+            .export_triage_log(&user_id, chat_id)?;
+        std::fs::write(&path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1514,7 +1795,7 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "2+2?", None, None)
+            .append_message(USER, chat.id, "user", "2+2?", None, None, None)
             .unwrap();
 
         // Generation streams; each checkpoint advances the same row.
@@ -1573,7 +1854,7 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "keep me", None, None)
+            .append_message(USER, chat.id, "user", "keep me", None, None, None)
             .unwrap();
         store.checkpoint_partial(USER, chat.id, "throw me away").unwrap();
 
@@ -1593,10 +1874,261 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         let m = store
-            .append_message(USER, chat.id, "assistant", "done", None, None)
+            .append_message(USER, chat.id, "assistant", "done", None, None, None)
             .unwrap();
         assert!(!m.partial);
         assert!(!store.get_chat(USER, chat.id).unwrap().messages[0].partial);
+    }
+
+    // ---- Supervised triage (P2.1 / P2.5) -----------------------------
+
+    /// The verdict round-trips through the `guard` column, and an ORDINARY
+    /// message's IPC payload is unchanged — no `guard: null` appears on the
+    /// tutor hero's rows just because the column now exists (the same
+    /// `skip_serializing_if` rule `partial` already follows).
+    #[test]
+    fn guard_round_trips_and_an_unguarded_message_serialises_as_before() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let guard = json!({
+            "route": "CLINICIAN",
+            "banner": "clinician",
+            "rawReply": "See your GP today.",
+            "timeframeStripped": ["today"]
+        });
+        let plain = store
+            .append_message(USER, chat.id, "user", "hello", None, None, None)
+            .unwrap();
+        let guarded = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "See your GP.",
+                None,
+                None,
+                Some(guard.clone()),
+            )
+            .unwrap();
+        assert_eq!(guarded.guard, Some(guard));
+        assert_eq!(guarded.confirmed_route, None);
+
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(
+            v.get("guard").is_none(),
+            "an unguarded message must not grow a null field: {v}"
+        );
+
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[1].guard.as_ref().unwrap()["route"], "CLINICIAN");
+    }
+
+    #[test]
+    fn append_message_upgrades_a_partial_row_instead_of_writing_a_second_assistant_row() {
+        // On mobile the FE and the Rust checkpointer both persisted the reply
+        // (two assistant rows per turn). The FE's append must land on the
+        // partial row the checkpointer already holds.
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "q", None, None, None)
+            .unwrap();
+        let partial_id = store
+            .checkpoint_partial(USER, chat.id, "See your GP tod")
+            .unwrap();
+        let info = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "See your GP.",
+                None,
+                None,
+                Some(json!({"route": "CLINICIAN"})),
+            )
+            .unwrap();
+        assert_eq!(
+            info.id, partial_id,
+            "the partial row was upgraded, not duplicated"
+        );
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.iter().filter(|m| m.role == "assistant").count(), 1);
+        assert_eq!(msgs[1].content, "See your GP.");
+        assert!(!msgs[1].partial);
+        assert_eq!(msgs[1].guard.as_ref().unwrap()["route"], "CLINICIAN");
+    }
+
+    /// A USER append must never be diverted onto the in-flight assistant
+    /// row — the upgrade is an assistant-only path.
+    #[test]
+    fn a_user_append_never_upgrades_the_in_flight_assistant_row() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let partial_id = store.checkpoint_partial(USER, chat.id, "half").unwrap();
+        let user = store
+            .append_message(USER, chat.id, "user", "next question", None, None, None)
+            .unwrap();
+        assert_ne!(user.id, partial_id);
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs.iter().any(|m| m.role == "assistant" && m.partial));
+    }
+
+    #[test]
+    fn confirm_route_records_the_override_and_rejects_an_unknown_route() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let m = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "See your GP.",
+                None,
+                None,
+                Some(json!({"route": "CLINICIAN"})),
+            )
+            .unwrap();
+
+        store.confirm_route(USER, m.id, "EMERGENCY").unwrap();
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[0].confirmed_route.as_deref(), Some("EMERGENCY"));
+        assert!(back[0].confirmed_at.is_some());
+        // The model's own verdict is never rewritten by the confirmation.
+        assert_eq!(back[0].guard.as_ref().unwrap()["route"], "CLINICIAN");
+
+        let err = store.confirm_route(USER, m.id, "MAYBE").unwrap_err();
+        assert!(err.contains("route"), "{err}");
+    }
+
+    /// A route can only be confirmed on an assistant row, and a bad id is a
+    /// named error rather than a silent no-op.
+    #[test]
+    fn confirm_route_rejects_a_message_that_is_not_an_assistant_reply() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let u = store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+        let err = store.confirm_route(USER, u.id, "EMERGENCY").unwrap_err();
+        assert!(err.contains(&u.id.to_string()), "{err}");
+    }
+
+    #[test]
+    fn export_triage_log_pairs_each_verdict_with_the_user_turn_before_it() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(
+                USER,
+                "Triage",
+                None,
+                None,
+                "med-triage",
+                vec!["triage-armb-v8".into()],
+            )
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "chest pain down my arm",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let a = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Call 999 now.",
+                None,
+                None,
+                Some(json!({
+                    "route": "EMERGENCY",
+                    "banner": "emergency",
+                    "rawReply": "Call 999 now.",
+                    "detectorsSha": "abc"
+                })),
+            )
+            .unwrap();
+        store.confirm_route(USER, a.id, "EMERGENCY").unwrap();
+
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["user_text"], "chest pain down my arm");
+        assert_eq!(lines[0]["model_route"], "EMERGENCY");
+        assert_eq!(lines[0]["confirmed_route"], "EMERGENCY");
+        assert_eq!(lines[0]["overridden"], false);
+        assert_eq!(lines[0]["adapter_ids"][0], "triage-armb-v8");
+        assert_eq!(lines[0]["detectors_sha"], "abc");
+    }
+
+    /// An UNGUARDED chat contributes no lines, and a confirmation that
+    /// differs from the model's route is reported as an override.
+    #[test]
+    fn export_triage_log_skips_unguarded_turns_and_flags_a_real_override() {
+        let store = ConvStore::new_in_memory();
+        let plain = store
+            .create_chat(USER, "Tutor", None, None, "socratic-tutor", vec![])
+            .unwrap();
+        store
+            .append_message(USER, plain.id, "user", "teach me", None, None, None)
+            .unwrap();
+        store
+            .append_message(USER, plain.id, "assistant", "sure", None, None, None)
+            .unwrap();
+        assert_eq!(store.export_triage_log(USER, Some(plain.id)).unwrap(), "");
+
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "sore throat", None, None, None)
+            .unwrap();
+        let a = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Rest and fluids.",
+                None,
+                None,
+                Some(json!({"route": "SELF_CARE", "banner": "self-care"})),
+            )
+            .unwrap();
+        store.confirm_route(USER, a.id, "CLINICIAN").unwrap();
+
+        // Every chat of the account, not just one.
+        let log = store.export_triage_log(USER, None).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1, "only the guarded turn is an audit row");
+        assert_eq!(lines[0]["user_text"], "sore throat");
+        assert_eq!(lines[0]["model_route"], "SELF_CARE");
+        assert_eq!(lines[0]["confirmed_route"], "CLINICIAN");
+        assert_eq!(lines[0]["overridden"], true);
+        assert_eq!(lines[0]["detectors_sha"], serde_json::Value::Null);
     }
 
     /// create_chat -> append 2 messages (one with citations) -> get_chat
@@ -1610,7 +2142,7 @@ mod tests {
             .unwrap();
 
         let m1 = store
-            .append_message(USER, chat.id, "user", "hello", None, None)
+            .append_message(USER, chat.id, "user", "hello", None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc"}]);
         let m2 = store
@@ -1620,6 +2152,7 @@ mod tests {
                 "assistant",
                 "hi there",
                 Some(citations.clone()),
+                None,
                 None,
             )
             .unwrap();
@@ -1650,7 +2183,15 @@ mod tests {
             .unwrap();
 
         let m1 = store
-            .append_message(USER, chat.id, "user", "what's 2+2 and 1/0?", None, None)
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "what's 2+2 and 1/0?",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let tool_calls = json!([
             {"expression": "2+2", "display": "4"},
@@ -1664,6 +2205,7 @@ mod tests {
                 "2+2 is 4; 1/0 is undefined.",
                 None,
                 Some(tool_calls.clone()),
+                None,
             )
             .unwrap();
 
@@ -1729,7 +2271,7 @@ mod tests {
             .create_chat(USER, "Doomed chat", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "unique_marker_xyz", None, None)
+            .append_message(USER, chat.id, "user", "unique_marker_xyz", None, None, None)
             .unwrap();
 
         assert_eq!(
@@ -1775,6 +2317,7 @@ mod tests {
                 "tell me about blood clotting",
                 None,
                 None,
+                None,
             )
             .unwrap();
         let gone = store
@@ -1808,14 +2351,14 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         store
-            .append_message(USER, chat.id, "user", "first", None, None)
+            .append_message(USER, chat.id, "user", "first", None, None, None)
             .unwrap();
         let after_first = store.get_chat(USER, chat.id).unwrap().chat;
         assert!(after_first.updated_at > chat.updated_at);
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         store
-            .append_message(USER, chat.id, "assistant", "second", None, None)
+            .append_message(USER, chat.id, "assistant", "second", None, None, None)
             .unwrap();
         let after_second = store.get_chat(USER, chat.id).unwrap().chat;
         assert!(after_second.updated_at > after_first.updated_at);
@@ -1851,13 +2394,15 @@ mod tests {
     }
 
     /// Defensive migration: a per-account `.db` file created with the OLD
-    /// (pre-model_id/adapter_ids) `chats` shape — hand-built directly on
-    /// disk here, bypassing `SCHEMA_SQL` entirely — still opens cleanly the
-    /// first time `ConvStore::conn_for` touches it, and `create_chat`
-    /// against it succeeds with the new columns backfilled to their
-    /// defaults rather than erroring on the missing columns. This exercises
-    /// the REAL open path (`ConvStore::new` + a real directory), not just
-    /// `migrate_chats_columns` in isolation.
+    /// (pre-model_id/adapter_ids) `chats` shape AND the old (pre-partial,
+    /// pre-guard) `messages` shape — both hand-built directly on disk here,
+    /// bypassing `SCHEMA_SQL` entirely — still opens cleanly the first time
+    /// `ConvStore::conn_for` touches it, and `create_chat`/`get_chat`/
+    /// `append_message` against it succeed with the new columns backfilled
+    /// to their defaults rather than erroring on the missing columns. This
+    /// exercises the REAL open path (`ConvStore::new` + a real directory),
+    /// not just `migrate_chats_columns`/`migrate_messages_columns` in
+    /// isolation.
     #[test]
     fn t8_migrates_an_existing_per_account_db_missing_the_new_columns() {
         let dir = std::env::temp_dir().join(format!(
@@ -1873,12 +2418,31 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             conn.execute_batch(
-                "CREATE TABLE chats (
+                // `folders` too, because the bundled SQLite has
+                // `SQLITE_DEFAULT_FOREIGN_KEYS` on: `chats.folder_id`'s
+                // parent table has to exist before a row can be inserted.
+                "CREATE TABLE folders (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE chats (
                     id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
                     title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
                     mounted_packs TEXT
-                );",
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY,
+                    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL, content TEXT NOT NULL,
+                    citations TEXT,
+                    tool_calls TEXT,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO chats (id, title, created_at, updated_at, pinned, archived)
+                    VALUES (1, 'Old chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0);
+                INSERT INTO messages (chat_id, role, content, created_at)
+                    VALUES (1, 'assistant', 'written before the guard', '2026-01-01T00:00:01Z');",
             )
             .unwrap();
         }
@@ -1889,6 +2453,36 @@ mod tests {
             .unwrap();
         assert_eq!(chat.model_id, "hero-llama");
         assert!(chat.adapter_ids.is_empty());
+
+        // A `messages` row written before `partial`/`guard`/
+        // `confirmed_route`/`confirmed_at` existed still reads back: the
+        // migration backfilled it to no verdict and no confirmation, which
+        // is exactly what a pre-guard message carries.
+        let old = store.get_chat(USER, 1).unwrap();
+        assert_eq!(old.chat.title, "Old chat");
+        assert_eq!(old.messages.len(), 1);
+        assert_eq!(old.messages[0].content, "written before the guard");
+        assert!(!old.messages[0].partial);
+        assert!(old.messages[0].guard.is_none());
+        assert!(old.messages[0].confirmed_route.is_none());
+        assert!(old.messages[0].confirmed_at.is_none());
+
+        // ...and the migrated table takes a guarded write straight away.
+        let m = store
+            .append_message(
+                USER,
+                1,
+                "assistant",
+                "Call 999 now.",
+                None,
+                None,
+                Some(json!({"route": "EMERGENCY"})),
+            )
+            .unwrap();
+        store.confirm_route(USER, m.id, "EMERGENCY").unwrap();
+        let after = store.get_chat(USER, 1).unwrap().messages;
+        assert_eq!(after[1].guard.as_ref().unwrap()["route"], "EMERGENCY");
+        assert_eq!(after[1].confirmed_route.as_deref(), Some("EMERGENCY"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1930,6 +2524,7 @@ mod tests {
                 a_chat.id,
                 "user",
                 "a_secret_marker_only_a_should_see",
+                None,
                 None,
                 None,
             )
@@ -2021,7 +2616,15 @@ mod tests {
             .create_chat(USER, "Export me", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "What is vitamin K?", None, None)
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "What is vitamin K?",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let citations = json!([{
             "n": 1, "packId": "p1", "chunkId": 3,
@@ -2034,6 +2637,7 @@ mod tests {
                 "assistant",
                 "It helps blood clot.",
                 Some(citations),
+                None,
                 None,
             )
             .unwrap();
@@ -2059,7 +2663,7 @@ mod tests {
             .create_chat(USER, "JSON export", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "hi", None, None)
+            .append_message(USER, chat.id, "user", "hi", None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc"}]);
         store
@@ -2069,6 +2673,7 @@ mod tests {
                 "assistant",
                 "hello",
                 Some(citations.clone()),
+                None,
                 None,
             )
             .unwrap();
@@ -2093,11 +2698,19 @@ mod tests {
             .create_chat(USER, "Txt export", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "hi", None, None)
+            .append_message(USER, chat.id, "user", "hi", None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc", "locator": "p.1"}]);
         store
-            .append_message(USER, chat.id, "assistant", "hello", Some(citations), None)
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "hello",
+                Some(citations),
+                None,
+                None,
+            )
             .unwrap();
 
         let txt = store.export_chat(USER, chat.id, ExportFormat::Txt).unwrap();
@@ -2117,10 +2730,10 @@ mod tests {
             .create_chat(USER, "Deterministic", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "one", None, None)
+            .append_message(USER, chat.id, "user", "one", None, None, None)
             .unwrap();
         store
-            .append_message(USER, chat.id, "assistant", "two", None, None)
+            .append_message(USER, chat.id, "assistant", "two", None, None, None)
             .unwrap();
 
         for format in [ExportFormat::Markdown, ExportFormat::Json, ExportFormat::Txt] {
@@ -2150,6 +2763,7 @@ mod tests {
                 a_chat.id,
                 "user",
                 "a_secret_marker_only_a_should_see",
+                None,
                 None,
                 None,
             )

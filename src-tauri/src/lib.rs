@@ -387,6 +387,8 @@ pub fn run() {
             convstore::append_message,
             convstore::search_chats,
             convstore::export_chat_to_file,
+            convstore::confirm_route,
+            convstore::export_triage_log_to_file,
             chat_cmds::chat_stream,
             chat_cmds::chat_complete,
             chat_cmds::chat_cancel,
