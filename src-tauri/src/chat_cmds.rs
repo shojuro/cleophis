@@ -175,12 +175,26 @@ mod imp {
         }
     }
 
+    /// The wire turns as the inference loop wants them, with the calc tool
+    /// contract appended to the system turn.
+    ///
+    /// P2.9: an entry whose catalog declares `"tools": false` gets NO preamble
+    /// and no synthesised system turn — its system content is the frontend's,
+    /// verbatim. That is not a tidiness preference. The supervised triage
+    /// entry was gated with exactly the catalog's `systemPrompt` as its only
+    /// system content, so a tool contract silently appended on device would
+    /// make the shipped context a different one from the gated context.
+    /// `tools` unset means the historical behaviour, so the tutor is
+    /// unaffected.
     fn to_loop_messages(app: &AppHandle, wire: Vec<WireMessage>) -> Vec<LoopMessage> {
         let mut out: Vec<LoopMessage> = Vec::with_capacity(wire.len() + 1);
-        let preamble =
+        let preamble = if crate::inference::hero_tools_enabled(app) {
             crate::engine_tools::tools_preamble(tool_family(
                 crate::engine_inproc::current_template(app),
-            ));
+            ))
+        } else {
+            String::new()
+        };
 
         let mut injected = false;
         for m in wire {
@@ -200,7 +214,10 @@ mod imp {
             };
             out.push(LoopMessage { role, content });
         }
-        if !injected {
+        // With tools off there is nothing to carry, so a conversation that
+        // arrived without a system turn keeps arriving without one — inserting
+        // an empty system message would add a turn the gate never saw.
+        if !injected && !preamble.is_empty() {
             out.insert(
                 0,
                 LoopMessage {
