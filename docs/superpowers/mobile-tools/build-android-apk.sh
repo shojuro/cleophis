@@ -8,6 +8,9 @@
 # Usage:
 #   docs/superpowers/mobile-tools/build-android-apk.sh            # debug APK, aarch64
 #   docs/superpowers/mobile-tools/build-android-apk.sh --release  # release APK
+#   docs/superpowers/mobile-tools/build-android-apk.sh --variant=triage
+#       # the supervised medical-triage build: catalog.triage.json is swapped in
+#       # as resources/catalog.json for this build only, and restored on exit.
 #
 # Notes:
 #   - Rust target dir is WSL-native (drvfs is 5-10x slower and breaks builds).
@@ -22,10 +25,18 @@ set -euo pipefail
 
 MODE="debug"
 TAURI_FLAGS=("--debug")
-if [ "${1:-}" = "--release" ]; then
-  MODE="release"
-  TAURI_FLAGS=()
-fi
+VARIANT="tutor"
+for a in "$@"; do
+  case "$a" in
+    --release) MODE="release"; TAURI_FLAGS=() ;;
+    --variant=*) VARIANT="${a#--variant=}" ;;
+    *) echo "unknown flag: $a" >&2; exit 2 ;;
+  esac
+done
+case "$VARIANT" in
+  tutor|triage) ;;
+  *) echo "unknown variant: $VARIANT (expected tutor or triage)" >&2; exit 2 ;;
+esac
 
 export CARGO_TARGET_DIR=/home/$USER/cleophis-mobile-target
 
@@ -100,10 +111,40 @@ record_provenance() {
   } >> "$PROV"
 }
 
-echo "== building $MODE APK (aarch64) =="
+echo "== building $MODE APK (aarch64), variant $VARIANT =="
 echo "== log: $LOG =="
 echo "== provenance: $PROV =="
 cd "$ROOT"
+
+# ── Catalog variant ───────────────────────────────────────────────────────
+# The app reads its catalog from `resources_root(app)/catalog.json` at runtime
+# and `include_bytes!`es that same path into the Android binary, so a variant
+# cannot be a second file the build picks between -- it has to BE that path for
+# the duration of the build. The swap therefore happens here, before the PRE
+# checkpoint, so the provenance sidecar's `porcelain` records the tree the
+# compiler actually saw: a build whose catalog was swapped reports a dirty
+# `resources/catalog.json`, and one whose swap silently failed does not.
+#
+# The trap restores on EVERY exit path -- `set -e` aborts and Ctrl-C included.
+# Leaving the triage catalog installed as `catalog.json` would make the next
+# ordinary build a triage build without saying so.
+CAT="$ROOT/src-tauri/resources/catalog.json"
+# Idempotent, so the interrupt traps and the EXIT trap can both fire without
+# the second one failing on an already-moved backup.
+restore_catalog() {
+  if [ -f "$CAT.tutor.bak" ]; then
+    mv -f "$CAT.tutor.bak" "$CAT"
+    echo "== variant: resources/catalog.json restored =="
+  fi
+}
+if [ "$VARIANT" = "triage" ]; then
+  cp "$CAT" "$CAT.tutor.bak"
+  cp "$ROOT/src-tauri/resources/catalog.triage.json" "$CAT"
+  trap restore_catalog EXIT
+  trap 'restore_catalog; exit 130' INT
+  trap 'restore_catalog; exit 143' TERM
+  echo "== variant: triage (catalog.triage.json swapped in for this build) =="
+fi
 
 record_provenance PRE
 
@@ -135,6 +176,7 @@ record_provenance POST
 {
   echo "[ARTIFACT]"
   echo "tauri_exit     $STATUS"
+  echo "variant        $VARIANT"
   while IFS= read -r apk; do
     [ -n "$apk" ] || continue
     echo "path           $apk"
