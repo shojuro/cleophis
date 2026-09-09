@@ -19,7 +19,11 @@
 //      the reply is replaced by the fixed note — see `unlocatedTimeFrame`;
 //   4. crisis — if the USER's words disclose self-harm and the reply does not
 //      signpost, the product's own crisis block is appended (R15: additional to
-//      the route, never instead of it).
+//      the route, never instead of it);
+//   5. the screen check — LAST, on the finished text, crisis block and all. The
+//      block is product text and nothing above rewrites it, so a check that ran
+//      before the append would be the one rule that looks for a time frame,
+//      looking at text that is not what a person sees.
 import {
   NUMBER_WORDS, ROUTE, URGENCY, detectCrisisResponse, detectCrisisStatement,
   detectMedication, detectNamedDiagnosis, detectRoute,
@@ -159,11 +163,12 @@ export function unlocatedTimeFrame(route, displayText) {
  *   displayText         what reaches the screen
  *   rawReply            what the model said, whatever was removed for display
  *   timeframeStripped   every time-frame phrase removed, as written
- *   timeframeUnlocated  a stated time frame survived the strip and the
- *                       prohibited filter and is still on the screen text, on a
- *                       CLINICIAN route. displayText is then TIME_FRAME_NOTE
- *                       alone: a referral whose timing this module could not
- *                       remove shows no sentence at all. Fail toward showing
+ *   timeframeUnlocated  a stated time frame survived everything above and is
+ *                       still on the FINISHED screen text — crisis block and
+ *                       all — on a CLINICIAN route. displayText is then
+ *                       TIME_FRAME_NOTE, plus the crisis block if one was due:
+ *                       a referral whose timing this module could not remove
+ *                       shows no model sentence at all. Fail toward showing
  *                       less. See `unlocatedTimeFrame`.
  *   crisisOnInput       the USER's words disclosed self-harm (Task 4)
  *   crisisLineAppended  the product's crisis block was added (Task 4)
@@ -186,27 +191,37 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
     if (timeframeStripped.length) display = tidy(`${display}${TIME_FRAME_NOTE}`);
   }
 
-  // Belt to the strip's braces, and asked of the FINISHED screen text rather
-  // than of the strip's own result — see `unlocatedTimeFrame` for why those are
-  // different questions. True means a stated time frame survived everything
-  // above on a CLINICIAN route, so no model sentence is shown at all and the
-  // fixed note stands alone; `rawReply` keeps every word for the log.
-  //
-  // TIME_FRAME_NOTE carries a leading space because it is written as a suffix;
-  // `tidy` takes it off when it stands by itself.
-  const timeframeUnlocated = unlocatedTimeFrame(routing.route, display);
-  if (timeframeUnlocated) display = tidy(TIME_FRAME_NOTE);
-
   if (routing.route === ROUTE.UNCLEAR) {
     display = tidy(`${display} ${BANNERS.out_of_scope.line}`);
   }
 
+  // Task 4 owns WHAT the crisis block says and when it is due. The ORDER is
+  // owned here and is an invariant rather than a preference: the block goes on
+  // BEFORE the screen check below, because it is product text that nothing above
+  // rewrites, and a check that ran before the append would be the only rule
+  // looking for a time frame, looking at text that is not what a person sees.
+  // Anything Task 4 adds to `display` belongs above that check for that reason.
   const crisisOnInput = detectCrisisStatement(userText).found;
-  let crisisLineAppended = false;
-  if (crisisOnInput && detectCrisisResponse(raw).signposted.length === 0) {
-    display = `${display}\n\n${crisisLine}`;
-    crisisLineAppended = true;
-  }
+  const crisisLineAppended = crisisOnInput && detectCrisisResponse(raw).signposted.length === 0;
+  const withCrisisBlock = (text) => (crisisLineAppended ? `${text}\n\n${crisisLine}` : text);
+  display = withCrisisBlock(display);
+
+  // THE SCREEN CHECK, LAST, on the finished text — see `unlocatedTimeFrame` for
+  // why it asks about the screen rather than about what the strip removed. True
+  // means a stated time frame survived everything above on a CLINICIAN route, so
+  // the model's sentence is not shown at all; `rawReply` keeps every word.
+  //
+  // The fallback re-attaches the crisis block rather than replacing it. R15 makes
+  // that block additional to the route and never instead of it, so it is not
+  // something a later rule may silently delete — and if the BLOCK's own wording
+  // is what the check saw, the flag stays true of what is shown, which is the
+  // operator's signal to reword their crisis line. This module does not solve a
+  // bad crisis line by removing a self-harm signpost.
+  //
+  // TIME_FRAME_NOTE carries a leading space because it is written as a suffix;
+  // `tidy` takes it off when it stands by itself.
+  const timeframeUnlocated = unlocatedTimeFrame(routing.route, display);
+  if (timeframeUnlocated) display = withCrisisBlock(tidy(TIME_FRAME_NOTE));
 
   return {
     route: routing.route,

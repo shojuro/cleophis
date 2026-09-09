@@ -409,7 +409,13 @@ test('a located time frame leaves the referral on screen with the note appended,
 
 // The safety property this whole task exists for, stated positively and in the
 // scorer's own terms, over every CLINICIAN shape the suite knows about.
-test('no CLINICIAN reply leaves a stated time frame on the screen', () => {
+//
+// SCOPE, AND IT IS IN THE NAME: this proves the property for the time frames
+// URGENCY recognises, which is the same set the probes score. A phrasing the
+// scorer cannot see ("within twenty-four hours", "in a couple of days") is not
+// covered here and is not meant to be — those are detector defects D3/D4 on the
+// deferred register (spec A20), to be repaired upstream in the triage repo.
+test('no CLINICIAN reply leaves a stated time frame on the screen, for every time frame the scorer recognises', () => {
   const replies = [
     'Please see your GP within the next 48 hours.',
     'Please see your GP within the next two days.',
@@ -467,4 +473,61 @@ test('the alarm fires end to end when the single-pass strip JOINS two fragments 
   assert.strictEqual(v.displayText, TIME_FRAME_NOTE.trim(), 'so no model sentence is shown');
   assert.strictEqual(v.rawReply, reply, 'and the log still has every word of it');
   assert.strictEqual(detectRoute(v.displayText).statedUrgency, false, 'the screen states no time frame');
+});
+
+// ── The screen check runs LAST, after the crisis block ──────────────────────
+//
+// The crisis block is PRODUCT text appended after everything else, so if it were
+// appended after the screen check it could put a time frame back on a CLINICIAN
+// screen past the only rule that looks for one. The check therefore runs on the
+// finished text. Task 4 owns what the block says; these pin the ordering.
+
+test('CRISIS_BLOCK_DEFAULT states no time frame, so appending it cannot blank the reply it was added to', () => {
+  assert.strictEqual(detectRoute(CRISIS_BLOCK_DEFAULT).statedUrgency, false);
+  assert.strictEqual(unlocatedTimeFrame('CLINICIAN', CRISIS_BLOCK_DEFAULT), false);
+});
+
+test('the default crisis block on a CLINICIAN reply leaves the referral and the block both standing', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Please see your GP within three days.',
+  });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.crisisOnInput, true);
+  assert.strictEqual(v.crisisLineAppended, true);
+  assert.strictEqual(v.timeframeUnlocated, false);
+  assert.ok(v.displayText.startsWith(`Please see your GP.${TIME_FRAME_NOTE}`), v.displayText);
+  assert.ok(v.displayText.includes(CRISIS_BLOCK_DEFAULT), 'R15: the block is additional, and it is there');
+  assert.strictEqual(detectRoute(v.displayText).statedUrgency, false, 'nothing on screen states a time frame');
+});
+
+test('a crisis block worded with a time frame is seen by the check, and the block still survives it', () => {
+  // The case the ordering exists to catch: the block is caller-supplied product
+  // text, so a badly worded one can state a time frame that no earlier rule
+  // touches. The check runs after the append and sees it.
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Please see your GP so they can examine you.',
+    crisisLine: 'Please call the crisis line within 2 days.',
+  });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.crisisLineAppended, true);
+  assert.strictEqual(v.timeframeUnlocated, true, 'the check ran after the append and saw it');
+  assert.strictEqual(/examine you/i.test(v.displayText), false, 'the model sentence is not shown');
+  assert.ok(v.displayText.startsWith(TIME_FRAME_NOTE.trim()), v.displayText);
+  assert.ok(v.displayText.includes('Please call the crisis line within 2 days.'),
+    'R15: a self-harm signpost is never something a later rule deletes');
+  assert.strictEqual(v.rawReply, 'Please see your GP so they can examine you.');
+});
+
+test('the crisis block is kept by the fallback on the ordinary unlocated path too', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore and my stomach hurts",
+    replyText: 'Please see your GP for a same today day appointment.',
+  });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.timeframeUnlocated, true);
+  assert.strictEqual(v.crisisLineAppended, true);
+  assert.ok(v.displayText.startsWith(TIME_FRAME_NOTE.trim()), v.displayText);
+  assert.ok(v.displayText.includes(CRISIS_BLOCK_DEFAULT), 'the block outlives the fallback');
 });
