@@ -398,6 +398,7 @@ pub fn run() {
             chat_cmds::chat_stage5_probe,
             mobile_native::network_state,
             mobile_native::share_chat,
+            mobile_native::share_triage_log,
             mobile_native::set_screen_privacy
         ])
         .on_window_event(|window, event| {

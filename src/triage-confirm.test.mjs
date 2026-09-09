@@ -170,11 +170,15 @@ test('supervised must be exactly true — a truthy value does not arm the UI', (
   }
 });
 
-test('an unsupervised chat is offered no triage-log export', () => {
-  assert.strictEqual(triageExportPlan({ supervised: false, isMobile: false, chatId: 3 }).kind, 'none');
-  assert.strictEqual(offersTriageExport({ supervised: false, isMobile: false }), false);
-  for (const supervised of [1, 'yes', undefined, null]) {
-    assert.strictEqual(offersTriageExport({ supervised, isMobile: false }), false);
+test('an unsupervised chat is offered no triage-log export, on either platform', () => {
+  // Now that mobile HAS a destination, the supervised check is the only thing
+  // keeping an ordinary chat's menu clean — assert it on both platforms.
+  for (const isMobile of [false, true]) {
+    assert.strictEqual(triageExportPlan({ supervised: false, isMobile, chatId: 3 }).kind, 'none');
+    assert.strictEqual(offersTriageExport({ supervised: false, isMobile, chatId: 3 }), false);
+    for (const supervised of [1, 'yes', undefined, null]) {
+      assert.strictEqual(offersTriageExport({ supervised, isMobile, chatId: 3 }), false);
+    }
   }
 });
 
@@ -267,19 +271,19 @@ test('a reply with no persisted row id sends nothing', () => {
   assert.strictEqual(confirmRequest({ message: null, route: 'EMERGENCY' }), null);
 });
 
-test('confirm_route returns nothing today, so the accepted route is what is reflected', () => {
-  // `convstore::confirm_route` is `Result<(), String>`: the resolve value over
-  // IPC is `null`. It resolved, so the store took the route — that is what the
-  // screen shows. `confirmedAt` is the store's clock and stays unknown until the
-  // chat is reopened, which is where the export reads it from anyway.
+test('a resolve value of null still reflects the route that was accepted', () => {
+  // Not the normal path since P2.5 — but a confirmation that RESOLVED did
+  // record the route, so a caller with no row to read still reflects it, and
+  // `confirmedAt` (the store's clock) is honestly unknown rather than invented.
   assert.deepStrictEqual(confirmResult(null, 'EMERGENCY'), { confirmedRoute: 'EMERGENCY', confirmedAt: null });
   assert.deepStrictEqual(confirmResult(undefined, 'SELF_CARE'), { confirmedRoute: 'SELF_CARE', confirmedAt: null });
 });
 
-test('a MessageInfo coming back wins over the route that was asked for', () => {
-  // If the command is ever changed to return the row (the shape `attach_guard`
-  // already returns), the store's own values are the truth and this needs no
-  // second change.
+test('the MessageInfo confirm_route now returns wins over the route that was asked for', () => {
+  // `convstore::confirm_route` returns the updated row (the shape
+  // `attach_guard` already returned). The store's own values are the truth —
+  // `confirmedAt` above all, which the front end cannot compute — so the banner
+  // is right without reopening the chat.
   assert.deepStrictEqual(
     confirmResult({ id: 42, confirmedRoute: 'CLINICIAN', confirmedAt: '2026-09-10T11:00:00+01:00' }, 'EMERGENCY'),
     { confirmedRoute: 'CLINICIAN', confirmedAt: '2026-09-10T11:00:00+01:00' },
@@ -306,16 +310,45 @@ test('a chat id of null exports every chat of the account', () => {
   assert.deepStrictEqual(triageExportPlan({ supervised: true, isMobile: false }).args, { chatId: null });
 });
 
-test('mobile has no destination for the triage log, and says so instead of failing', () => {
-  // `share_chat` is the phone's export destination and it formats through
-  // `convstore::export_chat` — markdown/json/txt only. `dialog.save` on Android
-  // hands back a `content://` URI, which `export_triage_log_to_file`'s
-  // `std::fs::write` cannot write to. Until a share command exists for this
-  // file, the entry is not offered and the reason is stated in one place.
-  const plan = triageExportPlan({ supervised: true, isMobile: true, chatId: 12 });
+test('a supervised chat on Android is shared through share_triage_log', () => {
+  // The phone's destination is the share sheet, not a file picker. `share_chat`
+  // could not carry this file (it formats through `convstore::export_chat` —
+  // markdown/json/txt), and `dialog.save` on Android hands back a `content://`
+  // URI that `export_triage_log_to_file`'s `std::fs::write` cannot write to.
+  // `share_triage_log` closed both gaps.
+  const plan = triageExportPlan({ supervised: true, isMobile: true, chatId: 12, title: 'Chest pain' });
+  assert.strictEqual(plan.kind, 'share');
+  assert.strictEqual(plan.command, 'share_triage_log');
+  assert.strictEqual(plan.message, null);
+  // The chat id and the chooser's title, nothing else — no path, because Rust
+  // launches the chooser, and no format, because there is only one.
+  assert.deepStrictEqual(plan.args, { chatId: 12, title: 'Chest pain' });
+  assert.strictEqual(offersTriageExport({ supervised: true, isMobile: true, chatId: 12 }), true);
+});
+
+test('an untitled chat still shares under a usable name', () => {
+  // Rust sanitises the title into the filename (`safe_file_stem`), but an empty
+  // string sanitises to the same fallback the chooser would show as blank — so
+  // the seam supplies one rather than shipping an empty chooser label.
+  for (const title of ['', null, undefined]) {
+    assert.deepStrictEqual(
+      triageExportPlan({ supervised: true, isMobile: true, chatId: 3, title }).args,
+      { chatId: 3, title: 'chat' },
+    );
+  }
+});
+
+test('exporting every chat at once stays desktop-only, and says why', () => {
+  // `share_triage_log`'s `chat_id` is an `i64`, deliberately not an `Option`:
+  // a chooser must not be able to hand every supervised conversation the
+  // account has to whatever app is tapped next. Desktop keeps the all-chats
+  // export because the reviewer picks a file and can inspect it first.
+  const plan = triageExportPlan({ supervised: true, isMobile: true, chatId: null, title: 'x' });
   assert.strictEqual(plan.kind, 'unavailable');
   assert.strictEqual(plan.message, TRIAGE_EXPORT_UNAVAILABLE);
-  assert.strictEqual(offersTriageExport({ supervised: true, isMobile: true }), false);
+  assert.strictEqual(offersTriageExport({ supervised: true, isMobile: true, chatId: null }), false);
+  // ...and it is refused HERE, never sent on to fail as an IPC type error.
+  assert.strictEqual(plan.command, undefined);
 });
 
 test('the menu entry names the file format it writes', () => {

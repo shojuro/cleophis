@@ -18,7 +18,8 @@
 //      are locked (a confirmation already recorded);
 //   3. WHAT THE RECEIPT SAYS — the sentences the guard removed, quoted as
 //      written, plus what it added, because a reader cannot see either;
-//   4. what to do with `confirm_route`'s return value, which today is nothing;
+//   4. what to do with `confirm_route`'s return value — since P2.5 the updated
+//      row, whose own `confirmedAt` the front end cannot compute;
 //   5. whether the triage-log export is offered at all, and with which
 //      arguments — the front end picks a destination and reshapes no bytes.
 //
@@ -218,16 +219,17 @@ export function confirmRequest({ message = null, route = null } = {}) {
 /**
  * What was recorded, from whatever `confirm_route` handed back.
  *
- * TODAY IT HANDS BACK NOTHING. `convstore::confirm_route` is
- * `Result<(), String>` (convstore.rs:1859), so the resolve value over IPC is
- * `null`. It RESOLVED, which is the store saying it took the route — so the
- * route the health worker chose is what the screen reflects, and `confirmedAt`
- * (the store's own clock) stays unknown until the chat is reopened, which is
- * also the only place the export ever reads it from.
+ * IT HANDS BACK THE ROW. Since P2.5 `convstore::confirm_route` returns the
+ * updated `MessageInfo` — the shape `attach_guard` already returned, camelCase
+ * `confirmedRoute`/`confirmedAt` — read back under the same lock as the
+ * `UPDATE`. So the store's own values win here, including `confirmedAt`, which
+ * is the store's clock and cannot be computed by a caller. Before that the
+ * banner could only show it after the chat was reopened.
  *
- * If that command is ever changed to return the row — the `MessageInfo` shape
- * `attach_guard` already returns, camelCase `confirmedRoute`/`confirmedAt` — the
- * store's own values win here with no second change anywhere.
+ * The fallback stays, and is not dead code: it is what makes this correct
+ * against a resolve value of `null` — an older build, or any future caller
+ * that has the route but no row. A confirmation that resolved DID record the
+ * route, so reflecting the requested one is right even with nothing to read.
  */
 export function confirmResult(result, requestedRoute) {
   const info = result && typeof result === 'object' ? result : null;
@@ -240,8 +242,18 @@ export function confirmResult(result, requestedRoute) {
 /* ---------------- the triage-log export ---------------- */
 
 export const TRIAGE_EXPORT_LABEL = 'Triage log (JSONL)';
+/**
+ * The ONE case a phone still cannot serve, now that `share_triage_log` exists:
+ * every chat's log at once.
+ *
+ * That is not an oversight. `share_triage_log` takes `chat_id: i64`, not an
+ * `Option`, precisely so a share sheet cannot hand every supervised
+ * conversation an account has ever had to whatever app is tapped next — see
+ * the command's own doc comment. Desktop keeps the all-chats export because
+ * there the destination is a file the reviewer picked and can inspect first.
+ */
 export const TRIAGE_EXPORT_UNAVAILABLE =
-  'The triage log can only be exported from the desktop app.';
+  'Exporting every triage log at once is desktop-only. Open a chat to share its log.';
 
 /** `export_triage_log(user, None)` walks every chat; the name says which. */
 export function triageLogFileName(chatId) {
@@ -253,21 +265,44 @@ export function triageLogFileName(chatId) {
  *
  *   'none'         not a supervised chat. The menu entry does not exist.
  *   'save'         desktop: the OS save sheet, then Task 7's command.
- *   'unavailable'  a supervised chat on a phone.
+ *   'share'        Android: the share sheet, via `share_triage_log`.
+ *   'unavailable'  every chat at once, asked for on a phone. See
+ *                  `TRIAGE_EXPORT_UNAVAILABLE`.
  *
- * WHY MOBILE HAS NO DESTINATION, stated here so it is in one place rather than
- * discovered again: `exportChat`'s mobile branch goes to `share_chat`, which
- * formats through `convstore::export_chat` and accepts markdown/json/txt only —
- * it cannot carry this file. And `dialog.save` on Android is
- * `ACTION_CREATE_DOCUMENT`, which hands back a `content://` URI that
- * `export_triage_log_to_file`'s `std::fs::write` cannot write to. Both fixes are
- * Rust (a `share_triage_log` beside `share_chat`), so until one exists the entry
- * is not offered and the reason is not a mystery. Flip `offersTriageExport` to
- * accept 'unavailable' — or make this return 'share' — the day it lands.
+ * THE SINGLE SEAM. Both platforms end at a Rust command that takes the chat id
+ * and adds only a destination — a path the save sheet chose, or the chooser
+ * Rust itself launches. The front end reshapes not one byte: every byte is
+ * `convstore::export_triage_log`'s on both paths, so the file a health worker
+ * shares off a phone is the file a reviewer saves on a desktop.
+ *
+ * Mobile was 'unavailable' outright until P2.5 added `share_triage_log`:
+ * `share_chat` formats through `convstore::export_chat` (markdown/json/txt) and
+ * could not carry this file, and `dialog.save` on Android hands back a
+ * `content://` URI that `export_triage_log_to_file`'s `std::fs::write` cannot
+ * write to. The Rust command closed both gaps at once.
  */
-export function triageExportPlan({ supervised = false, isMobile = false, chatId = null } = {}) {
+export function triageExportPlan({
+  supervised = false,
+  isMobile = false,
+  chatId = null,
+  title = '',
+} = {}) {
   if (supervised !== true) return { kind: 'none', message: null };
-  if (isMobile) return { kind: 'unavailable', message: TRIAGE_EXPORT_UNAVAILABLE };
+  if (isMobile) {
+    // `share_triage_log`'s `chat_id` is an `i64`, so there is no null to pass
+    // — deliberately, so a chooser cannot be handed the whole account. A
+    // missing id is refused here with the reason rather than sent on to fail
+    // as an IPC deserialization error.
+    if (chatId == null) return { kind: 'unavailable', message: TRIAGE_EXPORT_UNAVAILABLE };
+    return {
+      kind: 'share',
+      message: null,
+      command: 'share_triage_log',
+      // The title is the chooser's label and the shared file's stem; Rust
+      // sanitises it (`safe_file_stem`) before it becomes a filename.
+      args: { chatId, title: title || 'chat' },
+    };
+  }
   return {
     kind: 'save',
     message: null,
@@ -281,7 +316,20 @@ export function triageExportPlan({ supervised = false, isMobile = false, chatId 
   };
 }
 
-/** Whether the export menu shows the entry at all. */
-export function offersTriageExport({ supervised = false, isMobile = false } = {}) {
-  return triageExportPlan({ supervised, isMobile }).kind === 'save';
+/**
+ * Whether the export menu shows the entry for this chat.
+ *
+ * Accepts BOTH destinations rather than testing for 'save'. Testing for the
+ * one kind is exactly what hid the entry on mobile while `share_triage_log`
+ * did not exist, and it would hide it again the next time a platform gains a
+ * destination — so this asks "is there somewhere for it to go", which is the
+ * actual question, and stays correct without being edited.
+ *
+ * Takes the chat id for the same reason: on mobile the answer genuinely
+ * depends on it (a row has one, the all-chats export does not), so answering
+ * without it would offer an entry whose click then refuses.
+ */
+export function offersTriageExport({ supervised = false, isMobile = false, chatId = null } = {}) {
+  const { kind } = triageExportPlan({ supervised, isMobile, chatId });
+  return kind === 'save' || kind === 'share';
 }

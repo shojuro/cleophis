@@ -1159,10 +1159,11 @@ function chatRowHtml(c, opts) {
   const moveOpen = state.sidebar.moveMenuFor === c.id;
   const exportOpen = state.sidebar.exportMenuFor === c.id;
   // Task 8: the triage override log, offered only for a supervised chat — and
-  // only where there is somewhere to put the file (see `triageExportPlan` for
-  // why that is desktop-only today). A module constant with no markup in it,
-  // escaped anyway so this template has one rule and no exceptions.
-  const triageExport = offersTriageExport({ supervised: chatEntryOf(c)?.supervised === true, isMobile: IS_MOBILE })
+  // only where there is somewhere to put the file (the save sheet on desktop,
+  // the share sheet on Android since P2.5; see `triageExportPlan`). A module
+  // constant with no markup in it, escaped anyway so this template has one
+  // rule and no exceptions.
+  const triageExport = offersTriageExport({ supervised: chatEntryOf(c)?.supervised === true, isMobile: IS_MOBILE, chatId: c.id })
     ? `<button class="movemenu-item" data-act="export-triage">${escapeHtml(TRIAGE_EXPORT_LABEL)}</button>`
     : '';
   return `
@@ -1357,9 +1358,10 @@ async function openChat(id) {
     // tutor chat re-hydrates exactly as it did before.
     guard: msg.guard || undefined,
     confirmedRoute: msg.confirmedRoute || undefined,
-    // The store's own clock for that confirmation. It reaches the screen only
-    // here: `confirm_route` returns nothing, so a confirmation made in this
-    // session shows its route without a time until the chat is reopened.
+    // The store's own clock for that confirmation. Since P2.5 this is no
+    // longer the only way it reaches the screen — `confirm_route` returns the
+    // updated row, so a confirmation made in this session shows its time
+    // immediately. This is still where a REOPENED chat gets it.
     confirmedAt: msg.confirmedAt || undefined,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
     // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
@@ -1788,8 +1790,8 @@ function renderConfirm(bubbleEl, msg, supervised) {
     const done = document.createElement('div');
     done.className = 'triage-confirmed';
     done.textContent = st.statusText;
-    // The store's timestamp, once the chat has been reopened and read it back
-    // — `confirm_route` itself returns nothing today (see `confirmResult`).
+    // The store's timestamp, from the row `confirm_route` now returns (see
+    // `confirmResult`) or from a reopen that read it back.
     if (st.confirmedAt) {
       const when = document.createElement('span');
       when.className = 'triage-confirmed-at';
@@ -3087,15 +3089,17 @@ async function exportChat(id, title, format) {
 }
 
 // Task 8: the triage override log — one JSON line per guarded reply, carrying
-// the raw reply, the text that was shown, the verdict, the health worker's
-// confirmed route and the detector pin. It is the clinical review's artefact,
-// not a transcript, which is why it is its own entry beside the three chat
-// formats rather than a fourth format of `exportChat`.
+// the raw reply, the text that was shown, the verdict, the sentences the guard
+// removed, the health worker's confirmed route and the detector pin. It is the
+// clinical review's artefact, not a transcript, which is why it is its own
+// entry beside the three chat formats rather than a fourth format of
+// `exportChat`.
 //
-// Deliberately the SAME shape as `exportChat` immediately above: pick a
-// destination, hand it to the command, say where it went. The front end formats
-// nothing — every byte is `convstore::export_triage_log`'s, and reshaping it
-// here would put a second definition of the audit record in the app.
+// Deliberately the SAME shape as `exportChat` immediately above, branch for
+// branch: the share sheet on Android, the save sheet on desktop, pick a
+// destination and hand it to the command. The front end formats nothing —
+// every byte is `convstore::export_triage_log`'s, and reshaping it here would
+// put a second definition of the audit record in the app.
 //
 // The supervised check is made AGAIN here, not just when the menu entry was
 // rendered: the sidebar can be re-fetched between a render and a click.
@@ -3103,13 +3107,28 @@ async function exportTriageLog(chatId) {
   state.sidebar.exportMenuFor = null;
   renderSidebar();
 
+  const chat = chatById(chatId);
   const plan = triageExportPlan({
-    supervised: chatEntryOf(chatById(chatId))?.supervised === true,
+    supervised: chatEntryOf(chat)?.supervised === true,
     isMobile: IS_MOBILE,
     chatId,
+    title: chat?.title || '',
   });
-  if (plan.kind !== 'save') {
+  if (plan.kind === 'none' || plan.kind === 'unavailable') {
     if (plan.message) showToast(plan.message);
+    return;
+  }
+
+  // Android: the share sheet, not a file picker — the same branch `exportChat`
+  // above makes, for the same reason. The destination is chosen in the chooser
+  // Rust launches, so there is no path to report back; the file itself is
+  // `export_triage_log`'s own bytes either way.
+  if (plan.kind === 'share') {
+    try {
+      await invoke(plan.command, plan.args);
+    } catch (e) {
+      showToast(String(e));
+    }
     return;
   }
 

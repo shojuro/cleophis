@@ -987,7 +987,20 @@ impl ConvStore {
     /// Recording a route never rewrites the model's own verdict — that
     /// stays in `guard` — so the export can always show both and say
     /// whether the human overrode the machine.
-    pub fn confirm_route(&self, user_id: &str, message_id: i64, route: &str) -> Result<(), String> {
+    ///
+    /// Returns the row as it now stands, the same `MessageInfo` shape
+    /// [`Self::attach_guard`] returns. The front end needs `confirmed_at`
+    /// — the store's own clock, which the caller cannot compute — and
+    /// before this returned it the only way to see that value was to
+    /// reopen the chat. The read is under the SAME lock acquisition as
+    /// the `UPDATE` for `attach_guard`'s reason: two confirmations racing
+    /// on one row must not each read back the other's write.
+    pub fn confirm_route(
+        &self,
+        user_id: &str,
+        message_id: i64,
+        route: &str,
+    ) -> Result<MessageInfo, String> {
         if !Self::ROUTES.contains(&route) {
             return Err(format!(
                 "unknown route {route}; expected one of {}",
@@ -1006,7 +1019,9 @@ impl ConvStore {
         if n == 0 {
             return Err(format!("no assistant message with id {message_id}"));
         }
-        Ok(())
+        let sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1");
+        conn.query_row(&sql, params![message_id], message_from_row)
+            .map_err(|e| format!("confirmed route {route}, but row {message_id} read back: {e}"))
     }
 
     /// Write the guard's verdict onto a row the stream ALREADY persisted.
@@ -1153,8 +1168,43 @@ impl ConvStore {
                     "model_route": model_route,
                     "banner": guard.get("banner").cloned().unwrap_or(Value::Null),
                     "timeframe_stripped": guard.get("timeframeStripped").cloned().unwrap_or(Value::Null),
+                    // The heaviest receipt row there is: on a CLINICIAN route
+                    // a stated time frame survived every strip above, so the
+                    // guard withheld the model's sentences ENTIRELY and showed
+                    // its own note instead. `display_text` alone cannot say
+                    // that happened — a short note looks like a short answer —
+                    // so without this column the review cannot tell a withheld
+                    // reply from a terse one.
+                    //
+                    // A bool, never `null`, for `prohibited_removed`'s reason:
+                    // a verdict that omits the key, or carries a non-bool, did
+                    // not withhold anything, and that is `false`.
+                    "timeframe_unlocated": Value::Bool(
+                        guard
+                            .get("timeframeUnlocated")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ),
                     "crisis_line_appended": guard.get("crisisLineAppended").cloned().unwrap_or(Value::Null),
                     "prohibited": guard.get("prohibited").cloned().unwrap_or(Value::Null),
+                    // The removal RECEIPT: the sentences the guard actually
+                    // took out, verbatim. `prohibited` says a rule fired;
+                    // this says what the reader never saw, which is the half
+                    // a clinical review cannot reconstruct from anything
+                    // else in the row.
+                    //
+                    // Always a list, never `null`: a `null` here would read
+                    // as "unknown", and the two verdicts that produce no
+                    // array — one from before the receipt existed, one
+                    // carrying a malformed value — both mean "nothing was
+                    // removed", which is `[]`.
+                    "prohibited_removed": Value::Array(
+                        guard
+                            .get("prohibitedRemoved")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
                     "confirmed_route": m.confirmed_route,
                     "confirmed_at": m.confirmed_at,
                     "overridden": overridden,
@@ -1855,8 +1905,17 @@ pub async fn export_chat_to_file(
 /// a plain string over IPC (the four contract routes), validated in
 /// [`ConvStore::confirm_route`] — an unknown one is a clean error, never a
 /// stored value.
+///
+/// Resolves with the updated row, so the confirmation banner can show the
+/// store's own `confirmedAt` without reopening the chat. `src/triage-
+/// confirm.js`'s `confirmResult` already prefers a returned row over the
+/// route it asked for, so nothing on the front end had to learn a new shape.
 #[tauri::command]
-pub async fn confirm_route(message_id: i64, route: String, app: AppHandle) -> Result<(), String> {
+pub async fn confirm_route(
+    message_id: i64,
+    route: String,
+    app: AppHandle,
+) -> Result<MessageInfo, String> {
     let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>()
@@ -2350,12 +2409,22 @@ mod tests {
             )
             .unwrap();
 
-        store.confirm_route(USER, m.id, "EMERGENCY").unwrap();
+        // The returned row IS the row: the front end reflects the
+        // confirmation from this value alone, without reopening the chat.
+        let info = store.confirm_route(USER, m.id, "EMERGENCY").unwrap();
+        assert_eq!(info.id, m.id);
+        assert_eq!(info.confirmed_route.as_deref(), Some("EMERGENCY"));
+        assert!(info.confirmed_at.is_some());
+        assert_eq!(info.guard.as_ref().unwrap()["route"], "CLINICIAN");
+
         let back = store.get_chat(USER, chat.id).unwrap().messages;
         assert_eq!(back[0].confirmed_route.as_deref(), Some("EMERGENCY"));
         assert!(back[0].confirmed_at.is_some());
         // The model's own verdict is never rewritten by the confirmation.
         assert_eq!(back[0].guard.as_ref().unwrap()["route"], "CLINICIAN");
+        // ...and what came back is what was stored, not a hopeful echo of
+        // the request: a reopen must agree with it field for field.
+        assert_eq!(back[0], info);
 
         let err = store.confirm_route(USER, m.id, "MAYBE").unwrap_err();
         assert!(err.contains("route"), "{err}");
@@ -2411,25 +2480,86 @@ mod tests {
                 Some(json!({
                     "route": "EMERGENCY",
                     "banner": "emergency",
-                    "rawReply": "Call 999 now.",
+                    "rawReply": "Call 999 now. Take 300mg aspirin.",
+                    "prohibited": ["dosage"],
+                    "prohibitedRemoved": ["Take 300mg aspirin."],
                     "detectorsSha": "abc"
                 })),
             )
             .unwrap();
         store.confirm_route(USER, a.id, "EMERGENCY").unwrap();
 
+        // A SECOND guarded turn in the same chat, on the one route that can
+        // produce `timeframeUnlocated` — CLINICIAN. Two audit rows also make
+        // the user-turn pairing a real assertion rather than a tautology: with
+        // one pair, a bug that always reports the FIRST user turn passes.
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "when should I see someone?",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let b = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Ask a clinician about the timing.",
+                None,
+                None,
+                Some(json!({
+                    "route": "CLINICIAN",
+                    "banner": "clinician",
+                    "rawReply": "See a GP within 48 hours.",
+                    "timeframeStripped": [],
+                    "timeframeUnlocated": true,
+                    "detectorsSha": "abc"
+                })),
+            )
+            .unwrap();
+        store.confirm_route(USER, b.id, "CLINICIAN").unwrap();
+
         let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
         let lines: Vec<serde_json::Value> = log
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2);
         assert_eq!(lines[0]["user_text"], "chest pain down my arm");
         assert_eq!(lines[0]["model_route"], "EMERGENCY");
         assert_eq!(lines[0]["confirmed_route"], "EMERGENCY");
         assert_eq!(lines[0]["overridden"], false);
         assert_eq!(lines[0]["adapter_ids"][0], "triage-armb-v8");
         assert_eq!(lines[0]["detectors_sha"], "abc");
+        // The receipt: what the reader never saw, quoted as it was written.
+        // The raw reply still holds it, but only this column says which
+        // sentences the guard is claiming to have taken out.
+        assert_eq!(lines[0]["prohibited"][0], "dosage");
+        assert_eq!(
+            lines[0]["prohibited_removed"],
+            json!(["Take 300mg aspirin."])
+        );
+        // Absent from this verdict, so `false` — a bool, not null.
+        assert_eq!(lines[0]["timeframe_unlocated"], json!(false));
+
+        // The second row: paired with the SECOND user turn, and carrying the
+        // flag that says the reader was shown none of the model's sentences.
+        // Every receipt row the UI renders is now readable from the export.
+        assert_eq!(lines[1]["user_text"], "when should I see someone?");
+        assert_eq!(lines[1]["model_route"], "CLINICIAN");
+        assert_eq!(lines[1]["timeframe_unlocated"], json!(true));
+        assert_eq!(lines[1]["raw_reply"], "See a GP within 48 hours.");
+        assert_eq!(
+            lines[1]["display_text"],
+            "Ask a clinician about the timing."
+        );
+        assert_eq!(lines[1]["prohibited_removed"], json!([]));
+        assert_eq!(lines[1]["overridden"], false);
     }
 
     /// An UNGUARDED chat contributes no lines, and a confirmation that
@@ -2479,6 +2609,12 @@ mod tests {
         assert_eq!(lines[0]["confirmed_route"], "CLINICIAN");
         assert_eq!(lines[0]["overridden"], true);
         assert_eq!(lines[0]["detectors_sha"], serde_json::Value::Null);
+        // A verdict carrying no removals reports an EMPTY LIST, not null —
+        // the review reads this as "nothing was removed", and a null would
+        // read as "not known". Note `detectors_sha` above is deliberately
+        // still null: an absent pin genuinely IS unknown.
+        assert_eq!(lines[0]["prohibited_removed"], json!([]));
+        assert_eq!(lines[0]["timeframe_unlocated"], json!(false));
     }
 
     /// create_chat -> append 2 messages (one with citations) -> get_chat
