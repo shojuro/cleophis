@@ -7,6 +7,11 @@ import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js
 import { decideDownload, meteredPromptText } from './download-policy.js';
 import { assembleMessages } from './prompt-assembly.js';
 import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
+// The product's contract on a supervised reply (Phase 2). Every use below is
+// gated on `entry.supervised === true`; the tutor never reaches any of it.
+import { applyGuard } from './triage/guard.js';
+import { bannerKey, bannerText, persistAssistantTurn, provisionalStep, titlePlan } from './triage-turn.js';
+import { isPromptMismatch, promptFingerprint } from './prompt-fingerprint.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -1295,6 +1300,14 @@ async function openChat(id) {
   state.chat.messages = messages.map((msg) => ({
     role: msg.role,
     content: msg.content,
+    // The row id, so a reopened chat's replies can still be acted on — the
+    // health worker's route confirmation (Task 8) is written against it.
+    id: msg.id,
+    // Phase 2: a supervised reply's verdict and the confirmed route, both
+    // absent on every ordinary message (convstore skips them when null), so a
+    // tutor chat re-hydrates exactly as it did before.
+    guard: msg.guard || undefined,
+    confirmedRoute: msg.confirmedRoute || undefined,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
     // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
     // convstore's MessageInfo `#[serde(rename_all = "camelCase")]`) as
@@ -1394,15 +1407,39 @@ function rebuildChatDom() {
   // and render like any other bubble — their content IS the refusal text.
   // .calculations (Task 7) replays the same way, from `messages.tool_calls`.
   for (const msg of state.chat.messages) {
-    appendBubble(msg.role, msg.content, msg.citations, msg.calculations);
+    appendBubble(msg.role, msg.content, msg.citations, msg.calculations, msg.guard);
   }
   updateContextDivider();
 }
 
-function appendBubble(role, text, citations, calculations) {
+// The route banner: product-owned text, above the model's words and never
+// inside them. `provisional` is the one drawn from the streamed prefix before
+// the reply is finished — same copy, visibly unfinished, replaced by the
+// verdict's own banner at `finishStream`.
+//
+// The key is normalised once and used for BOTH the copy and the CSS class, so
+// a banner can never render a disposition it is not coloured as.
+function bannerEl(banner, provisional = false) {
+  const key = bannerKey(banner);
+  const b = bannerText(key);
+  const el = document.createElement('div');
+  el.className = `triage-banner triage-banner--${key}${provisional ? ' triage-banner--provisional' : ''}`;
+  const title = document.createElement('b');
+  title.textContent = b.title;
+  const line = document.createElement('span');
+  line.textContent = ` ${b.line}`;
+  el.append(title, line);
+  return el;
+}
+
+// `guard` is a supervised reply's verdict (Phase 2) — absent on every tutor
+// turn, and on every user turn, which is what keeps this function's behaviour
+// for those byte-identical to what it was.
+function appendBubble(role, text, citations, calculations, guard) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
+  if (guard) el.prepend(bannerEl(guard.banner));
   $('chatMessages').appendChild(el);
   if (citations && citations.length) renderCitations(el, citations);
   if (calculations && calculations.length) renderCalculations(el, calculations);
@@ -1763,10 +1800,20 @@ async function sendCompletion(userText) {
   const autoTitle = isFirstExchange ? { source: userText } : null;
 
   const m = state.chat.model;
+  // Phase 2, and the gate for every guard behaviour below. Captured here, with
+  // the entry itself, because `enterChat` can swap the model mid-stream without
+  // aborting the turn: whether this reply is guarded is decided by the entry it
+  // was SENT under, never by whatever the library is showing when it lands.
+  const supervised = !!(m && m.supervised);
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
   const bubble = appendBubble('assistant', '');
   bubble.classList.add('streaming');
   let acc = '';
+  // The provisional route banner, and the clock it is measured against. The
+  // model states its disposition in the first clause, so this reaches the
+  // screen well before the reply finishes.
+  const sentAt = performance.now();
+  let provisionalEl = null;
 
   // Persistence (§7 S7-2): lazily create the chat record on the very first
   // user message. `turnChatId` is captured ONCE for this turn and threaded
@@ -1912,8 +1959,16 @@ async function sendCompletion(userText) {
     // history budget — sources + kept history still stay within n_ctx.
     // Short chats are unaffected: windowMessages returns the whole list
     // (droppedCount 0), so behavior is byte-identical to before.
+    // `fingerprint` is read ONLY inside the supervised branch of
+    // `assembleMessages`, where it re-hashes the prompt about to be sent and
+    // throws if it is not the prompt the catalog pins — the gate was run under
+    // that exact text, so a drifted one is a different model wearing the same
+    // name. The tutor entry declares no fingerprint and never reaches the
+    // check. The throw is caught below and shown as an engine banner: a
+    // supervised turn that cannot prove its prompt is not sent at all.
     const { system: sys } = assembleMessages({
       entry: m, groundedPrompt, sent: [], ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+      fingerprint: promptFingerprint,
     });
     const win = windowMessages(state.chat.messages, sys, m.greeting, engineWindow(state.engine));
     // Assembled again with the windowed history now that `sys` (and thus the
@@ -1922,6 +1977,7 @@ async function sendCompletion(userText) {
     // were still budgeted by windowMessages (a few dozen tokens of slack).
     const assembled = assembleMessages({
       entry: m, groundedPrompt, sent: win.sent, ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+      fingerprint: promptFingerprint,
     });
     // One turn, described once for both platforms (task 2.1). On desktop this
     // lands in `calc-loop.js`, which owns the fetch/SSE-parse/tool-execute/
@@ -1949,18 +2005,46 @@ async function sendCompletion(userText) {
         // Show the leading-`<think></think>`-stripped view every render
         // (idempotent — see stripLeadingThink); `acc` keeps the raw text
         // so the strip decision is always re-made against the full prefix.
-        bubble.textContent = stripLeadingThink(acc);
+        const view = stripLeadingThink(acc);
+        bubble.textContent = view;
+        // Supervised only, and only until a route resolves: the detectors read
+        // the whole prefix, so asking again after the banner is up would be
+        // work per token for an answer that cannot change.
+        if (supervised && !provisionalEl) {
+          const step = provisionalStep({ supervised, alreadyShown: false, prefixText: view, elapsedMs: performance.now() - sentAt });
+          if (step.banner) {
+            provisionalEl = bannerEl(step.banner, true);
+            console.log(step.log);
+          }
+        }
+        // Re-attached rather than rebuilt: the `textContent` write above
+        // replaces every child of the bubble, banner included.
+        if (provisionalEl) bubble.prepend(provisionalEl);
         $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
       },
       signal: state.chat.aborter.signal,
     });
-    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle);
+    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle,
+      { entry: m, userText, messageId: out.messageId });
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle); return; }
+    if (err.name === 'AbortError') {
+      finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle, { entry: m, userText, messageId: null });
+      return;
+    }
     bubble.remove();
     state.chat.streaming = false;
     markTurnEnded();
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+    // A supervised entry whose system prompt is not the one its catalog
+    // fingerprint was cut from never reached the model — `assembleMessages`
+    // threw before the send. That is not a transport failure, so it gets no
+    // retry chip: retrying re-throws, and the fix is a correct catalog, not a
+    // second attempt. Loud banner, composer disabled, nothing sent.
+    if (isPromptMismatch(err)) {
+      showEngineBanner('This model\'s prompt is not the one it was checked with, so nothing was sent. Reinstall the model.');
+      setComposerEnabled(false);
+      return;
+    }
     try {
       const info = await invoke('engine_info');
       state.engine = info;
@@ -1991,7 +2075,20 @@ async function sendCompletion(userText) {
 // pushed message + rendered via renderCalculations, and persisted to the
 // `messages.tool_calls` column below (Task 7) — same treatment as
 // `citations` throughout this function.
-function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
+//
+// `turn` (Phase 2) is what this turn was SENT with, threaded through for the
+// same reason as `turnChatId`: none of it may be re-read from `state` here.
+//   entry      the catalog entry — `enterChat` can swap models mid-stream
+//              without aborting, and whether this reply is guarded must not
+//              depend on which model the library is showing when it lands;
+//   userText   the user's words for this turn, which is what the crisis check
+//              reads (a retry chip replays an already-pushed turn and passes
+//              null, so the transcript is consulted instead);
+//   messageId  the assistant row `chat_cmds.rs::settle` already finalized on
+//              mobile, or null. See `persistAssistantTurn`.
+// Absent on the two rag_query bail-outs, which pass no content and so reach
+// none of it.
+function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle, turn) {
   bubble.classList.remove('streaming');
   markTurnEnded(); // the turn is over on every path through here, abort included
   // Only touch the live DOM/in-memory transcript if this turn's chat is
@@ -2006,9 +2103,41 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // A turn that was ONLY an empty think block strips to '' and is treated
   // exactly like an empty turn (bubble removed, nothing persisted).
   const shown = stripLeadingThink(acc);
+
+  // ---- Phase 2: the product's contract on a supervised reply --------------
+  // The guard runs on `shown` — AFTER the think strip, never on `acc` — and
+  // keeps the raw reply inside the verdict, so what the model said survives
+  // whatever is removed from the screen. Everything below is `null` for the
+  // tutor, and every branch that reads it is a no-op there.
+  const entry = (turn && turn.entry) || state.chat.model;
+  const supervised = !!(entry && entry.supervised);
+  // The user turn the crisis check reads: this turn's own words when it is a
+  // fresh send, else the last user message (a retry chip replays a pushed one).
+  const userTurn = turn && turn.userText != null
+    ? turn.userText
+    : ([...state.chat.messages].reverse().find((x) => x.role === 'user')?.content ?? '');
+  const verdict = supervised && shown
+    ? applyGuard({ userText: userTurn, replyText: shown, crisisLine: entry.crisisLine || undefined })
+    : null;
+  const display = verdict ? verdict.displayText : shown;
+  if (verdict) {
+    console.log(`[triage] route ${verdict.route} banner ${verdict.banner} stripped ${verdict.timeframeStripped.length} crisis ${verdict.crisisLineAppended}`);
+    if (isActive) {
+      // The final banner always replaces the provisional one. Writing
+      // `textContent` clears every child, the provisional banner included, so
+      // the prepend below is what puts the verdict's own banner up — and there
+      // is never a moment with two.
+      bubble.textContent = display;
+      bubble.prepend(bannerEl(verdict.banner));
+    }
+  }
+
   if (isActive) {
     if (shown) {
-      const msg = { role: 'assistant', content: shown };
+      const msg = { role: 'assistant', content: display };
+      // The verdict travels with the message so `rebuildChatDom` can replay the
+      // banner, and so Task 8's confirmation UI has the route to confirm.
+      if (verdict) msg.guard = verdict;
       // Stash citations on the pushed message (not just rendered here) so
       // rebuildChatDom can replay them if the chat is exited and re-entered.
       if (citations && citations.length) {
@@ -2042,22 +2171,52 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // sendCompletion failed — in that case this turn silently isn't saved
   // either (same degrade-gracefully contract). Fire-and-forget: the
   // composer state above must never wait on this DB write.
-  if (shown && turnChatId != null) {
-    invoke('append_message', {
-      chatId: turnChatId,
-      role: 'assistant',
-      content: shown,
-      citations: citations && citations.length ? citations : null,
-      // Tauri maps this camelCase invoke-arg to append_message's `tool_calls`
-      // Rust param (convstore.rs) — same convention as `chatId` -> `chat_id`.
-      toolCalls: calculations && calculations.length ? calculations : null,
-    }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  //
+  // WHICH command, and why it is not always `append_message`: on mobile the
+  // streaming checkpoint row is finalized by `chat_cmds.rs::settle` BEFORE the
+  // `done` event, so a guarded turn is ATTACHED to that row rather than
+  // appended as a second one. `persistAssistantTurn` decides; the tutor's call
+  // is the same `append_message` with the same arguments it always made.
+  const persist = persistAssistantTurn({
+    chatId: turnChatId,
+    content: display,
+    citations,
+    calculations,
+    guard: verdict,
+    messageId: turn ? turn.messageId : null,
+  });
+  if (persist) {
+    invoke(persist.command, persist.args).then((info) => {
+      // The row id, kept on the in-memory message: it is what the health
+      // worker's route confirmation is written against (Task 8).
+      if (isActive && info && info.id) {
+        const last = state.chat.messages[state.chat.messages.length - 1];
+        if (last && last.role === 'assistant' && last.content === display) last.id = info.id;
+      }
+      refreshChatList(); // updated_at bump reorders the sidebar
+    }).catch(() => {});
   }
-  // §7 S7-5: fire-and-forget the auto-title generation for this turn — do
-  // NOT await it (it must never gate the composer restore above, which
-  // already ran). turnChatId-scoped like the persist above, so a
-  // mid-stream chat switch still titles the right chat.
-  if (shown && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, shown);
+  // §7 S7-5: fire-and-forget the title for this turn — do NOT await it (it
+  // must never gate the composer restore above, which already ran).
+  // turnChatId-scoped like the persist above, so a mid-stream chat switch
+  // still titles the right chat.
+  //
+  // A supervised chat is NOT titled by `maybeAutoTitle`: that makes a second
+  // completion, with its own system prompt at temperature 0.3, against a model
+  // whose whole contract is that it only ever sees the pinned prompt at
+  // temperature 0. It is titled from the user's own first message instead.
+  if (shown && turnChatId != null && autoTitle) {
+    const titling = titlePlan({ supervised, source: autoTitle.source });
+    if (titling.kind === 'model') {
+      maybeAutoTitle(turnChatId, autoTitle.source, shown);
+    } else if (titling.kind === 'fixed') {
+      // Same command, so the same guard applies: a chat the user has already
+      // renamed keeps its name (`title_auto`).
+      invoke('auto_title_chat', { id: turnChatId, title: titling.title })
+        .then((applied) => { if (applied === true) refreshChatList(); })
+        .catch(() => {});
+    }
+  }
 }
 
 // §7 S7-5: after the first complete exchange in a NEW chat, ask the local
