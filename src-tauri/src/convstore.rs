@@ -178,10 +178,13 @@
 //! `chat_cmds`'s `settle` FINALIZES the checkpoint row (clearing `partial`)
 //! before it sends the `Done` event that hands the front end the reply — so
 //! when the verdict finally exists there is no in-flight row left to find.
-//! `Done` therefore carries the finalized row's id, and the front end calls
-//! [`ConvStore::attach_guard`] on that id instead of appending a second
-//! row. The two together mean exactly one assistant row per turn on either
-//! platform, whichever call arrives with the verdict.
+//! `Done` therefore gains the finalized row's id (Task 6's half — it does
+//! not carry one yet), and the front end calls [`ConvStore::attach_guard`]
+//! on that id instead of appending a second row. That call also replaces
+//! the row's RAW content with the guard's `displayText`, so the single
+//! surviving row holds what the user saw while the guard column keeps what
+//! the model said. The two together mean exactly one assistant row per
+//! turn on either platform, whichever call arrives with the verdict.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1013,9 +1016,20 @@ impl ConvStore {
     /// `partial`) before the `Done` event that hands the front end the
     /// reply, so by the time the verdict exists there is no in-flight row
     /// left to upgrade — see the module doc comment's "One assistant row
-    /// per turn" section. `Done` carries the finalized row's id and the
-    /// front end attaches the verdict to THAT row rather than appending a
-    /// second one.
+    /// per turn" section. Once Task 6 lands, `Done` will carry the
+    /// finalized row's id and the front end will attach the verdict to
+    /// THAT row rather than appending a second one; today's front end
+    /// still appends, so nothing calls this yet.
+    ///
+    /// ONE ROW HOLDS BOTH TEXTS. The row `settle` wrote holds the RAW
+    /// reply, which is not what the user was shown, so when the verdict
+    /// carries a string `displayText` the same `UPDATE` also writes it to
+    /// `content`. Nothing is lost: the guard column keeps the raw reply as
+    /// `rawReply`, which is where the export reads it from — so reopening
+    /// a supervised chat renders the stripped text while the audit trail
+    /// still shows what the model actually said. A verdict with no
+    /// `displayText` (nothing was stripped, or a caller that does not send
+    /// one) leaves `content` exactly as it was.
     ///
     /// Never inserts. Refused, with an error naming the reason, when the
     /// row is not in this account's database, is not an assistant reply,
@@ -1024,7 +1038,7 @@ impl ConvStore {
     /// another `detectorsSha` would break the audit trail the export
     /// depends on. A repeat carrying the SAME `detectorsSha` is the same
     /// verdict, so it is accepted as a benign retry (a dropped IPC
-    /// response, say) and leaves the row holding exactly `guard`.
+    /// response, say) and rewrites the same values.
     ///
     /// The confirmation columns are not touched: the health worker's
     /// decision is [`Self::confirm_route`]'s business, never the guard's.
@@ -1044,7 +1058,7 @@ impl ConvStore {
             .query_row(&sql, params![message_id], message_from_row)
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some(existing) = existing else {
+        let Some(mut existing) = existing else {
             // Per-account databases: an id from another account is simply
             // not here, which is this same error rather than a leak.
             return Err(format!("no message with id {message_id} in this account"));
@@ -1068,16 +1082,29 @@ impl ConvStore {
             }
         }
 
-        conn.execute(
-            "UPDATE messages SET guard = ?1 WHERE id = ?2",
-            params![guard.to_string(), message_id],
-        )
+        // Owned before `guard` is moved into the returned row below.
+        let display_text: Option<String> = guard
+            .get("displayText")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        match display_text.as_deref() {
+            Some(text) => conn.execute(
+                "UPDATE messages SET guard = ?1, content = ?2 WHERE id = ?3",
+                params![guard.to_string(), text, message_id],
+            ),
+            None => conn.execute(
+                "UPDATE messages SET guard = ?1 WHERE id = ?2",
+                params![guard.to_string(), message_id],
+            ),
+        }
         .map_err(|e| e.to_string())?;
 
-        Ok(MessageInfo {
-            guard: Some(guard),
-            ..existing
-        })
+        if let Some(text) = display_text {
+            existing.content = text;
+        }
+        existing.guard = Some(guard);
+        Ok(existing)
     }
 
     /// One JSON line per guarded assistant message, paired with the user
@@ -1839,9 +1866,10 @@ pub async fn confirm_route(message_id: i64, route: String, app: AppHandle) -> Re
     .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
-/// Attaches the guard's verdict to the assistant row the stream already
-/// persisted — the mobile path's attachment point, where the row id comes
-/// from `ChatEvent::Done`. Async + `spawn_blocking` like every other
+/// Attaches the guard's verdict — and the text the user was actually shown
+/// — to the assistant row the stream already persisted. The mobile path's
+/// attachment point; the row id will come from `ChatEvent::Done` once Task
+/// 6 makes that event carry it. Async + `spawn_blocking` like every other
 /// command in this module: SQLite I/O must not run on the IPC thread.
 #[tauri::command]
 pub async fn attach_guard(
@@ -2133,6 +2161,98 @@ mod tests {
         assert_eq!(msgs.iter().filter(|m| m.role == "assistant").count(), 1);
         assert_eq!(msgs[1].guard.as_ref().unwrap()["detectorsSha"], "abc");
         assert_eq!(msgs[1].content, "Call 999 now.");
+    }
+
+    /// One row, both texts: the row `settle` wrote holds the RAW reply, so
+    /// attaching replaces `content` with what the user was actually shown
+    /// while the verdict keeps the raw reply for the audit trail.
+    #[test]
+    fn attach_guard_replaces_the_raw_content_with_the_guarded_display_text() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+        let row = store
+            .checkpoint_partial(USER, chat.id, "Call 999 within")
+            .unwrap();
+        // What the model said, timeframe and all — this is what the stream
+        // persists, and it is NOT what the user was shown.
+        store
+            .finalize_partial(USER, row, "Call 999 within 10 minutes.", None, None)
+            .unwrap();
+
+        let updated = store
+            .attach_guard(
+                USER,
+                row,
+                json!({
+                    "route": "EMERGENCY",
+                    "rawReply": "Call 999 within 10 minutes.",
+                    "displayText": "Call 999 now.",
+                    "timeframeStripped": ["within 10 minutes"],
+                    "detectorsSha": "abc"
+                }),
+            )
+            .unwrap();
+        assert_eq!(updated.content, "Call 999 now.");
+
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[1].content, "Call 999 now.", "the row renders stripped");
+        assert_eq!(
+            back[1].guard.as_ref().unwrap()["rawReply"],
+            "Call 999 within 10 minutes.",
+            "the raw reply survives inside the verdict"
+        );
+
+        // ...and the export shows both, not the same string twice.
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["display_text"], "Call 999 now.");
+        assert_eq!(lines[0]["raw_reply"], "Call 999 within 10 minutes.");
+        assert_ne!(
+            lines[0]["display_text"], lines[0]["raw_reply"],
+            "a stripped reply must not export as if nothing was stripped"
+        );
+    }
+
+    /// Nothing stripped, nothing to rewrite: a verdict with no
+    /// `displayText` leaves the row's content alone.
+    #[test]
+    fn attach_guard_without_display_text_leaves_the_content_untouched() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        let m = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Rest and fluids.",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let updated = store
+            .attach_guard(
+                USER,
+                m.id,
+                json!({"route": "SELF_CARE", "detectorsSha": "abc"}),
+            )
+            .unwrap();
+        assert_eq!(updated.content, "Rest and fluids.");
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[0].content, "Rest and fluids.");
+        assert_eq!(back[0].guard.as_ref().unwrap()["route"], "SELF_CARE");
     }
 
     /// A verdict is attached ONCE. A repeat from the same detector build is
