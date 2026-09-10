@@ -30,7 +30,14 @@ import {
   NUMBER_WORDS, ROUTE, URGENCY, detectCrisisResponse, detectCrisisStatement,
   detectMedication, detectNamedDiagnosis, detectRoute,
 } from './detectors.mjs';
-import pin from './detectors.pin.json' with { type: 'json' };
+// The pin as a GENERATED ES module, not as JSON. `src/index.html` loads
+// `app.js` with no bundler and `app.js` imports this file at module scope, so
+// `import … with { type: 'json' }` would put a Chromium-123 floor on the whole
+// front end: on a minSdk-24 device with an un-updated System WebView `app.js`
+// fails to PARSE and neither build boots — the tutor's included. Both pin files
+// are written by tools/sync-triage-detectors.sh from one set of values in one
+// run, and detectors.test.mjs asserts they agree.
+import pin from './detectors.pin.js';
 
 export const BANNERS = Object.freeze({
   emergency: { title: 'EMERGENCY', line: 'Emergency services now. Do not let them drive themselves.' },
