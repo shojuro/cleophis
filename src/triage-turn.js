@@ -59,6 +59,46 @@ export function bannerText(key) {
 }
 
 /**
+ * How much wall clock must pass between two detector passes before a route
+ * resolves.
+ *
+ * `routeOfPrefix` reads the WHOLE prefix, so running it on every delta is
+ * O(n²) regex work on the UI thread for a reply that never states a
+ * disposition, on a device whose UI thread is also drawing the stream.
+ *
+ * 100 MS OF WALL CLOCK, NOT A TOKEN COUNT, and the choice matters. What the
+ * banner competes with is not tokens, it is the frame the user is waiting to
+ * see, so a budget denominated in time is the one that stays true whatever the
+ * generation rate. A token count does not: at 4 tok/s an every-8-tokens rule
+ * would hold the banner back by up to two seconds — and `[triage]
+ * time-to-route` is exactly the number the device session is there to read, so
+ * that rule would corrupt the measurement it is meant to sit beside. At 100 ms
+ * the line stays honest to within a tenth of a second, and a fast device (where
+ * deltas really do arrive faster than the budget) is where the skipping
+ * actually happens and the cost is actually worth bounding.
+ */
+export const ROUTE_CHECK_MIN_MS = 100;
+
+/**
+ * May the detectors run again yet?
+ *
+ * The throttle, as its own pure rule so it is tested once and stated once.
+ * `lastCheckMs` is when they last ran, on the same clock as `elapsedMs` (both
+ * measured from send); a non-finite `lastCheckMs` means they never have, which
+ * is the FIRST delta and always runs — the opening clause is where the model
+ * states its disposition, so the earliest possible pass is the valuable one.
+ *
+ * Fails toward running: a non-finite `elapsedMs` is read as 0 rather than as
+ * "not yet", because the failure mode of skipping is a supervised reply whose
+ * banner never appears at all.
+ */
+export function shouldCheckRoute({ lastCheckMs = null, elapsedMs = 0 } = {}) {
+  if (!Number.isFinite(lastCheckMs)) return true;
+  const now = Number.isFinite(elapsedMs) ? elapsedMs : 0;
+  return now - lastCheckMs >= ROUTE_CHECK_MIN_MS;
+}
+
+/**
  * What the streamed prefix should do to the provisional banner.
  *
  * The model states its disposition in the first clause, so the banner can be
@@ -66,6 +106,12 @@ export function bannerText(key) {
  * that gap is seconds, not milliseconds. `alreadyShown` is the whole state
  * machine: once a route has resolved for this turn, later deltas are inert,
  * so the log line is a per-turn measurement rather than a per-token one.
+ *
+ * BEFORE a route resolves there is no such early return, which is what
+ * `shouldCheckRoute` is for. The caller owns the "when it last ran" state, the
+ * way it already owns `alreadyShown`, and gates this call on that rule; the
+ * `[triage] time-to-route` line then still measures the first resolution to
+ * within `ROUTE_CHECK_MIN_MS`.
  *
  * UNCLEAR is the ONLY route that means "keep waiting". OUT_OF_SCOPE is the
  * model declining on the record and shows immediately.

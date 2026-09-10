@@ -2052,6 +2052,51 @@ mod tests {
         assert!(last.partial, "a killed turn must remain identifiable as truncated");
     }
 
+    /// Stop before the first token: the store half of `chat_cmds::settle`'s
+    /// empty-outcome branch.
+    ///
+    /// A checkpoint row exists (the checkpointer had fired, or the cancel
+    /// arrived after one), the turn returns `Ok` with no text, and the row is
+    /// DISCARDED rather than finalized. Finalizing left a blank, non-partial
+    /// assistant row; the front end persists nothing for an empty reply, so
+    /// that row carried no verdict and `replayMessage` withheld it behind
+    /// "Unverified reply" — a safety notice about a reply that never existed.
+    ///
+    /// `settle` itself is not reachable from this harness: it is a private fn
+    /// inside `#[cfg(mobile)] mod imp` and takes an `AppHandle` with managed
+    /// state. Its branch is compiled by the Android cross-check
+    /// (`cargo check -p cleophis --target aarch64-linux-android --tests`); what
+    /// is asserted here is the store behaviour that branch depends on.
+    #[test]
+    fn a_checkpointed_turn_that_produced_nothing_leaves_no_row_to_withhold() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "sore throat", None, None, None)
+            .unwrap();
+        store.checkpoint_partial(USER, chat.id, "").unwrap();
+        assert_eq!(
+            store.get_chat(USER, chat.id).unwrap().messages.len(),
+            2,
+            "the checkpoint row is there to be discarded"
+        );
+
+        store.discard_partial(USER, chat.id).unwrap();
+
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(
+            msgs.len(),
+            1,
+            "Stop before the first token must leave no reply"
+        );
+        assert_eq!(msgs[0].role, "user");
+        // And nothing for the export to read either: an unguarded assistant
+        // row is skipped there, but it is not skipped on screen.
+        assert_eq!(store.export_triage_log(USER, Some(chat.id)).unwrap(), "");
+    }
+
     #[test]
     fn finalizing_clears_the_marker_and_a_short_answer_is_not_mistaken_for_truncated() {
         let store = ConvStore::new_in_memory();

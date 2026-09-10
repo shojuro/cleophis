@@ -12,7 +12,8 @@ import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js'
 import { applyGuard } from './triage/guard.js';
 import {
   bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
-  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldGroundTurn, titlePlan,
+  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
+  shouldGroundTurn, titlePlan,
 } from './triage-turn.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
@@ -2079,6 +2080,12 @@ async function sendCompletion(userText) {
   // screen well before the reply finishes.
   const sentAt = performance.now();
   let provisionalEl = null;
+  // When the detectors last ran for this turn, on the same clock as `sentAt`.
+  // This is what throttles them before a route resolves — see
+  // `shouldCheckRoute`. `null` means never, i.e. the first delta always runs.
+  // Read only on the supervised path, so the tutor's `onDelta` does exactly
+  // what it did before.
+  let lastRouteCheckMs = null;
 
   // Persistence (§7 S7-2): lazily create the chat record on the very first
   // user message. `turnChatId` is captured ONCE for this turn and threaded
@@ -2293,11 +2300,21 @@ async function sendCompletion(userText) {
         // early and never reads the prefix again — the detectors read the whole
         // of it, which would otherwise be work per token for an answer that
         // cannot change. The tutor is stopped by the gate before the call.
+        //
+        // BEFORE a route resolves there is no such early return, and that is
+        // what `shouldCheckRoute` is for: the detectors run at most once per
+        // 100 ms of wall clock (and always on the first delta), so a reply that
+        // never states a disposition stops costing a whole-prefix regex pass
+        // per token on a device that is also drawing the stream.
         if (supervised) {
-          const step = provisionalStep({ supervised, alreadyShown: !!provisionalEl, prefixText: view, elapsedMs: performance.now() - sentAt });
-          if (step.banner) {
-            provisionalEl = bannerEl(step.banner, true);
-            console.log(step.log);
+          const elapsedMs = performance.now() - sentAt;
+          if (shouldCheckRoute({ lastCheckMs: lastRouteCheckMs, elapsedMs })) {
+            lastRouteCheckMs = elapsedMs;
+            const step = provisionalStep({ supervised, alreadyShown: !!provisionalEl, prefixText: view, elapsedMs });
+            if (step.banner) {
+              provisionalEl = bannerEl(step.banner, true);
+              console.log(step.log);
+            }
           }
         }
         // Re-attached rather than rebuilt: the `textContent` write above

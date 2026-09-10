@@ -434,6 +434,28 @@ mod imp {
             return None;
         };
 
+        // A SUCCESSFUL turn that produced no text is not a reply either, and
+        // finalizing one is worse here than the litter it is on the tutor's
+        // side. Stop before the first token returns `Ok` with empty content;
+        // finalizing wrote a blank, non-partial assistant row, and the front
+        // end persists nothing for an empty reply — so the row kept no verdict,
+        // and on the next open `replayMessage` withheld it behind "Unverified
+        // reply". A health worker who pressed Stop was shown a safety notice
+        // about a reply that never existed.
+        //
+        // So it takes the same path the `None` branch above takes: discard the
+        // checkpoint row, and return `None` for the id — there is no finalized
+        // reply for `attach_guard` to be pointed at. `ChatEvent::Done` still
+        // fires with the empty content it always did, and the front end's
+        // `finishStream` removes the bubble and persists nothing, exactly as
+        // before. The tool loop is unaffected: it has already returned by the
+        // time `settle` runs, and a turn that calculated but never spoke is
+        // given fallback copy by `tool_loop::finish`, so it is not empty here.
+        if outcome.content.trim().is_empty() {
+            let _ = store.discard_partial(user, *chat);
+            return None;
+        }
+
         // The final text may differ from the streamed text (the loop
         // substitutes fallback copy for a silent or capped turn), so finalize
         // with the outcome rather than the accumulator.

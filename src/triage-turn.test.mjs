@@ -18,9 +18,10 @@ import { windowMessages } from './context-window.js';
 import { createTransport } from './transport.js';
 import {
   ATTACH_FAILED_NOTICE, FOREIGN_CHAT_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
+  ROUTE_CHECK_MIN_MS,
   bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
-  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldGroundTurn,
-  supervisedTitle, titlePlan,
+  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
+  shouldGroundTurn, supervisedTitle, titlePlan,
 } from './triage-turn.js';
 import { applyGuard } from './triage/guard.js';
 
@@ -85,6 +86,108 @@ test('the provisional banner resolves ONCE — a later delta never re-logs the t
   assert.ok(first.log);
   const later = provisionalStep({ supervised: true, alreadyShown: true, prefixText: 'See a clinician about this, and also…', elapsedMs: 900 });
   assert.deepStrictEqual(later, { route: null, banner: null, log: null });
+});
+
+/* ---------------- the throttle on the detectors, on a fake clock ---------------- */
+
+/**
+ * `app.js`'s `onDelta` loop, driven by a FAKE clock instead of
+ * `performance.now()`. The throttle is a rule about wall time, so the only way
+ * to test it is to own the clock — and the loop is reproduced here rather than
+ * asserted piecemeal because what matters is the two pieces of state working
+ * together: `lastCheckMs` (the throttle) and `alreadyShown` (the state machine).
+ *
+ * @param deltas how many deltas arrive
+ * @param msPerDelta the fake generation rate — 250 is the ~4 tok/s floor device
+ * @param prefixAt (i) => the text streamed so far after delta i
+ * @returns the elapsed times at which the detectors actually ran, plus the logs
+ */
+function driveStream({ deltas, msPerDelta, prefixAt }) {
+  let lastCheckMs = null;
+  let shown = false;
+  const ranAt = [];
+  const logs = [];
+  for (let i = 0; i < deltas; i += 1) {
+    const elapsedMs = (i + 1) * msPerDelta; // the fake clock, ticking per delta
+    if (!shouldCheckRoute({ lastCheckMs, elapsedMs })) continue;
+    lastCheckMs = elapsedMs;
+    const step = provisionalStep({ supervised: true, alreadyShown: shown, prefixText: prefixAt(i), elapsedMs });
+    if (!shown) ranAt.push(elapsedMs);
+    if (step.log) { logs.push(step.log); shown = true; }
+  }
+  return { ranAt, logs };
+}
+
+const UNROUTABLE = 'Thank you for describing what you are seeing';
+
+test('the throttle is 100 ms of wall clock', () => {
+  assert.strictEqual(ROUTE_CHECK_MIN_MS, 100);
+});
+
+test('a fast stream is throttled to one detector pass per 100 ms', () => {
+  // 20 ms per delta — deltas arrive five times faster than the budget, so four
+  // out of every five are skipped. This is the case the throttle exists for.
+  const { ranAt } = driveStream({ deltas: 25, msPerDelta: 20, prefixAt: () => UNROUTABLE });
+  assert.deepStrictEqual(ranAt, [20, 120, 220, 320, 420]);
+});
+
+test('the first delta always runs, however early it arrives', () => {
+  // The opening clause is where the model states its disposition, so the
+  // earliest possible pass is the valuable one.
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: null, elapsedMs: 1 }), true);
+  const { logs } = driveStream({ deltas: 1, msPerDelta: 3, prefixAt: () => 'Call an ambulance now.' });
+  assert.deepStrictEqual(logs, ['[triage] time-to-route 3 ms']);
+});
+
+test('a floor device is not throttled at all, so the banner is never held back', () => {
+  // ~4 tok/s: 250 ms per delta, already slower than the budget. THIS is why the
+  // rule counts milliseconds and not tokens — an every-8-deltas rule would hold
+  // the banner for two seconds here, on the one device that can least afford it.
+  const { ranAt } = driveStream({ deltas: 8, msPerDelta: 250, prefixAt: () => UNROUTABLE });
+  assert.deepStrictEqual(ranAt, [250, 500, 750, 1000, 1250, 1500, 1750, 2000]);
+});
+
+test('the time-to-route line is honest to within the throttle, and logged exactly once', () => {
+  // 20 ms per delta, so the permitted passes are t = 20, 120, 220, 320…
+  // The disposition enters the text at delta 6, i.e. t = 140 ms — deliberately
+  // NOT a permitted pass, so this measures a real throttle delay rather than a
+  // coincidence. The next pass is t = 220, so the line reads 220 against a
+  // truth of 140: late by 80 ms, inside one window, and never a second line.
+  const TRUTH_MS = 140;
+  const { logs } = driveStream({
+    deltas: 40,
+    msPerDelta: 20,
+    prefixAt: (i) => (i < 6 ? UNROUTABLE : `${UNROUTABLE}. Call an ambulance now.`),
+  });
+  assert.deepStrictEqual(logs, ['[triage] time-to-route 220 ms']);
+  const reported = Number(logs[0].match(/\d+/)[0]);
+  assert.ok(reported > TRUTH_MS, 'the delay this asserts a bound on must actually be non-zero');
+  assert.ok(
+    reported - TRUTH_MS <= ROUTE_CHECK_MIN_MS,
+    `the line must stay within one throttle window of the truth (was ${reported - TRUTH_MS} ms late)`,
+  );
+});
+
+test('once a route resolves the detectors stop being asked at all', () => {
+  // `alreadyShown` short-circuits `provisionalStep` before `routeOfPrefix`, so
+  // the throttle only ever governs the window BEFORE a disposition is on screen.
+  const later = provisionalStep({ supervised: true, alreadyShown: true, prefixText: 'Call an ambulance now.', elapsedMs: 9000 });
+  assert.deepStrictEqual(later, { route: null, banner: null, log: null });
+});
+
+test('a non-finite clock reading runs the detectors rather than skipping them', () => {
+  // Failing toward "run" — the alternative failure is a banner that never
+  // appears at all on a supervised reply.
+  for (const bad of [undefined, NaN, null, 'soon']) {
+    assert.strictEqual(shouldCheckRoute({ lastCheckMs: bad, elapsedMs: 5 }), true, `lastCheckMs=${String(bad)}`);
+  }
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: 0, elapsedMs: NaN }), false);
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: -1000, elapsedMs: NaN }), true);
+});
+
+test('the throttle boundary is inclusive — exactly 100 ms later is a run', () => {
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: 500, elapsedMs: 599.9 }), false);
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: 500, elapsedMs: 600 }), true);
 });
 
 test('an OUT_OF_SCOPE prefix is a disposition and does show provisionally', () => {
