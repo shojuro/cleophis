@@ -18,9 +18,11 @@ import { windowMessages } from './context-window.js';
 import { createTransport } from './transport.js';
 import {
   ATTACH_FAILED_NOTICE, FOREIGN_CHAT_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
-  bannerKey, bannerText, canSendInChat, entryForChat, persistAssistantTurn, persistFailurePlan,
-  provisionalStep, replayMessage, shouldGroundTurn, supervisedTitle, titlePlan,
+  bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
+  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldGroundTurn,
+  supervisedTitle, titlePlan,
 } from './triage-turn.js';
+import { applyGuard } from './triage/guard.js';
 
 /* ---------------- the banner shown above a reply ---------------- */
 
@@ -138,6 +140,106 @@ test('an empty turn, or one whose chat was never created, persists nothing', () 
   assert.strictEqual(persistAssistantTurn({ chatId: 4, content: '' }), null);
   assert.strictEqual(persistAssistantTurn({ chatId: null, content: 'x' }), null);
   assert.strictEqual(persistAssistantTurn({ chatId: null, content: '', guard: { banner: 'emergency' }, messageId: null }), null);
+});
+
+/* ---------------- the provenance stamped at persistence ---------------- */
+
+const TRIAGE_ENTRY = Object.freeze({
+  id: 'med-triage',
+  supervised: true,
+  promptFingerprint: '67b7f1633f30',
+  sha256: '25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3',
+  adapterSha256: '5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20',
+  sampling: { temperature: 0.0, maxTokens: 320 },
+});
+
+test('the PERSISTED verdict carries the three provenance keys, copied from the entry', () => {
+  const verdict = applyGuard({ userText: 'chest pain', replyText: 'Call 999 now.' });
+  const stamped = guardForPersistence(verdict, TRIAGE_ENTRY);
+  assert.strictEqual(stamped.promptFingerprint, TRIAGE_ENTRY.promptFingerprint);
+  assert.strictEqual(stamped.modelSha, TRIAGE_ENTRY.sha256);
+  assert.strictEqual(stamped.adapterSha, TRIAGE_ENTRY.adapterSha256);
+});
+
+test('applyGuard\'s twelve-key verdict shape is NOT changed by the stamp', () => {
+  // Task 3 pins the verdict's shape. Provenance is a fact about the turn, not
+  // about the text, so it is added on a COPY at the moment the row is written.
+  const verdict = applyGuard({ userText: 'chest pain', replyText: 'Call 999 now.' });
+  const before = Object.keys(verdict).sort();
+  const stamped = guardForPersistence(verdict, TRIAGE_ENTRY);
+  assert.strictEqual(before.length, 12);
+  assert.deepStrictEqual(Object.keys(verdict).sort(), before, 'applyGuard\'s verdict was mutated');
+  assert.notStrictEqual(stamped, verdict);
+  assert.deepStrictEqual(
+    Object.keys(stamped).sort(),
+    [...before, 'adapterSha', 'modelSha', 'promptFingerprint'].sort(),
+  );
+});
+
+test('an entry that pins no shas stamps empty strings, never null and never a missing key', () => {
+  // The export writes these as strings; one shape for every guarded row means
+  // a reader never has to handle both `null` and `""` for "not recorded".
+  const stamped = guardForPersistence({ route: 'SELF_CARE' }, { supervised: true });
+  assert.deepStrictEqual(stamped, {
+    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '',
+  });
+  const noEntry = guardForPersistence({ route: 'SELF_CARE' }, null);
+  assert.deepStrictEqual(noEntry, {
+    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '',
+  });
+});
+
+test('TUTOR IDENTITY: no verdict means no stamp, so the invoke args are unchanged', () => {
+  assert.strictEqual(guardForPersistence(null, TRIAGE_ENTRY), null);
+  const plan = persistAssistantTurn({
+    chatId: 4, content: 'Because the derivative is zero.',
+    guard: guardForPersistence(null, { supervised: false }), messageId: 77,
+  });
+  assert.strictEqual(plan.command, 'append_message');
+  assert.deepStrictEqual(Object.keys(plan.args).sort(), ['chatId', 'citations', 'content', 'role', 'toolCalls']);
+});
+
+/* ---------------- the sampling the desktop sidecar is asked for ---------------- */
+
+test('a supervised entry\'s catalog sampling reaches the desktop request body', () => {
+  assert.deepStrictEqual(
+    samplingFor({ entry: TRIAGE_ENTRY, maxTokens: 1024, temperature: 0.7 }),
+    { maxTokens: 320, temperature: 0.0 },
+  );
+});
+
+test('temperature 0.0 is not treated as absent — the falsy trap this exists for', () => {
+  // `s.temperature || fallback` would send 0.7 for exactly the entry whose
+  // whole contract is that it is sampled at zero.
+  const { temperature } = samplingFor({ entry: TRIAGE_ENTRY, maxTokens: 1024, temperature: 0.7 });
+  assert.strictEqual(temperature, 0);
+});
+
+test('a supervised entry that pins only one value keeps the default for the other', () => {
+  assert.deepStrictEqual(
+    samplingFor({ entry: { supervised: true, sampling: { maxTokens: 64 } }, maxTokens: 1024, temperature: 0.7 }),
+    { maxTokens: 64, temperature: 0.7 },
+  );
+  assert.deepStrictEqual(
+    samplingFor({ entry: { supervised: true, sampling: {} }, maxTokens: 1024, temperature: 0.7 }),
+    { maxTokens: 1024, temperature: 0.7 },
+  );
+});
+
+test('TUTOR IDENTITY: an unsupervised entry gets the defaults it always got', () => {
+  const defaults = { maxTokens: 1024, temperature: 0.7 };
+  for (const entry of [
+    null,
+    { supervised: false },
+    { supervised: null },
+    {},
+    // Not `=== true`, so it does not qualify — and a tutor entry that somehow
+    // carried a `sampling` block still must not change what it sends.
+    { supervised: 1, sampling: { temperature: 0.0, maxTokens: 8 } },
+    { sampling: { temperature: 0.0, maxTokens: 8 } },
+  ]) {
+    assert.deepStrictEqual(samplingFor({ entry, ...defaults }), defaults, JSON.stringify(entry));
+  }
 });
 
 /* ---------------- the title of a supervised chat ---------------- */

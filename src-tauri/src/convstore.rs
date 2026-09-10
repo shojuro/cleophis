@@ -984,6 +984,14 @@ impl ConvStore {
     /// The health worker's decision on a supervised reply. Only assistant
     /// rows carry a route; only the four contract routes are accepted.
     ///
+    /// AND ONLY A GUARDED ROW. A confirmation is a decision ABOUT a verdict —
+    /// the export's `overridden` column is literally `confirmed_route !=
+    /// guard.route` — so a row with no verdict has nothing to agree or
+    /// disagree with, and confirming one would write a route that the export
+    /// then skips (it only emits guarded replies). The front end already draws
+    /// the controls against a guarded message only; this makes the store's
+    /// rule the same rule rather than a convention the caller is trusted with.
+    ///
     /// Recording a route never rewrites the model's own verdict — that
     /// stays in `guard` — so the export can always show both and say
     /// whether the human overrode the machine.
@@ -1009,16 +1017,32 @@ impl ConvStore {
         }
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
-        let n = conn
-            .execute(
-                "UPDATE messages SET confirmed_route = ?1, confirmed_at = ?2 \
-                 WHERE id = ?3 AND role = 'assistant'",
-                params![route, now_iso(), message_id],
+        // Read, check and write under ONE lock acquisition, the same shape
+        // [`Self::attach_guard`] uses and for the same reason: the verdict this
+        // confirmation is about must not be attached (or replaced) between the
+        // check and the write.
+        let (role, has_guard): (String, bool) = conn
+            .query_row(
+                "SELECT role, guard IS NOT NULL FROM messages WHERE id = ?1",
+                params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .map_err(|e| e.to_string())?;
-        if n == 0 {
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no assistant message with id {message_id}"))?;
+        if role != "assistant" {
             return Err(format!("no assistant message with id {message_id}"));
         }
+        if !has_guard {
+            return Err(format!(
+                "message {message_id} carries no verdict to confirm"
+            ));
+        }
+        conn.execute(
+            "UPDATE messages SET confirmed_route = ?1, confirmed_at = ?2 WHERE id = ?3",
+            params![route, now_iso(), message_id],
+        )
+        .map_err(|e| e.to_string())?;
         let sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1");
         conn.query_row(&sql, params![message_id], message_from_row)
             .map_err(|e| format!("confirmed route {route}, but row {message_id} read back: {e}"))
@@ -1211,6 +1235,25 @@ impl ConvStore {
                     "detectors_sha": guard.get("detectorsSha").cloned().unwrap_or(Value::Null),
                     "model_id": chat.model_id,
                     "adapter_ids": chat.adapter_ids,
+                    // Provenance BY SHA, beside the ids above rather than
+                    // instead of them (spec §5 P2.5). An id is only as stable
+                    // as the re-pinning discipline behind it: Phase 3 swaps the
+                    // adapter under the same `med-triage` id, and a review
+                    // reading one of these lines afterwards cannot tell which
+                    // bytes produced it. These three can. They are stamped onto
+                    // the persisted verdict from the catalog ENTRY the turn was
+                    // sent under (see triage-turn.js `guardForPersistence`) —
+                    // not from today's catalog, which is the whole point.
+                    //
+                    // Strings, `""` when absent, never `null`, for
+                    // `prohibited_removed`'s reason: the two verdicts that
+                    // carry nothing here — one written before this existed, one
+                    // from an entry that pins no shas — both mean "not
+                    // recorded", and a reader that has to handle `null` as well
+                    // as `""` will eventually handle only one of them.
+                    "prompt_fingerprint": guard.get("promptFingerprint").and_then(Value::as_str).unwrap_or(""),
+                    "model_sha": guard.get("modelSha").and_then(Value::as_str).unwrap_or(""),
+                    "adapter_sha": guard.get("adapterSha").and_then(Value::as_str).unwrap_or(""),
                 });
                 out.push_str(&line.to_string());
                 out.push('\n');
@@ -2483,7 +2526,12 @@ mod tests {
                     "rawReply": "Call 999 now. Take 300mg aspirin.",
                     "prohibited": ["dosage"],
                     "prohibitedRemoved": ["Take 300mg aspirin."],
-                    "detectorsSha": "abc"
+                    "detectorsSha": "abc",
+                    // Stamped at persistence by `guardForPersistence`, not by
+                    // `applyGuard` — see the export's provenance block.
+                    "promptFingerprint": "67b7f1633f30",
+                    "modelSha": "25162bff",
+                    "adapterSha": "5304e464"
                 })),
             )
             .unwrap();
@@ -2536,6 +2584,14 @@ mod tests {
         assert_eq!(lines[0]["overridden"], false);
         assert_eq!(lines[0]["adapter_ids"][0], "triage-armb-v8");
         assert_eq!(lines[0]["detectors_sha"], "abc");
+        // Spec §5 P2.5's provenance triple, BESIDE the ids rather than instead
+        // of them: `model_id`/`adapter_ids` above still say which entry, these
+        // say which bytes. Phase 3 re-points the adapter under the same id, so
+        // only these three can date a line after that.
+        assert_eq!(lines[0]["model_id"], "med-triage");
+        assert_eq!(lines[0]["prompt_fingerprint"], "67b7f1633f30");
+        assert_eq!(lines[0]["model_sha"], "25162bff");
+        assert_eq!(lines[0]["adapter_sha"], "5304e464");
         // The receipt: what the reader never saw, quoted as it was written.
         // The raw reply still holds it, but only this column says which
         // sentences the guard is claiming to have taken out.
@@ -2560,6 +2616,50 @@ mod tests {
         );
         assert_eq!(lines[1]["prohibited_removed"], json!([]));
         assert_eq!(lines[1]["overridden"], false);
+        // This verdict pins no provenance — a row from before the stamp
+        // existed, or an entry that names no shas. Empty STRINGS, never null,
+        // so a reader has one absent-value to handle rather than two.
+        assert_eq!(lines[1]["prompt_fingerprint"], "");
+        assert_eq!(lines[1]["model_sha"], "");
+        assert_eq!(lines[1]["adapter_sha"], "");
+    }
+
+    /// A confirmation is a decision ABOUT a verdict, so a row that carries
+    /// none cannot be confirmed: the export's `overridden` column is
+    /// `confirmed_route != guard.route`, and the export emits guarded
+    /// replies only — a route written onto an unguarded row would be a
+    /// decision recorded nowhere anyone reads.
+    #[test]
+    fn confirm_route_refuses_a_row_that_carries_no_verdict() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        // An assistant row with no guard — what `settle` leaves behind when
+        // `attach_guard` never lands.
+        let bare = store
+            .append_message(USER, chat.id, "assistant", "See your GP.", None, None, None)
+            .unwrap();
+        let err = store.confirm_route(USER, bare.id, "EMERGENCY").unwrap_err();
+        assert!(err.contains(&bare.id.to_string()), "{err}");
+        assert!(err.contains("no verdict"), "{err}");
+
+        // Refused means NOTHING was written, not "written and reported".
+        let back = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(back[0].confirmed_route, None);
+        assert_eq!(back[0].confirmed_at, None);
+
+        // And the same row, once a verdict is attached, confirms normally —
+        // so the refusal is about the missing verdict and not about the row.
+        store
+            .attach_guard(
+                USER,
+                bare.id,
+                json!({"route": "CLINICIAN", "detectorsSha": "abc"}),
+            )
+            .unwrap();
+        let info = store.confirm_route(USER, bare.id, "EMERGENCY").unwrap();
+        assert_eq!(info.confirmed_route.as_deref(), Some("EMERGENCY"));
     }
 
     /// An UNGUARDED chat contributes no lines, and a confirmation that

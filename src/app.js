@@ -11,8 +11,8 @@ import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js'
 // gated on `entry.supervised === true`; the tutor never reaches any of it.
 import { applyGuard } from './triage/guard.js';
 import {
-  bannerKey, bannerText, canSendInChat, entryForChat, persistAssistantTurn, persistFailurePlan,
-  provisionalStep, replayMessage, shouldGroundTurn, titlePlan,
+  bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
+  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldGroundTurn, titlePlan,
 } from './triage-turn.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
@@ -2265,13 +2265,18 @@ async function sendCompletion(userText) {
     // `onDelta` keeps `acc` growing exactly as the old inline loop did, so the
     // AbortError branch below still sees whatever partial text streamed before
     // the abort.
+    const desktopSampling = samplingFor({ entry: m, maxTokens: REPLY_RESERVE, temperature: 0.7 });
     const out = await transport.streamTurn({
       port: state.engine.port,
       // The chat this turn belongs to — mobile's KV-reuse key, so consecutive
       // turns of one conversation share a warm prefix (task 1.5). Desktop
       // ignores it; `cache_prompt: true` is how the sidecar does the same job.
       chatId: turnChatId,
-      baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
+      // Defaults bound to the windowing reserve so the two can't drift; a
+      // SUPERVISED entry's catalog `sampling` overrides both, so the desktop
+      // dev check runs the same model the in-process engine does. Tutor
+      // entries take the `REPLY_RESERVE`/0.7 pair unchanged — see `samplingFor`.
+      baseBody: { max_tokens: desktopSampling.maxTokens, temperature: desktopSampling.temperature, cache_prompt: true },
       messages: assembled.messages,
       tools: [CALC_TOOL],
       runCalc: (expression) => invoke('calc', { expression }),
@@ -2462,12 +2467,19 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // `done` event, so a guarded turn is ATTACHED to that row rather than
   // appended as a second one. `persistAssistantTurn` decides; the tutor's call
   // is the same `append_message` with the same arguments it always made.
+  //
+  // The PERSISTED verdict carries three keys the in-memory one does not:
+  // `promptFingerprint`, `modelSha`, `adapterSha`, stamped from `entry` — the
+  // catalog entry this turn was SENT under. `applyGuard`'s own twelve-key
+  // shape is untouched (it is pinned by Task 3's tests and is a function of
+  // the text alone); provenance is a fact about the turn and belongs at the
+  // moment the row is written. `export_triage_log` copies all three out again.
   const persist = persistAssistantTurn({
     chatId: turnChatId,
     content: display,
     citations,
     calculations,
-    guard: verdict,
+    guard: guardForPersistence(verdict, entry),
     messageId: turn ? turn.messageId : null,
   });
   //

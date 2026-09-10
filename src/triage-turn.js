@@ -89,6 +89,74 @@ export function provisionalStep({ supervised = false, alreadyShown = false, pref
 }
 
 /**
+ * The sampling the desktop sidecar is asked for, given the entry.
+ *
+ * The in-process engine already reads the catalog's `sampling` for a supervised
+ * entry; the desktop transport does not — it sends one hard-coded pair for
+ * every model. That is not the shipped triage path, but it IS the path the
+ * plan's own desktop check of the guard runs on, and a check that runs at
+ * temperature 0.7 is not checking the model the gate was cut against (`0.0`,
+ * 320 tokens). So the desktop dev check now runs under the same sampling.
+ *
+ * `entry.supervised === true` and nothing looser: the tutor's request body must
+ * be the one it has always been, and `supervised` is a Rust `bool` that
+ * serialises as `null` for every entry that does not set it.
+ *
+ * `Number.isFinite`, NOT `||`. The one value a supervised entry most needs to
+ * pin is `temperature: 0.0`, which is falsy — `s.temperature || fallback` would
+ * silently send 0.7 for exactly the entry this exists for.
+ *
+ * @returns {{maxTokens: number, temperature: number}}
+ */
+export function samplingFor({ entry = null, maxTokens = 0, temperature = 0 } = {}) {
+  if (!entry || entry.supervised !== true) return { maxTokens, temperature };
+  const s = entry.sampling || {};
+  return {
+    maxTokens: Number.isFinite(s.maxTokens) ? s.maxTokens : maxTokens,
+    temperature: Number.isFinite(s.temperature) ? s.temperature : temperature,
+  };
+}
+
+/**
+ * The verdict as it is PERSISTED: `applyGuard`'s twelve keys plus the three
+ * that say which bytes produced the reply.
+ *
+ * WHY IT IS NOT IN `applyGuard`. That function's shape is pinned by Task 3's
+ * tests and it is pure in the strong sense — a verdict is a function of the
+ * user's words and the model's, and nothing else. Provenance is a fact about
+ * the TURN, not about the text, and it is only ever needed at the moment the
+ * row is written. So it is stamped here, on a copy, and the twelve-key shape
+ * survives untouched in memory and in every test that pins it.
+ *
+ * WHY BY SHA AND NOT BY ID. `export_triage_log` already writes the chat's
+ * `model_id` and `adapter_ids`, and spec §5 P2.5 asks for these three as well.
+ * An id is a name the catalog may re-point: Phase 3 swaps the triage adapter
+ * (v3 → v8) under the same entry id, and a clinical review reading an exported
+ * line months later cannot tell which adapter answered unless the bytes are on
+ * the line. These come from the entry the turn was SENT under — threaded
+ * through `finishStream` for the same reason `turnChatId` is — so a catalog
+ * that changes mid-stream cannot rewrite the provenance of a reply already
+ * given.
+ *
+ * Always all three, always strings, `''` when the entry pins none, so every
+ * guarded row has one shape. The tutor never reaches here: a null verdict
+ * returns null and `persistAssistantTurn` is called with exactly the argument
+ * set it was called with before this existed.
+ *
+ * @returns {object|null} a NEW object; `verdict` is never mutated.
+ */
+export function guardForPersistence(verdict, entry = null) {
+  if (!verdict) return null;
+  const str = (v) => (typeof v === 'string' ? v : '');
+  return {
+    ...verdict,
+    promptFingerprint: str(entry && entry.promptFingerprint),
+    modelSha: str(entry && entry.sha256),
+    adapterSha: str(entry && entry.adapterSha256),
+  };
+}
+
+/**
  * Which command persists this finished assistant turn, and with what.
  *
  * THE DISTINCTION THIS EXISTS FOR. On mobile the streaming checkpoint row is

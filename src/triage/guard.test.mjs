@@ -938,6 +938,12 @@ test('signpostsCrisisSupport counts a route to help and not a lexicon collision'
     'Rest and drink fluids.',
     TIME_FRAME_NOTE,
     PROHIBITED_NOTE,
+    // Every line the PRODUCT can put on screen by itself belongs in this list.
+    // The out-of-scope line is appended to an UNCLEAR reply and is the whole of
+    // what a reader sees when the model declined and nothing else survived —
+    // if it ever counted as a signpost, a disclosure answered by a decline
+    // would lose the crisis block, which is the R15 failure exactly.
+    BANNERS.out_of_scope.line,
     '', null, undefined,
   ]) assert.strictEqual(signpostsCrisisSupport(no), false, JSON.stringify(no ?? null));
 });
