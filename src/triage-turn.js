@@ -88,14 +88,16 @@ export const ROUTE_CHECK_MIN_MS = 100;
  * is the FIRST delta and always runs — the opening clause is where the model
  * states its disposition, so the earliest possible pass is the valuable one.
  *
- * Fails toward running: a non-finite `elapsedMs` is read as 0 rather than as
- * "not yet", because the failure mode of skipping is a supervised reply whose
- * banner never appears at all.
+ * Fails toward running: a non-finite `elapsedMs` RUNS the detectors rather
+ * than reading as "not yet", because the failure mode of skipping is a
+ * supervised reply whose banner never appears at all. (Unreachable in the
+ * product — `performance.now() - sentAt` is always finite — but the rule is
+ * stated here and pinned by its test so the safe direction is the coded one.)
  */
 export function shouldCheckRoute({ lastCheckMs = null, elapsedMs = 0 } = {}) {
   if (!Number.isFinite(lastCheckMs)) return true;
-  const now = Number.isFinite(elapsedMs) ? elapsedMs : 0;
-  return now - lastCheckMs >= ROUTE_CHECK_MIN_MS;
+  if (!Number.isFinite(elapsedMs)) return true;
+  return elapsedMs - lastCheckMs >= ROUTE_CHECK_MIN_MS;
 }
 
 /**

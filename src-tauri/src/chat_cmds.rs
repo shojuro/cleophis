@@ -402,8 +402,10 @@ mod imp {
         }
     }
 
-    /// Close out the checkpoint row: finalize on success, and on failure either
-    /// discard it (nothing was produced) or leave it marked partial.
+    /// Close out the checkpoint row: finalize on success (a success whose
+    /// content is EMPTY — Stop before the first token, or a think-only reply —
+    /// is discarded instead, so no blank row is finalized), and on failure
+    /// either discard it (nothing was produced) or leave it marked partial.
     ///
     /// Returns the id of the row it FINALIZED, which the caller puts on
     /// [`ChatEvent::Done`] so the front end can attach a guard verdict to that

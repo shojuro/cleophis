@@ -181,7 +181,7 @@ test('a non-finite clock reading runs the detectors rather than skipping them', 
   for (const bad of [undefined, NaN, null, 'soon']) {
     assert.strictEqual(shouldCheckRoute({ lastCheckMs: bad, elapsedMs: 5 }), true, `lastCheckMs=${String(bad)}`);
   }
-  assert.strictEqual(shouldCheckRoute({ lastCheckMs: 0, elapsedMs: NaN }), false);
+  assert.strictEqual(shouldCheckRoute({ lastCheckMs: 0, elapsedMs: NaN }), true);
   assert.strictEqual(shouldCheckRoute({ lastCheckMs: -1000, elapsedMs: NaN }), true);
 });
 
