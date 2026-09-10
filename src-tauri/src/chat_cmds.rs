@@ -63,9 +63,25 @@ pub struct CalcView {
 pub enum ChatEvent {
     /// Display text only — tool syntax has already been suppressed.
     Delta { text: String },
+    /// `rename_all` on the enum above renames the VARIANTS, not their fields —
+    /// which nothing had noticed while every field was one lower-case word.
+    /// `message_id` is the first that would wire as snake_case, so the variant
+    /// carries its own rename.
+    #[serde(rename_all = "camelCase")]
     Done {
         content: String,
         calculations: Vec<CalcView>,
+        /// The id of the assistant row [`settle`] just finalized for this
+        /// turn, or `None` when there was no checkpoint to finalize (no
+        /// signed-in account, no chat, or the finalize itself failed).
+        ///
+        /// It exists because the row is written BEFORE this event: the front
+        /// end's guard verdict for a supervised reply has to be ATTACHED to
+        /// that row (`attach_guard`), since appending would file a second
+        /// assistant row for one turn. A `None` here is the front end's
+        /// signal to fall back to `append_message`, which upgrades a row
+        /// still marked partial and inserts otherwise.
+        message_id: Option<i64>,
     },
     Error { message: String },
 }
@@ -175,12 +191,29 @@ mod imp {
         }
     }
 
+    /// The wire turns as the inference loop wants them, with the calc tool
+    /// contract appended to the system turn.
+    ///
+    /// P2.9: an entry whose catalog declares `"tools": false` gets NO preamble
+    /// and no synthesised system turn — its system content is the frontend's,
+    /// verbatim. That is not a tidiness preference. The supervised triage
+    /// entry was gated with exactly the catalog's `systemPrompt` as its only
+    /// system content, so a tool contract silently appended on device would
+    /// make the shipped context a different one from the gated context.
+    /// `tools` unset means the historical behaviour, so the tutor is
+    /// unaffected.
     fn to_loop_messages(app: &AppHandle, wire: Vec<WireMessage>) -> Vec<LoopMessage> {
         let mut out: Vec<LoopMessage> = Vec::with_capacity(wire.len() + 1);
-        let preamble =
+        // Both arms are `&'static str` — `tools_preamble` returns one, and the
+        // off arm must too, or the `if` fails to unify (E0308). Every use below
+        // (`format!`, `is_empty`, `trim_start`) works on `&str` unchanged.
+        let preamble: &'static str = if crate::inference::hero_tools_enabled(app) {
             crate::engine_tools::tools_preamble(tool_family(
                 crate::engine_inproc::current_template(app),
-            ));
+            ))
+        } else {
+            ""
+        };
 
         let mut injected = false;
         for m in wire {
@@ -200,7 +233,10 @@ mod imp {
             };
             out.push(LoopMessage { role, content });
         }
-        if !injected {
+        // With tools off there is nothing to carry, so a conversation that
+        // arrived without a system turn keeps arriving without one — inserting
+        // an empty system message would add a turn the gate never saw.
+        if !injected && !preamble.is_empty() {
             out.insert(
                 0,
                 LoopMessage {
@@ -343,17 +379,20 @@ mod imp {
 
         match result {
             Ok(outcome) => {
-                settle(&app, &checkpoint_to, &progress, Some(&outcome));
+                let message_id = settle(&app, &checkpoint_to, &progress, Some(&outcome));
                 let _ = on_event.send(ChatEvent::Done {
                     content: outcome.content.clone(),
                     calculations: calc_views(&outcome),
+                    message_id,
                 });
                 Ok(())
             }
             Err(message) => {
                 // Deliberately NOT finalized: the row stays marked partial,
                 // which is what makes it recoverable as truncated rather than
-                // indistinguishable from a short finished answer.
+                // indistinguishable from a short finished answer. The returned
+                // id is `None` for that same reason — a failed turn has no
+                // finished reply for a verdict to be attached to.
                 settle(&app, &checkpoint_to, &progress, None);
                 let _ = on_event.send(ChatEvent::Error {
                     message: message.clone(),
@@ -363,16 +402,27 @@ mod imp {
         }
     }
 
-    /// Close out the checkpoint row: finalize on success, and on failure either
-    /// discard it (nothing was produced) or leave it marked partial.
+    /// Close out the checkpoint row: finalize on success (a success whose
+    /// content is EMPTY — Stop before the first token, or a think-only reply —
+    /// is discarded instead, so no blank row is finalized), and on failure
+    /// either discard it (nothing was produced) or leave it marked partial.
+    ///
+    /// Returns the id of the row it FINALIZED, which the caller puts on
+    /// [`ChatEvent::Done`] so the front end can attach a guard verdict to that
+    /// row rather than append a second one. `None` on every path where no
+    /// finalized row exists — no account or chat to write into, no row, or a
+    /// finalize that failed. In that last case the row is still marked partial,
+    /// so the front end's `append_message` fallback upgrades it in place; a
+    /// `Some` returned for a failed finalize would instead point `attach_guard`
+    /// at a row still holding the last checkpoint's text.
     fn settle(
         app: &AppHandle,
         target: &Option<(String, i64)>,
         progress: &Arc<std::sync::Mutex<Progress>>,
         outcome: Option<&LoopOutcome>,
-    ) {
+    ) -> Option<i64> {
         let Some((user, chat)) = target.as_ref() else {
-            return;
+            return None;
         };
         let p = progress.lock().unwrap_or_else(|e| e.into_inner());
         let store = app.state::<crate::convstore::ConvStore>();
@@ -383,8 +433,30 @@ mod imp {
                 // recover — an empty partial row would just be litter.
                 let _ = store.discard_partial(user, *chat);
             }
-            return;
+            return None;
         };
+
+        // A SUCCESSFUL turn that produced no text is not a reply either, and
+        // finalizing one is worse here than the litter it is on the tutor's
+        // side. Stop before the first token returns `Ok` with empty content;
+        // finalizing wrote a blank, non-partial assistant row, and the front
+        // end persists nothing for an empty reply — so the row kept no verdict,
+        // and on the next open `replayMessage` withheld it behind "Unverified
+        // reply". A health worker who pressed Stop was shown a safety notice
+        // about a reply that never existed.
+        //
+        // So it takes the same path the `None` branch above takes: discard the
+        // checkpoint row, and return `None` for the id — there is no finalized
+        // reply for `attach_guard` to be pointed at. `ChatEvent::Done` still
+        // fires with the empty content it always did, and the front end's
+        // `finishStream` removes the bubble and persists nothing, exactly as
+        // before. The tool loop is unaffected: it has already returned by the
+        // time `settle` runs, and a turn that calculated but never spoke is
+        // given fallback copy by `tool_loop::finish`, so it is not empty here.
+        if outcome.content.trim().is_empty() {
+            let _ = store.discard_partial(user, *chat);
+            return None;
+        }
 
         // The final text may differ from the streamed text (the loop
         // substitutes fallback copy for a silent or capped turn), so finalize
@@ -395,9 +467,12 @@ mod imp {
             // Short turns can finish before the first checkpoint fires.
             None => store.checkpoint_partial(user, *chat, &outcome.content).ok(),
         };
-        if let Some(row) = row {
-            if let Err(e) = store.finalize_partial(user, row, &outcome.content, None, calcs) {
+        let row = row?;
+        match store.finalize_partial(user, row, &outcome.content, None, calcs) {
+            Ok(()) => Some(row),
+            Err(e) => {
                 eprintln!("chat_stream: finalize failed: {e}");
+                None
             }
         }
     }

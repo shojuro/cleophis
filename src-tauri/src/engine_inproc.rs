@@ -272,8 +272,13 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                 // The session borrows `handle`, and `Load` has to `unload()` it,
                 // so the borrow is confined to this expression while the
                 // decision it produces outlives it.
-                let end =
-                    serve_one_session(&mut **h, session_config(&tier), turn, &rx, &thermal);
+                let end = serve_one_session(
+                    &mut **h,
+                    session_config(&tier, pinned_sampling(&app)),
+                    turn,
+                    &rx,
+                    &thermal,
+                );
                 match end {
                     SessionEnd::Idle => {}
                     SessionEnd::Yield(next) => pending = Some(next),
@@ -306,9 +311,10 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                         // through here, so the frontend's window updates on the
                         // same event that tells it the engine is ready again.
                         let tier = crate::tier_select::effective_tier(&app);
-                        engine
-                            .n_ctx
-                            .store(session_config(&tier).n_ctx, Ordering::Relaxed);
+                        engine.n_ctx.store(
+                            session_config(&tier, pinned_sampling(&app)).n_ctx,
+                            Ordering::Relaxed,
+                        );
                         engine.set_status(EngineStatus::Ready);
                         let _ = app.emit("engine-ready", engine.info());
                     }
@@ -677,11 +683,29 @@ fn to_chat_message(m: &LoopMessage) -> ChatMessage {
 /// Context window per tier (spec §2): 2048 on the floor, 4096 above. The A22 is
 /// a floor device, so 2048 is the shipping default and the larger window is
 /// opt-in by tier rather than by hope.
-fn session_config(tier: &str) -> SessionConfig {
+///
+/// Sampling is the engine default (temperature 0.7) unless the LOADED hero
+/// pins one. The supervised triage entry pins temperature 0, because every
+/// number that entry was gated on was produced greedily — serving it at 0.7
+/// is a different model from the one that passed. `None` reproduces the
+/// pre-P2.9 config field for field, which is what leaves the tutor unchanged.
+fn session_config(tier: &str, pinned: Option<kpack_engine::Sampling>) -> SessionConfig {
     SessionConfig {
         n_ctx: if tier == "low" { 2048 } else { 4096 },
-        ..SessionConfig::default()
+        sampling: pinned.unwrap_or_default(),
     }
+}
+
+/// The hero's catalog `sampling` block projected onto the engine's `Sampling`.
+/// Only `temperature` and `max_tokens` are pinnable; `top_k`/`top_p`/`seed`
+/// keep their defaults, which is inert at temperature 0 — the backend takes
+/// the greedy path and never consults them (`kpack-engine/src/llama.rs`).
+fn pinned_sampling(app: &AppHandle) -> Option<kpack_engine::Sampling> {
+    crate::inference::hero_sampling(app).map(|s| kpack_engine::Sampling {
+        temperature: s.temperature,
+        max_tokens: s.max_tokens,
+        ..kpack_engine::Sampling::default()
+    })
 }
 
 /// Guarantees the engine never sits in a non-terminal state after the inference

@@ -496,6 +496,42 @@ pub(crate) fn launch_hashes(app: &AppHandle) -> Result<LaunchHashes, String> {
     })
 }
 
+/// The hero catalog entry, parsed fresh. Small file, read on every call — the
+/// same read `resolve_launch` and `hero_chat_template` each already do, kept
+/// uncached deliberately: the catalog is swapped at BUILD time
+/// (`build-android-apk.sh --variant=triage`), so a process-lifetime cache
+/// would only obscure which file a running app actually loaded.
+pub fn hero_entry(app: &AppHandle) -> Option<crate::catalog::CatalogEntry> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    crate::catalog::hero(&entries).cloned()
+}
+
+/// The loaded catalog's hero id — the id the entitlement and tier-switch
+/// bookkeeping key off. Derived, never assumed: the triage build ships a
+/// catalog whose hero is `med-triage`, not `tier_select::HERO_MODEL_ID`.
+pub fn hero_id(app: &AppHandle) -> Option<String> {
+    hero_entry(app).map(|e| e.id)
+}
+
+/// The sampling the hero pins, if any. The triage entry pins greedy decode
+/// (every number it was gated on is greedy); the tutor pins nothing and gets
+/// the engine default, so its behaviour is unchanged.
+#[cfg(mobile)]
+pub(crate) fn hero_sampling(app: &AppHandle) -> Option<crate::catalog::SamplingOverride> {
+    hero_entry(app).and_then(|e| e.sampling)
+}
+
+/// Whether the calc tool preamble rides on the system turn. Unset means yes,
+/// the historical behaviour — the supervised triage entry is the only thing
+/// that says `false`, because it was never gated with the preamble in its
+/// context.
+#[cfg(mobile)]
+pub(crate) fn hero_tools_enabled(app: &AppHandle) -> bool {
+    hero_entry(app).and_then(|e| e.tools).unwrap_or(true)
+}
+
 /// The hero's declared chat-template family for the effective tier, if the
 /// catalog names one. `None` leaves the engine on `ChatTemplate::Auto`, which
 /// reads the template embedded in the GGUF — the sidecar's `--jinja` behaviour.

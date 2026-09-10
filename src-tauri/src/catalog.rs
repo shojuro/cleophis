@@ -59,6 +59,41 @@ pub struct CatalogEntry {
     /// hasn't moved to `hero_variant` yet. Absent on non-hero entries.
     #[serde(default)]
     pub tiers: Option<Tiers>,
+    /// A supervised entry: a health worker confirms every reply (spec P2.5).
+    /// The FE applies the triage guard and the pinned-prompt assembly only when
+    /// this is true; the tutor hero leaves it unset.
+    #[serde(default)]
+    pub supervised: bool,
+    /// sha256 of `system_prompt`, first 12 hex chars — the fingerprint the
+    /// triage gates record. A mismatch on device is a different gate.
+    #[serde(default)]
+    pub prompt_fingerprint: Option<String>,
+    /// `Some(false)` disables the calc tool preamble on the system turn. The
+    /// triage model was never gated with it.
+    #[serde(default)]
+    pub tools: Option<bool>,
+    /// Sampling the engine must use for this entry. The triage gates are
+    /// greedy; the app's default is temperature 0.7.
+    #[serde(default)]
+    pub sampling: Option<SamplingOverride>,
+    /// The crisis line the guard appends, region-specific.
+    #[serde(default)]
+    pub crisis_line: Option<String>,
+    /// The lowest device tier this entry runs acceptably on (Phase 3 P3.3).
+    /// The FE hides "Get" below it.
+    #[serde(default)]
+    pub min_tier: Option<String>,
+}
+
+/// The decoding an entry pins, overriding the engine default (temperature
+/// 0.7, 512 tokens). Every triage gate number was produced greedily, so the
+/// entry that has to reproduce those numbers on device says so in the catalog
+/// rather than relying on a default nobody reads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingOverride {
+    pub temperature: f32,
+    pub max_tokens: usize,
 }
 
 /// One device tier's fully-pinned base+adapter identity — everything a launch
@@ -220,7 +255,7 @@ mod tests {
     fn real_catalog_file_parses_and_has_hero() {
         let raw = include_str!("../resources/catalog.json");
         let v = parse_catalog(raw).unwrap();
-        assert_eq!(v.len(), 11, "expected 11 catalog entries");
+        assert_eq!(v.len(), 12, "expected 12 catalog entries");
         let h = hero(&v).expect("catalog must contain the hero model");
         assert_eq!(h.id, "socratic-tutor");
         assert!(h.system_prompt.is_some() && h.greeting.is_some());
@@ -274,6 +309,177 @@ mod tests {
         assert_eq!(hero_variant(h, "high").base_model.as_deref(), Some("Qwen3-8B"));
         // Unknown tier defends to mid.
         assert_eq!(hero_variant(h, "banana").base_model.as_deref(), Some("Qwen3-4B"));
+    }
+
+    // ---- P2.9: the triage catalog variant ----------------------------------
+
+    #[test]
+    fn the_triage_catalog_parses_and_its_hero_is_the_supervised_triage_entry() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert!(h.supervised);
+        assert_eq!(h.tools, Some(false));
+        let s = h.sampling.as_ref().expect("sampling pinned");
+        assert_eq!(s.temperature, 0.0);
+        assert_eq!(s.max_tokens, 320);
+        assert!(h
+            .prompt_fingerprint
+            .as_deref()
+            .map(|f| f.len() == 12)
+            .unwrap_or(false));
+        assert_eq!(h.chat_template.as_deref(), Some("qwen"));
+        assert!(h.system_prompt.is_some() && h.crisis_line.is_some());
+        assert_eq!(h.min_tier.as_deref(), Some("low"));
+        assert!(
+            !entries.iter().any(|e| e.id == "socratic-tutor" && e.real),
+            "the tutor is not launchable in the triage variant"
+        );
+    }
+
+    /// A15: the shipped triage shape is base + LoRA, exactly like the tutor
+    /// hero — never a merged single-file model. `resolve_launch` fails closed
+    /// when a declared adapter is missing, so dropping `adapterFile` here would
+    /// silently ship the ungated base instead of refusing to launch.
+    #[test]
+    fn the_triage_hero_ships_as_base_plus_lora_not_a_merged_model() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert!(
+            h.model_file.is_some(),
+            "triage hero must declare a base model file"
+        );
+        assert!(
+            h.adapter_file.is_some(),
+            "triage hero must declare an adapter file"
+        );
+        // Both hashes come from ONE rung of the v3 gate manifests, which is why
+        // they are pinned here as literals rather than described: the base is
+        // `base_q4_sha256` and the adapter is `adapter_gguf_sha256` of the
+        // `Qwen3-1.7B-armb-v3` stack in ~/cleophas-triage's
+        // work/gate-17b, work/gate-17b-v7 and work/m4-prompt-ab
+        // run-manifest.json. A device serving a different pair is not serving
+        // the stack any triage number was measured on.
+        assert_eq!(
+            h.sha256.as_deref(),
+            Some("25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3"),
+            "base must be the v3 gate rung's base_q4_sha256"
+        );
+        assert_eq!(
+            h.adapter_sha256.as_deref(),
+            Some("5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20"),
+            "adapter must be the v3 gate rung's adapter_gguf_sha256"
+        );
+        assert!(h.adapter_id.is_some());
+        // No `tiers` block: the triage entry is one pinned pair, so
+        // `hero_variant` resolves it through the flat-field fallback.
+        assert!(h.tiers.is_none());
+        let resolved = hero_variant(h, "low");
+        assert_eq!(resolved.model_file, h.model_file);
+        assert_eq!(resolved.adapter_file, h.adapter_file);
+    }
+
+    #[test]
+    fn the_general_catalog_shows_the_triage_tile_but_does_not_launch_it() {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let t = entries
+            .iter()
+            .find(|e| e.id == "med-triage")
+            .expect("tile present");
+        assert!(!t.real);
+        assert!(
+            t.model_file.is_none(),
+            "the general tile pins no model file"
+        );
+        assert!(t.adapter_file.is_none());
+        // A marketing card is not a supervised entry. Tasks 5 and 6 add FE
+        // readers gated on `supervised === true`; a reader that keys on it
+        // without also checking `real` would otherwise apply triage behaviour
+        // inside the TUTOR app, because this tile ships in the tutor build.
+        // The launchable entry in catalog.triage.json is the only supervised
+        // one, and this asserts the tile is not a second answer to that.
+        assert!(!t.supervised, "the general tile is not a supervised entry");
+        assert_eq!(t.crisis_line, None);
+        assert_eq!(t.prompt_fingerprint, None);
+        assert_eq!(t.sampling, None);
+        assert_eq!(t.tools, None);
+        // `minTier` stays: it is a property of the model the card advertises,
+        // and the drawer reads it to decide whether to offer the card at all.
+        assert_eq!(t.min_tier.as_deref(), Some("low"));
+        assert_eq!(hero(&entries).unwrap().id, "socratic-tutor");
+    }
+
+    /// Exactly one entry across BOTH shipped catalogs declares itself
+    /// supervised, and it is the one that is launchable.
+    #[test]
+    fn only_the_launchable_triage_hero_is_supervised() {
+        let general = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        assert!(
+            !general.iter().any(|e| e.supervised),
+            "no entry in the tutor catalog is supervised"
+        );
+
+        let triage = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let supervised: Vec<&str> = triage
+            .iter()
+            .filter(|e| e.supervised)
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(supervised, vec!["med-triage"]);
+        assert!(triage.iter().find(|e| e.supervised).unwrap().real);
+    }
+
+    /// The tutor hero's behaviour must be byte-identical after P2.9: no
+    /// `supervised`, no pinned `sampling`, `tools` unset (so the calc preamble
+    /// still rides on its system turn).
+    #[test]
+    fn the_tutor_hero_declares_none_of_the_supervised_fields() {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "socratic-tutor");
+        assert!(!h.supervised);
+        assert_eq!(h.tools, None);
+        assert_eq!(h.sampling, None);
+        assert_eq!(h.prompt_fingerprint, None);
+        assert_eq!(h.crisis_line, None);
+        assert_eq!(h.min_tier, None);
+    }
+
+    /// Every new field is `#[serde(default)]`, so a catalog written before
+    /// P2.9 — the `SAMPLE` fixture, and the `catalog.json` already sitting in
+    /// app-data on a device that hasn't updated — still parses.
+    #[test]
+    fn entries_without_the_new_fields_still_parse() {
+        let v = parse_catalog(SAMPLE).unwrap();
+        assert!(!v[0].supervised);
+        assert_eq!(v[0].tools, None);
+        assert_eq!(v[0].sampling, None);
+        assert_eq!(v[0].min_tier, None);
+        assert_eq!(v[0].crisis_line, None);
+        assert_eq!(v[0].prompt_fingerprint, None);
+    }
+
+    #[test]
+    fn a_sampling_override_round_trips_as_camel_case() {
+        let one: Vec<CatalogEntry> = parse_catalog(
+            r#"[{"id":"s","name":"S","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/s.gguf",
+                 "blurb":"b","real":true,"supervised":true,"tools":false,
+                 "sampling":{"temperature":0.0,"maxTokens":320},"minTier":"mid"}]"#,
+        )
+        .unwrap();
+        let e = &one[0];
+        assert!(e.supervised);
+        assert_eq!(e.tools, Some(false));
+        assert_eq!(
+            e.sampling,
+            Some(SamplingOverride {
+                temperature: 0.0,
+                max_tokens: 320
+            })
+        );
+        assert_eq!(e.min_tier.as_deref(), Some("mid"));
     }
 
     #[test]

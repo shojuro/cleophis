@@ -55,6 +55,7 @@ embedded_covers!(
     "drug-interactions.webp",
     "ecg.webp",
     "intro-python.webp",
+    "med-triage.webp",
     "neurosurg.webp",
     "sat-prep.webp",
     "socratic-tutor.webp",
@@ -159,13 +160,23 @@ mod tests {
     /// The catalog is the thing that actually names covers at runtime, so it —
     /// not the directory — is the binding contract: a `cover` the mobile build
     /// cannot produce is a broken card in the library.
+    ///
+    /// BOTH catalogs, since P2.9. `--variant=triage` swaps
+    /// `catalog.triage.json` in as `catalog.json` at build time, so a cover
+    /// named only there is exactly as capable of shipping broken — and only
+    /// on the build nobody has a desktop version of to notice it on.
     #[test]
     fn every_catalog_cover_is_embedded() {
-        let raw = std::fs::read_to_string(resources_dir().join("catalog.json"))
-            .expect("resources/catalog.json must exist");
-        let entries = crate::catalog::parse_catalog(&raw).expect("catalog must parse");
+        for name in ["catalog.json", "catalog.triage.json"] {
+            let raw = std::fs::read_to_string(resources_dir().join(name))
+                .unwrap_or_else(|_| panic!("resources/{name} must exist"));
+            let entries = crate::catalog::parse_catalog(&raw).expect("catalog must parse");
+            assert_covers_embedded(name, &entries);
+        }
+    }
 
-        for e in &entries {
+    fn assert_covers_embedded(catalog: &str, entries: &[crate::catalog::CatalogEntry]) {
+        for e in entries {
             let file = e
                 .cover
                 .rsplit('/')
@@ -173,15 +184,17 @@ mod tests {
                 .expect("cover path must have a filename");
             assert!(
                 COVER_FILES.contains(&file),
-                "catalog entry {:?} references cover {:?}, which is not embedded \
+                "{} entry {:?} references cover {:?}, which is not embedded \
                  — add it to embedded_covers! or the Android build ships a broken image",
+                catalog,
                 e.id,
                 e.cover
             );
             assert!(
                 e.cover.starts_with("covers/"),
-                "catalog entry {:?} has cover {:?} outside covers/ — the mobile \
+                "{} entry {:?} has cover {:?} outside covers/ — the mobile \
                  materializer only writes covers/",
+                catalog,
                 e.id,
                 e.cover
             );

@@ -505,3 +505,65 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
    could clip under a large scale factor (the chat title and the pill)
    ellipsize rather than overflow. */
 
+
+/* --- Triage route banners (Phase 2) ---------------------------------------
+   Product-owned text, ABOVE the model's words and never inside them: the
+   banner says what the product decided the reply routes to, so it must not be
+   mistakable for a sentence the model wrote. Each paints its own background so
+   it reads at a glance on the assistant bubble, and `--provisional` is the one
+   drawn from the streamed prefix — same copy, visibly unfinished, replaced by
+   the verdict's own banner when the reply lands.
+   `.msg` is `white-space:pre-wrap`, which is what keeps the space between the
+   title and the line without a margin. */
+.triage-banner{display:block;margin:0 0 6px;padding:6px 10px;border-radius:8px;font-size:13px;line-height:1.3}
+.triage-banner b{letter-spacing:.04em}
+.triage-banner--emergency{background:#7f1d1d;color:#fff}
+.triage-banner--clinician{background:#1e3a8a;color:#fff}
+.triage-banner--self_care{background:#14532d;color:#fff}
+.triage-banner--out_of_scope{background:#3f3f46;color:#fff}
+.triage-banner--provisional{opacity:.7;border:1px dashed rgba(255,255,255,.6)}
+/* The health worker's confirmation (Task 8 renders these), inside the assistant
+   bubble under the model's words — the decision belongs to the reply it is
+   about, and a control floating beside the bubble would not say which reply it
+   confirmed. Its own stacking context so `.msg`'s `pre-wrap` cannot put stray
+   space between the rows. */
+.triage-actions{display:flex;flex-direction:column;gap:2px;margin-top:8px;
+  border-top:1px solid var(--line);padding-top:8px}
+.triage-confirm{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+/* Sized down from the page's `.btn`: these sit inside a 14.5px bubble, and the
+   full-size control reads as the chat's primary action rather than this
+   reply's. `flex-wrap` above is what puts the picker on its own line at 360px
+   instead of pushing the row off the bubble. */
+.triage-confirm .btn{padding:6px 12px;font-size:13px;border-radius:8px}
+.triage-confirm select{padding:4px 6px;background:var(--surface2);color:var(--text);
+  border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:13px}
+/* Locked, not gone: a recorded decision stays legible as the thing that was
+   chosen. `.btn:disabled` already dims; the select needs telling. */
+.triage-confirm select:disabled{opacity:.6;cursor:default}
+/* A locked row is a RECORD, and must not read as an action. Dimming alone did
+   not do it — a 60%-opacity teal `.btn.primary` on this ground is still the
+   most legible thing in the bubble, so `renderConfirm` drops the primary class
+   here and these two rules take the rest of the weight out. */
+.triage-actions.is-locked .triage-confirm .btn{background:transparent;border-color:var(--line);color:var(--faint)}
+.triage-actions.is-locked .triage-confirm select{color:var(--faint)}
+/* The decision is the strongest line in the block: it is the only thing here a
+   person put there, and it is what the export's `overridden` flag is computed
+   from. */
+.triage-confirmed{margin-top:6px;font-size:12.5px;font-weight:600;color:var(--text)}
+.triage-confirmed-at{font-weight:400;color:var(--faint)}
+/* The removal receipt: what the guard took out of this reply and what it added.
+   Same collapsed-disclosure grammar as `.citations`/`.calculations`, because it
+   is the same kind of provenance under the same kind of bubble — and collapsed
+   by default because it is the reply, not the receipt, that is being read. */
+.triage-receipt{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.receipttoggle{align-self:flex-start;background:none;border:0;color:var(--muted);font-size:12px;
+  font-weight:600;padding:2px 0}
+.receipttoggle:hover{color:var(--text)}
+.receiptlist{display:none;flex-direction:column;gap:4px}
+.triage-receipt.expanded .receiptlist{display:flex}
+.receipt-row{font-size:12.5px;color:var(--muted);line-height:1.4}
+/* The fifth banner is not a disposition: it is the product saying this reply
+   never went through the guard, so nothing can be claimed for it. The app's own
+   warning colour, so it cannot be read as one of the four routes. It carries a
+   title and no line, which is why `bannerEl` omits the empty span. */
+.triage-banner--unverified{background:var(--amber);color:var(--amber-ink)}

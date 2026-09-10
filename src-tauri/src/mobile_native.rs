@@ -1,6 +1,9 @@
 //! The two Android shims 2.2 left unfinished — the download network policy's
 //! fact source and share-sheet export — plus, from 5.1, the inference
-//! foreground service's start/stop.
+//! foreground service's start/stop. Share-sheet export is two commands as of
+//! P2.5: a chat (`share_chat`) and a supervised chat's triage override log
+//! (`share_triage_log`), which is an audit artefact rather than a transcript
+//! and says so at its own definition.
 //!
 //! All three reach Kotlin through `android_bridge::with_app_class`, the JNI
 //! entry path proven on device in the native chunk and given a single home in
@@ -146,6 +149,38 @@ pub async fn share_chat(id: i64, format: String, title: String, app: AppHandle) 
     }
 }
 
+/// Export this chat's triage override log (JSONL) and hand it to the Android
+/// share sheet — the phone's counterpart to `export_triage_log_to_file`.
+///
+/// **Its own command, not a fourth `format` of [`share_chat`]**, for the same
+/// reason the desktop side is two commands rather than one: this is not a
+/// transcript in another syntax. It is the clinical review's audit artefact,
+/// formatted by `convstore::export_triage_log`, carrying rows no chat export
+/// has — the raw reply before the guard touched it, the removal receipt, the
+/// health worker's confirmed route and whether it overrode the model. Folding
+/// it into a parameter named after document formats would hide an audit log
+/// behind an export menu.
+///
+/// **One chat, never the whole account**: `chat_id` is an `i64`, not an
+/// `Option<i64>`. The all-chats export exists on desktop
+/// (`export_triage_log(user, None)`), where the destination is a file the
+/// reviewer picked and can inspect before it goes anywhere. Handing every
+/// supervised conversation an account has ever had to whatever app is tapped
+/// next in a chooser is a materially different act, and it is not one this
+/// command should make reachable by passing `null`.
+#[tauri::command]
+pub async fn share_triage_log(chat_id: i64, title: String, app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        imp::share_triage_log(chat_id, title, app).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (chat_id, title, app);
+        Err(DESKTOP_REFUSAL.to_string())
+    }
+}
+
 /// The pure half of the share path, in its own file so it can be compiled and
 /// run outside the app crate (the `#[path]` pattern `engine_tools` and
 /// `engine_serve` already use). Compiled on **every** platform so its tests
@@ -215,6 +250,109 @@ mod imp {
         android_bridge::with_app_class("com.cleophis.app.ShareSheet", |env, class, activity| {
             let j_path = env.new_string(&path).map_err(|e| format!("share: {e}"))?;
             let j_mime = env.new_string(mime).map_err(|e| format!("share: {e}"))?;
+            let j_title = env.new_string(&title).map_err(|e| format!("share: {e}"))?;
+            env.call_static_method(
+                class,
+                "shareFile",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                &[
+                    activity.into(),
+                    (&j_path).into(),
+                    (&j_mime).into(),
+                    (&j_title).into(),
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("shareFile: {e}"))
+        })
+    }
+
+    /// **`text/plain`, not `application/x-ndjson`** — the accurate type, which
+    /// this was first written as, loses to the type that actually reaches a
+    /// destination.
+    ///
+    /// The bridge constrains nothing: `ShareSheet.shareFile` takes the MIME as
+    /// a `String` and puts it straight on the `ACTION_SEND` intent
+    /// (`ShareSheet.kt`), so either value works as far as this code is
+    /// concerned. **The Android chooser is what decides**, and it offers only
+    /// targets that registered for the type. Files, Drive and every mail app
+    /// register for `text/plain`; almost nothing registers for
+    /// `application/x-ndjson`, so naming the format precisely risks a chooser
+    /// with no targets in it — an export button that opens an empty sheet and
+    /// gives a health worker nowhere to send the audit log. A note app
+    /// rendering the file as one long line is a cosmetic cost; an empty
+    /// chooser is a dead feature.
+    ///
+    /// **The `.jsonl` extension is what carries the format**, and it survives
+    /// the share: `ShareSheet` hands over a FileProvider URI for the file this
+    /// module named, so whatever receives it stores `…-triage-log.jsonl`. The
+    /// clinical review opens the file by name, not by MIME.
+    const TRIAGE_LOG_MIME: &str = "text/plain";
+
+    /// Written and shared exactly like `share_chat`'s file — same cache
+    /// directory (already covered by the FileProvider's cache-path root, so
+    /// no new provider wiring), same overwrite-per-share rule, same bridge
+    /// call.
+    ///
+    /// **Deliberately duplicated rather than factored into a helper shared
+    /// with `share_chat`.** Nothing on this branch compiles this module:
+    /// `imp` is `cfg(target_os = "android")`, so neither the WSL `check` nor
+    /// the founder's Windows `cargo test` reaches a line of it, and the
+    /// first compiler that will is the Android cross-build. Under that,
+    /// editing the working share path to host a helper risks breaking a
+    /// proven function to tidy an unproven one. The new path is additive;
+    /// `share_chat` above is untouched. If a third sharer ever appears, that
+    /// is the moment to extract the helper — with a compiler watching.
+    pub(super) async fn share_triage_log(
+        chat_id: i64,
+        title: String,
+        app: AppHandle,
+    ) -> Result<(), String> {
+        let user_id = current_user_id(&app).ok_or_else(|| "Sign in to export.".to_string())?;
+        let stem = safe_file_stem(&title);
+
+        // The front end reshapes none of these bytes and neither does this:
+        // the file that reaches the share sheet is `export_triage_log`'s own
+        // output, the same output the desktop command writes to disk.
+        //
+        // Including when it is EMPTY. A supervised chat whose turns carry no
+        // verdict exports nothing, and this shares that nothing rather than
+        // inventing a refusal the desktop path does not have. If an empty
+        // audit log is the wrong thing to produce, it is wrong on both
+        // platforms, and the fix belongs in `export_triage_log` rather than
+        // in one of its two destinations.
+        let content = {
+            let app = app.clone();
+            let user_id = user_id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                app.state::<ConvStore>()
+                    .export_triage_log(&user_id, Some(chat_id))
+            })
+            .await
+            .map_err(|_| "export task failed".to_string())??
+        };
+
+        let dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("no cache dir: {e}"))?
+            .join("exports");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cache dir: {e}"))?;
+
+        // `-triage-log` is not decoration. The chat's own JSON export in this
+        // same directory is `{stem}.json`, and this is `{stem}.jsonl` — one
+        // character apart, in a downloads list, for two files that mean very
+        // different things. The suffix makes the audit log say what it is
+        // wherever it lands.
+        let path = dir.join(format!("{stem}-triage-log.jsonl"));
+        std::fs::write(&path, content).map_err(|e| format!("write: {e}"))?;
+        let path = path.to_string_lossy().to_string();
+
+        android_bridge::with_app_class("com.cleophis.app.ShareSheet", |env, class, activity| {
+            let j_path = env.new_string(&path).map_err(|e| format!("share: {e}"))?;
+            let j_mime = env
+                .new_string(TRIAGE_LOG_MIME)
+                .map_err(|e| format!("share: {e}"))?;
             let j_title = env.new_string(&title).map_err(|e| format!("share: {e}"))?;
             env.call_static_method(
                 class,

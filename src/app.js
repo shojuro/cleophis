@@ -5,6 +5,23 @@ import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMAL_PROMINENT_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
+import { assembleMessages } from './prompt-assembly.js';
+import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
+// The product's contract on a supervised reply (Phase 2). Every use below is
+// gated on `entry.supervised === true`; the tutor never reaches any of it.
+import { applyGuard } from './triage/guard.js';
+import {
+  bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
+  persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
+  shouldGroundTurn, titlePlan,
+} from './triage-turn.js';
+// Task 8: the health worker's decision on a supervised reply, and the audit
+// log's way out. Gated on the same `supervised === true` as everything above.
+import {
+  TRIAGE_EXPORT_LABEL, confirmRequest, confirmResult, confirmState, offersTriageExport,
+  receiptLabel, routeLabel, triageExportPlan,
+} from './triage-confirm.js';
+import { isPromptMismatch, promptFingerprint } from './prompt-fingerprint.js';
 
 const { invoke, convertFileSrc, Channel } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -55,7 +72,12 @@ const state = {
   cat: 'all', subject: 'all', q: '', signedIn: false, nick: null, device: null,
   mine: new Set(), lapsed: new Set(), chatBlocked: new Set(), catalog: [],
   engine: { port: 0, status: 'Starting', gpuOffload: false },
-  chat: { model: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
+  // `model` is the ENTERED model — the one that answers. `entry`/`modelId` are
+  // the OPEN CHAT's, which is not the same thing: `openChat` opens any chat
+  // from the sidebar without re-pointing `model`. Rendering a transcript asks
+  // the chat's entry; answering in it asks the entered model. Both track
+  // `chatId` and are set by `setChatOwner` wherever it is.
+  chat: { model: null, entry: null, modelId: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
   dl: { installed: false, partBytes: 0, active: false },
   // Task 2.2 engine-state inputs. `dlProgress` is the last download-progress
   // payload (null when no download is in flight), `turn` times the in-flight
@@ -361,7 +383,10 @@ const TIER_OPTS = [
   { mode: 'high', label: 'Large · 8B', sub: '≈4.8 GB · most capable' },
 ];
 function tierSelectorHtml(m) {
-  if (!m.real || !(state.mine.has(m.id) || state.dl.installed)) return '';
+  // P2.9: also renders nothing for an entry with no `tiers` block. The options
+  // below ARE that block; without it the selector would offer three models the
+  // entry does not have.
+  if (!tierSelectorApplies(m, { owned: state.mine.has(m.id), installed: state.dl.installed })) return '';
   const ts = state.tierSel || { mode: 'auto', effectiveTier: 'mid', switchAvailable: true, nextChangeAt: null };
   const opts = TIER_OPTS.map((o) => {
     const active = ts.mode === o.mode;
@@ -398,6 +423,12 @@ function openDrawer(id) {
   const check = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const gib = (heroBytes / 2 ** 30).toFixed(2);
   const waitingLabel = 'Waiting for payment… (click to cancel)';
+  // P2.9: an entry may declare the lowest device tier it runs acceptably on.
+  // Below it the Get / Download control is REPLACED by a line saying so —
+  // replaced rather than disabled, because a dead button invites a second tap
+  // and explains nothing. Entries without a `minTier` (every entry today but
+  // the triage one) are untouched.
+  const belowMin = belowMinTier(effectiveTier(), m.minTier);
   const btnLabel = m.real
     ? (!installed
         ? (state.pay.modelId === m.id
@@ -432,7 +463,9 @@ function openDrawer(id) {
       <div class="spec"><div class="k">Eval</div><div class="v">${escapeHtml(m.eval) || '—'}</div></div>
     </div>
     <div class="dlrow">
-      <button class="btn primary block" id="dlBtn">${btnLabel}</button>
+      ${belowMin
+        ? `<div class="dlline mono" id="minTierLine" style="display:block;font-size:12.5px;color:var(--muted)">${escapeHtml(minTierNotice(m.minTier))}</div>`
+        : `<button class="btn primary block" id="dlBtn">${btnLabel}</button>`}
       <div class="prog" id="prog"><i></i></div>
       <div class="dlline mono" id="dlLine" style="display:none;font-size:12.5px;color:var(--muted);margin-top:8px"></div>
       <div class="installed" id="installedMsg">${check} Installed — runs offline on your device</div>
@@ -448,7 +481,8 @@ function openDrawer(id) {
   $('scrim').classList.add('show'); $('drawer').classList.add('show');
   $('drawer').setAttribute('aria-hidden', 'false');
   if (installed && !m.real) $('installedMsg').style.display = 'flex';
-  $('dlBtn').onclick = () => runGetFlow(m, $('dlBtn'));
+  // The button is absent entirely when the device is below the entry's floor.
+  if (!belowMin) $('dlBtn').onclick = () => runGetFlow(m, $('dlBtn'));
   if (showRenewLine) {
     const renewEl = $('renewLine');
     renewEl.onclick = () => startCheckoutFlow(m, renewEl);
@@ -1103,6 +1137,21 @@ async function refreshChatList() {
   renderSidebar();
 }
 
+// A CHAT's own catalog entry, from its stored `modelId` — never the entered
+// model. The export menu is per row, and whether a chat has a triage log is a
+// question about that chat, not about whichever card was last tapped. Passing
+// no fallback is the point: a chat whose model this catalog no longer lists is
+// not supervised by inheritance.
+function chatEntryOf(chat) { return entryForChat(state.catalog, chat); }
+
+// The ChatInfo behind a sidebar row id, from whichever list rendered it (a live
+// search renders `searchResults`, everything else `chats`).
+function chatById(id) {
+  return (state.sidebar.searchResults || []).find((c) => c.id === id)
+    || state.sidebar.chats.find((c) => c.id === id)
+    || null;
+}
+
 // title is user-renameable (untrusted) — escapeHtml it; pin/rename/delete/
 // archive/move/export are static labels, not interpolated user data.
 // `opts.nested` indents a row under a folder header.
@@ -1110,6 +1159,14 @@ function chatRowHtml(c, opts) {
   const nested = opts && opts.nested;
   const moveOpen = state.sidebar.moveMenuFor === c.id;
   const exportOpen = state.sidebar.exportMenuFor === c.id;
+  // Task 8: the triage override log, offered only for a supervised chat — and
+  // only where there is somewhere to put the file (the save sheet on desktop,
+  // the share sheet on Android since P2.5; see `triageExportPlan`). A module
+  // constant with no markup in it, escaped anyway so this template has one
+  // rule and no exceptions.
+  const triageExport = offersTriageExport({ supervised: chatEntryOf(c)?.supervised === true, isMobile: IS_MOBILE, chatId: c.id })
+    ? `<button class="movemenu-item" data-act="export-triage">${escapeHtml(TRIAGE_EXPORT_LABEL)}</button>`
+    : '';
   return `
     <div class="chatrow ${c.id === state.chat.chatId ? 'active' : ''}${nested ? ' nested' : ''}${c.archived ? ' is-archived' : ''}" data-id="${c.id}">
       <span class="chatrow-title">${escapeHtml(c.title)}</span>
@@ -1130,6 +1187,7 @@ function chatRowHtml(c, opts) {
             <button class="movemenu-item" data-act="export-to" data-format="markdown">Markdown</button>
             <button class="movemenu-item" data-act="export-to" data-format="json">JSON</button>
             <button class="movemenu-item" data-act="export-to" data-format="txt">Plain text</button>
+            ${triageExport}
           </div>
         </span>
         <button class="chatrow-act" data-act="delete" title="Delete">✕</button>
@@ -1251,6 +1309,14 @@ function clearChatSearch() {
   renderSidebar();
 }
 
+// Phase 2: record which model the chat now on screen BELONGS to. Called
+// wherever `state.chat.chatId` is assigned, so the two can never drift — a
+// stale `entry` would decide, wrongly, whether an unverified reply is withheld.
+function setChatOwner(entry, modelId) {
+  state.chat.entry = entry ?? null;
+  state.chat.modelId = modelId ?? null;
+}
+
 // Clears the message DOM back to just the model's greeting, without
 // touching state.chat.chatId — callers (newChat, delete-active-chat,
 // enterChat on a model switch) each decide what chatId should be first.
@@ -1274,6 +1340,10 @@ async function openChat(id) {
   }
   const { chat, messages } = detail;
   state.chat.chatId = chat.id;
+  // The chat's OWN entry, not the entered one: this may be any chat in the
+  // sidebar, and whether an unverified reply is withheld is a question about
+  // the chat rather than about which card was last tapped.
+  setChatOwner(entryForChat(state.catalog, chat, state.chat.model), chat.modelId);
   state.chat.packPaths = chat.mountedPacks || [];
   // Re-hydrate into the same {role, content, citations?} shape sendMessage/
   // finishStream push locally, so rebuildChatDom's replay logic (below)
@@ -1281,6 +1351,19 @@ async function openChat(id) {
   state.chat.messages = messages.map((msg) => ({
     role: msg.role,
     content: msg.content,
+    // The row id, so a reopened chat's replies can still be acted on — the
+    // health worker's route confirmation (Task 8) is written against it.
+    id: msg.id,
+    // Phase 2: a supervised reply's verdict and the confirmed route, both
+    // absent on every ordinary message (convstore skips them when null), so a
+    // tutor chat re-hydrates exactly as it did before.
+    guard: msg.guard || undefined,
+    confirmedRoute: msg.confirmedRoute || undefined,
+    // The store's own clock for that confirmation. Since P2.5 this is no
+    // longer the only way it reaches the screen — `confirm_route` returns the
+    // updated row, so a confirmation made in this session shows its time
+    // immediately. This is still where a REOPENED chat gets it.
+    confirmedAt: msg.confirmedAt || undefined,
     citations: msg.citations && msg.citations.length ? msg.citations : undefined,
     // §3a/Task 7: the `messages.tool_calls` column, surfaced camelCase (via
     // convstore's MessageInfo `#[serde(rename_all = "camelCase")]`) as
@@ -1316,6 +1399,7 @@ async function newChat() {
     chatId = chat.id;
   } catch (_) { /* persistence failed — still hand back a clean local chat */ }
   state.chat.chatId = chatId;
+  setChatOwner(m, m?.id ?? null); // created with the entered model's id, above
   resetChatDom();
   await refreshChatList();
 }
@@ -1348,6 +1432,10 @@ function enterChat(m) {
     state.chat.messages = [];
   }
   state.chat.model = m;
+  // A chat that is open stays whosever it is — re-entering a card must not
+  // re-attribute a transcript. Only the unsaved chat this leaves behind (the
+  // model switch above, a first entry, a deleted active chat) belongs to `m`.
+  if (state.chat.chatId == null) setChatOwner(m, null);
   $('chatModelName').textContent = m.name;
   $('chatCover').src = m.coverUrl;
   rebuildChatDom();
@@ -1379,16 +1467,73 @@ function rebuildChatDom() {
   // chat is exited and re-entered. .noEvidence messages carry no citations
   // and render like any other bubble — their content IS the refusal text.
   // .calculations (Task 7) replays the same way, from `messages.tool_calls`.
+  // Phase 2: in a supervised chat an assistant row with NO verdict is withheld
+  // — see `replayMessage`. That covers a partial row left by a killed turn, a
+  // row whose `attach_guard` never landed, and any other producer that did not
+  // pass through the guard. The greeting bubble above is UI, not a stored
+  // message, and is deliberately outside this loop.
+  //
+  // Asked of the CHAT's entry, never of the entered model. A row that carries a
+  // verdict renders it either way; only the withholding of an unguarded row
+  // turns on this, and getting it from `state.chat.model` withholds every reply
+  // in an ordinary tutor chat that happens to be open while triage is entered.
+  const chatEntry = state.chat.entry || m;
+  const supervised = !!(chatEntry && chatEntry.supervised);
   for (const msg of state.chat.messages) {
-    appendBubble(msg.role, msg.content, msg.citations, msg.calculations);
+    const view = replayMessage({ supervised, role: msg.role, content: msg.content, guard: msg.guard });
+    // A withheld reply shows nothing of its own, its sources and its
+    // calculations included: they are provenance for text that is not on
+    // screen.
+    const el = appendBubble(
+      msg.role, view.text,
+      view.withheld ? undefined : msg.citations,
+      view.withheld ? undefined : msg.calculations,
+      view.banner,
+    );
+    // Task 8: the confirmation block, and the receipt of what the guard
+    // changed. A row already confirmed comes back LOCKED rather than blank —
+    // `confirmState` reads `confirmedRoute`/`confirmedAt` off the row `openChat`
+    // re-hydrated — and a withheld row (no verdict) has no route to confirm, so
+    // it renders nothing at all.
+    renderConfirm(el, msg, supervised);
   }
   updateContextDivider();
 }
 
-function appendBubble(role, text, citations, calculations) {
+// The route banner: product-owned text, above the model's words and never
+// inside them. `provisional` is the one drawn from the streamed prefix before
+// the reply is finished — same copy, visibly unfinished, replaced by the
+// verdict's own banner at `finishStream`.
+//
+// The key is normalised once and used for BOTH the copy and the CSS class, so
+// a banner can never render a disposition it is not coloured as.
+function bannerEl(banner, provisional = false) {
+  const key = bannerKey(banner);
+  const b = bannerText(key);
+  const el = document.createElement('div');
+  el.className = `triage-banner triage-banner--${key}${provisional ? ' triage-banner--provisional' : ''}`;
+  const title = document.createElement('b');
+  title.textContent = b.title;
+  el.append(title);
+  // The `unverified` banner is a title and nothing else; every route banner
+  // carries a line. Appending an empty span would leave a stray space in a
+  // `pre-wrap` bubble.
+  if (b.line) {
+    const line = document.createElement('span');
+    line.textContent = ` ${b.line}`;
+    el.append(line);
+  }
+  return el;
+}
+
+// `banner` is a banner KEY (Phase 2) — one of the four routes, or the
+// `unverified` one. Absent on every tutor turn and on every user turn, which is
+// what keeps this function's behaviour for those byte-identical to what it was.
+function appendBubble(role, text, citations, calculations, banner) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.textContent = text;
+  if (banner) el.prepend(bannerEl(banner));
   $('chatMessages').appendChild(el);
   if (citations && citations.length) renderCitations(el, citations);
   if (calculations && calculations.length) renderCalculations(el, calculations);
@@ -1509,6 +1654,156 @@ function renderCalculations(afterEl, calcs) {
   box.appendChild(list);
   afterEl.insertAdjacentElement('afterend', box);
   $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
+}
+
+// The removal receipt (Task 8): what the guard took out of this reply and what
+// it put in. The same collapsed-disclosure grammar as renderCitations/
+// renderCalculations immediately above, and for the same reason — it is
+// provenance for the bubble it hangs under, not part of the reply.
+//
+// Every row quotes the MODEL's own sentences, so textContent only, never
+// innerHTML. `receiptRows` decides what the rows say; this only writes them.
+function receiptEl(receipt) {
+  const box = document.createElement('div');
+  box.className = 'triage-receipt';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'receipttoggle';
+  toggle.textContent = receiptLabel(receipt.count, false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = receiptLabel(receipt.count, open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'receiptlist';
+  for (const row of receipt.rows) {
+    const el = document.createElement('div');
+    el.className = 'receipt-row';
+    el.textContent = row;
+    list.appendChild(el);
+  }
+  box.appendChild(list);
+  return box;
+}
+
+// A recorded confirmation carries the store's own clock (`now_iso()`), which is
+// an RFC 3339 string. Shown in the reader's locale; left as written if it is
+// anything this build cannot parse, because the audit value is the timestamp,
+// not the formatting.
+function formatConfirmedAt(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+}
+
+// The health worker holds the decision (spec §2, non-goals). Nothing is "final"
+// until Confirm or Change route is pressed, and the choice is written to the
+// message row through Task 7's `confirm_route` so the export can say whether the
+// model was overridden.
+//
+// A CONFIRMATION IS AN ACT AND IS NEVER INFERRED. It exists only after that
+// command has resolved; the controls disable themselves for the round trip so
+// one tap cannot become two writes, and come back if it fails.
+//
+// Drawn only for a SUPERVISED chat — asked of the chat's own entry, the same
+// question `rebuildChatDom` asks about withholding, never of the entered model.
+// `confirmState` owns every decision here (which controls, what the picker
+// offers, what the receipt says); this function only writes them, and re-renders
+// itself after a successful write so the locked state on screen is drawn by the
+// same code that draws a reopened chat's.
+//
+// Idempotent: any block already in this bubble is removed first, so it is safe
+// to call again as the row id lands and again as the confirmation does.
+function renderConfirm(bubbleEl, msg, supervised) {
+  const st = confirmState({ supervised, message: msg });
+  // Removed even when nothing replaces it, so a re-render can never leave a
+  // stale block behind whatever the new state turns out to be.
+  bubbleEl.querySelector('.triage-actions')?.remove();
+  if (!st.render) return null;
+
+  const box = document.createElement('div');
+  // `is-locked` is a styling hook and it earns its place. Rendered without it,
+  // a confirmed reply kept a teal `.btn.primary` that `:disabled` merely dimmed
+  // — still the most legible control in the bubble, still inviting a press, on
+  // the one reply where pressing does nothing. Found by screenshotting the page
+  // and looking at it; every bounds assertion above it passed.
+  box.className = `triage-actions${st.controls === 'locked' ? ' is-locked' : ''}`;
+
+  if (st.controls !== 'none') {
+    const row = document.createElement('div');
+    row.className = 'triage-confirm';
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    // The primary weight belongs to an action that is still open. Once the
+    // decision is recorded, `.triage-confirmed` below is what should carry it.
+    confirm.className = st.controls === 'locked' ? 'btn' : 'btn primary';
+    confirm.textContent = `Confirm: ${routeLabel(st.modelRoute)}`;
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'Route');
+    for (const o of st.options) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      opt.selected = o.selected;
+      select.appendChild(opt);
+    }
+    const change = document.createElement('button');
+    change.type = 'button';
+    change.className = 'btn';
+    change.textContent = 'Change route';
+    const enable = (on) => { confirm.disabled = !on; select.disabled = !on; change.disabled = !on; };
+
+    const commit = async (route) => {
+      const req = confirmRequest({ message: msg, route });
+      if (!req) return; // no row to write against, or a route the store refuses
+      enable(false);
+      let info;
+      try {
+        info = await invoke(req.command, req.args);
+      } catch (e) {
+        // Nothing was recorded, so nothing on screen may say it was. The
+        // controls come back and the health worker can try again.
+        enable(true);
+        showEngineBanner(`Could not record the route: ${e}`);
+        return;
+      }
+      const recorded = confirmResult(info, route);
+      msg.confirmedRoute = recorded.confirmedRoute;
+      msg.confirmedAt = recorded.confirmedAt;
+      renderConfirm(bubbleEl, msg, supervised);
+    };
+    // Listeners exist only while the decision is open. A locked row is a
+    // record, and a record with a live handler on it is one stray programmatic
+    // click away from overwriting the health worker's own answer.
+    if (st.controls === 'locked') {
+      enable(false);
+    } else {
+      confirm.addEventListener('click', () => commit(st.modelRoute));
+      change.addEventListener('click', () => commit(select.value));
+    }
+
+    row.append(confirm, select, change);
+    box.appendChild(row);
+  }
+
+  if (st.statusText) {
+    const done = document.createElement('div');
+    done.className = 'triage-confirmed';
+    done.textContent = st.statusText;
+    // The store's timestamp, from the row `confirm_route` now returns (see
+    // `confirmResult`) or from a reopen that read it back.
+    if (st.confirmedAt) {
+      const when = document.createElement('span');
+      when.className = 'triage-confirmed-at';
+      when.textContent = ` · ${formatConfirmedAt(st.confirmedAt)}`;
+      done.appendChild(when);
+    }
+    box.appendChild(done);
+  }
+
+  box.appendChild(receiptEl(st.receipt));
+  bubbleEl.appendChild(box);
   return box;
 }
 
@@ -1698,10 +1993,27 @@ function pulseCost() {
   c.classList.add('pulse');
 }
 
+// Phase 2: may the ENTERED model answer in the chat that is open? A supervised
+// one answers only in its own chats — sending elsewhere would file a guarded
+// triage row, verdict and audit line and all, into someone else's conversation.
+// Asked in both entry points from one pure decision, so they cannot disagree:
+// here, before the user's text is taken from them, and again at the top of
+// `sendCompletion`, which is also where a retry chip arrives.
+function sendPermit() {
+  return canSendInChat({
+    entered: state.chat.model,
+    // No record yet means no chat yet: the first message creates one, with the
+    // entered model's id.
+    chat: state.chat.chatId == null ? null : { modelId: state.chat.modelId },
+  });
+}
+
 function sendMessage() {
   const input = $('chatInput');
   const text = input.value.trim();
   if (!text || state.chat.streaming) return;
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
   input.value = '';
   state.chat.messages.push({ role: 'user', content: text });
   appendBubble('user', text);
@@ -1712,6 +2024,11 @@ function sendMessage() {
 // call sendCompletion() bare to replay an already-pushed/already-persisted
 // user turn, which must NOT be persisted a second time.
 async function sendCompletion(userText) {
+  // BEFORE ANY INVOKE, and before the streaming latch below, so a refusal
+  // leaves no composer state to restore. The retry chips reach this function
+  // directly, which is why the check is here as well as in `sendMessage`.
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
   // Streaming guard set SYNCHRONOUSLY, before any await below — otherwise a
   // second rapid Send could slip past sendMessage's `state.chat.streaming`
   // check (read synchronously there) and race a second sendCompletion call
@@ -1749,10 +2066,26 @@ async function sendCompletion(userText) {
   const autoTitle = isFirstExchange ? { source: userText } : null;
 
   const m = state.chat.model;
+  // Phase 2, and the gate for every guard behaviour below. Captured here, with
+  // the entry itself, because `enterChat` can swap the model mid-stream without
+  // aborting the turn: whether this reply is guarded is decided by the entry it
+  // was SENT under, never by whatever the library is showing when it lands.
+  const supervised = !!(m && m.supervised);
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
   const bubble = appendBubble('assistant', '');
   bubble.classList.add('streaming');
   let acc = '';
+  // The provisional route banner, and the clock it is measured against. The
+  // model states its disposition in the first clause, so this reaches the
+  // screen well before the reply finishes.
+  const sentAt = performance.now();
+  let provisionalEl = null;
+  // When the detectors last ran for this turn, on the same clock as `sentAt`.
+  // This is what throttles them before a route resolves — see
+  // `shouldCheckRoute`. `null` means never, i.e. the first delta always runs.
+  // Read only on the supervised path, so the tutor's `onDelta` does exactly
+  // what it did before.
+  let lastRouteCheckMs = null;
 
   // Persistence (§7 S7-2): lazily create the chat record on the very first
   // user message. `turnChatId` is captured ONCE for this turn and threaded
@@ -1784,6 +2117,7 @@ async function sendCompletion(userText) {
         // it's non-null here someone else already won the race.
         if (state.chat.chatId == null) {
           state.chat.chatId = turnChatId;
+          setChatOwner(m, m?.id ?? null); // create_chat above used this id
           refreshChatList();
         }
       } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
@@ -1797,8 +2131,14 @@ async function sendCompletion(userText) {
   // rag_query BEFORE touching the model. When no packs are attached this
   // whole block is skipped and everything below runs exactly as it did
   // before A4 — same fetch, same SSE parsing, same system message.
+  //
+  // Phase 2: NEVER for a supervised entry, however many packs are attached.
+  // Grounding replaces the one thing Task 5 pins — the catalog's systemPrompt
+  // as the only system content — and it carries a second unguarded producer
+  // with it: the scripted `noEvidence` refusal below is written into the
+  // transcript and persisted without ever passing through `applyGuard`.
   let groundedPrompt = null, groundedCitations = null;
-  if (state.chat.packPaths.length > 0) {
+  if (shouldGroundTurn({ supervised, packCount: state.chat.packPaths.length })) {
     const query = state.chat.messages[state.chat.messages.length - 1]?.content;
     if (query != null) {
       bubble.textContent = 'Searching your packs…';
@@ -1809,6 +2149,9 @@ async function sendCompletion(userText) {
         // If Stop was hit during the pack search, honor it: bail silently
         // rather than surfacing a "pack search failed" retry chip for a turn
         // the user deliberately cancelled.
+        // No `turn` argument: this bail-out carries no content, so it reaches
+        // no guard, no persist and no title. Grounding is off for a supervised
+        // entry anyway, so this line is unreachable from one.
         if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
         // Do NOT silently fall through to an ungrounded send — that would
         // betray the "this answer cites your packs" promise. Fail the turn
@@ -1829,6 +2172,7 @@ async function sendCompletion(userText) {
       // clicked during "Searching your packs…" resolves here rather than
       // cancelling the IPC. Honor it — drop the turn without committing a
       // refusal or a grounded answer to history or the pill.
+      // Same as above: no content, so no `turn` is needed and none is passed.
       if (state.chat.aborter.signal.aborted) { finishStream(bubble, '', null, [], turnChatId); return; }
       if (rag.status === 'noEvidence') {
         // Adapter v2: when the contract adapter is composed on this tier, it is
@@ -1898,8 +2242,26 @@ async function sendCompletion(userText) {
     // history budget — sources + kept history still stay within n_ctx.
     // Short chats are unaffected: windowMessages returns the whole list
     // (droppedCount 0), so behavior is byte-identical to before.
-    const sys = groundedPrompt != null ? groundedPrompt : m.systemPrompt + UNGROUNDED_NO_SOURCES_NOTE;
+    // `fingerprint` is read ONLY inside the supervised branch of
+    // `assembleMessages`, where it re-hashes the prompt about to be sent and
+    // throws if it is not the prompt the catalog pins — the gate was run under
+    // that exact text, so a drifted one is a different model wearing the same
+    // name. The tutor entry declares no fingerprint and never reaches the
+    // check. The throw is caught below and shown as an engine banner: a
+    // supervised turn that cannot prove its prompt is not sent at all.
+    const { system: sys } = assembleMessages({
+      entry: m, groundedPrompt, sent: [], ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+      fingerprint: promptFingerprint,
+    });
     const win = windowMessages(state.chat.messages, sys, m.greeting, engineWindow(state.engine));
+    // Assembled again with the windowed history now that `sys` (and thus the
+    // budget it leaves for history) is known — see windowMessages above. For
+    // a supervised entry this drops the greeting turn entirely; its tokens
+    // were still budgeted by windowMessages (a few dozen tokens of slack).
+    const assembled = assembleMessages({
+      entry: m, groundedPrompt, sent: win.sent, ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
+      fingerprint: promptFingerprint,
+    });
     // One turn, described once for both platforms (task 2.1). On desktop this
     // lands in `calc-loop.js`, which owns the fetch/SSE-parse/tool-execute/
     // resubmit cycle end to end and is Tauri/DOM-free by design; on Android it
@@ -1910,18 +2272,19 @@ async function sendCompletion(userText) {
     // `onDelta` keeps `acc` growing exactly as the old inline loop did, so the
     // AbortError branch below still sees whatever partial text streamed before
     // the abort.
+    const desktopSampling = samplingFor({ entry: m, maxTokens: REPLY_RESERVE, temperature: 0.7 });
     const out = await transport.streamTurn({
       port: state.engine.port,
       // The chat this turn belongs to — mobile's KV-reuse key, so consecutive
       // turns of one conversation share a warm prefix (task 1.5). Desktop
       // ignores it; `cache_prompt: true` is how the sidecar does the same job.
       chatId: turnChatId,
-      baseBody: { max_tokens: REPLY_RESERVE, temperature: 0.7, cache_prompt: true }, // bound to the windowing reserve so the two can't drift
-      messages: [
-        { role: 'system', content: sys },
-        { role: 'assistant', content: m.greeting },
-        ...win.sent,
-      ],
+      // Defaults bound to the windowing reserve so the two can't drift; a
+      // SUPERVISED entry's catalog `sampling` overrides both, so the desktop
+      // dev check runs the same model the in-process engine does. Tutor
+      // entries take the `REPLY_RESERVE`/0.7 pair unchanged — see `samplingFor`.
+      baseBody: { max_tokens: desktopSampling.maxTokens, temperature: desktopSampling.temperature, cache_prompt: true },
+      messages: assembled.messages,
       tools: [CALC_TOOL],
       runCalc: (expression) => invoke('calc', { expression }),
       onDelta: (d) => {
@@ -1930,18 +2293,58 @@ async function sendCompletion(userText) {
         // Show the leading-`<think></think>`-stripped view every render
         // (idempotent — see stripLeadingThink); `acc` keeps the raw text
         // so the strip decision is always re-made against the full prefix.
-        bubble.textContent = stripLeadingThink(acc);
+        const view = stripLeadingThink(acc);
+        bubble.textContent = view;
+        // Supervised only. `provisionalEl` IS the state machine's
+        // `alreadyShown`, so once a route resolves `provisionalStep` returns
+        // early and never reads the prefix again — the detectors read the whole
+        // of it, which would otherwise be work per token for an answer that
+        // cannot change. The tutor is stopped by the gate before the call.
+        //
+        // BEFORE a route resolves there is no such early return, and that is
+        // what `shouldCheckRoute` is for: the detectors run at most once per
+        // 100 ms of wall clock (and always on the first delta), so a reply that
+        // never states a disposition stops costing a whole-prefix regex pass
+        // per token on a device that is also drawing the stream.
+        if (supervised) {
+          const elapsedMs = performance.now() - sentAt;
+          if (shouldCheckRoute({ lastCheckMs: lastRouteCheckMs, elapsedMs })) {
+            lastRouteCheckMs = elapsedMs;
+            const step = provisionalStep({ supervised, alreadyShown: !!provisionalEl, prefixText: view, elapsedMs });
+            if (step.banner) {
+              provisionalEl = bannerEl(step.banner, true);
+              console.log(step.log);
+            }
+          }
+        }
+        // Re-attached rather than rebuilt: the `textContent` write above
+        // replaces every child of the bubble, banner included.
+        if (provisionalEl) bubble.prepend(provisionalEl);
         $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
       },
       signal: state.chat.aborter.signal,
     });
-    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle);
+    finishStream(bubble, out.content, groundedCitations, out.calculations, turnChatId, autoTitle,
+      { entry: m, userText, messageId: out.messageId });
   } catch (err) {
-    if (err.name === 'AbortError') { finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle); return; }
+    if (err.name === 'AbortError') {
+      finishStream(bubble, acc, groundedCitations, [], turnChatId, autoTitle, { entry: m, userText, messageId: null });
+      return;
+    }
     bubble.remove();
     state.chat.streaming = false;
     markTurnEnded();
     $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+    // A supervised entry whose system prompt is not the one its catalog
+    // fingerprint was cut from never reached the model — `assembleMessages`
+    // threw before the send. That is not a transport failure, so it gets no
+    // retry chip: retrying re-throws, and the fix is a correct catalog, not a
+    // second attempt. Loud banner, composer disabled, nothing sent.
+    if (isPromptMismatch(err)) {
+      showEngineBanner('This model\'s prompt is not the one it was checked with, so nothing was sent. Reinstall the model.');
+      setComposerEnabled(false);
+      return;
+    }
     try {
       const info = await invoke('engine_info');
       state.engine = info;
@@ -1972,7 +2375,20 @@ async function sendCompletion(userText) {
 // pushed message + rendered via renderCalculations, and persisted to the
 // `messages.tool_calls` column below (Task 7) — same treatment as
 // `citations` throughout this function.
-function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle) {
+//
+// `turn` (Phase 2) is what this turn was SENT with, threaded through for the
+// same reason as `turnChatId`: none of it may be re-read from `state` here.
+//   entry      the catalog entry — `enterChat` can swap models mid-stream
+//              without aborting, and whether this reply is guarded must not
+//              depend on which model the library is showing when it lands;
+//   userText   the user's words for this turn, which is what the crisis check
+//              reads (a retry chip replays an already-pushed turn and passes
+//              null, so the transcript is consulted instead);
+//   messageId  the assistant row `chat_cmds.rs::settle` already finalized on
+//              mobile, or null. See `persistAssistantTurn`.
+// Absent on the two rag_query bail-outs, which pass no content and so reach
+// none of it.
+function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitle, turn) {
   bubble.classList.remove('streaming');
   markTurnEnded(); // the turn is over on every path through here, abort included
   // Only touch the live DOM/in-memory transcript if this turn's chat is
@@ -1987,9 +2403,41 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // A turn that was ONLY an empty think block strips to '' and is treated
   // exactly like an empty turn (bubble removed, nothing persisted).
   const shown = stripLeadingThink(acc);
+
+  // ---- Phase 2: the product's contract on a supervised reply --------------
+  // The guard runs on `shown` — AFTER the think strip, never on `acc` — and
+  // keeps the raw reply inside the verdict, so what the model said survives
+  // whatever is removed from the screen. Everything below is `null` for the
+  // tutor, and every branch that reads it is a no-op there.
+  const entry = (turn && turn.entry) || state.chat.model;
+  const supervised = !!(entry && entry.supervised);
+  // The user turn the crisis check reads: this turn's own words when it is a
+  // fresh send, else the last user message (a retry chip replays a pushed one).
+  const userTurn = turn && turn.userText != null
+    ? turn.userText
+    : ([...state.chat.messages].reverse().find((x) => x.role === 'user')?.content ?? '');
+  const verdict = supervised && shown
+    ? applyGuard({ userText: userTurn, replyText: shown, crisisLine: entry.crisisLine || undefined })
+    : null;
+  const display = verdict ? verdict.displayText : shown;
+  if (verdict) {
+    console.log(`[triage] route ${verdict.route} banner ${verdict.banner} stripped ${verdict.timeframeStripped.length} crisis ${verdict.crisisLineAppended}`);
+    if (isActive) {
+      // The final banner always replaces the provisional one. Writing
+      // `textContent` clears every child, the provisional banner included, so
+      // the prepend below is what puts the verdict's own banner up — and there
+      // is never a moment with two.
+      bubble.textContent = display;
+      bubble.prepend(bannerEl(verdict.banner));
+    }
+  }
+
   if (isActive) {
     if (shown) {
-      const msg = { role: 'assistant', content: shown };
+      const msg = { role: 'assistant', content: display };
+      // The verdict travels with the message so `rebuildChatDom` can replay the
+      // banner, and so Task 8's confirmation UI has the route to confirm.
+      if (verdict) msg.guard = verdict;
       // Stash citations on the pushed message (not just rendered here) so
       // rebuildChatDom can replay them if the chat is exited and re-entered.
       if (citations && citations.length) {
@@ -2003,6 +2451,13 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
         renderCalculations(bubble, calculations);
       }
       state.chat.messages.push(msg);
+      // Task 8: the receipt goes up NOW, with the reply it describes. The
+      // Confirm/Change controls cannot — they are written against a row id that
+      // only exists once the persist below has resolved, so `confirmState`
+      // returns `controls: 'none'` here and the `.then` re-renders. A persist
+      // that never lands leaves exactly this: the receipt, no controls, which
+      // is the honest state of a reply that was guarded but not recorded.
+      renderConfirm(bubble, msg, supervised);
     } else {
       bubble.remove();
     }
@@ -2023,22 +2478,87 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // sendCompletion failed — in that case this turn silently isn't saved
   // either (same degrade-gracefully contract). Fire-and-forget: the
   // composer state above must never wait on this DB write.
-  if (shown && turnChatId != null) {
-    invoke('append_message', {
-      chatId: turnChatId,
-      role: 'assistant',
-      content: shown,
-      citations: citations && citations.length ? citations : null,
-      // Tauri maps this camelCase invoke-arg to append_message's `tool_calls`
-      // Rust param (convstore.rs) — same convention as `chatId` -> `chat_id`.
-      toolCalls: calculations && calculations.length ? calculations : null,
-    }).then(refreshChatList).catch(() => {}); // updated_at bump reorders the sidebar
+  //
+  // WHICH command, and why it is not always `append_message`: on mobile the
+  // streaming checkpoint row is finalized by `chat_cmds.rs::settle` BEFORE the
+  // `done` event, so a guarded turn is ATTACHED to that row rather than
+  // appended as a second one. `persistAssistantTurn` decides; the tutor's call
+  // is the same `append_message` with the same arguments it always made.
+  //
+  // The PERSISTED verdict carries three keys the in-memory one does not:
+  // `promptFingerprint`, `modelSha`, `adapterSha`, stamped from `entry` — the
+  // catalog entry this turn was SENT under. `applyGuard`'s own twelve-key
+  // shape is untouched (it is pinned by Task 3's tests and is a function of
+  // the text alone); provenance is a fact about the turn and belongs at the
+  // moment the row is written. `export_triage_log` copies all three out again.
+  const persist = persistAssistantTurn({
+    chatId: turnChatId,
+    content: display,
+    citations,
+    calculations,
+    guard: guardForPersistence(verdict, entry),
+    messageId: turn ? turn.messageId : null,
+  });
+  //
+  // AND A FAILED PERSIST IS NOT ALWAYS SILENT. A failed `append_message` is —
+  // nothing was written and nothing is left behind, which is the app's existing
+  // degrade-gracefully contract. A failed `attach_guard` is not: the row is
+  // already there, holding the model's RAW reply, so saying nothing would
+  // persist the unguarded text and show it on the next open. Retried once, then
+  // said out loud. `persistFailurePlan` owns that decision and is tested.
+  if (persist) {
+    const attempt = (n) => invoke(persist.command, persist.args).then((info) => {
+      // The row id, kept on the in-memory message: it is what the health
+      // worker's route confirmation is written against (Task 8).
+      if (isActive && info && info.id) {
+        const last = state.chat.messages[state.chat.messages.length - 1];
+        if (last && last.role === 'assistant' && last.content === display) {
+          last.id = info.id;
+          // Task 8: NOW the confirmation has a row to be written against, so
+          // the controls can be drawn. `supervised` here is the entry that
+          // produced this reply — the same one the guard ran under, and (by
+          // `canSendInChat`) the same one the chat belongs to.
+          renderConfirm(bubble, last, supervised);
+        }
+      }
+      refreshChatList(); // updated_at bump reorders the sidebar
+    }).catch((e) => {
+      const plan = persistFailurePlan({ command: persist.command, attempt: n, error: e });
+      if (plan.action === 'ignore') return;
+      console.log(plan.log);
+      if (plan.action === 'retry') { attempt(n + 1); return; }
+      // The bubble is left exactly as it is. `display` was computed here, from
+      // this reply, and is still what the guard decided to show — the failure
+      // is that it was not RECORDED, not that it cannot be trusted.
+      //
+      // A screen write, so `isActive` gates it like every other one in this
+      // function: a banner naming a reply the user has navigated away from
+      // points at nothing on screen.
+      if (isActive) showEngineBanner(plan.message);
+    });
+    attempt(1);
   }
-  // §7 S7-5: fire-and-forget the auto-title generation for this turn — do
-  // NOT await it (it must never gate the composer restore above, which
-  // already ran). turnChatId-scoped like the persist above, so a
-  // mid-stream chat switch still titles the right chat.
-  if (shown && turnChatId != null && autoTitle) maybeAutoTitle(turnChatId, autoTitle.source, shown);
+  // §7 S7-5: fire-and-forget the title for this turn — do NOT await it (it
+  // must never gate the composer restore above, which already ran).
+  // turnChatId-scoped like the persist above, so a mid-stream chat switch
+  // still titles the right chat.
+  //
+  // A supervised chat is NOT titled by `maybeAutoTitle`: that makes a second
+  // completion, with its own system prompt at temperature 0.3, against a model
+  // whose whole contract is that it only ever sees the pinned prompt at
+  // temperature 0. It is titled from the user's own first message instead.
+  if (shown && turnChatId != null && autoTitle) {
+    const titling = titlePlan({ supervised, source: autoTitle.source });
+    if (titling.kind === 'model') {
+      maybeAutoTitle(turnChatId, autoTitle.source, shown);
+    } else if (titling.kind === 'fixed') {
+      // Same command, so the same guard applies: a chat the user has already
+      // renamed keeps its name (`title_auto`).
+      invoke('auto_title_chat', { id: turnChatId, title: titling.title })
+        .then((applied) => { if (applied === true) refreshChatList(); })
+        .catch(() => {});
+    }
+  }
 }
 
 // §7 S7-5: after the first complete exchange in a NEW chat, ask the local
@@ -2495,6 +3015,7 @@ $('chatList').addEventListener('click', async (e) => {
       if (state.chat.chatId === id) {
         state.chat.aborter?.abort();
         state.chat.chatId = null;
+        setChatOwner(state.chat.model, null); // back to this model's clean chat
         resetChatDom();
       }
       await refreshChatList();
@@ -2529,6 +3050,8 @@ $('chatList').addEventListener('click', async (e) => {
     } else if (act === 'export-to') {
       const titleEl = row.querySelector('.chatrow-title');
       await exportChat(id, titleEl ? titleEl.textContent : 'chat', actBtn.dataset.format);
+    } else if (act === 'export-triage') {
+      await exportTriageLog(id);
     }
     return;
   }
@@ -2593,6 +3116,66 @@ async function exportChat(id, title, format) {
     showToast(String(e));
   }
 }
+
+// Task 8: the triage override log — one JSON line per guarded reply, carrying
+// the raw reply, the text that was shown, the verdict, the sentences the guard
+// removed, the health worker's confirmed route and the detector pin. It is the
+// clinical review's artefact, not a transcript, which is why it is its own
+// entry beside the three chat formats rather than a fourth format of
+// `exportChat`.
+//
+// Deliberately the SAME shape as `exportChat` immediately above, branch for
+// branch: the share sheet on Android, the save sheet on desktop, pick a
+// destination and hand it to the command. The front end formats nothing —
+// every byte is `convstore::export_triage_log`'s, and reshaping it here would
+// put a second definition of the audit record in the app.
+//
+// The supervised check is made AGAIN here, not just when the menu entry was
+// rendered: the sidebar can be re-fetched between a render and a click.
+async function exportTriageLog(chatId) {
+  state.sidebar.exportMenuFor = null;
+  renderSidebar();
+
+  const chat = chatById(chatId);
+  const plan = triageExportPlan({
+    supervised: chatEntryOf(chat)?.supervised === true,
+    isMobile: IS_MOBILE,
+    chatId,
+    title: chat?.title || '',
+  });
+  if (plan.kind === 'none' || plan.kind === 'unavailable') {
+    if (plan.message) showToast(plan.message);
+    return;
+  }
+
+  // Android: the share sheet, not a file picker — the same branch `exportChat`
+  // above makes, for the same reason. The destination is chosen in the chooser
+  // Rust launches, so there is no path to report back; the file itself is
+  // `export_triage_log`'s own bytes either way.
+  if (plan.kind === 'share') {
+    try {
+      await invoke(plan.command, plan.args);
+    } catch (e) {
+      showToast(String(e));
+    }
+    return;
+  }
+
+  let path;
+  try {
+    path = await window.__TAURI__.dialog.save({ defaultPath: plan.defaultPath, filters: plan.filters });
+  } catch (e) {
+    showToast(String(e));
+    return;
+  }
+  if (path == null) return; // cancelled
+  try {
+    await invoke(plan.command, { ...plan.args, path });
+    showToast('Triage log exported to ' + path);
+  } catch (e) {
+    showToast(String(e));
+  }
+}
 $('signOutBtn').addEventListener('click', async () => {
   try { await invoke('sign_out'); } catch (_) {}
   cancelPaymentPoll(null);
@@ -2611,6 +3194,7 @@ $('signOutBtn').addEventListener('click', async () => {
   state.chat.model = null;
   state.chat.packPaths = [];
   state.chat.chatId = null;
+  setChatOwner(null, null);
   $('chatList').innerHTML = '';
   // §7 S7-2b: the sidebar's folder/archive/search UI is per-account too —
   // drop it here so the next sign-in (possibly a different account) starts
