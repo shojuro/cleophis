@@ -386,7 +386,19 @@ impl LlamaSession<'_> {
         // Kept ON as a no-op safety net: the prompt now closes the block
         // before the first token, so a well-behaved Qwen3 emits none — but a
         // model that emits one anyway is still stripped rather than shown.
-        let mut stripper = ThinkStripper::new(self.template.strips_think());
+        // The family decides, unless a caller overrides it. The ONE caller that
+        // does is the device-probe harness, which must record the engine's
+        // output on BOTH sides of the strip: `raw` is the model contract's
+        // evidence and `text` is the product contract's, and a harness that can
+        // only see one of them cannot tell a reply the model never gave from
+        // one the stripper ate. It then applies THIS stripper, `finish()` and
+        // all, so nothing about the rule is re-implemented — only observed
+        // twice. See `SessionConfig::strip_think`.
+        let strip = self
+            .cfg
+            .strip_think
+            .unwrap_or_else(|| self.template.strips_think());
+        let mut stripper = ThinkStripper::new(strip);
         // One decoder for the whole turn: a multi-byte UTF-8 char can straddle
         // two tokens, and the Decoder buffers the partial sequence across calls.
         let mut decoder = encoding_rs::UTF_8.new_decoder();

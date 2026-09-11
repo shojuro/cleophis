@@ -89,6 +89,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             max_tokens: args.max_tokens,
             ..Sampling::default()
         },
+        ..SessionConfig::default()
     })?;
 
     let mut messages = Vec::new();

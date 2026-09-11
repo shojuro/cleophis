@@ -166,6 +166,20 @@ pub struct SessionConfig {
     /// Context window. Per-tier cap: 2048 on the floor (1B), 4096 above (§2).
     pub n_ctx: u32,
     pub sampling: Sampling,
+    /// Whether the backend applies the start-of-turn `<think>` strip before
+    /// the sink sees a token. `None` — the shipping default — derives it from
+    /// the template family, which is what every product caller wants.
+    ///
+    /// `Some(false)` exists for ONE caller: the device-probe harness, which
+    /// has to record the engine's output *before* any stripping as well as
+    /// after it. The release bar describes what the patient reads and the
+    /// model bar describes what the model said; the think block sits between
+    /// them, and a harness that can only see one side cannot tell a reply that
+    /// was never generated from one the stripper ate (`ThinkStripper` returns
+    /// the empty string when a run dies inside a block). The harness then
+    /// applies the SAME `ThinkStripper` itself, so nothing is re-implemented —
+    /// only observed at both points.
+    pub strip_think: Option<bool>,
 }
 
 impl Default for SessionConfig {
@@ -173,6 +187,7 @@ impl Default for SessionConfig {
         SessionConfig {
             n_ctx: 2048,
             sampling: Sampling::default(),
+            strip_think: None,
         }
     }
 }

@@ -727,6 +727,10 @@ fn session_config(tier: &str, pinned: Option<kpack_engine::Sampling>) -> Session
     SessionConfig {
         n_ctx: if tier == "low" { 2048 } else { 4096 },
         sampling: pinned.unwrap_or_default(),
+        // `None` = the template family decides, which is the shipping
+        // behaviour: ChatMl/Qwen strips, Llama3 does not. Only the device-probe
+        // harness overrides it, and only to record the raw side as well.
+        strip_think: None,
     }
 }
 
