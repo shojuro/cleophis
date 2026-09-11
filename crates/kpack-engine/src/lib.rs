@@ -67,7 +67,10 @@ pub use backend::{
 };
 pub use error::EngineError;
 pub use mock::{CollectSink, MockBackend};
-pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
+pub use template::{
+    prompt_sha256, role_name, ChatMessage, ChatTemplate, Role, StripFinish, ThinkPolicy,
+    ThinkStripper, QWEN3_THINK_BLOCK,
+};
 
 #[cfg(feature = "real")]
 pub use llama::{backend_system_info, print_kernel_report, LlamaEngine};

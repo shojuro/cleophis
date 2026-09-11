@@ -62,7 +62,7 @@ use std::sync::atomic::AtomicBool;
 
 use kpack_engine::{
     AdapterRole, AdapterSpec, ChatMessage, ChatTemplate, EngineBackend, EngineHandle,
-    EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig,
+    EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig, StopReason,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -618,6 +618,14 @@ fn fmt_trace(t: &crate::engine_thermal::ThermalTrace) -> String {
     )
 }
 
+/// What the user reads when a turn ended inside an unclosed `<think>` block.
+///
+/// Not an error and not a silence: the model produced tokens, and every one of
+/// them was reasoning the runtime suppresses. Before Phase 1c that arrived as
+/// an empty string and the chat rendered a blank reply.
+const TRUNCATED_IN_THINK_NOTICE: &str =
+    "The reply was cut short before the answer began. Please send it again.";
+
 impl TurnSource for SessionTurns<'_, '_> {
     fn turn(
         &mut self,
@@ -627,31 +635,38 @@ impl TurnSource for SessionTurns<'_, '_> {
         let rendered: Vec<ChatMessage> = messages.iter().map(to_chat_message).collect();
         let cancel = self.cancel.clone();
         let thermal = self.thermal.clone();
-        // `ControlFlow::Break` is kpack-engine's cooperative cancel: it stops
-        // generation at the next token rather than tearing the session down, so
-        // the handle stays reusable for the next turn.
-        let mut tokens = |text: &str| -> ControlFlow<()> {
-            // Thermal timing is taken HERE and nowhere downstream (H6/A7).
-            // This closure is called once per token by `EngineSession::stream`;
-            // `on_delta` is on the far side of `ToolStream`, which withholds
-            // text that might be tool syntax and releases it in a burst. Timing
-            // there would measure the suppressor's release schedule and read a
-            // held-back stretch as a stall and its flush as a speed-up.
-            thermal.borrow_mut().on_token();
-            sink(text);
-            if cancel.load(Ordering::Relaxed) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
         // Snapshot before the stream so the reconciliation covers exactly this
         // call. The tool loop runs several streams per user-visible turn, and a
         // per-turn total would blur them together — which is the granularity
         // the divergence question needs, since a tool round-trip is one of the
         // things that changes it.
         let before = self.thermal.borrow().sink_calls();
-        let out = self.session.stream(&rendered, &mut tokens);
+        // Whether this stream put ANY text in front of the caller. Needed by
+        // the truncation branch below, and scoped with the closure so `sink` is
+        // free again afterwards.
+        let mut spoke = false;
+        let out = {
+            // `ControlFlow::Break` is kpack-engine's cooperative cancel: it
+            // stops generation at the next token rather than tearing the
+            // session down, so the handle stays reusable for the next turn.
+            let mut tokens = |text: &str| -> ControlFlow<()> {
+                // Thermal timing is taken HERE and nowhere downstream (H6/A7).
+                // This closure is called once per token by `EngineSession::stream`;
+                // `on_delta` is on the far side of `ToolStream`, which withholds
+                // text that might be tool syntax and releases it in a burst. Timing
+                // there would measure the suppressor's release schedule and read a
+                // held-back stretch as a stall and its flush as a speed-up.
+                thermal.borrow_mut().on_token();
+                spoke = true;
+                sink(text);
+                if cancel.load(Ordering::Relaxed) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            self.session.stream(&rendered, &mut tokens)
+        };
         // Only on success: a failed stream has no trustworthy token count, and
         // logging a reconciliation against a partial one would put a fake
         // divergence into the soak transcript.
@@ -659,6 +674,25 @@ impl TurnSource for SessionTurns<'_, '_> {
             self.thermal
                 .borrow_mut()
                 .stream_ended(before, stats.generated_tokens);
+            // The turn died inside an unclosed `<think>` block, so every byte
+            // the model produced was suppressed and the user is looking at an
+            // empty bubble. Say so instead.
+            //
+            // This is the ONLY place the product puts words into a model turn,
+            // and it is deliberate. `tool_loop::run` decides what to display
+            // from this text alone, and an empty string is exactly what it
+            // cannot tell apart from a model with nothing to say — its existing
+            // fallbacks fire on a turn that CALCULATED but never spoke, which
+            // this is not.
+            //
+            // With the pre-closed think block now in the rendered prompt
+            // (`ChatTemplate::finish_generation_prompt`) the Qwen3 hero cannot
+            // open a block at all, so this should be unreachable on the shipping
+            // triage stack — which is why it prints as well as speaks.
+            if stats.stop == StopReason::TruncatedInThink && !spoke {
+                eprintln!("[prompt] stream ended inside an unclosed <think> block");
+                sink(TRUNCATED_IN_THINK_NOTICE);
+            }
         }
         out.map(|_stats| ()).map_err(|e| e.to_string())
     }
