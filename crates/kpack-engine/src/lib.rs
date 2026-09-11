@@ -56,11 +56,13 @@ pub mod template;
 mod prefix;
 
 /// The device-probe harness's pure half — the prompt-file format, the output
-/// record, the Qwen3 prompt render whose sha is the pod↔device parity
-/// assertion, and the catalog fields the run is answerable to. Outside the
-/// `real` gate for the same reason [`cpu`] and `prefix` are: the parsing and
-/// serialisation are the part a reviewer can be wrong about in a way no device
-/// run would reveal, so they must be tested on a box with no NDK and no phone.
+/// record, the catalog fields the run is answerable to, and every refusal the
+/// gate mode makes. It owns NO rendering: the prompt bytes and their parity sha
+/// are [`template::ChatTemplate`]'s, and the think-strip is [`template::ThinkStripper`]'s.
+/// Outside the `real` gate for the same reason [`cpu`] and `prefix` are: the
+/// parsing, the serialisation and the refusals are the parts a reviewer can be
+/// wrong about in a way no device run would reveal, so they must be tested on a
+/// box with no NDK and no phone.
 pub mod probe_io;
 
 #[cfg(feature = "real")]

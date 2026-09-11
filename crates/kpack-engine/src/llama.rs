@@ -331,7 +331,23 @@ impl LlamaSession<'_> {
         let tokens = self
             .model
             .str_to_token(&prompt, AddBos::Always)
-            .map_err(|e| EngineError::Backend(format!("tokenize: {e}")))?;
+            .map_err(|e| {
+                // The `[prompt]` line is printed BELOW this, so that it can
+                // carry the token count — which means a tokenizer failure would
+                // otherwise produce a transcript with no sha in it at all, and
+                // a caller that refuses such a run (the device-probe script
+                // does) would report "this run cannot say what it served"
+                // instead of the tokenizer error. So the error carries what the
+                // line would have said.
+                EngineError::Backend(format!(
+                    "tokenize: {e} (prompt template={:?} think={:?} bytes={} \
+                     sha256={} — nothing was generated)",
+                    self.template,
+                    self.template.think_policy(),
+                    prompt.len(),
+                    crate::template::prompt_sha256(&prompt),
+                ))
+            })?;
         let prompt_tokens = tokens.len();
 
         // Printed AFTER tokenising, so the line can carry the token count.

@@ -277,6 +277,32 @@ device_sha() { # serial, sha-cmd, device path
   adbs "$1" shell "$2 '$3' 2>/dev/null" | tr -d '\r' | awk '{print $1}'
 }
 
+# Push a small file and CHECK IT LANDED WHOLE. No catalog sha to compare
+# against, so the local one is computed here — the question is not "is this the
+# published artefact" (the caller knows what it handed over) but "did adb copy
+# all of it", which is the same question the GGUFs are asked and for the same
+# reason: an interrupted `adb push` leaves a short file and still exits 0.
+#
+# The prompt file is why this exists. A short one makes the harness run fewer
+# items, print its own [N/N] and exit 0, and the only thing that would notice is
+# the `records: N of M` line — which is now fatal, but a check that catches the
+# truncation at the push is better than one that catches it two hours later.
+# A short harness binary at least fails loudly at exec; a short prompt file does
+# not fail at all.
+push_small_verified() { # serial, sha-cmd, local path
+  local s="$1" shacmd="$2" src="$3" name; name="$(basename "$3")"
+  local want; want="$(sha256sum "$src" | cut -d' ' -f1)"
+  adbs "$s" push "$src" "$DEV/$name" >/dev/null \
+    || { echo "  [$s] FAIL: push $name" >&2; return 1; }
+  local got; got="$(device_sha "$s" "$shacmd" "$DEV/$name")"
+  if [ "$got" != "$want" ]; then
+    echo "  [$s] FAIL: $name sha256 on the DEVICE is $got, expected $want" >&2
+    echo "         (an interrupted adb push leaves a short file and still exits 0)" >&2
+    return 1
+  fi
+  echo "  [$s] pushed and verified: $name $got"
+}
+
 push_verified() { # serial, sha-cmd, local, device basename, expected sha
   local s="$1" shacmd="$2" src="$3" name="$4" want="$5"
   local have=""
@@ -344,11 +370,10 @@ run_on() { # serial
   push_verified "$serial" "$shacmd" "$MODEL_LOCAL"   "$(basename "$MODEL_FILE")"   "$MODEL_SHA"   || return 1
   push_verified "$serial" "$shacmd" "$ADAPTER_LOCAL" "$(basename "$ADAPTER_FILE")" "$ADAPTER_SHA" || return 1
 
-  # Small, and re-pushed every run: these are the two things a re-run usually
-  # exists because of.
+  # Small, re-pushed every run because they are what a re-run usually exists
+  # because of, and sha-checked on the device for the reason above.
   for f in "$TGT/probe" "$LIBCXX" "$PROMPTS" "$CATALOG"; do
-    adbs "$serial" push "$f" "$DEV/$(basename "$f")" >/dev/null \
-      || { echo "[$serial] FAIL: pushing $(basename "$f")" >&2; return 1; }
+    push_small_verified "$serial" "$shacmd" "$f" || return 1
   done
   adbs "$serial" shell "chmod 755 $DEV/probe" >/dev/null 2>&1
 
@@ -444,6 +469,10 @@ run_on() { # serial
     if ! grep -q '^\[prompt\]' "$outlog"; then
       echo "[$serial] FAIL: the engine printed no [prompt] line, so this run cannot say" >&2
       echo "  what it served. Without it the device-vs-pod delta is not attributable." >&2
+      echo "  The line is printed after tokenisation (it carries tokens=), so a TOKENIZER" >&2
+      echo "  failure produces this message rather than its own. Read the harness log" >&2
+      echo "  above for a 'tokenize:' error before treating this as a missing line — that" >&2
+      echo "  error carries the sha the line would have printed." >&2
       rc=1
     else
       echo "[$serial] ---- the sha to compare with the pod (real 1.7B stack) ----"
@@ -524,6 +553,8 @@ for line in open(prompts, encoding="utf-8"):
     want[r["id"]] = hashlib.sha256(render(r["system"], r["user"]).encode("utf-8")).hexdigest()
 bad = 0
 n = 0
+short = 0
+seen = set()
 first = None
 for line in open(out, encoding="utf-8"):
     line = line.strip()
@@ -531,6 +562,7 @@ for line in open(out, encoding="utf-8"):
         continue
     rec = json.loads(line)
     n += 1
+    seen.add(rec["id"])
     if first is None:
         first = rec
     if want.get(rec["id"]) != rec.get("prompt_sha"):
@@ -538,6 +570,22 @@ for line in open(out, encoding="utf-8"):
         if bad <= 3:
             print(f"  PROMPT-SHA MISMATCH {rec['id']}: harness {rec.get('prompt_sha')} vs script {want.get(rec['id'])}")
 print(f"  records: {n} of {len(want)}")
+# 🔴 A SHORT RUN IS A FAILED RUN, and this line is the only thing that says so.
+#
+# The count was computed and then discarded, so a run that produced 140 of 260
+# records exited 0 and looked exactly like a complete one. That is not a
+# hypothetical: the prompt file is pushed over adb, an interrupted `adb push`
+# leaves a short file and still exits 0 — the reason the GGUFs are re-hashed on
+# the device — and a short prompt file makes the harness run fewer items, print
+# its own `[N/N]`, and exit 0 with nothing anywhere disagreeing.
+if n != len(want):
+    short = len(want) - n
+    print(f"  SHORT RUN: {short} of {len(want)} prompts produced no record.")
+    print( "  Scoring this file would divide by the prompts that ran rather than by the")
+    print( "  prompts that were asked, which turns a failed run into a smaller sample.")
+    missing = [i for i in want if i not in seen][:5]
+    for i in missing:
+        print(f"    MISSING: {i}")
 if first:
     print(f"  prompt_sha[{first['id']}] = {first['prompt_sha']}")
     print( "  PARITY: this sha must equal the pod's rendered_prompt_sha256 for the same")
@@ -567,7 +615,7 @@ if wrong:
     print("  WRONG THINK POLICY: " + " ".join(f"{k}={v}" for k, v in sorted(wrong.items())))
     print("  Records served without the pre-closed think block are not comparable with the")
     print("  pod. Re-run with --template chatml; do not score this file.")
-sys.exit(1 if (bad or wrong) else 0)
+sys.exit(1 if (bad or wrong or short) else 0)
 PY
 }
 
@@ -596,6 +644,7 @@ base = load(1)
 if base is None:
     sys.exit(1)
 worst = 0
+differing = 0
 for run in range(2, repeat + 1):
     other = load(run)
     if other is None:
@@ -606,11 +655,19 @@ for run in range(2, repeat + 1):
     print(f"  run1 vs run{run}: {len(diffs)} of {len(base)} replies differ; {len(missing)} ids only in one run")
     for i in diffs[:5]:
         print(f"    DIFFERS: {i}")
+    differing += len(diffs)
     worst = max(worst, len(diffs) + len(missing))
-if worst:
+# Only when replies actually DIFFER. A run that produced no file, or a shorter
+# one, is an incomplete run — the exit code is 1 either way, which is the safe
+# direction, but "non-determinism at temperature 0" sends the reader after a
+# cause that is not there.
+if differing:
     print("  NON-DETERMINISM ON ONE DEVICE AT TEMPERATURE 0. Read this before reading any")
     print("  device-vs-pod delta: a device that does not repeat itself cannot be compared")
     print("  with anything.")
+elif worst:
+    print("  The runs are not comparable: one of them is missing records. That is an")
+    print("  incomplete run, not evidence about determinism.")
 sys.exit(1 if worst else 0)
 PY
 }
@@ -623,9 +680,12 @@ echo "== ${#DEVICES[@]} device(s) ready: ${DEVICES[*]}"
 
 # ── HOW LONG THIS TAKES, SAID BEFORE IT STARTS ───────────────────────────────
 #
-# The real M7 set is 260 prompts: 200 endpoint arms, 20 crisis-embedded, 40
-# crisis. At the catalog's 320-token cap and the tok/s a 1.7B Q4_K_M gets on the
-# workhorse tier, a run is HOURS, not minutes — and `--repeat 2` doubles it.
+# Counted from the prompt file, never from a number written here: the M7 set was
+# 260 prompts when this was written (200 endpoint arms, 20 crisis-embedded, 40
+# crisis) and the plan review's A2(iii) asked for 164, so the two documents
+# disagree and neither is this script's to settle. At the catalog's 320-token
+# cap and the tok/s a 1.7B Q4_K_M gets on the workhorse tier, a run of that size
+# is HOURS, not minutes — and `--repeat 2` doubles it.
 # Printed here rather than discovered at minute forty, because the two things a
 # founder does with that number are "start it before bed" and "do not start it
 # on a laptop that sleeps".

@@ -338,7 +338,7 @@ struct Plan {
     json_out: Option<String>,
     catalog: Option<CatalogEntry>,
     template: ChatTemplate,
-    template_source: &'static str,
+    template_source: String,
     temp: f32,
     max_tokens: usize,
     n_ctx: u32,
@@ -373,6 +373,17 @@ impl Plan {
             None => (None, None),
         };
 
+        // The family, resolved ONCE and from one place, for the prompt-file
+        // arms. The flag wins; the catalog decides when the flag is absent; and
+        // `auto` from EITHER source is refused inside `resolve_mode`, because a
+        // catalog typo produces the same thinking prompt as a forgotten flag and
+        // has no operator error attached to it.
+        let (family, family_source) = match (&a.template_name, &catalog) {
+            (Some(n), _) => (Some(n.clone()), "--template"),
+            (None, Some(c)) => (Some(c.chat_template.clone()), "catalog chatTemplate"),
+            (None, None) => (None, "the harness default"),
+        };
+
         let mode = probe_io::resolve_mode(probe_io::GateInputs {
             prompts_file: a.prompts_file.is_some(),
             json_out: a.json_out.is_some(),
@@ -381,7 +392,8 @@ impl Plan {
             template_given: a.template_given,
             catalog: catalog.as_ref(),
             fingerprint: fingerprint.as_deref(),
-            template_name: a.template_name.as_deref(),
+            family: family.as_deref(),
+            family_source,
             temp_given: if a.temp_given { Some(a.temp) } else { None },
             max_tokens_given: if a.max_tokens_given { Some(a.max_tokens) } else { None },
         })?;
@@ -400,7 +412,7 @@ impl Plan {
                 json_out: None,
                 catalog,
                 template: a.template,
-                template_source: "--template",
+                template_source: "--template".into(),
                 temp: a.temp,
                 max_tokens: a.max_tokens,
                 n_ctx: a.n_ctx,
@@ -412,8 +424,16 @@ impl Plan {
         let records = records.expect("a non-builtin mode has a prompt file");
         let mut temp = a.temp;
         let mut max_tokens = a.max_tokens;
-        let mut template = a.template;
-        let mut template_source = "--template";
+        // `resolve_mode` has already refused `auto` from either source, and an
+        // unknown word errors here rather than defaulting to `Auto` — the
+        // wildcard arm this replaced turned a catalog typo into the thinking
+        // prompt with nothing to blame.
+        let template = match &family {
+            Some(f) => probe_io::chat_template_for(f)
+                .map_err(|e| format!("{family_source}: {e}"))?,
+            None => a.template,
+        };
+        let template_source = family_source;
 
         match &mode {
             probe_io::Mode::Smoke => {
@@ -423,14 +443,6 @@ impl Plan {
             probe_io::Mode::Gate(s) => {
                 temp = s.temp_milli as f32 / 1000.0;
                 max_tokens = s.max_tokens;
-                if let Some(family) = &s.template_from_catalog {
-                    template = match family.as_str() {
-                        "llama3" | "llama-3" | "llama" => ChatTemplate::Llama3,
-                        "chatml" | "qwen" => ChatTemplate::ChatMl,
-                        _ => ChatTemplate::Auto,
-                    };
-                    template_source = "catalog chatTemplate";
-                }
             }
             probe_io::Mode::Builtin => unreachable!("handled above"),
         }
@@ -440,7 +452,7 @@ impl Plan {
             json_out: a.json_out.clone(),
             catalog,
             template,
-            template_source,
+            template_source: template_source.to_string(),
             temp,
             max_tokens,
             n_ctx: a.n_ctx,

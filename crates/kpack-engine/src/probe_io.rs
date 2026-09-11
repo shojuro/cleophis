@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 
-use crate::template::{StripFinish, ThinkStripper};
+use crate::template::{ChatTemplate, StripFinish, ThinkStripper};
 
 /// sha256 of `bytes`, lowercase hex.
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -401,6 +401,29 @@ pub fn parse_catalog(text: &str, want_id: Option<&str>) -> Result<CatalogEntry, 
 // exercise a single one of them. A safety mechanism nothing can test is a
 // safety mechanism nobody has seen work.
 
+/// The catalog's / the flag's chat-template word, mapped to a family.
+///
+/// AN UNKNOWN WORD IS AN ERROR, and that is the whole reason this function
+/// exists instead of a `match` with a `_ => Auto` arm. Since Task A2 the family
+/// decides the think policy, and `Auto` means `ThinkPolicy::Off` — so a wildcard
+/// arm turns a typo like `"qwen3"` in the catalog into the thinking prompt, with
+/// no flag to blame and no operator error to notice. The run would then be
+/// caught by the header's `WARNING` line or by the script's artefact check, but
+/// only after a one-to-three-hour phone run.
+pub fn chat_template_for(name: &str) -> Result<ChatTemplate, String> {
+    match name {
+        "auto" => Ok(ChatTemplate::Auto),
+        "llama3" | "llama-3" | "llama" => Ok(ChatTemplate::Llama3),
+        "chatml" | "qwen" => Ok(ChatTemplate::ChatMl),
+        o => Err(format!(
+            "unknown chat-template family {o:?}: expected auto, llama3 or chatml \
+             (the catalog spells ChatMl as \"qwen\"). This is refused rather than \
+             defaulted, because the family decides the think policy and a default \
+             of `auto` would serve the thinking prompt"
+        )),
+    }
+}
+
 /// Everything the harness knows about a run before it decides what kind of run
 /// it is. Each `Option` distinguishes "given" from "what it is": an unset
 /// `--max-tokens` takes the catalog's value, a set one must EQUAL it, and a
@@ -413,9 +436,13 @@ pub struct GateInputs<'a> {
     pub system_given: bool,
     pub greeting_given: bool,
     pub template_given: bool,
-    /// The family named by `--template`, when it was given. Only `"auto"` is
-    /// acted on, and only to refuse it — see below.
-    pub template_name: Option<&'a str>,
+    /// The family word this run resolved to — `--template` if it was given, the
+    /// catalog's `chatTemplate` otherwise — and where it came from, for the
+    /// message. The RESOLVED word rather than the flag, because a catalog value
+    /// of `"auto"` is the same failure as a flag of `--template auto` and has
+    /// no operator error attached to it at all.
+    pub family: Option<&'a str>,
+    pub family_source: &'a str,
     pub catalog: Option<&'a CatalogEntry>,
     /// The fingerprint of the prompt file's shared system prompt, once read.
     pub fingerprint: Option<&'a str>,
@@ -428,9 +455,6 @@ pub struct GateInputs<'a> {
 pub struct GateSettings {
     pub temp_milli: i64,
     pub max_tokens: usize,
-    /// `Some(family)` when the catalog decided the template because
-    /// `--template` was not given.
-    pub template_from_catalog: Option<String>,
 }
 
 /// Which of the three things this invocation is.
@@ -477,16 +501,16 @@ pub fn resolve_mode(i: GateInputs) -> Result<Mode, String> {
     // configuration nobody ships. So it is refused here rather than warned
     // about, and the two template fields on every record make a wrong run
     // visible in the comparison rather than in a log a reader may not open.
-    if i.template_name == Some("auto") {
-        return Err(
-            "--template auto is refused with --prompts-file: since A2 the family \
-                    decides the think policy, and `auto` appends no pre-closed think \
-                    block, so a Qwen3 model serves the THINKING prompt — the one no \
-                    gate has ever run under, spending part of the 320-token budget on \
-                    reasoning. Pass --template chatml, or omit --template and let the \
-                    catalog's chatTemplate decide"
-                .into(),
-        );
+    if i.family == Some("auto") {
+        return Err(format!(
+            "chat-template family `auto` ({}) is refused with --prompts-file: since \
+             A2 the family decides the think policy, and `auto` appends no \
+             pre-closed think block, so a Qwen3 model serves the THINKING prompt — \
+             the one no gate has ever run under, spending part of the 320-token \
+             budget on reasoning. Pass --template chatml, or set the catalog's \
+             chatTemplate to \"qwen\"",
+            i.family_source
+        ));
     }
     if !i.json_out {
         return Ok(Mode::Smoke);
@@ -551,11 +575,6 @@ pub fn resolve_mode(i: GateInputs) -> Result<Mode, String> {
     Ok(Mode::Gate(GateSettings {
         temp_milli,
         max_tokens,
-        template_from_catalog: if i.template_given {
-            None
-        } else {
-            Some(cat.chat_template.clone())
-        },
     }))
 }
 
@@ -832,6 +851,15 @@ impl Parser<'_> {
         let start = self.i;
         if self.peek() == Some('-') {
             self.i += 1;
+        }
+        // Strict: `01` is not JSON. Nothing this harness reads emits one, and
+        // the lenience corrupted nothing — but this module documents its subset
+        // precisely everywhere else, and a parser that is stricter than its
+        // documentation is easier to trust than one that is looser.
+        if self.peek() == Some('0')
+            && matches!(self.b.get(self.i + 1), Some(c) if c.is_ascii_digit())
+        {
+            return Err(format!("leading zero in a number at offset {}", self.i));
         }
         while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-')
         {
@@ -1223,7 +1251,8 @@ mod tests {
             template_given: false,
             catalog: Some(c),
             fingerprint: Some("67b7f1633f30"),
-            template_name: None,
+            family: Some("qwen"),
+            family_source: "catalog chatTemplate",
             temp_given: None,
             max_tokens_given: None,
         }
@@ -1238,7 +1267,6 @@ mod tests {
             Mode::Gate(GateSettings {
                 temp_milli: 0,
                 max_tokens: 320,
-                template_from_catalog: Some("qwen".into()),
             })
         );
     }
@@ -1335,36 +1363,72 @@ mod tests {
     /// line on stderr says otherwise. Refused, in both arms that read a prompt
     /// file, so a wrong flag cannot produce a plausible file at all.
     #[test]
-    fn template_auto_is_refused_with_a_prompt_file_in_either_arm() {
+    fn family_auto_is_refused_with_a_prompt_file_in_either_arm() {
         let c = cat();
         for json_out in [true, false] {
             let mut i = inputs(&c);
             i.json_out = json_out;
             i.template_given = true;
-            i.template_name = Some("auto");
+            i.family = Some("auto");
+            i.family_source = "--template";
             let e = resolve_mode(i).unwrap_err();
-            assert!(e.contains("--template auto is refused"), "{e}");
+            assert!(e.contains("family `auto`"), "{e}");
+            assert!(e.contains("--template"), "{e}");
             assert!(e.contains("THINKING prompt"), "{e}");
             assert!(e.contains("--template chatml"), "{e}");
         }
     }
 
+    /// A3 review M1. The refusal keys on the RESOLVED family, so a catalog that
+    /// says `auto` is refused exactly like a flag that does — and that case has
+    /// no operator error attached to it at all, which is what made it the
+    /// nastier of the two.
     #[test]
-    fn template_chatml_is_accepted_and_the_builtin_arm_still_takes_auto() {
+    fn a_catalog_asking_for_auto_is_refused_and_the_message_says_where_it_came_from() {
+        let c = cat();
+        let mut i = inputs(&c);
+        i.family = Some("auto");
+        i.family_source = "catalog chatTemplate";
+        let e = resolve_mode(i).unwrap_err();
+        assert!(e.contains("catalog chatTemplate"), "{e}");
+        assert!(
+            !e.contains("(--template)"),
+            "it did not come from the flag: {e}"
+        );
+    }
+
+    /// A3 review M1, the other half: an unknown word is an error rather than a
+    /// silent `Auto`. `"qwen3"` is the shape of the typo that would otherwise
+    /// cost a one-to-three-hour phone run before anything said so.
+    #[test]
+    fn an_unknown_chat_template_family_is_refused_rather_than_defaulted() {
+        assert_eq!(chat_template_for("qwen").unwrap(), ChatTemplate::ChatMl);
+        assert_eq!(chat_template_for("chatml").unwrap(), ChatTemplate::ChatMl);
+        assert_eq!(chat_template_for("llama3").unwrap(), ChatTemplate::Llama3);
+        assert_eq!(chat_template_for("auto").unwrap(), ChatTemplate::Auto);
+
+        let e = chat_template_for("qwen3").unwrap_err();
+        assert!(e.contains("qwen3"), "{e}");
+        assert!(e.contains("refused rather than defaulted"), "{e}");
+    }
+
+    #[test]
+    fn family_chatml_is_accepted_and_the_builtin_arm_still_takes_auto() {
         let c = cat();
         let mut i = inputs(&c);
         i.template_given = true;
-        i.template_name = Some("chatml");
+        i.family = Some("chatml");
         assert!(matches!(resolve_mode(i), Ok(Mode::Gate(_))));
 
         // `run-on-device.sh` drives the built-in sets with `--template auto` on
         // a Llama GGUF, where the policy is Off because the family has no think
-        // block at all. That path is untouched.
+        // block at all. That path is untouched — the refusal sits after the
+        // builtin early-return on purpose.
         let mut i = inputs(&c);
         i.prompts_file = false;
         i.json_out = false;
         i.template_given = true;
-        i.template_name = Some("auto");
+        i.family = Some("auto");
         assert_eq!(resolve_mode(i).unwrap(), Mode::Builtin);
     }
 
@@ -1403,17 +1467,6 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_template_stops_the_catalog_deciding_it() {
-        let c = cat();
-        let mut i = inputs(&c);
-        i.template_given = true;
-        match resolve_mode(i).unwrap() {
-            Mode::Gate(s) => assert_eq!(s.template_from_catalog, None),
-            m => panic!("{m:?}"),
-        }
-    }
-
-    #[test]
     fn a_catalog_that_asks_for_a_sampled_serve_is_refused() {
         // The harness only produces greedy output. A catalog pinning 0.7 would
         // make the greedy refusal above a claim about something that is not
@@ -1421,6 +1474,10 @@ mod tests {
         let c = parse_catalog(CAT, Some("socratic-tutor")).unwrap();
         let mut i = inputs(&c);
         i.fingerprint = Some("zzz");
+        // The tutor entry's chatTemplate IS `auto`, so the family refusal would
+        // fire first. Point the family at a real one, so what this test
+        // measures is the temperature refusal and nothing else.
+        i.family = Some("chatml");
         let e = resolve_mode(i).unwrap_err();
         assert!(e.contains("sampling.temperature is 0.7"), "{e}");
     }

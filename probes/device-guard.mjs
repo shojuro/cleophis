@@ -28,8 +28,8 @@
 //
 // ── WHAT IT REFUSES, AND WHY IT STILL WRITES A LINE ─────────────────────────
 //
-// A record with no `text`, or one the harness marked `truncated_in_think`, is
-// not guarded. `applyGuard('')` hands back the out-of-scope banner line and a
+// A record with no `user`, no `text`, or one the harness marked
+// `truncated_in_think`, is not guarded. `applyGuard('')` hands back the out-of-scope banner line and a
 // route — a display indistinguishable from a reply the model actually gave —
 // and a truncation's `text` is the model's own reasoning, which would become a
 // banner and a route out of a sentence it was writing to itself.
@@ -126,6 +126,20 @@ export function headerRecord({ source, catalogId, crisisLine, records, skipped =
  */
 export function guardRecord(record, { crisisLine }) {
   const { id, user, text, state } = record ?? {};
+  // The PATIENT'S WORDS, refused the same way the reply is. `String(user ?? '')`
+  // would have guarded the record against an empty patient turn, and an empty
+  // patient turn cannot disclose self-harm — so `detectCrisisStatement` finds
+  // nothing, the crisis block is not appended, and a display that should have
+  // carried it does not. That is the same failure class as a blank reply, with
+  // no refusal attached to it, and it is silent in exactly the direction R15
+  // says it must not be.
+  if (typeof user !== 'string') {
+    throw new Error(
+      `record ${JSON.stringify(id ?? '?')}: "user" is ${typeof user}, not a string. `
+      + 'Guarding against an empty patient turn disables crisis-on-input detection, '
+      + 'so a reply that needed the crisis block would be shown without it.',
+    );
+  }
   if (typeof text !== 'string' || text.length === 0) {
     throw new Error(
       `record ${JSON.stringify(id ?? '?')}: no "text" to guard `
@@ -147,7 +161,7 @@ export function guardRecord(record, { crisisLine }) {
       + 'route built out of it would read exactly like a reply the model gave.',
     );
   }
-  const v = applyGuard({ userText: String(user ?? ''), replyText: text, crisisLine });
+  const v = applyGuard({ userText: user, replyText: text, crisisLine });
   return {
     id,
     display: v.displayText,
