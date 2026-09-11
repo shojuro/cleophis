@@ -240,6 +240,14 @@ pub struct OutRecord {
     /// `ok` | `max_tokens` | `cancelled` | `truncated_in_think`.
     pub state: String,
     pub prompt_tokens: usize,
+    /// The declared chat-template family (`ChatMl`) and the think policy it
+    /// implies (`PreClosed`). ON EVERY RECORD, not once in a header, because
+    /// these two are what a wrong run differs by, and the point is that the
+    /// comparison catches it rather than an operator reading stderr. A file of
+    /// records saying `think=Off` was served the thinking prompt, whatever else
+    /// it reports.
+    pub template: String,
+    pub think: String,
     /// Every input key the harness did not name, written back untouched.
     pub extra: Vec<(String, Json)>,
 }
@@ -263,6 +271,8 @@ impl OutRecord {
         push_kv_str(&mut s, "prompt_sha", &self.prompt_sha, false);
         push_kv_str(&mut s, "state", &self.state, false);
         let _ = write!(s, ",\"prompt_tokens\":{}", self.prompt_tokens);
+        push_kv_str(&mut s, "template", &self.template, false);
+        push_kv_str(&mut s, "think", &self.think, false);
         for (k, v) in &self.extra {
             s.push(',');
             escape_into(&mut s, k);
@@ -403,6 +413,9 @@ pub struct GateInputs<'a> {
     pub system_given: bool,
     pub greeting_given: bool,
     pub template_given: bool,
+    /// The family named by `--template`, when it was given. Only `"auto"` is
+    /// acted on, and only to refuse it — see below.
+    pub template_name: Option<&'a str>,
     pub catalog: Option<&'a CatalogEntry>,
     /// The fingerprint of the prompt file's shared system prompt, once read.
     pub fingerprint: Option<&'a str>,
@@ -445,6 +458,33 @@ pub fn resolve_mode(i: GateInputs) -> Result<Mode, String> {
             "--system and --prompts-file are mutually exclusive: the system \
                     prompt comes from the records, is asserted to be one prompt across \
                     all of them, and is fingerprinted against the catalog"
+                .into(),
+        );
+    }
+    // 🔴 `--template auto` IS NOT A HARMLESS DEFAULT ANY MORE.
+    //
+    // Since Task A2 the declared family decides the THINK POLICY: `chatml`
+    // appends the pre-closed `<think>\n\n</think>\n\n` block so the model
+    // cannot open one, and `auto` appends nothing. On a Qwen3 GGUF `auto`
+    // therefore serves the THINKING prompt — out of distribution against the
+    // corpus and against every gate this programme has run, and splitting the
+    // catalog's 320-token budget between reasoning and answer.
+    //
+    // Nothing downstream would say so. The run would load, generate, write its
+    // records and report success; the stripper would tidy the display; and the
+    // only trace would be a `[prompt] think=Off` line on stderr that an
+    // operator has to notice. A device bar scored on that measures a
+    // configuration nobody ships. So it is refused here rather than warned
+    // about, and the two template fields on every record make a wrong run
+    // visible in the comparison rather than in a log a reader may not open.
+    if i.template_name == Some("auto") {
+        return Err(
+            "--template auto is refused with --prompts-file: since A2 the family \
+                    decides the think policy, and `auto` appends no pre-closed think \
+                    block, so a Qwen3 model serves the THINKING prompt — the one no \
+                    gate has ever run under, spending part of the 320-token budget on \
+                    reasoning. Pass --template chatml, or omit --template and let the \
+                    catalog's chatTemplate decide"
                 .into(),
         );
     }
@@ -962,6 +1002,8 @@ mod tests {
             prompt_sha: "s".into(),
             state: "ok".into(),
             prompt_tokens: 3,
+            template: "ChatMl".into(),
+            think: "PreClosed".into(),
             extra: recs[0].extra.clone(),
         };
         let v = Json::parse(&out.to_json_line()).unwrap();
@@ -1044,6 +1086,8 @@ mod tests {
             prompt_sha: "deadbeef".into(),
             state: "ok".into(),
             prompt_tokens: 180,
+            template: "ChatMl".into(),
+            think: "PreClosed".into(),
             extra: Vec::new(),
         };
         let line = r.to_json_line();
@@ -1085,6 +1129,8 @@ mod tests {
             prompt_sha: "x".into(),
             state: "ok".into(),
             prompt_tokens: 3,
+            template: "ChatMl".into(),
+            think: "PreClosed".into(),
             extra: Vec::new(),
         };
         let line = r.to_json_line();
@@ -1177,6 +1223,7 @@ mod tests {
             template_given: false,
             catalog: Some(c),
             fingerprint: Some("67b7f1633f30"),
+            template_name: None,
             temp_given: None,
             max_tokens_given: None,
         }
@@ -1280,6 +1327,79 @@ mod tests {
             Mode::Gate(s) => assert_eq!(s.max_tokens, 320),
             m => panic!("{m:?}"),
         }
+    }
+
+    /// A2's review item I2. `auto` is `ThinkPolicy::Off`, so a forgotten flag
+    /// serves the THINKING prompt while the run reports success from end to
+    /// end — the stripper tidies the display and only a `[prompt] think=Off`
+    /// line on stderr says otherwise. Refused, in both arms that read a prompt
+    /// file, so a wrong flag cannot produce a plausible file at all.
+    #[test]
+    fn template_auto_is_refused_with_a_prompt_file_in_either_arm() {
+        let c = cat();
+        for json_out in [true, false] {
+            let mut i = inputs(&c);
+            i.json_out = json_out;
+            i.template_given = true;
+            i.template_name = Some("auto");
+            let e = resolve_mode(i).unwrap_err();
+            assert!(e.contains("--template auto is refused"), "{e}");
+            assert!(e.contains("THINKING prompt"), "{e}");
+            assert!(e.contains("--template chatml"), "{e}");
+        }
+    }
+
+    #[test]
+    fn template_chatml_is_accepted_and_the_builtin_arm_still_takes_auto() {
+        let c = cat();
+        let mut i = inputs(&c);
+        i.template_given = true;
+        i.template_name = Some("chatml");
+        assert!(matches!(resolve_mode(i), Ok(Mode::Gate(_))));
+
+        // `run-on-device.sh` drives the built-in sets with `--template auto` on
+        // a Llama GGUF, where the policy is Off because the family has no think
+        // block at all. That path is untouched.
+        let mut i = inputs(&c);
+        i.prompts_file = false;
+        i.json_out = false;
+        i.template_given = true;
+        i.template_name = Some("auto");
+        assert_eq!(resolve_mode(i).unwrap(), Mode::Builtin);
+    }
+
+    #[test]
+    fn every_output_record_names_the_family_and_the_think_policy() {
+        // Not once in a header: these two are what a wrongly-templated run
+        // differs by, and the point is that the COMPARISON catches it rather
+        // than an operator noticing a line on stderr.
+        let r = OutRecord {
+            id: "a".into(),
+            suite: "s".into(),
+            system: "S".into(),
+            user: "u".into(),
+            raw: "r".into(),
+            text: "t".into(),
+            tokens: 1,
+            ms: 2,
+            prompt_sha: "x".into(),
+            state: "ok".into(),
+            prompt_tokens: 3,
+            template: "ChatMl".into(),
+            think: "PreClosed".into(),
+            extra: Vec::new(),
+        };
+        let v = Json::parse(&r.to_json_line()).unwrap();
+        assert_eq!(v.get("template").and_then(Json::as_str), Some("ChatMl"));
+        assert_eq!(v.get("think").and_then(Json::as_str), Some("PreClosed"));
+        // And the two spellings the harness writes are the enums' own Debug
+        // output, so a rename in template.rs cannot leave these strings behind.
+        assert_eq!(format!("{:?}", ChatTemplate::ChatMl), "ChatMl");
+        assert_eq!(
+            format!("{:?}", ChatTemplate::ChatMl.think_policy()),
+            "PreClosed"
+        );
+        assert_eq!(format!("{:?}", ChatTemplate::Auto.think_policy()), "Off");
     }
 
     #[test]

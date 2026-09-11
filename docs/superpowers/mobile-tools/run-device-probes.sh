@@ -379,6 +379,22 @@ run_on() { # serial
     local outjson="$OUT/$tag.json"
     local outlog="$OUT/$tag.log"
 
+    # ── `--template chatml`, PASSED EXPLICITLY ───────────────────────────────
+    #
+    # The harness would derive the same family from the catalog's `"qwen"` if
+    # the flag were omitted, so this is belt and braces — and the braces are the
+    # point. Since A2 the family decides the THINK POLICY: `chatml` puts the
+    # pre-closed `<think>\n\n</think>\n\n` block in the assistant prefix so the
+    # model cannot open one, and `auto` appends nothing, which on a Qwen3 GGUF
+    # serves the THINKING prompt — the prompt no gate this programme has run
+    # under, spending part of the 320-token budget on reasoning.
+    #
+    # Stating it here means the served configuration is readable in this file
+    # rather than inferred from a catalog field two directories away. The
+    # harness REFUSES `--template auto` with a prompt file, and every output
+    # record carries `template` and `think`, so a wrong run is caught by the
+    # comparison rather than by someone reading stderr.
+    #
     # `--model-sha`/`--behavioral-sha` make the ENGINE hash the artifacts too,
     # which is the second sha check on the same bytes and is deliberate: the
     # script's check answers "did the push land", the engine's is the very
@@ -392,6 +408,7 @@ run_on() { # serial
         --behavioral $(basename "$ADAPTER_FILE") --behavioral-sha $ADAPTER_SHA \
         --prompts-file $(basename "$PROMPTS") \
         --catalog $(basename "$CATALOG") $([ -n "$CATALOG_ID" ] && echo "--catalog-id $CATALOG_ID") \
+        --template chatml \
         --json $devjson --n-ctx $N_CTX --gpu-layers 0" 2>&1 | tee "$outlog"
     local harness_rc=${PIPESTATUS[0]}
     local t1; t1=$(date +%s)
@@ -431,6 +448,14 @@ run_on() { # serial
     else
       echo "[$serial] ---- the sha to compare with the pod (real 1.7B stack) ----"
       grep -m1 '^\[prompt\]' "$outlog"
+      # `tokens=` is on that line beside `sha256=`, and it is not decoration:
+      # the sha pins the prompt STRING and says nothing about a prepended BOS
+      # token. Qwen3 declares none, so the two sides should agree — but "should"
+      # is not a measurement, and a one-token shift with identical digests is
+      # exactly the difference that produces a handful of plausible
+      # disagreements and no explanation.
+      echo "[$serial]   Compare BOTH numbers on that line. The sha pins the prompt string;"
+      echo "[$serial]   tokens= is what would show a BOS token on one side and not the other."
       echo "[$serial]   Put this beside the pod's rendered_prompt_sha256 for the same"
       echo "[$serial]   {system,user}. Equal shas exclude rendering as an explanation for"
       echo "[$serial]   any disagreement; unequal shas mean nothing else in the run counts."
@@ -449,21 +474,54 @@ run_on() { # serial
 # the prompt wrongly and hashes it consistently is still caught. It is the
 # cheapest available check on the one number the pod comparison rests on.
 verify_sha_independently() { # out json
-  python3 - "$1" "$PROMPTS" <<'PY'
+  python3 - "$1" "$PROMPTS" "$REPO/crates/kpack-engine/tests/fixtures/qwen3-render-parity.json" <<'PY'
 import hashlib, json, sys
-out, prompts = sys.argv[1], sys.argv[2]
+out, prompts, fixture = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def render(system, user):
+    return (
+        "<|im_start|>system\n" + system + "<|im_end|>\n"
+        "<|im_start|>user\n" + user + "<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+
+
+# ── THE POSITIVE CONTROL, AND WHY THIS CHECK NEEDS ONE ──────────────────────
+#
+# What follows compares the harness's `prompt_sha` against a SECOND renderer
+# written here, so that a harness which renders the prompt wrongly and hashes
+# it consistently is still caught. That argument is worth nothing if the second
+# renderer is wrong in the same way — and nothing above would say so, because
+# two agreeing implementations look exactly like one correct one.
+#
+# So it is checked first, against the pod's OWN Jinja: Task A2 committed three
+# cases rendered by the real Qwen3 tokenizer under `enable_thinking=False`
+# (transformers 4.57.1, the pods' pin), prompt bytes and digest both. If this
+# renderer cannot reproduce those, it is not evidence about anything and the
+# run says so rather than reporting a clean parity.
+try:
+    fx = json.load(open(fixture, encoding="utf-8"))
+except OSError as e:
+    sys.exit(f"  FATAL: cannot read the Jinja parity fixture: {e}")
+for c in fx["cases"]:
+    r = render(c["system"], c["user"])
+    if r != c["expected_prompt"] or hashlib.sha256(r.encode("utf-8")).hexdigest() != c["expected_sha256"]:
+        sys.exit(
+            f"  FATAL: this script's renderer disagrees with the pod's Jinja on "
+            f"{c['id']}. Every prompt-sha comparison below would be a check of two "
+            f"implementations agreeing with each other and not with the gate."
+        )
+print(f"  renderer control: reproduces {len(fx['cases'])}/{len(fx['cases'])} Qwen3-Jinja cases "
+      f"({fx['renderer']['transformers']}, enable_thinking=False)")
+
 want = {}
 for line in open(prompts, encoding="utf-8"):
     line = line.strip()
     if not line:
         continue
     r = json.loads(line)
-    rendered = (
-        "<|im_start|>system\n" + r["system"] + "<|im_end|>\n"
-        "<|im_start|>user\n" + r["user"] + "<|im_end|>\n"
-        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    )
-    want[r["id"]] = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    want[r["id"]] = hashlib.sha256(render(r["system"], r["user"]).encode("utf-8")).hexdigest()
 bad = 0
 n = 0
 first = None
@@ -483,17 +541,33 @@ print(f"  records: {n} of {len(want)}")
 if first:
     print(f"  prompt_sha[{first['id']}] = {first['prompt_sha']}")
     print( "  PARITY: this sha must equal the pod's rendered_prompt_sha256 for the same")
-    print( "          {system,user}. It is computed from the rendered prompt STRING on")
-    print( "          both sides; until Task A2 exposes the engine's own render, it")
-    print( "          proves the pod<->harness half and not the harness<->engine half.")
+    print( "          {system,user}. On the device side it comes from the ENGINE, over the")
+    print( "          exact bytes it tokenised (A2's EngineSession::rendered_prompt_sha256),")
+    print( "          not from a second rendering of the prompt file. The digest pins the")
+    print( "          STRING; compare tokens= on the [prompt] line too, since a prepended")
+    print( "          BOS token on one side would not move it.")
 states = {}
+policies = {}
 for line in open(out, encoding="utf-8"):
     line = line.strip()
     if line:
-        s = json.loads(line).get("state", "?")
+        rec = json.loads(line)
+        s = rec.get("state", "?")
         states[s] = states.get(s, 0) + 1
+        key = f"{rec.get('template','?')}/{rec.get('think','?')}"
+        policies[key] = policies.get(key, 0) + 1
 print("  states: " + " ".join(f"{k}={v}" for k, v in sorted(states.items())))
-sys.exit(1 if bad else 0)
+print("  template/think: " + " ".join(f"{k}={v}" for k, v in sorted(policies.items())))
+# A2's review item I2, checked on the ARTEFACT rather than on the flag that was
+# meant to produce it. Anything but PreClosed means the model was served the
+# thinking prompt and could spend the 320-token budget on reasoning, which makes
+# every number in the file a measurement of a configuration nobody ships.
+wrong = {k: v for k, v in policies.items() if not k.endswith("/PreClosed")}
+if wrong:
+    print("  WRONG THINK POLICY: " + " ".join(f"{k}={v}" for k, v in sorted(wrong.items())))
+    print("  Records served without the pre-closed think block are not comparable with the")
+    print("  pod. Re-run with --template chatml; do not score this file.")
+sys.exit(1 if (bad or wrong) else 0)
 PY
 }
 

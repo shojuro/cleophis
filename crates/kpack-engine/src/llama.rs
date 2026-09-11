@@ -203,10 +203,30 @@ impl EngineHandle for LlamaHandle {
             })?;
         }
 
-        // Resolve the per-model chat template. `Auto` reads the template
-        // embedded in the GGUF — the in-process equivalent of the sidecar's
-        // `--jinja`. An explicit family is used only as a fallback / for a
-        // model whose GGUF ships no template.
+        // Resolve the per-model chat template STRING. `chat_template(None)`
+        // reads the one embedded in the GGUF — the in-process equivalent of the
+        // sidecar's `--jinja` — and that is true whatever family the caller
+        // declared.
+        //
+        // 🔴 THE DECLARED FAMILY IS NO LONGER COSMETIC, and the comment that
+        // used to sit here said the opposite. It claimed an explicit family was
+        // "only a fallback / for a model whose GGUF ships no template", which
+        // was true while the family decided nothing but whether to strip.
+        //
+        // Since A2 it decides the THINK POLICY, which shapes the prompt:
+        // `ChatMl` appends the 19-byte pre-closed `<think>\n\n</think>\n\n`
+        // block so the model cannot open one, and `Auto` and `Llama3` append
+        // nothing. So `Auto` and `ChatMl` no longer render the same bytes for a
+        // Qwen3 GGUF — they differ by that block and by whether the model
+        // reasons inside the catalog's 320-token budget. `Auto` on a Qwen3
+        // model serves the THINKING prompt, which is the prompt no gate this
+        // programme has ever run under.
+        //
+        // Nothing here detects the family from the GGUF; it comes from the
+        // `LoadRequest`. The app is safe because the catalog says `"qwen"` and
+        // `template_for` maps that to `ChatMl` (pinned by A2's parity test).
+        // The device-probe harness refuses `--template auto` in its gate mode
+        // for the same reason, rather than trusting the flag to be remembered.
         let chat_template = self
             .model
             .chat_template(None)
@@ -308,22 +328,33 @@ impl LlamaSession<'_> {
         // device transcript has to self-evidence what it served. A run whose
         // sha differs from the pod's is not a model difference, and without
         // this line that would be argued about afterwards instead of read off.
-        if !self.prompt_sha_logged {
-            self.prompt_sha_logged = true;
-            eprintln!(
-                "[prompt] template={:?} think={:?} bytes={} sha256={}",
-                self.template,
-                self.template.think_policy(),
-                prompt.len(),
-                crate::template::prompt_sha256(&prompt)
-            );
-        }
-
         let tokens = self
             .model
             .str_to_token(&prompt, AddBos::Always)
             .map_err(|e| EngineError::Backend(format!("tokenize: {e}")))?;
         let prompt_tokens = tokens.len();
+
+        // Printed AFTER tokenising, so the line can carry the token count.
+        //
+        // The sha pins the prompt STRING and stops there. It says nothing about
+        // whether this tokenizer prepended a BOS token on the way to the model
+        // — `AddBos::Always` adds one only if the vocab declares one, and Qwen3
+        // does not, so it *should* be a no-op. "Should" is not a measurement:
+        // the pod and the phone could differ by one leading token with
+        // identical digests, and a one-token shift is exactly the kind of
+        // difference that produces a handful of legitimate-looking
+        // disagreements and no explanation. `tokens=` is what would show it.
+        if !self.prompt_sha_logged {
+            self.prompt_sha_logged = true;
+            eprintln!(
+                "[prompt] template={:?} think={:?} bytes={} tokens={} sha256={}",
+                self.template,
+                self.template.think_policy(),
+                prompt.len(),
+                prompt_tokens,
+                crate::template::prompt_sha256(&prompt)
+            );
+        }
 
         // ---- Prefix-KV reuse (spec task 1.5) ----------------------------
         //

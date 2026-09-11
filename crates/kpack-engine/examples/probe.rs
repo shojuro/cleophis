@@ -266,6 +266,8 @@ fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
                     prompt_sha,
                     state: state.to_string(),
                     prompt_tokens: stats.prompt_tokens,
+                    template: format!("{:?}", plan.template),
+                    think: format!("{:?}", plan.template.think_policy()),
                     extra: item.extra.clone(),
                 };
                 // One line, then flush. A crash on item 140 of 164 must leave
@@ -379,6 +381,7 @@ impl Plan {
             template_given: a.template_given,
             catalog: catalog.as_ref(),
             fingerprint: fingerprint.as_deref(),
+            template_name: a.template_name.as_deref(),
             temp_given: if a.temp_given { Some(a.temp) } else { None },
             max_tokens_given: if a.max_tokens_given { Some(a.max_tokens) } else { None },
         })?;
@@ -477,7 +480,17 @@ impl Plan {
             None => eprintln!("[probe-json] max-tokens  = {}   (no --catalog: unasserted)", self.max_tokens),
         }
         eprintln!("[probe-json] temperature= {}   n-ctx = {}", self.temp, self.n_ctx);
-        eprintln!("[probe-json] template   = {:?}   (from {})", self.template, self.template_source);
+        eprintln!("[probe-json] template   = {:?}   think = {:?}   (from {})",
+            self.template, self.template.think_policy(), self.template_source);
+        if self.template.think_policy() == kpack_engine::ThinkPolicy::Off && self.json_out.is_some() {
+            // Unreachable while `resolve_mode` refuses `--template auto`, and
+            // kept anyway: this is the condition that makes every number in the
+            // file a measurement of a prompt no gate has run under, and a
+            // second statement of it costs one line.
+            eprintln!("[probe-json] WARNING    : think=Off — the model may open its own \
+                       <think> block and spend the token budget on it. This is NOT the \
+                       prompt the gate serves.");
+        }
         eprintln!("[probe-json] think-strip= engine {}, harness applies ThinkStripper \
                    + finish() (raw and text both recorded)",
             if self.json_out.is_some() { "OFF" } else { "per template family" });
@@ -552,6 +565,10 @@ struct Args {
     // value, a set one must EQUAL it, and a default that happened to match
     // would otherwise be indistinguishable from an assertion.
     system_given: bool, temp_given: bool, max_tokens_given: bool, template_given: bool,
+    /// The `--template` word as typed. `resolve_mode` refuses `auto` with a
+    /// prompt file, and that refusal reads better naming the word than naming
+    /// the enum variant it parsed to.
+    template_name: Option<String>,
 }
 
 impl Args {
@@ -566,6 +583,7 @@ impl Args {
             builtin: "all".into(),
             prompts_file: None, json_out: None, catalog: None, catalog_id: None,
             system_given: false, temp_given: false, max_tokens_given: false, template_given: false,
+            template_name: None,
         };
         let mut it = std::env::args().skip(1);
         while let Some(f) = it.next() {
@@ -582,10 +600,12 @@ impl Args {
                 "--system" => { a.system = v()?; a.system_given = true; }
                 "--greeting" => a.greeting = Some(v()?),
                 "--template" => {
-                    a.template = match v()?.as_str() {
+                    let name = v()?;
+                    a.template = match name.as_str() {
                         "auto" => ChatTemplate::Auto, "llama3" => ChatTemplate::Llama3, "chatml" => ChatTemplate::ChatMl,
                         o => return Err(format!("bad --template {o}")),
                     };
+                    a.template_name = Some(name);
                     a.template_given = true;
                 }
                 "--temp" => { a.temp = v()?.parse().map_err(|_| "bad --temp")?; a.temp_given = true; }
