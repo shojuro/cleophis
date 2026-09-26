@@ -1,0 +1,65 @@
+{
+  "_comment": "isOverdoseSection(sectionPath) over OVERDOSE_SECTION_PATTERNS.",
+  "cases": [
+    {
+      "path": "Paracetamol > If you take too much",
+      "overdose": true
+    },
+    {
+      "path": "Overdose",
+      "overdose": true
+    },
+    {
+      "path": "Ibuprofen > Overdosage",
+      "overdose": true
+    },
+    {
+      "path": "Maximum dose",
+      "overdose": true
+    },
+    {
+      "path": "Dosage > Maximum daily dose",
+      "overdose": true
+    },
+    {
+      "path": "Max dose",
+      "overdose": true
+    },
+    {
+      "path": "Max. dose",
+      "overdose": true
+    },
+    {
+      "path": "How much is too much?",
+      "overdose": true
+    },
+    {
+      "path": "Paracetamol poisoning",
+      "overdose": true
+    },
+    {
+      "path": "Toxicity",
+      "overdose": true
+    },
+    {
+      "path": "Dosage",
+      "overdose": false
+    },
+    {
+      "path": "How and when to take it",
+      "overdose": false
+    },
+    {
+      "path": "Side effects",
+      "overdose": false
+    },
+    {
+      "path": "Dosage > Adults",
+      "overdose": false
+    },
+    {
+      "path": "",
+      "overdose": false
+    }
+  ]
+}

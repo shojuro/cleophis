@@ -1,0 +1,1198 @@
+{
+  "_comment": "dose-cite-v1 verdict fixtures, one named group per clause of the rule. Each case: a reply + a named source set (sources.json) -> the expected verdict fields. WITHHELD stands for lookup-guard.js's WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. The canonical rule is src/triage/lookup-guard.js; the triage repo's probes/dose-cite.mjs vendors it and asserts identity group by group.",
+  "groups": {
+    "citation-range": [
+      {
+        "name": "a citation out of range withholds its sentence",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a common painkiller [2]. It is safe in pregnancy [7].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [2]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "It is safe in pregnancy [7].",
+              "reason": "citation-out-of-range"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "citation [0] is out of range",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a painkiller [0].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [0].",
+              "reason": "citation-out-of-range"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "one out-of-range number in a list withholds the sentence",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol lowers a temperature [2, 4].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol lowers a temperature [2, 4].",
+              "reason": "citation-out-of-range"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a comma list of in-range citations is kept",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol treats aches and pains [1, 2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol treats aches and pains [1, 2].",
+          "kept": [
+            "Paracetamol treats aches and pains [1, 2]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "a citation range form the rule does not parse is malformed",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a painkiller [1-3].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1-3].",
+              "reason": "citation-malformed"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a bracket with words and a digit is malformed",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a painkiller [source 2].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [source 2].",
+              "reason": "citation-malformed"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "dose-recognition": [
+      {
+        "name": "number words and pills",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take eight pills at once.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take eight pills at once.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "number words and a spelled unit",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Adults take twenty milligrams.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Adults take twenty milligrams.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "teen number words",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take sixteen tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take sixteen tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a before a unit is one",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take a gram.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take a gram.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "half a tablet",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take half a tablet.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take half a tablet.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "compound number words",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take five hundred milligrams.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take five hundred milligrams.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the -gramme spelling",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 milligrammes.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 milligrammes.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a leading-point decimal",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take .5 mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take .5 mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a zero-width space between number and unit",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take 500​mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500​mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "teaspoons",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Give 2 teaspoons.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 teaspoons.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "sprays",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Use 2 sprays.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Use 2 sprays.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a patch",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Apply 1 patch.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Apply 1 patch.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a suppository",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Insert one suppository.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Insert one suppository.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "pessaries",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Insert 2 pessaries.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Insert 2 pessaries.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "lozenges",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Suck 3 lozenges.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Suck 3 lozenges.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "caplets",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take 2 caplets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 caplets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "cc",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Give 5 cc.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 5 cc.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "nanograms",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Give 50 nanograms.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 50 nanograms.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a percentage strength",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Use the 1% cream.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Use the 1% cream.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a concentration",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. The liquid is 250 mg in 5 ml.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "The liquid is 250 mg in 5 ml.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a vulgar fraction",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Give ½ tablet.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give ½ tablet.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a unit outside the table, uncited, is still a dose",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take 2 oz.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 oz.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a cited quantity in a unit outside the table cannot be verified",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a painkiller [1]. Take 3 grains [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 3 grains [1].",
+              "reason": "dose-unrecognised"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a number that is not a dose is prose",
+        "sources": "noDose",
+        "replyText": "It is sold in packs of 16 [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "It is sold in packs of 16 [1].",
+          "kept": [
+            "It is sold in packs of 16 [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "once as a conjunction is not a dose",
+        "sources": "noDose",
+        "replyText": "Once you feel better, stop taking it [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Once you feel better, stop taking it [1].",
+          "kept": [
+            "Once you feel better, stop taking it [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "verbatim-presence": [
+      {
+        "name": "a cited dose present in the cited source is kept",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a painkiller [2]. The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [2]. The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].",
+          "kept": [
+            "Paracetamol is a painkiller [2].",
+            "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "unit spelling and spacing are normalised before the check",
+        "sources": "amoxicillin",
+        "replyText": "Adults usually take 500 mg three times daily [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Adults usually take 500 mg three times daily [1].",
+          "kept": [
+            "Adults usually take 500 mg three times daily [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a dose with no citation is withheld, the rest is kept",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol treats aches and pains [2]. Adults can take 1000 mg at a time.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol treats aches and pains [2]. WITHHELD",
+          "kept": [
+            "Paracetamol treats aches and pains [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Adults can take 1000 mg at a time.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "a cited dose absent from the cited source is withheld",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol treats aches and pains [2]. The usual dose is 650mg every 6 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol treats aches and pains [2]. WITHHELD",
+          "kept": [
+            "Paracetamol treats aches and pains [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "The usual dose is 650mg every 6 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "a dose cited to a source that does not state it is withheld",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol reduces a high temperature [2]. Take 500mg tablets [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol reduces a high temperature [2]. WITHHELD",
+          "kept": [
+            "Paracetamol reduces a high temperature [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500mg tablets [2].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "50 mg is not inside 500 mg",
+        "sources": "children",
+        "replyText": "Give 50 mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 50 mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a per-kilogram reply dose does not match a flat source dose",
+        "sources": "amoxicillin",
+        "replyText": "Give 500mg/kg three times a day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 500mg/kg three times a day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a flat reply dose does not match a spelled-out per-kilogram source dose",
+        "sources": "children",
+        "replyText": "Give 10 mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the per-kilogram dose itself is kept",
+        "sources": "children",
+        "replyText": "Children take 10 mg/kg [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children take 10 mg/kg [1].",
+          "kept": [
+            "Children take 10 mg/kg [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a whole number does not match a source fraction",
+        "sources": "children",
+        "replyText": "Children aged 6 to 11 take 2 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Children aged 6 to 11 take 2 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a whole number does not match a vulgar-fraction source",
+        "sources": "children",
+        "replyText": "Babies can have 2 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Babies can have 2 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the fraction in words matches the source fraction",
+        "sources": "children",
+        "replyText": "Children aged 6 to 11 take half a tablet [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 take half a tablet [1].",
+          "kept": [
+            "Children aged 6 to 11 take half a tablet [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a decimal is not a sentence end, and 2.5 ml is not 5 ml",
+        "sources": "amoxicillin",
+        "replyText": "Give 2.5 ml of the liquid [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 2.5 ml of the liquid [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a strength without its volume does not match a concentration",
+        "sources": "amoxicillin",
+        "replyText": "The liquid has 250 mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "The liquid has 250 mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "range-handling": [
+      {
+        "name": "a range with an en dash matches the source's written range",
+        "sources": "salbutamol",
+        "replyText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+          "kept": [
+            "Take 1-2 puffs every 4 to 6 hours when needed [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "one end of a source range is not the range",
+        "sources": "children",
+        "replyText": "Take 2 tablets if aged 16 or over [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets if aged 16 or over [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the range as a range is kept",
+        "sources": "children",
+        "replyText": "If aged 16 or over, take 1 to 2 tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "If aged 16 or over, take 1 to 2 tablets [1].",
+          "kept": [
+            "If aged 16 or over, take 1 to 2 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "one end of an interval range is not the interval",
+        "sources": "salbutamol",
+        "replyText": "Take 1 or 2 puffs every 4 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 1 or 2 puffs every 4 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a count of a strength must match the source count",
+        "sources": "paracetamol",
+        "replyText": "Take 16 500mg tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 500mg tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "overdose-section": [
+      {
+        "name": "a sentence citing an overdose section is withheld even with a verbatim dose",
+        "sources": "paracetamol",
+        "replyText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. Go to A&E if you take more than 8 tablets in 24 hours [3].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. WITHHELD",
+          "kept": [
+            "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Go to A&E if you take more than 8 tablets in 24 hours [3].",
+              "reason": "overdose-section"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a maximum-dose section is withheld",
+        "sources": "salbutamol",
+        "replyText": "Never take more than 8 puffs in 24 hours [2].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Never take more than 8 puffs in 24 hours [2].",
+              "reason": "overdose-section"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a sentence with no dose citing a poisoning section is withheld",
+        "sources": "poisoning",
+        "replyText": "Take 1 or 2 tablets every 4 to 6 hours [1]. It can damage the liver [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1 or 2 tablets every 4 to 6 hours [1]. WITHHELD",
+          "kept": [
+            "Take 1 or 2 tablets every 4 to 6 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "It can damage the liver [2].",
+              "reason": "overdose-section"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "withholding-and-banner": [
+      {
+        "name": "consecutive withheld sentences collapse into one banner",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a painkiller [2]. Take 1g. Then take 1g again [9]. It also lowers a high temperature [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [2]. WITHHELD It also lowers a high temperature [2].",
+          "kept": [
+            "Paracetamol is a painkiller [2].",
+            "It also lowers a high temperature [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 1g.",
+              "reason": "dose-uncited"
+            },
+            {
+              "sentence": "Then take 1g again [9].",
+              "reason": "citation-out-of-range"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "separate withheld sentences get separate banners",
+        "sources": "paracetamol",
+        "replyText": "Take 1g. Paracetamol is a painkiller [2]. Take 2g.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "WITHHELD Paracetamol is a painkiller [2]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 1g.",
+              "reason": "dose-uncited"
+            },
+            {
+              "sentence": "Take 2g.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "a citation after the full stop belongs to the sentence before it",
+        "sources": "paracetamol",
+        "replyText": "Leave at least 4 hours between doses. [1]\nParacetamol is a painkiller. [2]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Leave at least 4 hours between doses. [1]\nParacetamol is a painkiller. [2]",
+          "kept": [
+            "Leave at least 4 hours between doses. [1]",
+            "Paracetamol is a painkiller. [2]"
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "a citation alone on the next line belongs to the line before it",
+        "sources": "paracetamol",
+        "replyText": "Dose: one or two 500mg tablets up to 4 times in 24 hours\n[1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Dose: one or two 500mg tablets up to 4 times in 24 hours\n[1]",
+          "kept": [
+            "Dose: one or two 500mg tablets up to 4 times in 24 hours\n[1]"
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "no-evidence-fallback": [
+      {
+        "name": "a reply with nothing citable left is the scripted refusal",
+        "sources": "paracetamol",
+        "replyText": "I could not find that in the sources.",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [
+            "I could not find that in the sources."
+          ],
+          "withheld": [],
+          "citations": []
+        }
+      },
+      {
+        "name": "an empty reply is the scripted refusal",
+        "sources": "paracetamol",
+        "replyText": "",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [],
+          "citations": []
+        }
+      },
+      {
+        "name": "a reply whose every cited sentence is withheld is the scripted refusal",
+        "sources": "noDose",
+        "replyText": "Take 500 mg [1]. Take 1g [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 500 mg [1].",
+              "reason": "dose-not-in-source"
+            },
+            {
+              "sentence": "Take 1g [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a citation on its own line is judged with the dose on the line before it",
+        "sources": "noDose",
+        "replyText": "Dose: 500mg\n[1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Dose: 500mg\n[1]",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a bare citation line after a withheld dose is not evidence",
+        "sources": "noDose",
+        "replyText": "Take 500 mg.\n\n[1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [
+            "[1]"
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ]
+  }
+}

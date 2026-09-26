@@ -1,0 +1,87 @@
+{
+  "_comment": "splitSentences(input): [text, the whitespace after it]. A citation after the full stop, or alone on the very next line, belongs to the sentence before; a decimal point, e.g. and i.e. do not end a sentence.",
+  "cases": [
+    {
+      "input": "A 2.5 ml dose [1]. B, e.g. this. [2]\nC!",
+      "sentences": [
+        {
+          "text": "A 2.5 ml dose [1].",
+          "sep": " "
+        },
+        {
+          "text": "B, e.g. this. [2]",
+          "sep": "\n"
+        },
+        {
+          "text": "C!",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "   ",
+      "sentences": []
+    },
+    {
+      "input": "Take .5 mg now.",
+      "sentences": [
+        {
+          "text": "Take .5 mg now.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Dose: 500mg\n[1]\nNext line.",
+      "sentences": [
+        {
+          "text": "Dose: 500mg\n[1]",
+          "sep": "\n"
+        },
+        {
+          "text": "Next line.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 500 mg.\n\n[1]",
+      "sentences": [
+        {
+          "text": "Take 500 mg.",
+          "sep": "\n\n"
+        },
+        {
+          "text": "[1]",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Leave 4 hours between doses. [1]\nIt is a painkiller. [2]",
+      "sentences": [
+        {
+          "text": "Leave 4 hours between doses. [1]",
+          "sep": "\n"
+        },
+        {
+          "text": "It is a painkiller. [2]",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Is it safe? Yes [1]!",
+      "sentences": [
+        {
+          "text": "Is it safe?",
+          "sep": " "
+        },
+        {
+          "text": "Yes [1]!",
+          "sep": ""
+        }
+      ]
+    }
+  ]
+}

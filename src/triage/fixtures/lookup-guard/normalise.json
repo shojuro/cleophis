@@ -1,0 +1,257 @@
+{
+  "_comment": "normaliseDoseText: input -> the normalised text. Spelling only, never quantity; no unit is converted into another.",
+  "cases": [
+    {
+      "input": "500 milligrams three times a day",
+      "normalised": "500mg 3 times/day"
+    },
+    {
+      "input": "500 mg three times daily",
+      "normalised": "500mg 3 times/day"
+    },
+    {
+      "input": "Take 1 or 2 puffs every 4–6 hours",
+      "normalised": "take 1-2puffs every 4-6 hours"
+    },
+    {
+      "input": "every 4 to 6 hrs",
+      "normalised": "every 4-6 hours"
+    },
+    {
+      "input": "250 micrograms",
+      "normalised": "250mcg"
+    },
+    {
+      "input": "250 µg",
+      "normalised": "250mcg"
+    },
+    {
+      "input": "250 μg",
+      "normalised": "250mcg"
+    },
+    {
+      "input": "5 mL",
+      "normalised": "5ml"
+    },
+    {
+      "input": "5 millilitres",
+      "normalised": "5ml"
+    },
+    {
+      "input": "1,000 units",
+      "normalised": "1000units"
+    },
+    {
+      "input": "1,000,000 units",
+      "normalised": "1000000units"
+    },
+    {
+      "input": "400 IU",
+      "normalised": "400iu"
+    },
+    {
+      "input": "twice a day",
+      "normalised": "2 times/day"
+    },
+    {
+      "input": "once daily",
+      "normalised": "1 times/day"
+    },
+    {
+      "input": "once every four hours",
+      "normalised": "1 times every 4 hours"
+    },
+    {
+      "input": "Once you feel better, stop.",
+      "normalised": "once you feel better, stop."
+    },
+    {
+      "input": "10 mg per kg",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "10 mg per kilogram of body weight",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "10 milligrams a kilo",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "2 tabs",
+      "normalised": "2tablets"
+    },
+    {
+      "input": "1% cream",
+      "normalised": "1% cream"
+    },
+    {
+      "input": "1 per cent cream",
+      "normalised": "1% cream"
+    },
+    {
+      "input": "1 g",
+      "normalised": "1g"
+    },
+    {
+      "input": "1 gramme",
+      "normalised": "1g"
+    },
+    {
+      "input": "500 milligrammes",
+      "normalised": "500mg"
+    },
+    {
+      "input": "Take eight pills at once.",
+      "normalised": "take 8pills at once."
+    },
+    {
+      "input": "Adults take twenty milligrams.",
+      "normalised": "adults take 20mg."
+    },
+    {
+      "input": "sixteen tablets",
+      "normalised": "16tablets"
+    },
+    {
+      "input": "five hundred milligrams",
+      "normalised": "500mg"
+    },
+    {
+      "input": "one hundred and fifty mg",
+      "normalised": "150mg"
+    },
+    {
+      "input": "twenty-five mg",
+      "normalised": "25mg"
+    },
+    {
+      "input": "one-two tablets",
+      "normalised": "1-2tablets"
+    },
+    {
+      "input": "one and two tablets",
+      "normalised": "1 and 2tablets"
+    },
+    {
+      "input": "Take a gram.",
+      "normalised": "take 1g."
+    },
+    {
+      "input": "an injection",
+      "normalised": "1injections"
+    },
+    {
+      "input": "Take half a tablet.",
+      "normalised": "take 1/2tablets."
+    },
+    {
+      "input": "half of a tablet",
+      "normalised": "1/2tablets"
+    },
+    {
+      "input": "three quarters of a tablet",
+      "normalised": "3/4tablets"
+    },
+    {
+      "input": "one and a half tablets",
+      "normalised": "1 1/2tablets"
+    },
+    {
+      "input": "1½ tablets",
+      "normalised": "1 1/2tablets"
+    },
+    {
+      "input": "Give ½ tablet.",
+      "normalised": "give 1/2tablets."
+    },
+    {
+      "input": "1⁄2 tablet",
+      "normalised": "1/2tablets"
+    },
+    {
+      "input": ".5 mg",
+      "normalised": "0.5mg"
+    },
+    {
+      "input": "500​mg",
+      "normalised": "500mg"
+    },
+    {
+      "input": "500­mg",
+      "normalised": "500mg"
+    },
+    {
+      "input": "2 teaspoons",
+      "normalised": "2teaspoons"
+    },
+    {
+      "input": "2 tsp",
+      "normalised": "2teaspoons"
+    },
+    {
+      "input": "1 tablespoonful",
+      "normalised": "1tablespoons"
+    },
+    {
+      "input": "5 spoonfuls",
+      "normalised": "5spoonfuls"
+    },
+    {
+      "input": "2 sprays",
+      "normalised": "2sprays"
+    },
+    {
+      "input": "1 patch",
+      "normalised": "1patches"
+    },
+    {
+      "input": "one suppository",
+      "normalised": "1suppositories"
+    },
+    {
+      "input": "2 pessaries",
+      "normalised": "2pessaries"
+    },
+    {
+      "input": "3 lozenges",
+      "normalised": "3lozenges"
+    },
+    {
+      "input": "2 caplets",
+      "normalised": "2caplets"
+    },
+    {
+      "input": "5 cc",
+      "normalised": "5cc"
+    },
+    {
+      "input": "50 nanograms",
+      "normalised": "50ng"
+    },
+    {
+      "input": "250 mg in 5 ml",
+      "normalised": "250mg/5ml"
+    },
+    {
+      "input": "250 mg per 5 ml",
+      "normalised": "250mg/5ml"
+    },
+    {
+      "input": "250mg/5ml",
+      "normalised": "250mg/5ml"
+    },
+    {
+      "input": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours.",
+      "normalised": "the usual dose is 1-2 500mg tablets up to 4 times in 24 hours."
+    },
+    {
+      "input": "Children aged 6 to 11: 1/2 tablet.",
+      "normalised": "children aged 6-11: 1/2tablets."
+    },
+    {
+      "input": "take 2 oz",
+      "normalised": "take 2 oz"
+    }
+  ]
+}
