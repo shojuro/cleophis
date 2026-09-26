@@ -5,6 +5,7 @@ import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMAL_PROMINENT_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
+import { pickHeroArtifacts, heroVariantFor } from './dist-pick.js';
 import { assembleMessages } from './prompt-assembly.js';
 import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
 // The product's contract on a supervised reply (Phase 2). Every use below is
@@ -156,10 +157,14 @@ function tierVariant(tier) {
   return h && h.tiers && h.tiers[tier] ? h.tiers[tier] : null;
 }
 // The dist-catalog `base_model` for a tier (the kind:'base'/'adapter' records
-// carry it). Falls back to the 4B hero if the catalog predates `tiers`.
+// carry it). A flat (tier-less) hero such as the triage entry declares it as
+// its own `baseModel`. Empty when neither says — downloadHeroPair then
+// refuses rather than guessing (Phase 1g M1).
 function heroBaseModel(tier) {
   const v = tierVariant(tier || effectiveTier());
-  return v && v.baseModel ? v.baseModel : 'Qwen3-4B';
+  if (v && v.baseModel) return v.baseModel;
+  const h = heroEntry();
+  return (h && !h.tiers && h.baseModel) || '';
 }
 // The always-on adapter id stamped as per-chat provenance — the ACTIVE tier's,
 // not always the 4B one.
@@ -596,13 +601,10 @@ function startCheckoutFlow(m, btn) {
 // by the initial hero install and a tier switch (which pass different
 // baseModels). The bar/line UI in onDownloadProgress is driven by the
 // download-progress events download_artifact emits.
-// The tiers-block variant for a given dist-catalog base_model (used to learn
-// whether that tier declares a contract adapter).
-function tierVariantByBase(baseModel) {
-  const h = heroEntry();
-  if (!h || !h.tiers) return null;
-  return Object.values(h.tiers).find((t) => t.baseModel === baseModel) || null;
-}
+// The artifacts are picked by the bundled entry's PINNED shas (dist-pick.js),
+// never by kind + base_model: the signed catalog can carry several bases and
+// adapters for one base_model, and the first match was not necessarily the
+// pair this build was gated on (Phase 1g M1).
 
 // §2.2 download network policy, Android only. The gate runs ONCE for the whole
 // install rather than per artifact: base + adapter (+ contract) are one user
@@ -641,22 +643,23 @@ async function downloadHeroPair(baseModel, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
   state.dl.active = true;
   try {
-    const cat = await invoke('fetch_dist_catalog');
-    const arts = (cat && cat.artifacts) || [];
-    const base = arts.find((a) => a.kind === 'base' && a.base_model === baseModel);
-    const adapter = arts.find((a) => a.kind === 'adapter' && a.base_model === baseModel);
-    if (!base || !adapter) {
-      throw new Error("This model isn't available to download yet — please update the app or try again later.");
+    // The pinned identity comes from the BUNDLED catalog (tiers entry, or the
+    // flat entry's own fields); an empty or unknown baseModel means this build
+    // does not say what to install, and guessing is how the wrong adapter
+    // landed before.
+    const variant = heroVariantFor(heroEntry(), baseModel);
+    if (!variant) {
+      throw new Error("This build doesn't say which model to download — please update the app.");
     }
+    const cat = await invoke('fetch_dist_catalog');
+    // Throws a user-facing reason when a pinned sha is not in the signed
+    // catalog or its record's kind / base_model disagree.
+    const { base, adapter, contract } = pickHeroArtifacts(cat && cat.artifacts, variant);
     // Totalled across everything this install will pull, including the
-    // contract adapter when the tier declares one — the user is being asked
+    // contract adapter when the variant declares one — the user is being asked
     // about their data allowance, and a figure that undercounts what will
     // actually be transferred is the wrong number to answer with.
-    const variant = tierVariantByBase(baseModel);
-    const contractArt = variant && variant.contractAdapterFile
-      ? arts.find((a) => a.kind === 'contract-adapter' && a.base_model === baseModel)
-      : null;
-    const totalBytes = (base.size || 0) + (adapter.size || 0) + ((contractArt && contractArt.size) || 0);
+    const totalBytes = (base.size || 0) + (adapter.size || 0) + ((contract && contract.size) || 0);
     if (!(await meteredGate(totalBytes))) {
       // A declined prompt is a cancellation, not a failure: no toast, no error
       // chip. The `finally` below restores the button and the progress bar.
@@ -664,17 +667,9 @@ async function downloadHeroPair(baseModel, btn) {
     }
     await downloadArtifact(base);
     await downloadArtifact(adapter);
-    // Adapter v2 static composition: if this tier declares a contract adapter,
-    // download it too (composed alongside the behavioral one via `--lora a,b`).
-    // Absent until v2's catalog (v5) ships, so this is a no-op today.
-    const v = tierVariantByBase(baseModel);
-    if (v && v.contractAdapterFile) {
-      const contract = arts.find((a) => a.kind === 'contract-adapter' && a.base_model === baseModel);
-      if (!contract) {
-        throw new Error("The contract adapter isn't available to download yet — please update the app.");
-      }
-      await downloadArtifact(contract);
-    }
+    // Adapter v2 static composition: when the variant declares a contract
+    // adapter, it is composed alongside the behavioral one via `--lora a,b`.
+    if (contract) await downloadArtifact(contract);
   } finally {
     // Always clear the in-flight flag + progress bar, even on a missing-artifact
     // throw or a download rejection — otherwise the button sticks on "Downloading…".
