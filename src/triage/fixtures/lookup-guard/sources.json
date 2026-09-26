@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared source sets for the dose-cite-v3 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance.",
+  "_comment": "Shared source sets for the dose-cite-v4 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
   "paracetamol": [
     {
       "n": 1,
@@ -50,6 +50,14 @@
       "text": "Paracetamol is a common painkiller used to treat aches and pains."
     }
   ],
+  "nodoseP": [
+    {
+      "n": 1,
+      "docTitle": "P",
+      "sectionPath": "P > How to take it",
+      "text": "Paracetamol is a painkiller."
+    }
+  ],
   "children": [
     {
       "n": 1,
@@ -70,6 +78,48 @@
       "docTitle": "Paracetamol",
       "sectionPath": "Paracetamol poisoning",
       "text": "Paracetamol poisoning can damage the liver."
+    }
+  ],
+  "paraIbu": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol",
+      "sectionPath": "Dosage",
+      "text": "Paracetamol: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen",
+      "sectionPath": "Dosage",
+      "text": "Ibuprofen: take 2 tablets."
+    }
+  ],
+  "paraAdultIbu": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "Dosage",
+      "text": "Adults: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen for adults",
+      "sectionPath": "Dosage",
+      "text": "Take 2 tablets."
+    }
+  ],
+  "paraAdultIbuNamed": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "Dosage",
+      "text": "Adults: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen for adults",
+      "sectionPath": "Dosage",
+      "text": "Ibuprofen: take 2 tablets."
     }
   ]
 }

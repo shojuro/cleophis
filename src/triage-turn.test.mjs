@@ -725,7 +725,7 @@ import {
 import { LOOKUP_SOURCE_FOOTER, runLookupTurn } from './lookup-turn.js';
 
 const LOOKUP_REPLY_GUARD = Object.freeze({
-  kind: 'lookup', rule: 'dose-cite-v3', outcome: 'grounded',
+  kind: 'lookup', rule: 'dose-cite-v4', outcome: 'grounded',
   displayText: 'The usual dose is 500mg [1]. [A sentence was withheld: the reference pack does not confirm it.]',
   rawReply: 'The usual dose is 500mg [1]. Take 1g.',
   kept: ['The usual dose is 500mg [1].'],
