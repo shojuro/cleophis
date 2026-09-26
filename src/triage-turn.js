@@ -475,12 +475,15 @@ export function triageHistory(messages) {
  */
 function replayLookup({ role, content, guard }) {
   if (role === 'user') return { banner: null, text: content, withheld: false, lookup: { query: true } };
+  // Fail closed: a lookup reply verdict with no display text of its own is
+  // not shown from `content`, which on mobile can be the checkpointed raw reply.
+  if (typeof guard.displayText !== 'string') return { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true };
   const cited = Array.isArray(guard.citations) ? guard.citations : [];
   const sources = Array.isArray(guard.sources) ? guard.sources : [];
   const withheld = Array.isArray(guard.withheld) ? guard.withheld : [];
   return {
     banner: null,
-    text: typeof guard.displayText === 'string' ? guard.displayText : content,
+    text: guard.displayText,
     withheld: false,
     lookup: {
       outcome: guard.outcome,

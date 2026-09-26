@@ -293,3 +293,28 @@ test('the persisted verdict keeps each source\'s url and retrievedAt (null when 
   assert.strictEqual(r.verdict.sources[1].retrievedAt, null);
   assert.ok(r.verdict.sources.every((s) => !('text' in s)));
 });
+
+/* ---------------- fix round 1, M3: one reply length for budget and model ---------------- */
+
+import { lookupReplyTokens } from './lookup-turn.js';
+
+test('the reply length is the entry\'s pinned maxTokens, else 320, and the model is asked for the budgeted value', async () => {
+  assert.strictEqual(lookupReplyTokens(ENTRY), 320);
+  assert.strictEqual(lookupReplyTokens({ sampling: { maxTokens: 400 } }), 400);
+  assert.strictEqual(lookupReplyTokens({ sampling: { maxTokens: 'x' } }), 320);
+  const generate = mockModel('Paracetamol treats aches [1].');
+  await runLookupTurn({ text: 'paracetamol', entry: { ...ENTRY, sampling: { temperature: 0, maxTokens: 400 } }, invoke: mockInvoke(GROUNDED), generate });
+  assert.strictEqual(generate.calls[0].maxTokens, 400);
+});
+
+test('a larger pinned reply shrinks the room for the prompt: over budget with 1000, not with 320', async () => {
+  const prompt = `${PROMPT}${'x'.repeat(4000)}`;
+  const big = { ...GROUNDED, prompt };
+  const at320 = await runLookupTurn({ text: 'p', entry: ENTRY, invoke: mockInvoke(big), generate: mockModel('') });
+  assert.notStrictEqual(at320.outcome, 'overBudget');
+  const generate = mockModel('');
+  const at1000 = await runLookupTurn({ text: 'p', entry: { ...ENTRY, sampling: { maxTokens: 1000 } }, invoke: mockInvoke(big), generate });
+  assert.strictEqual(at1000.outcome, 'overBudget');
+  assert.match(at1000.error, /\+ 1000\)/);
+  assert.strictEqual(generate.calls.length, 0);
+});

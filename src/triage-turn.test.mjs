@@ -843,3 +843,9 @@ test('replayMessage is unchanged for triage rows', () => {
   assert.deepStrictEqual(replayMessage({ supervised: true, role: 'assistant', content: 'x' }),
     { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true });
 });
+
+test('replayMessage fails closed on a lookup reply verdict with no displayText: never the raw row content', () => {
+  const guard = { kind: 'lookup', outcome: 'grounded', withheld: [], citations: [1], sources: [] };
+  assert.deepStrictEqual(replayMessage({ supervised: true, role: 'assistant', content: 'RAW 1000mg', guard }),
+    { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true });
+});

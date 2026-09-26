@@ -70,21 +70,22 @@ export const LOOKUP_N_CTX = 2048;
 export const LOOKUP_REPLY_TOKENS = 320;
 
 export class LookupBudgetError extends Error {
-  constructor(tokens) {
-    super(`lookup prompt over budget: ${tokens} estimated tokens > ${LOOKUP_N_CTX} (system + user + ${LOOKUP_REPLY_TOKENS})`);
+  constructor(tokens, replyTokens = LOOKUP_REPLY_TOKENS) {
+    super(`lookup prompt over budget: ${tokens} estimated tokens > ${LOOKUP_N_CTX} (system + user + ${replyTokens})`);
     this.name = 'LookupBudgetError';
     this.tokens = tokens;
   }
 }
 
 /**
- * system + user + the reply's 320 must fit 2048, by the estimator the app
+ * system + user + the reply's tokens (the entry's `sampling.maxTokens`, 320
+ * when it pins none) must fit 2048, by the estimator the app
  * already windows with (`estTokens`, which over-counts on purpose). Trimming
  * trailing sources to fit is Rust's job (M5); here an over-budget prompt is a
  * hard error, never a silent truncation.
  */
-export function lookupBudget({ system = '', query = '' } = {}) {
-  const tokens = estTokens(system) + estTokens(query) + LOOKUP_REPLY_TOKENS;
+export function lookupBudget({ system = '', query = '', replyTokens = LOOKUP_REPLY_TOKENS } = {}) {
+  const tokens = estTokens(system) + estTokens(query) + replyTokens;
   return { tokens, ok: tokens <= LOOKUP_N_CTX };
 }
 
@@ -95,14 +96,14 @@ export function lookupBudget({ system = '', query = '' } = {}) {
  * @throws {Error} when there is no grounded prompt (never falls back to the
  *   triage prompt), and {LookupBudgetError} when over budget.
  */
-export function assembleLookupMessages({ groundedPrompt, query } = {}) {
+export function assembleLookupMessages({ groundedPrompt, query, replyTokens = LOOKUP_REPLY_TOKENS } = {}) {
   if (typeof groundedPrompt !== 'string' || !groundedPrompt.trim()) {
     throw new Error('lookup needs the grounded prompt from rag_lookup; there is none');
   }
   const system = groundedPrompt;
   const user = String(query ?? '');
-  const { tokens, ok } = lookupBudget({ system, query: user });
-  if (!ok) throw new LookupBudgetError(tokens);
+  const { tokens, ok } = lookupBudget({ system, query: user, replyTokens });
+  if (!ok) throw new LookupBudgetError(tokens, replyTokens);
   return {
     system,
     tokens,

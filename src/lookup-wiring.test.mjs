@@ -58,3 +58,10 @@ test('a lookup row draws its sources with the lookup renderer and its footer fro
   assert.ok(renderer.includes('lookupCitationRow') && renderer.includes('e.preventDefault()'));
   assert.ok(!renderer.includes('innerHTML'));
 });
+
+test('the lookup query row is filed (awaited) before the turn runs, so its reply can never be filed first', () => {
+  const lookup = body('sendLookup');
+  const append = lookup.indexOf("await invoke('append_message', { chatId: turnChatId, role: 'user'");
+  assert.ok(append !== -1, 'query append is awaited');
+  assert.ok(append < lookup.indexOf('runLookupTurn('));
+});

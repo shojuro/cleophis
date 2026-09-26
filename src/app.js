@@ -19,7 +19,6 @@ import {
 // Phase 1h M6: the reference LOOKUP mode on the supervised screen. Its
 // decisions live in lookup-turn.js (tested); this file draws them.
 import { lookupCitationRow, lookupForPersistence, referencePackId, runLookupTurn } from './lookup-turn.js';
-import { LOOKUP_REPLY_TOKENS } from './prompt-assembly.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
 import {
@@ -2778,7 +2777,11 @@ async function sendLookup(userText, { persistUser = true } = {}) {
   const turnChatId = await ensureTurnChat(m, userText);
   if (persistUser && turnChatId != null) {
     // The marker keeps a REOPENED chat's lookup query out of triage history.
-    invoke('append_message', { chatId: turnChatId, role: 'user', content: userText, guard: LOOKUP_QUERY_GUARD })
+    // AWAITED: a scripted reply is appended within the same tick, and both
+    // commands run on spawn_blocking, so without this the reply could be filed
+    // before the query that produced it (and the export would pair it with the
+    // previous user turn).
+    await invoke('append_message', { chatId: turnChatId, role: 'user', content: userText, guard: LOOKUP_QUERY_GUARD })
       .catch(() => {});
   }
 
@@ -2789,14 +2792,16 @@ async function sendLookup(userText, { persistUser = true } = {}) {
       text: userText,
       entry: m,
       invoke,
-      generate: async ({ messages }) => {
+      generate: async ({ messages, maxTokens }) => {
         started = true;
         markTurnStarted();
-        const sampling = samplingFor({ entry: m, maxTokens: LOOKUP_REPLY_TOKENS, temperature: 0 });
+        // `maxTokens` is the value the budget was checked against
+        // (`lookupReplyTokens`); only the temperature comes from `samplingFor`.
+        const sampling = samplingFor({ entry: m, maxTokens, temperature: 0 });
         const out = await transport.streamTurn({
           port: state.engine.port,
           chatId: turnChatId,
-          baseBody: { max_tokens: sampling.maxTokens, temperature: sampling.temperature, cache_prompt: true },
+          baseBody: { max_tokens: maxTokens, temperature: sampling.temperature, cache_prompt: true },
           messages,
           // The triage contract has no calc(): no tool is offered.
           tools: undefined,

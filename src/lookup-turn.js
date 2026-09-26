@@ -23,7 +23,17 @@ import {
   LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, applyLookupGuard,
 } from './triage/lookup-guard.js';
 import pin from './triage/detectors.pin.js';
-import { LookupBudgetError, assembleLookupMessages } from './prompt-assembly.js';
+import { LOOKUP_REPLY_TOKENS, LookupBudgetError, assembleLookupMessages } from './prompt-assembly.js';
+
+/**
+ * The reply length a lookup asks for and budgets for: the entry's pinned
+ * `sampling.maxTokens`, else 320. ONE value, used both by the budget and by
+ * the model call, so the two can never disagree.
+ */
+export function lookupReplyTokens(entry) {
+  const n = entry && entry.sampling && entry.sampling.maxTokens;
+  return Number.isFinite(n) && n > 0 ? n : LOOKUP_REPLY_TOKENS;
+}
 
 export const LOOKUP_UNAVAILABLE_TEXT =
   'The reference pack is not available on this device, so nothing was looked up.';
@@ -178,7 +188,7 @@ export function lookupCitationRow(c) {
  * @param {string} p.text      the user's query
  * @param {object} p.entry     the catalog entry the turn is SENT under
  * @param {Function} p.invoke  Tauri's invoke (mocked in tests)
- * @param {Function} p.generate ({system, messages}) -> Promise<{content, messageId}>;
+ * @param {Function} p.generate ({system, messages, maxTokens}) -> Promise<{content, messageId}>;
  *   `content` already stripped of any leading empty think block.
  * @returns {Promise<{outcome: string, displayText: string, verdict: object|null,
  *   citations: object[], modelCalled: boolean, messageId: number|null,
@@ -217,9 +227,10 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
   const citations = Array.isArray(rag.citations) ? rag.citations : [];
   if (!citations.length) return scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT);
 
+  const replyTokens = lookupReplyTokens(entry);
   let assembled;
   try {
-    assembled = assembleLookupMessages({ groundedPrompt: rag.prompt, query });
+    assembled = assembleLookupMessages({ groundedPrompt: rag.prompt, query, replyTokens });
   } catch (e) {
     if (e instanceof LookupBudgetError) {
       return {
@@ -231,7 +242,7 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
   }
 
   const sources = sourcesFromPrompt(rag.prompt, citations);
-  const reply = await generate({ system: assembled.system, messages: assembled.messages });
+  const reply = await generate({ system: assembled.system, messages: assembled.messages, maxTokens: replyTokens });
   const verdict = {
     ...applyLookupGuard({ replyText: reply && reply.content, sources }),
     sources: citations.map(sourceRecord),

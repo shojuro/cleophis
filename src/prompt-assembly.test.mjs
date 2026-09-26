@@ -142,3 +142,9 @@ test('triage mode is untouched: the fingerprint throw still guards the supervise
   const entry = { supervised: true, systemPrompt: 'drifted', promptFingerprint: 'deadbeefdead', greeting: 'g' };
   assert.throws(() => assembleMessages({ entry, sent: [], fingerprint: promptFingerprint }), /prompt fingerprint mismatch/);
 });
+
+test('lookup budget: the reply tokens are a parameter, defaulting to 320', () => {
+  assert.strictEqual(lookupBudget({ system: 'x', query: 'q', replyTokens: 1000 }).tokens, estTokens('x') + estTokens('q') + 1000);
+  const atLimit = 'x'.repeat(6016);
+  assert.throws(() => assembleLookupMessages({ groundedPrompt: atLimit, query: 'q', replyTokens: 321 }), LookupBudgetError);
+});
