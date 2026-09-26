@@ -22,6 +22,10 @@
 //   4. crisis — if the USER's words disclose self-harm and the reply does not
 //      signpost, the product's own crisis block is appended (R15: additional to
 //      the route, never instead of it);
+//      Under `crisisRule: 'replace'` (Phase 1h M2, not yet the default) the
+//      disclosure instead puts the product's acknowledgement + signpost block
+//      FIRST and shows the model's reply under it only when that reply carries
+//      a route in `replaceKeepRoutes` — see `applyGuard`;
 //   5. the screen check — LAST, on the finished text, crisis block and all. The
 //      block is product text and nothing above rewrites it, so a check that ran
 //      before the append would be the one rule that looks for a time frame,
@@ -60,6 +64,34 @@ export const CRISIS_BLOCK_DEFAULT =
   'If you are having thoughts of harming yourself, please tell the health worker with you now, '
   + 'and you can also call the Samaritans free on 116 123 at any hour. If there is immediate danger, call 999. '
   + 'This is in addition to the advice above, not instead of it.';
+
+// ── Phase 1h M2: the replace rule's block ───────────────────────────────────
+//
+// Founder decision 2026-09-27: on a plain disclosure the crisis line is the
+// PRODUCT's, not the model's. Under `crisisRule: 'replace'` the display leads
+// with this acknowledgement followed by the entry's own crisis line (the
+// region-specific signpost, never re-typed here), and the model's reply appears
+// under it only when it carries a red-flag route.
+//
+// WORDED AGAINST THE FROZEN REPLY SCORER, not by ear. `detectCrisisResponse`
+// (the vendored detectors.mjs) must read the block as CRISIS_SUPPORT —
+// acknowledged AND signposted — and `detectRoute` must read it as UNCLEAR,
+// because anything else scores the product's own text as "triaged it as a
+// symptom". Three acknowledgement patterns fire on this sentence ("thank you
+// for telling", "I'm really sorry", "you are not alone"), so one rewording
+// cannot drop it below acknowledged; the signpost labels come from the crisis
+// line. It names no clinician, no emergency direction and no time frame.
+// guard.test.mjs asserts all of it against the detectors this module imports.
+export const CRISIS_ACKNOWLEDGEMENT =
+  "Thank you for telling me. I'm really sorry you are feeling this way, and you are not alone.";
+
+/** The replace rule's fixed block: the acknowledgement, then the entry's crisis line. */
+export function crisisReplaceBlock(crisisLine = CRISIS_BLOCK_DEFAULT) {
+  return `${CRISIS_ACKNOWLEDGEMENT} ${crisisLine}`;
+}
+
+export const CRISIS_RULES = Object.freeze(['append', 'replace']);
+export const REPLACE_KEEP_ROUTES_DEFAULT = Object.freeze([ROUTE.EMERGENCY]);
 
 // URGENCY is defined without the global flag; a global copy is needed to
 // remove every match, not the first. The `i` is needed too: the detectors only
@@ -304,8 +336,39 @@ export function unlocatedTimeFrame(route, displayText) {
  *                       was removed, and every sentence when the filter had to
  *                       fall back to showing PROHIBITED_NOTE alone
  *   detectorsSha        the pin all of the above was decided by
+ *
+ * UNDER `crisisRule: 'replace'` ONLY, five more keys — so the default verdict
+ * keeps its twelve-key shape, byte for byte (guard.transcripts.test.mjs pins a
+ * digest of it from before the option existed):
+ *
+ *   crisisRule          'replace'
+ *   keepRoutes          the routes whose reply is still shown under the block
+ *   crisisReplaced      the disclosure fired and the block LEADS the display
+ *   replyShown          the model's (filtered) reply is on screen under it;
+ *                       true whenever the rule did not fire
+ *   routeDetected       detectRoute of the RAW reply — what decided replyShown
+ *
+ * and when the block replaced the reply outright (`crisisReplaced &&
+ * !replyShown`) `banner` is null: no route banner is drawn over text the
+ * model did not write. `crisisLineAppended` is false throughout, because
+ * nothing is appended UNDER a reply.
+ *
+ * @param {object} opts
+ * @param {'append'|'replace'} [opts.crisisRule='append']
+ * @param {string[]} [opts.replaceKeepRoutes=['EMERGENCY']] read only by 'replace'
  */
-export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_BLOCK_DEFAULT } = {}) {
+export function applyGuard({
+  userText = '', replyText = '', crisisLine = CRISIS_BLOCK_DEFAULT,
+  crisisRule = 'append', replaceKeepRoutes = REPLACE_KEEP_ROUTES_DEFAULT,
+} = {}) {
+  // Refused loudly rather than defaulted: a probe run that asked for a rule and
+  // silently measured the other would be a registered number about nothing.
+  if (!CRISIS_RULES.includes(crisisRule)) {
+    throw new TypeError(`applyGuard: unknown crisisRule ${JSON.stringify(crisisRule)}`);
+  }
+  const replace = crisisRule === 'replace';
+  const keepRoutes = replace ? validKeepRoutes(replaceKeepRoutes) : null;
+
   const raw = String(replyText ?? '');
   const routing = detectRoute(raw);
   const banner = ROUTE_TO_BANNER[routing.route];
@@ -342,6 +405,11 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
   // that no longer exists, and it fails in the one direction R15 says it must
   // not: no crisis line at the moment it matters.
   const crisisOnInput = detectCrisisStatement(userText).found;
+  if (replace) {
+    return replaceVerdict({
+      raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes,
+    });
+  }
   const crisisDue = () => crisisOnInput && !signpostsCrisisSupport(display);
   let crisisLineAppended = crisisDue();
   if (crisisLineAppended) display = `${display}\n\n${crisisLine}`;
@@ -387,5 +455,64 @@ export function applyGuard({ userText = '', replyText = '', crisisLine = CRISIS_
     prohibited: { medication: prohibited.medication, diagnosis: prohibited.diagnosis },
     prohibitedRemoved: prohibited.removed,
     detectorsSha: pin.sha256,
+  };
+}
+
+function validKeepRoutes(routes) {
+  const known = Object.values(ROUTE);
+  if (!Array.isArray(routes) || routes.some((r) => !known.includes(r))) {
+    throw new TypeError(`applyGuard: replaceKeepRoutes must be an array of ${known.join('|')}, got ${JSON.stringify(routes)}`);
+  }
+  return [...routes];
+}
+
+/**
+ * The `replace` rule's tail of `applyGuard`: everything above it — route,
+ * prohibited filter, time-frame strip, the UNCLEAR line — has already run on
+ * the reply, so a reply kept under the block is exactly the reply `append`
+ * would have shown, minus the appended block.
+ *
+ * No disclosure: the display is what `append` shows with no disclosure (the
+ * append branch cannot fire without one), so the two rules agree on every
+ * turn that does not disclose.
+ *
+ * The screen check still runs LAST on the finished text, block and all. If a
+ * stated time frame survives on a kept CLINICIAN reply, the reply part is
+ * replaced by TIME_FRAME_NOTE and the block stays — the block is never what a
+ * later rule removes.
+ */
+function replaceVerdict({
+  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes,
+}) {
+  const crisisReplaced = crisisOnInput;
+  const replyShown = !crisisReplaced || keepRoutes.includes(routing.route);
+  const block = crisisReplaceBlock(crisisLine);
+  const compose = (replyPart) => {
+    if (!crisisReplaced) return replyPart;
+    return replyShown ? `${block}\n\n${replyPart}` : block;
+  };
+
+  let screen = compose(display);
+  const timeframeUnlocated = unlocatedTimeFrame(routing.route, screen);
+  if (timeframeUnlocated) screen = compose(tidy(TIME_FRAME_NOTE));
+
+  return {
+    route: routing.route,
+    why: routing.why,
+    banner: crisisReplaced && !replyShown ? null : banner,
+    displayText: screen,
+    rawReply: raw,
+    timeframeStripped,
+    timeframeUnlocated,
+    crisisOnInput,
+    crisisLineAppended: false,
+    prohibited: { medication: prohibited.medication, diagnosis: prohibited.diagnosis },
+    prohibitedRemoved: prohibited.removed,
+    detectorsSha: pin.sha256,
+    crisisRule: 'replace',
+    keepRoutes,
+    crisisReplaced,
+    replyShown,
+    routeDetected: routing.route,
   };
 }

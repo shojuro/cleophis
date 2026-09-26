@@ -16,11 +16,14 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  BANNERS, CRISIS_BLOCK_DEFAULT, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE, ROUTE_TO_BANNER,
-  TIME_FRAME_NOTE, applyGuard, filterProhibited, routeOfPrefix, signpostsCrisisSupport,
-  stripTimeFrames, unlocatedTimeFrame,
+  BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
+  ROUTE_TO_BANNER, TIME_FRAME_NOTE, applyGuard, crisisReplaceBlock, filterProhibited, routeOfPrefix,
+  signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
 } from './guard.js';
-import { detectMedication, detectNamedDiagnosis, detectRoute } from './detectors.mjs';
+import {
+  CRISIS_HANDLING, detectCrisisResponse, detectCrisisStatement, detectMedication,
+  detectNamedDiagnosis, detectRoute,
+} from './detectors.mjs';
 
 const pin = JSON.parse(readFileSync(new URL('./detectors.pin.json', import.meta.url), 'utf8'));
 
@@ -962,4 +965,169 @@ test('the suppressing labels are the detector’s own, and the ambiguous one is 
     true,
     'a redundant signpost, where the alternative is a missing one',
   );
+});
+
+// ── Phase 1h M2: the product crisis rule (append | replace) ─────────────────
+//
+// Founder decision 2026-09-27: on a plain disclosure the product REPLACES the
+// model's reply with a fixed acknowledgement + signpost block, and shows the
+// model's reply under it only when that reply carries a red-flag route. Built
+// as an OPTION so the triage repo can measure both variants before Phase 1i
+// registers one; the default stays `append`, byte-for-byte.
+
+const EMERGENCY_REPLY = 'Call 999 now for an ambulance. Do not drive yourself.';
+const CLINICIAN_REPLY = 'Please see your GP so they can examine you.';
+const SELF_CARE_REPLY = 'Rest and drink fluids.';
+const NO_ROUTE_REPLY = 'I hear you.';
+
+test('the replace block is read by the FROZEN reply scorer as acknowledged AND signposted, and never as a route', () => {
+  const blocks = new Map([
+    ['default', crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)],
+    ['catalog med-triage', crisisReplaceBlock(SHIPPED_CRISIS_LINE)],
+  ]);
+  for (const [where, block] of blocks) {
+    const r = detectCrisisResponse(block);
+    assert.strictEqual(r.handling, CRISIS_HANDLING.CRISIS_SUPPORT, `${where}: ${r.handling}`);
+    assert.ok(r.acknowledged.length > 0, `${where}: not acknowledged`);
+    assert.ok(r.signposted.length > 0, `${where}: not signposted`);
+    assert.deepStrictEqual(r.screened, [], where);
+    assert.deepStrictEqual(r.dismissed, [], where);
+    assert.strictEqual(r.triaged, false, `${where}: triaged as a symptom`);
+    assert.strictEqual(detectRoute(block).route, 'UNCLEAR', where);
+    assert.strictEqual(detectRoute(block).statedUrgency, false, `${where} states a time frame`);
+    // The guard's own suppression test agrees it signposts, and the block is not
+    // itself read as a disclosure (it would re-trigger on a replayed transcript).
+    assert.strictEqual(signpostsCrisisSupport(block), true, where);
+    assert.strictEqual(detectCrisisStatement(block).found, false, where);
+  }
+  // The acknowledgement alone carries every acknowledgement the block needs —
+  // the signpost comes from the operator's crisis line, never re-typed here.
+  assert.ok(detectCrisisResponse(CRISIS_ACKNOWLEDGEMENT).acknowledged.length >= 2);
+  assert.strictEqual(crisisReplaceBlock('X LINE'), `${CRISIS_ACKNOWLEDGEMENT} X LINE`);
+});
+
+test('replace: a plain disclosure with no red-flag route shows the block ONLY, and no route banner', () => {
+  for (const replyText of [CLINICIAN_REPLY, SELF_CARE_REPLY, NO_ROUTE_REPLY]) {
+    const v = applyGuard({ userText: DISCLOSURE, replyText, crisisRule: 'replace' });
+    assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_BLOCK_DEFAULT), replyText);
+    assert.strictEqual(v.banner, null, `${replyText}: the route banner is suppressed`);
+    assert.strictEqual(v.crisisOnInput, true);
+    assert.strictEqual(v.crisisReplaced, true);
+    assert.strictEqual(v.replyShown, false);
+    assert.strictEqual(v.crisisLineAppended, false, 'nothing was appended UNDER a reply');
+    assert.strictEqual(v.crisisRule, 'replace');
+    assert.deepStrictEqual(v.keepRoutes, ['EMERGENCY']);
+    assert.strictEqual(v.routeDetected, detectRoute(replyText).route);
+    assert.strictEqual(v.route, v.routeDetected, 'the route is still recorded for the confirm UI');
+    assert.strictEqual(v.rawReply, replyText, 'the raw reply is always kept for the log');
+  }
+});
+
+test('replace: a disclosure + EMERGENCY reply shows the block, then the reply, with the emergency banner', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: EMERGENCY_REPLY, crisisRule: 'replace' });
+  assert.strictEqual(v.displayText, `${crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)}\n\n${EMERGENCY_REPLY}`);
+  assert.strictEqual(v.banner, 'emergency');
+  assert.strictEqual(v.replyShown, true);
+  assert.strictEqual(v.crisisReplaced, true, 'the block still LEADS the display');
+  assert.strictEqual(v.crisisLineAppended, false);
+  assert.strictEqual(v.routeDetected, 'EMERGENCY');
+});
+
+test('replace: a disclosure + CLINICIAN reply is block-only under {E}, block + reply under {E,C}', () => {
+  const e = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'replace' });
+  assert.strictEqual(e.displayText, crisisReplaceBlock(CRISIS_BLOCK_DEFAULT));
+  assert.strictEqual(e.replyShown, false);
+  assert.strictEqual(e.banner, null);
+
+  const ec = applyGuard({
+    userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'replace',
+    replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  assert.strictEqual(ec.displayText, `${crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)}\n\n${CLINICIAN_REPLY}`);
+  assert.strictEqual(ec.replyShown, true);
+  assert.strictEqual(ec.banner, 'clinician');
+  assert.deepStrictEqual(ec.keepRoutes, ['EMERGENCY', 'CLINICIAN']);
+});
+
+test('replace: a kept reply still goes through the prohibited filter and the time-frame strip first', () => {
+  const v = applyGuard({
+    userText: DISCLOSURE,
+    replyText: 'Please see your GP within 48 hours. Take 400 mg ibuprofen every six hours.',
+    crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  const block = crisisReplaceBlock(CRISIS_BLOCK_DEFAULT);
+  assert.ok(v.displayText.startsWith(`${block}\n\n`), v.displayText);
+  const reply = v.displayText.slice(block.length + 2);
+  assert.strictEqual(/ibuprofen|400 mg|48 hours/i.test(reply), false, reply);
+  assert.ok(v.prohibitedRemoved.length > 0);
+  assert.deepStrictEqual(v.timeframeStripped, ['within 48 hours']);
+  assert.strictEqual(detectRoute(v.displayText).statedUrgency, false);
+});
+
+test('replace: a hidden reply lends nothing to the screen — no model sentence, no out-of-scope line', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: 'Hmm, hard to say.', crisisRule: 'replace' });
+  assert.strictEqual(v.route, 'UNCLEAR');
+  assert.strictEqual(v.displayText.includes(BANNERS.out_of_scope.line), false);
+  assert.strictEqual(v.displayText.includes('Hmm'), false);
+});
+
+test('replace: a region-specific crisis line from the catalog is the signpost in the block', () => {
+  const v = applyGuard({ userText: 'i want to die', replyText: 'See your GP.', crisisLine: 'CALL LOCAL LINE 1234', crisisRule: 'replace' });
+  assert.strictEqual(v.displayText, `${CRISIS_ACKNOWLEDGEMENT} CALL LOCAL LINE 1234`);
+});
+
+test('replace: no disclosure leaves the display, banner and route exactly as append would', () => {
+  for (const [userText, replyText] of [
+    ['sore throat', EMERGENCY_REPLY], ['sore throat', CLINICIAN_REPLY],
+    ["i'm really stressed about work and i'm not sleeping well", 'That sounds hard. Please see your GP within 2 days.'],
+    ['sore throat', SELF_CARE_REPLY], ['sore throat', NO_ROUTE_REPLY],
+  ]) {
+    const a = applyGuard({ userText, replyText });
+    for (const keep of [['EMERGENCY'], ['EMERGENCY', 'CLINICIAN']]) {
+      const r = applyGuard({ userText, replyText, crisisRule: 'replace', replaceKeepRoutes: keep });
+      assert.strictEqual(r.displayText, a.displayText, replyText);
+      assert.strictEqual(r.banner, a.banner, replyText);
+      assert.strictEqual(r.route, a.route, replyText);
+      assert.strictEqual(r.crisisReplaced, false);
+      assert.strictEqual(r.replyShown, true);
+      assert.strictEqual(r.crisisLineAppended, false);
+    }
+  }
+});
+
+test('append (the default) keeps the twelve-key verdict and ignores replaceKeepRoutes', () => {
+  const twelve = [
+    'banner', 'crisisLineAppended', 'crisisOnInput', 'detectorsSha', 'displayText',
+    'prohibited', 'prohibitedRemoved', 'rawReply', 'route', 'timeframeStripped',
+    'timeframeUnlocated', 'why',
+  ];
+  const d = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY });
+  const a = applyGuard({
+    userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'append',
+    replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  assert.deepStrictEqual(Object.keys(d).sort(), twelve);
+  assert.deepStrictEqual(a, d);
+  assert.strictEqual(d.displayText, `${CLINICIAN_REPLY}\n\n${CRISIS_BLOCK_DEFAULT}`);
+});
+
+test('replace: the verdict always carries the rule fields, disclosure or not', () => {
+  const extra = ['crisisReplaced', 'crisisRule', 'keepRoutes', 'replyShown', 'routeDetected'];
+  for (const userText of [DISCLOSURE, 'sore throat']) {
+    const v = applyGuard({ userText, replyText: CLINICIAN_REPLY, crisisRule: 'replace' });
+    for (const k of extra) assert.ok(k in v, `${userText}: ${k}`);
+  }
+});
+
+test('an unknown crisis rule or keep-route is refused loudly, never silently defaulted', () => {
+  assert.throws(() => applyGuard({ userText: DISCLOSURE, replyText: 'x', crisisRule: 'REPLACE' }), /crisisRule/);
+  assert.throws(() => applyGuard({ userText: DISCLOSURE, replyText: 'x', crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'ER'] }), /replaceKeepRoutes/);
+  assert.throws(() => applyGuard({ userText: DISCLOSURE, replyText: 'x', crisisRule: 'replace', replaceKeepRoutes: 'EMERGENCY' }), /replaceKeepRoutes/);
+});
+
+test('replace: the keep set passed in is copied, so a caller mutating it later cannot rewrite a verdict', () => {
+  const keep = ['EMERGENCY'];
+  const v = applyGuard({ userText: DISCLOSURE, replyText: EMERGENCY_REPLY, crisisRule: 'replace', replaceKeepRoutes: keep });
+  keep.push('CLINICIAN');
+  assert.deepStrictEqual(v.keepRoutes, ['EMERGENCY']);
 });

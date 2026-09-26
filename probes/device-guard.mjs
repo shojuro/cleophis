@@ -44,6 +44,16 @@
 //   node probes/device-guard.mjs --in work/device-probes/m7.R58N.json \
 //                                --out work/device-probes/m7.R58N.guard.json
 //   [--catalog src-tauri/resources/catalog.triage.json] [--catalog-id med-triage]
+//   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
+//
+// `--crisis-rule` selects `applyGuard`'s crisis rule (Phase 1h M2). `append`,
+// the default, is what ships; `replace` is the founder's 2026-09-27 rule under
+// measurement — on a disclosure the product's acknowledgement + signpost block
+// leads the display and the model's reply is shown under it only when its
+// route is in `--keep-routes` (default EMERGENCY; the other registered variant
+// is EMERGENCY,CLINICIAN). Both are echoed in the header beside
+// `detectors_sha` and on every record, so a scorer can never read a file
+// without knowing which rule produced it.
 //
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
@@ -51,7 +61,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { applyGuard } from '../src/triage/guard.js';
+import { CRISIS_RULES, REPLACE_KEEP_ROUTES_DEFAULT, applyGuard } from '../src/triage/guard.js';
+import { ROUTE } from '../src/triage/detectors.mjs';
 import pin from '../src/triage/detectors.pin.js';
 
 const DEFAULT_CATALOG = new URL('../src-tauri/resources/catalog.triage.json', import.meta.url);
@@ -85,6 +96,36 @@ export function catalogEntry(path = DEFAULT_CATALOG, id = null) {
   return hit;
 }
 
+/**
+ * The crisis-rule flags, parsed and validated BEFORE any record is guarded.
+ *
+ * `guardAll` turns a record's error into a refused entry, so a bad flag
+ * discovered per record would write a file of 260 "device failures" — a failed
+ * bar produced by a typo. Refused here, the run fails with nothing written.
+ *
+ * @returns {{crisisRule: 'append'|'replace', keepRoutes: string[]|null}}
+ *   `keepRoutes` is null under `append`, which reads no keep set.
+ */
+export function crisisOptions({ crisisRule = null, keepRoutes = null } = {}) {
+  const rule = crisisRule ?? 'append';
+  if (!CRISIS_RULES.includes(rule)) {
+    throw new Error(`--crisis-rule must be one of ${CRISIS_RULES.join('|')}, got ${JSON.stringify(crisisRule)}`);
+  }
+  if (rule !== 'replace') {
+    if (keepRoutes != null) throw new Error('--keep-routes is read only with --crisis-rule replace');
+    return { crisisRule: rule, keepRoutes: null };
+  }
+  if (keepRoutes == null) return { crisisRule: rule, keepRoutes: [...REPLACE_KEEP_ROUTES_DEFAULT] };
+  const list = Array.isArray(keepRoutes)
+    ? [...keepRoutes]
+    : String(keepRoutes).split(',').map((r) => r.trim()).filter(Boolean);
+  const known = Object.values(ROUTE);
+  if (!list.length || list.some((r) => !known.includes(r))) {
+    throw new Error(`--keep-routes must be a comma list of ${known.join('|')}, got ${JSON.stringify(keepRoutes)}`);
+  }
+  return { crisisRule: rule, keepRoutes: list };
+}
+
 const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex');
 
 /**
@@ -96,7 +137,9 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
  * `crisis_line_sha256` is here because the crisis block is the one piece of
  * text the product ADDS, so a change to it changes what the bar measured.
  */
-export function headerRecord({ source, catalogId, crisisLine, records, skipped = [] }) {
+export function headerRecord({
+  source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
+}) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
     header: 'device-guard',
@@ -111,6 +154,10 @@ export function headerRecord({ source, catalogId, crisisLine, records, skipped =
     // failures, and named.
     skipped,
     detectors_sha: probe.detectorsSha,
+    // Beside the detector pin because it is the same kind of fact: which rule
+    // decided every display below. `keep_routes` is null under `append`.
+    crisis_rule: crisisRule,
+    keep_routes: crisisRule === 'replace' ? [...keepRoutes] : null,
     detectors_pin_file_sha: pin.sha256,
     crisis_line_sha256: sha256(crisisLine),
   };
@@ -124,7 +171,7 @@ export function headerRecord({ source, catalogId, crisisLine, records, skipped =
  * diagnostic; it is never what a patient reads and must never be scored as if
  * it were.
  */
-export function guardRecord(record, { crisisLine }) {
+export function guardRecord(record, { crisisLine, crisisRule = 'append', keepRoutes = null }) {
   const { id, user, text, state } = record ?? {};
   // The PATIENT'S WORDS, refused the same way the reply is. `String(user ?? '')`
   // would have guarded the record against an empty patient turn, and an empty
@@ -161,7 +208,14 @@ export function guardRecord(record, { crisisLine }) {
       + 'route built out of it would read exactly like a reply the model gave.',
     );
   }
-  const v = applyGuard({ userText: user, replyText: text, crisisLine });
+  const replace = crisisRule === 'replace';
+  const v = applyGuard({
+    userText: user,
+    replyText: text,
+    crisisLine,
+    crisisRule,
+    ...(replace && keepRoutes ? { replaceKeepRoutes: keepRoutes } : {}),
+  });
   return {
     id,
     display: v.displayText,
@@ -180,6 +234,14 @@ export function guardRecord(record, { crisisLine }) {
     timeframe_unlocated: v.timeframeUnlocated,
     prohibited: v.prohibited,
     changed: v.displayText !== text,
+    // The crisis rule (Phase 1h M2), on every record whichever rule ran, so a
+    // file has one shape. Under `append` the rule cannot replace anything:
+    // `crisis_replaced` is false and `reply_shown` true by construction.
+    crisis_rule: crisisRule,
+    keep_routes: replace ? v.keepRoutes : null,
+    crisis_replaced: replace ? v.crisisReplaced : false,
+    reply_shown: replace ? v.replyShown : true,
+    route_detected: replace ? v.routeDetected : v.route,
   };
 }
 
@@ -198,7 +260,7 @@ export function guardRecord(record, { crisisLine }) {
  * file inventing a reply. An empty display fails the item, which is what a
  * device failure should do.
  */
-function refusedEntry(record, reason) {
+function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null } = {}) {
   return {
     id: record?.id ?? null,
     display: '',
@@ -216,6 +278,11 @@ function refusedEntry(record, reason) {
     timeframe_unlocated: false,
     prohibited: { medication: [], diagnosis: [] },
     changed: false,
+    crisis_rule: crisisRule,
+    keep_routes: crisisRule === 'replace' ? keepRoutes : null,
+    crisis_replaced: false,
+    reply_shown: false,
+    route_detected: null,
   };
 }
 
@@ -235,7 +302,7 @@ export function guardAll(records, opts) {
     try {
       guarded.push(guardRecord(r, opts));
     } catch (e) {
-      guarded.push(refusedEntry(r, e.message));
+      guarded.push(refusedEntry(r, e.message, opts));
       skipped.push({ id: r?.id ?? null, state: r?.state ?? null, reason: e.message });
     }
   }
@@ -250,6 +317,8 @@ export function summarise(guarded) {
   let removedAny = 0;
   let unlocated = 0;
   let refused = 0;
+  let replaced = 0;
+  let hidden = 0;
   for (const g of guarded) {
     if (g.refused) { refused += 1; continue; }
     banners[g.route_banner] = (banners[g.route_banner] ?? 0) + 1;
@@ -257,6 +326,8 @@ export function summarise(guarded) {
     if (g.crisis_line_appended) appended += 1;
     if (g.removed.length) removedAny += 1;
     if (g.timeframe_unlocated) unlocated += 1;
+    if (g.crisis_replaced) replaced += 1;
+    if (g.crisis_replaced && !g.reply_shown) hidden += 1;
   }
   return {
     records: guarded.length,
@@ -266,20 +337,24 @@ export function summarise(guarded) {
     crisis_line_appended: appended,
     prohibited_removed: removedAny,
     timeframe_unlocated: unlocated,
+    crisis_replaced: replaced,
+    reply_hidden: hidden,
   };
 }
 
-export function run({ inPath, outPath, catalogPath, catalogId }) {
+export function run({ inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null }) {
+  const rule = crisisOptions({ crisisRule, keepRoutes });
   const entry = catalogEntry(catalogPath ?? DEFAULT_CATALOG, catalogId ?? null);
   const records = parseJsonl(readFileSync(inPath, 'utf8'));
   if (!records.length) throw new Error(`${inPath} holds no records`);
-  const { guarded, skipped } = guardAll(records, { crisisLine: entry.crisisLine });
+  const { guarded, skipped } = guardAll(records, { crisisLine: entry.crisisLine, ...rule });
   const header = headerRecord({
     source: inPath,
     catalogId: entry.id,
     crisisLine: entry.crisisLine,
     records: guarded.length,
     skipped,
+    ...rule,
   });
   const body = [header, ...guarded].map((r) => JSON.stringify(r)).join('\n');
   writeFileSync(outPath, `${body}\n`, 'utf8');
@@ -287,7 +362,9 @@ export function run({ inPath, outPath, catalogPath, catalogId }) {
 }
 
 function main(argv) {
-  const args = { in: null, out: null, catalog: null, 'catalog-id': null };
+  const args = {
+    in: null, out: null, catalog: null, 'catalog-id': null, 'crisis-rule': null, 'keep-routes': null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const f = argv[i].replace(/^--/, '');
     if (!(f in args)) throw new Error(`unknown flag ${argv[i]}`);
@@ -295,11 +372,21 @@ function main(argv) {
     if (i >= argv.length) throw new Error(`${argv[i - 1]} needs a value`);
     args[f] = argv[i];
   }
-  if (!args.in || !args.out) throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID]');
+  if (!args.in || !args.out) {
+    throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID] '
+      + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]');
+  }
   const { header, skipped, summary } = run({
-    inPath: args.in, outPath: args.out, catalogPath: args.catalog, catalogId: args['catalog-id'],
+    inPath: args.in,
+    outPath: args.out,
+    catalogPath: args.catalog,
+    catalogId: args['catalog-id'],
+    crisisRule: args['crisis-rule'],
+    keepRoutes: args['keep-routes'],
   });
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
+  process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule}`
+    + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}\n`);
   process.stderr.write(`[device-guard] ${JSON.stringify(summary)}\n`);
   for (const s of skipped) {
     process.stderr.write(`[device-guard] REFUSED ${s.id} (state=${s.state}): ${s.reason}\n`);

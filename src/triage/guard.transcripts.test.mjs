@@ -17,8 +17,11 @@
 // transcripts turns these red rather than shrinking them in silence.
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { applyGuard, CRISIS_BLOCK_DEFAULT, PROHIBITED_NOTE, TIME_FRAME_NOTE } from './guard.js';
+import {
+  applyGuard, CRISIS_BLOCK_DEFAULT, PROHIBITED_NOTE, TIME_FRAME_NOTE, crisisReplaceBlock,
+} from './guard.js';
 import {
   URGENCY, detectMedication, detectNamedDiagnosis, detectRoute, normaliseReply,
 } from './detectors.mjs';
@@ -266,5 +269,90 @@ test('all 1,000 saved replies render exactly one banner and never an empty displ
     const v = verdictOf(a);
     assert.ok(['emergency', 'clinician', 'self_care', 'out_of_scope'].includes(v.banner), `${where(a)}: ${v.banner}`);
     assert.ok(v.displayText.trim().length > 0, `${where(a)} rendered empty`);
+  }
+});
+
+// ── Phase 1h M2: the crisis rule over the fixtures ──────────────────────────
+
+// THE APPEND PATH, BYTE FOR BYTE. The whole verdict — every key, every value —
+// for the 1,000 saved replies and for every crisis item's target and control
+// under three fixed replies, hashed in order. Pinned from the guard as it was
+// at eeda6a0, BEFORE the rule option existed, so adding `replace` provably left
+// the default untouched. A change here is a change to what ships today.
+const APPEND_DIGEST_AT_EEDA6A0 = '3930f76990c533582121fe89f711b94f6b2eb53c371309ad1821e8ed76e5ba4b';
+const FIXED_REPLIES = ['Please see your GP today.', 'Call 999 now for an ambulance.', 'Rest and drink fluids.'];
+
+function digestOf(opts) {
+  const h = createHash('sha256');
+  for (const a of saved) h.update(`${JSON.stringify(applyGuard({ userText: a.user, replyText: a.reply ?? '', ...opts }))}\n`);
+  for (const c of crisis) {
+    for (const u of [c.target, c.control]) {
+      for (const r of FIXED_REPLIES) h.update(`${JSON.stringify(applyGuard({ userText: u, replyText: r, ...opts }))}\n`);
+    }
+  }
+  return h.digest('hex');
+}
+
+test('the append path is byte-identical to eeda6a0 over all 1,000 saved replies and 246 crisis verdicts', () => {
+  assert.strictEqual(saved.length, 1000);
+  assert.strictEqual(crisis.length * 2 * FIXED_REPLIES.length, 246);
+  assert.strictEqual(digestOf({}), APPEND_DIGEST_AT_EEDA6A0, 'default');
+  assert.strictEqual(digestOf({ crisisRule: 'append' }), APPEND_DIGEST_AT_EEDA6A0, 'explicit append');
+});
+
+const KEEP_SETS = [['EMERGENCY'], ['EMERGENCY', 'CLINICIAN']];
+
+test('replace changes nothing on 0 of the 1,000 saved replies: no saved user turn discloses', () => {
+  for (const keep of KEEP_SETS) {
+    const moved = saved.filter((a) => {
+      const r = applyGuard({ userText: a.user, replyText: a.reply ?? '', crisisRule: 'replace', replaceKeepRoutes: keep });
+      const v = verdictOf(a);
+      return r.crisisReplaced || r.displayText !== v.displayText || r.banner !== v.banner;
+    });
+    assert.deepStrictEqual(moved.map(where), [], keep.join(','));
+  }
+});
+
+test('replace fires on 39 of the 41 crisis targets and 0 of the 41 controls, under both keep sets', () => {
+  for (const keep of KEEP_SETS) {
+    for (const r of FIXED_REPLIES) {
+      const opts = { replyText: r, crisisRule: 'replace', replaceKeepRoutes: keep };
+      const missed = crisis.filter((c) => !applyGuard({ userText: c.target, ...opts }).crisisReplaced).map((c) => c.id).sort();
+      assert.deepStrictEqual(missed, [...REGISTERED_BLIND_SPOTS].sort(), `${keep} / ${r}`);
+      const ctl = crisis.filter((c) => applyGuard({ userText: c.control, ...opts }).crisisReplaced).map((c) => c.id);
+      assert.deepStrictEqual(ctl, [], `${keep} / ${r}`);
+    }
+  }
+});
+
+test('on the 39 that fire: every display carries the block; the reply is kept by route, 39/0/0 under {E} and 39/39/0 under {E,C}', () => {
+  const block = crisisReplaceBlock(CRISIS_BLOCK_DEFAULT);
+  const expected = {
+    EMERGENCY: { 'Call 999 now for an ambulance.': 39, 'Please see your GP today.': 0, 'Rest and drink fluids.': 0 },
+    'EMERGENCY,CLINICIAN': { 'Call 999 now for an ambulance.': 39, 'Please see your GP today.': 39, 'Rest and drink fluids.': 0 },
+  };
+  for (const keep of KEEP_SETS) {
+    for (const r of FIXED_REPLIES) {
+      let fired = 0;
+      let shown = 0;
+      for (const c of crisis) {
+        const v = applyGuard({ userText: c.target, replyText: r, crisisRule: 'replace', replaceKeepRoutes: keep });
+        if (!v.crisisReplaced) continue;
+        fired += 1;
+        assert.ok(v.displayText.startsWith(block), `${c.id}: ${v.displayText}`);
+        assert.strictEqual(detectRoute(v.displayText).statedUrgency, false, c.id);
+        if (v.replyShown) {
+          shown += 1;
+          assert.ok(v.displayText.length > block.length, c.id);
+          assert.ok(keep.includes(v.routeDetected), c.id);
+          assert.strictEqual(v.banner, v.routeDetected.toLowerCase(), c.id);
+        } else {
+          assert.strictEqual(v.displayText, block, c.id);
+          assert.strictEqual(v.banner, null, c.id);
+        }
+      }
+      assert.strictEqual(fired, 39, `${keep} / ${r}`);
+      assert.strictEqual(shown, expected[keep.join(',')][r], `${keep} / ${r}`);
+    }
   }
 });

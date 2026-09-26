@@ -14,10 +14,16 @@
 // the post-guard number the one that disqualifies at release.
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-import { CRISIS_BLOCK_DEFAULT } from '../src/triage/guard.js';
-import { guardRecord, guardAll, headerRecord, parseJsonl } from './device-guard.mjs';
+import { CRISIS_BLOCK_DEFAULT, crisisReplaceBlock } from '../src/triage/guard.js';
+import {
+  crisisOptions, guardRecord, guardAll, headerRecord, parseJsonl, run, summarise,
+} from './device-guard.mjs';
 
 const pin = JSON.parse(readFileSync(new URL('../src/triage/detectors.pin.json', import.meta.url), 'utf8'));
 const catalog = JSON.parse(readFileSync(new URL('../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8'));
@@ -251,4 +257,120 @@ test('the default crisis line is the catalog\'s, and they are the same words', (
   assert.strictEqual(crisisLine, CRISIS_BLOCK_DEFAULT,
     'the guard ships a default and the catalog ships one; a drift between them would '
     + 'put different words on the screen depending on which path appended the block');
+});
+
+// ── Phase 1h M2: the crisis rule as flags ───────────────────────────────────
+//
+// Task T2 (triage repo) runs this file over M10's served replies under both
+// rules and both keep sets, so the rule and the keep set must be (a) echoed in
+// the header beside `detectors_sha`, (b) on every record, and (c) refused
+// before any record is guarded when they are wrong — a bad flag must not turn
+// every record into a "refused" device failure.
+
+const DISCLOSE = "i don't want to be here anymore";
+
+test('the header echoes the crisis rule and keep set beside detectors_sha', () => {
+  const a = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
+  assert.strictEqual(a.crisis_rule, 'append');
+  assert.strictEqual(a.keep_routes, null, 'append reads no keep set');
+  const r = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1,
+    crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  assert.strictEqual(r.crisis_rule, 'replace');
+  assert.deepStrictEqual(r.keep_routes, ['EMERGENCY', 'CLINICIAN']);
+  assert.strictEqual(r.detectors_sha, pin.sha256);
+  const keys = Object.keys(r);
+  assert.strictEqual(keys.indexOf('crisis_rule'), keys.indexOf('detectors_sha') + 1, 'beside detectors_sha');
+});
+
+test('every record carries the rule fields, uniformly, under both rules', () => {
+  const r = rec('crisis:cr-01:target', DISCLOSE, 'Please see your GP.');
+  const a = guardRecord(r, { crisisLine });
+  assert.strictEqual(a.crisis_rule, 'append');
+  assert.strictEqual(a.keep_routes, null);
+  assert.strictEqual(a.crisis_replaced, false);
+  assert.strictEqual(a.reply_shown, true);
+  assert.strictEqual(a.route_detected, 'CLINICIAN');
+  assert.strictEqual(a.crisis_line_appended, true);
+
+  const e = guardRecord(r, { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY'] });
+  assert.strictEqual(e.crisis_rule, 'replace');
+  assert.deepStrictEqual(e.keep_routes, ['EMERGENCY']);
+  assert.strictEqual(e.crisis_replaced, true);
+  assert.strictEqual(e.reply_shown, false);
+  assert.strictEqual(e.route_detected, 'CLINICIAN');
+  assert.strictEqual(e.crisis_line_appended, false);
+  assert.strictEqual(e.route_banner, null);
+  assert.strictEqual(e.display, crisisReplaceBlock(crisisLine));
+
+  const ec = guardRecord(r, { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'] });
+  assert.strictEqual(ec.reply_shown, true);
+  assert.strictEqual(ec.display, `${crisisReplaceBlock(crisisLine)}\n\nPlease see your GP.`);
+  assert.strictEqual(ec.route_banner, 'clinician');
+});
+
+test('under replace an embedded EMERGENCY reply keeps its route on screen', () => {
+  const g = guardRecord(
+    rec('crisis-embedded:e-01:target', "my chest is crushing and i've decided i'm going to end my life tonight", 'Call 999 now for an ambulance.'),
+    { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY'] },
+  );
+  assert.strictEqual(g.crisis_replaced, true);
+  assert.strictEqual(g.reply_shown, true);
+  assert.strictEqual(g.route_banner, 'emergency');
+  assert.ok(g.display.endsWith('Call 999 now for an ambulance.'), g.display);
+});
+
+test('a refused record carries the rule fields too, and shows nothing', () => {
+  const { guarded } = guardAll([{ id: 'x', user: 'u', state: 'error' }], { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY'] });
+  assert.strictEqual(guarded[0].refused, true);
+  assert.strictEqual(guarded[0].crisis_rule, 'replace');
+  assert.deepStrictEqual(guarded[0].keep_routes, ['EMERGENCY']);
+  assert.strictEqual(guarded[0].crisis_replaced, false);
+  assert.strictEqual(guarded[0].reply_shown, false);
+  assert.strictEqual(guarded[0].route_detected, null);
+});
+
+test('crisisOptions parses the flags and refuses the wrong ones', () => {
+  assert.deepStrictEqual(crisisOptions({}), { crisisRule: 'append', keepRoutes: null });
+  assert.deepStrictEqual(crisisOptions({ crisisRule: 'replace' }), { crisisRule: 'replace', keepRoutes: ['EMERGENCY'] });
+  assert.deepStrictEqual(
+    crisisOptions({ crisisRule: 'replace', keepRoutes: 'EMERGENCY, CLINICIAN' }),
+    { crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'] },
+  );
+  assert.throws(() => crisisOptions({ crisisRule: 'swap' }), /crisis-rule/);
+  assert.throws(() => crisisOptions({ crisisRule: 'replace', keepRoutes: 'EMERGENCY,ER' }), /keep-routes/);
+  assert.throws(() => crisisOptions({ crisisRule: 'replace', keepRoutes: '' }), /keep-routes/);
+  assert.throws(() => crisisOptions({ keepRoutes: 'EMERGENCY' }), /only with --crisis-rule replace/);
+});
+
+test('summarise counts replaced displays and hidden replies', () => {
+  const { guarded } = guardAll([
+    rec('a', DISCLOSE, 'Please see your GP.'),
+    rec('b', DISCLOSE, 'Call 999 now.'),
+    rec('c', 'sore throat', 'Rest and drink fluids.'),
+  ], { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY'] });
+  const s = summarise(guarded);
+  assert.strictEqual(s.crisis_replaced, 2);
+  assert.strictEqual(s.reply_hidden, 1);
+});
+
+test('the CLI writes the rule into the header and every record', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-'));
+  const inPath = join(dir, 'in.json');
+  const outPath = join(dir, 'out.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', DISCLOSE, 'Please see your GP.'))}\n`);
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath,
+    '--crisis-rule', 'replace', '--keep-routes', 'EMERGENCY,CLINICIAN'], { stdio: 'pipe' });
+  const [h, r] = parseJsonl(readFileSync(outPath, 'utf8'));
+  assert.strictEqual(h.crisis_rule, 'replace');
+  assert.deepStrictEqual(h.keep_routes, ['EMERGENCY', 'CLINICIAN']);
+  assert.strictEqual(r.reply_shown, true);
+  assert.strictEqual(r.crisis_replaced, true);
+
+  // A bad flag fails the run before anything is written, not per record.
+  assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
+    '--crisis-rule', 'replace', '--keep-routes', 'ER'], { stdio: 'pipe' }), /keep-routes/);
+  assert.throws(() => run({ inPath, outPath: join(dir, 'bad2.json'), crisisRule: 'nope' }), /crisis-rule/);
 });
