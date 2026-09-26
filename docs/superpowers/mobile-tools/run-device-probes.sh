@@ -5,16 +5,18 @@
 # prompt file and the aarch64 `probe` harness; runs the harness in `--json`
 # mode with the flags the app uses; pulls the result; prints the parity lines.
 #
-# The pod scores `endpoint(Q4 base + f16 LoRA)` on the same items. This script
+# The pod scores the catalog entry's base (its `quant`: the Q6_K served form
+# since Phase 1g M2) + the LoRA on the same items. This script
 # produces the other side of that comparison. Everything it refuses to do is a
 # way the two runs could look alike and not be alike.
 #
 # ── WHAT THIS SCRIPT WILL NOT DO ─────────────────────────────────────────────
 #
 #   * run without a device (`adb devices` in state `device`);
-#   * push a GGUF whose LOCAL sha256 is not the catalog's — a 1.2 GB copy of
-#     the wrong file is worse than a refusal, because the run that follows
-#     looks exactly like a real one;
+#   * push a GGUF whose LOCAL sha256 is not the catalog's — a base-sized copy
+#     (the entry's `fileBytes`, printed below) of the wrong file is worse
+#     than a refusal, because the run that follows looks exactly like a real
+#     one;
 #   * accept a GGUF whose sha256 ON THE DEVICE is not the catalog's after the
 #     push — an interrupted `adb push` leaves a short file and adb still exits
 #     0 often enough that this has to be checked rather than assumed;
@@ -26,7 +28,9 @@
 #
 # ── IDEMPOTENT, AND WHY THAT MATTERS HERE ────────────────────────────────────
 #
-# The GGUFs are ~1.3 GB together and a wireless `adb push` of that is minutes.
+# The base alone is the catalog entry's `fileBytes` (1,673,006,944 bytes for the
+# Q6_K served form; the script prints the figure it actually read), the adapter
+# comes on top, and a wireless `adb push` of that is minutes.
 # A re-run therefore hashes what is already on the device and pushes only what
 # differs. `--force-push` is the escape hatch. The harness binary and the prompt
 # file are small and are pushed every time, because those are the two things a
@@ -147,6 +151,9 @@ for k, v in [
     ("ENTRY_ID", e["id"]),
     ("MODEL_FILE", e["modelFile"]),
     ("MODEL_SHA", e["sha256"]),
+    ("QUANT", e["quant"]),
+    ("FILE_BYTES", int(e["fileBytes"])),
+    ("FILE_GB", f'{int(e["fileBytes"]) / 1e9:.2f}'),
     ("ADAPTER_FILE", e["adapterFile"]),
     ("ADAPTER_SHA", e["adapterSha256"]),
     ("MAX_TOKENS", e["sampling"]["maxTokens"]),
@@ -169,13 +176,16 @@ CAT_VARS="$(read_catalog)" || {
 # this is not a threat model — it is that a value containing a quote or a `$`
 # would make `eval` fail in a way that reads like a broken phone rather than a
 # broken catalog, and the whole point of this block is to fail legibly.
-ENTRY_ID="" MODEL_FILE="" MODEL_SHA="" ADAPTER_FILE="" ADAPTER_SHA=""
+ENTRY_ID="" MODEL_FILE="" MODEL_SHA="" QUANT="" FILE_BYTES="" FILE_GB="" ADAPTER_FILE="" ADAPTER_SHA=""
 MAX_TOKENS="" TEMPERATURE="" CHAT_TEMPLATE="" CATALOG_FP="" COMPUTED_FP=""
 while IFS='=' read -r k v; do
   case "$k" in
     ENTRY_ID)      ENTRY_ID="$v";;
     MODEL_FILE)    MODEL_FILE="$v";;
     MODEL_SHA)     MODEL_SHA="$v";;
+    QUANT)         QUANT="$v";;
+    FILE_BYTES)    FILE_BYTES="$v";;
+    FILE_GB)       FILE_GB="$v";;
     ADAPTER_FILE)  ADAPTER_FILE="$v";;
     ADAPTER_SHA)   ADAPTER_SHA="$v";;
     MAX_TOKENS)    MAX_TOKENS="$v";;
@@ -186,7 +196,7 @@ while IFS='=' read -r k v; do
     *) echo "FATAL: unexpected catalog field $k" >&2; exit 1;;
   esac
 done <<< "$CAT_VARS"
-for k in ENTRY_ID MODEL_FILE MODEL_SHA ADAPTER_FILE ADAPTER_SHA MAX_TOKENS TEMPERATURE CHAT_TEMPLATE CATALOG_FP COMPUTED_FP; do
+for k in ENTRY_ID MODEL_FILE MODEL_SHA QUANT FILE_BYTES FILE_GB ADAPTER_FILE ADAPTER_SHA MAX_TOKENS TEMPERATURE CHAT_TEMPLATE CATALOG_FP COMPUTED_FP; do
   [ -n "${!k}" ] || { echo "FATAL: catalog field $k came back empty" >&2; exit 1; }
 done
 
@@ -217,7 +227,7 @@ for pair in "MODEL:$MODEL_LOCAL:$MODEL_FILE" "ADAPTER:$ADAPTER_LOCAL:$ADAPTER_FI
   }
 done
 
-echo "== local sha256 (before any 1.2 GB push) =="
+echo "== local sha256 (before any push: the $QUANT base is $FILE_BYTES bytes, ~$FILE_GB GB, plus the adapter) =="
 check_local_sha() { # label, file, expected
   local got; got="$(sha256sum "$2" | cut -d' ' -f1)"
   if [ "$got" != "$3" ]; then
@@ -424,7 +434,8 @@ run_on() { # serial
     # which is the second sha check on the same bytes and is deliberate: the
     # script's check answers "did the push land", the engine's is the very
     # fail-closed gate the app applies before it will load anything. It costs a
-    # re-hash of ~1.3 GB on the phone at every run; that is the price of the
+    # re-hash of the base (the entry's `fileBytes`) plus the adapter on the
+    # phone at every run; that is the price of the
     # device running the same load path the product runs.
     echo "[$serial] == run $run/$REPEAT -> $outjson =="
     local t0; t0=$(date +%s)
@@ -673,7 +684,7 @@ PY
 }
 
 echo
-echo "== catalog: $ENTRY_ID  (fingerprint $CATALOG_FP, maxTokens $MAX_TOKENS, temperature $TEMPERATURE, template $CHAT_TEMPLATE)"
+echo "== catalog: $ENTRY_ID  ($QUANT base, $FILE_BYTES bytes; fingerprint $CATALOG_FP, maxTokens $MAX_TOKENS, temperature $TEMPERATURE, template $CHAT_TEMPLATE)"
 echo "== prompts: $PROMPTS ($(grep -cve '^[[:space:]]*$' "$PROMPTS") records)"
 echo "== harness: $TGT/probe"
 echo "== ${#DEVICES[@]} device(s) ready: ${DEVICES[*]}"
@@ -684,22 +695,28 @@ echo "== ${#DEVICES[@]} device(s) ready: ${DEVICES[*]}"
 # 260 prompts when this was written (200 endpoint arms, 20 crisis-embedded, 40
 # crisis) and the plan review's A2(iii) asked for 164, so the two documents
 # disagree and neither is this script's to settle. At the catalog's 320-token
-# cap and the tok/s a 1.7B Q4_K_M gets on the workhorse tier, a run of that size
+# cap and the tok/s a 1.7B gets on the workhorse tier, a run of that size
 # is HOURS, not minutes — and `--repeat 2` doubles it.
 # Printed here rather than discovered at minute forty, because the two things a
 # founder does with that number are "start it before bed" and "do not start it
 # on a laptop that sleeps".
 PROMPT_N="$(grep -cve '^[[:space:]]*$' "$PROMPTS")"
-python3 - "$PROMPT_N" "$REPEAT" <<'PY'
+python3 - "$PROMPT_N" "$REPEAT" "$QUANT" <<'PY'
 import sys
-n, repeat = int(sys.argv[1]), int(sys.argv[2])
+n, repeat, quant = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
 # 8 and 25 tok/s bracket what this project has measured for a 1.7B Q4_K_M on
 # the floor and workhorse tiers; 320 is the cap, and most replies come in well
-# under it, so the low end is pessimistic on purpose.
+# under it, so the low end is pessimistic on purpose. Those brackets are Q4's.
+# The served form is Q6_K, which decodes roughly 5-10% slower on the same phone;
+# no Q6_K number has been measured yet, so the brackets are printed as Q4's and
+# labelled as such rather than scaled by a guess.
 for label, tps in (("fast", 25.0), ("slow", 8.0)):
     mins = n * (320.0 / tps) / 60.0 * repeat
-    print(f"== estimate ({label}, {tps:.0f} tok/s, 320-token cap): {mins:.0f} min for "
-          f"{n} prompts x {repeat} run(s)")
+    print(f"== estimate ({label}, {tps:.0f} tok/s measured at Q4_K_M, 320-token cap): "
+          f"{mins:.0f} min for {n} prompts x {repeat} run(s)")
+if quant != "Q4_K_M":
+    print(f"== this entry serves {quant}, not Q4_K_M: expect it to run slower than these")
+    print(f"==   Q4 brackets (roughly 5-10% for Q6_K; not yet measured on a phone).")
 print("== the harness prints a live ETA per item once the first one lands.")
 if n * repeat > 150:
     print("== LONG RUN: keep the host awake (a suspended laptop kills the adb shell) and")
