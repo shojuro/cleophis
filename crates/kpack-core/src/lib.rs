@@ -60,6 +60,7 @@ pub mod embed;
 pub mod epub;
 pub mod format;
 pub mod html;
+pub mod lexical_build;
 pub mod lookup;
 pub mod manifest;
 pub mod parse;
@@ -99,3 +100,7 @@ pub use retrieve::{
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};
 pub use wordpiece::{WordPieceTokenizer, BGE_MAX_INPUT_TOKENS};
+pub use lexical_build::{
+    build_lexical_pack, chunk_content_sha256, pack_content_sha256, LexicalBuildMeta, LexicalBuildReport,
+    LexicalSource,
+};

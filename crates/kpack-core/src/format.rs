@@ -413,6 +413,27 @@ impl Pack {
         Ok(rows)
     }
 
+    /// Open one explicit transaction for a bulk build (Phase 1h M4b): every
+    /// insert until [`Pack::commit_bulk`] lands in one commit instead of one
+    /// commit per statement. Build-time only, never on a mounted pack.
+    pub fn begin_bulk(&self) -> Result<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    /// Commit the transaction [`Pack::begin_bulk`] opened.
+    pub fn commit_bulk(&self) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    /// `VACUUM`: rewrite the file compactly, in page order. A build's last
+    /// step, so the pack's bytes depend only on its content.
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
     /// Set a manifest key/value pair (upsert).
     pub fn manifest_set(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(

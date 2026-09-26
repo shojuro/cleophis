@@ -727,23 +727,33 @@ fn unquote(v: &str) -> String {
 /// differs from the display title — empty and duplicate (by normalised
 /// form) entries dropped, file order kept.
 fn title_entry(doc_id: i64, title: &str, fm: Option<&FrontMatter>) -> TitleEntry {
+    let variants: Vec<&str> = fm
+        .map(|f| f.variants.iter().chain(f.title.iter()).map(String::as_str).collect())
+        .unwrap_or_default();
+    title_entry_for(doc_id, title, fm.and_then(|f| f.slug.as_deref()), &variants)
+}
+
+/// The one rule for a `titles` row, shared by [`build_pack`]'s front matter
+/// path and the lexical reference build (`crate::lexical_build`): `slug`
+/// slugified (or derived from the title when absent/empty); `variants`
+/// trimmed, in the given order, with empty ones and duplicates by
+/// normalised form — the title's own included — dropped.
+pub fn title_entry_for(doc_id: i64, title: &str, slug: Option<&str>, variants: &[&str]) -> TitleEntry {
     let normalised_title = crate::lookup::normalise_title(title);
-    let slug = fm
-        .and_then(|f| f.slug.as_deref())
+    let slug = slug
         .map(crate::lookup::slugify)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| crate::lookup::slugify(title));
-    let mut variants: Vec<String> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     let mut seen: Vec<String> = vec![normalised_title.clone()];
-    if let Some(f) = fm {
-        for v in f.variants.iter().chain(f.title.iter()) {
-            let n = crate::lookup::normalise_title(v);
-            if !n.is_empty() && !seen.contains(&n) {
-                seen.push(n);
-                variants.push(v.trim().to_string());
-            }
+    for v in variants {
+        let n = crate::lookup::normalise_title(v);
+        if !n.is_empty() && !seen.contains(&n) {
+            seen.push(n);
+            kept.push(v.trim().to_string());
         }
     }
+    let variants = kept;
     TitleEntry {
         doc_id,
         title: title.to_string(),
@@ -756,7 +766,7 @@ fn title_entry(doc_id: i64, title: &str, fm: Option<&FrontMatter>) -> TitleEntry
 /// `<path>.part` — same path, `.part` appended to the whole file name.
 /// Mirrors `manifest.rs`'s `sig_path_for` / `src-tauri/src/cloud/
 /// download.rs`'s `part_path_for` convention.
-fn part_path_for(final_path: &Path) -> PathBuf {
+pub(crate) fn part_path_for(final_path: &Path) -> PathBuf {
     let mut os = final_path.as_os_str().to_os_string();
     os.push(".part");
     PathBuf::from(os)
@@ -777,7 +787,7 @@ fn rfc3339_now() -> String {
     rfc3339_from_system_time(std::time::SystemTime::now())
 }
 
-fn rfc3339_from_system_time(t: std::time::SystemTime) -> String {
+pub(crate) fn rfc3339_from_system_time(t: std::time::SystemTime) -> String {
     // A build machine's clock is never before the Unix epoch in practice;
     // `unwrap_or_default()` degrades a hypothetically pre-epoch clock to
     // the epoch itself (1970-01-01T00:00:00Z) rather than panicking a
