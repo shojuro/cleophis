@@ -613,7 +613,10 @@ mod tests {
                 assert!(check_artifact_pinned(&h, c).is_ok());
             }
         }
-        assert!(tiers.mid.contract_adapter_sha256.is_some(), "fixture exercises a contract pin");
+        assert!(
+            tiers.mid.contract_adapter_sha256.is_some(),
+            "fixture exercises a contract pin"
+        );
         // The triage pair is not pinned by the tutor build.
         let t = triage_hero();
         assert!(check_artifact_pinned(&h, t.adapter_sha256.as_deref().unwrap()).is_err());
