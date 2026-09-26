@@ -37,6 +37,11 @@ case "$VARIANT" in
   tutor|triage) ;;
   *) echo "unknown variant: $VARIANT (expected tutor or triage)" >&2; exit 2 ;;
 esac
+# src-tauri/build.rs reads this (Phase 1h M5): only a triage build embeds the
+# bundled reference pack (resources/packs/reference-uk-v1.kpack + .kpack.sig,
+# when present). Declared with rerun-if-env-changed, so switching variants
+# re-evaluates it even on the shared CARGO_TARGET_DIR.
+export CLEOPHIS_VARIANT="$VARIANT"
 
 export CARGO_TARGET_DIR=/home/$USER/cleophis-mobile-target
 

@@ -353,6 +353,7 @@ pub fn run() {
             kpack::build_personal_pack,
             kpack::cancel_build,
             kpack::rag_query,
+            kpack::rag_lookup,
             kpack::list_packs,
             kpack::delete_pack,
             cloud::commands::check_password_strength,

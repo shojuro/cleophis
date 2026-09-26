@@ -9,6 +9,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Phase 1h M5: build.rs hashes the bundled reference pack (when present, triage
+# variant only) so the Android materializer's stamp tracks its exact bytes
+# without re-hashing tens of MB on every launch. Same 0.10 line the app
+# already depends on (no new crate in the graph).
+sha2 = "0.10"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }

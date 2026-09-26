@@ -102,6 +102,24 @@ pub struct CatalogEntry {
     /// The FE hides "Get" below it.
     #[serde(default)]
     pub min_tier: Option<String>,
+    /// The signed reference pack this entry's lookup reads (Phase 1h M5),
+    /// shipped in the bundled pack root. Unset until Task M4b builds and
+    /// signs the pack. `referencePack` on the wire.
+    #[serde(default)]
+    pub reference_pack: Option<ReferencePack>,
+}
+
+/// Pins for a bundled reference pack: `id` is its `pack_id` (and its file
+/// stem under `<resources_root>/packs/`), `sha256` the `.kpack` file's bytes
+/// hash, `content_sha256` the hash over its content (design ruling I13 —
+/// both fingerprints recorded), `version` its `pack_version`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferencePack {
+    pub id: String,
+    pub sha256: String,
+    pub content_sha256: String,
+    pub version: String,
 }
 
 /// The decoding an entry pins, overriding the engine default (temperature
@@ -359,6 +377,29 @@ mod tests {
     }
 
     // ---- P2.9: the triage catalog variant ----------------------------------
+
+    /// Phase 1h M5: `referencePack` is optional, unset this round (M4b fills
+    /// it), and parses when present.
+    #[test]
+    fn reference_pack_is_optional_and_parses_when_present() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        assert_eq!(hero(&entries).unwrap().reference_pack, None);
+        assert!(entries.iter().all(|e| e.reference_pack.is_none()));
+
+        let raw = r#"[{"id":"x","name":"X","category":"medical","subject":"S","cover":"covers/x.webp",
+            "sizeParams":"1B","quant":"Q4","fileBytes":1,"blurb":"b",
+            "referencePack":{"id":"reference-uk-v1","sha256":"aa","contentSha256":"bb","version":"2026.09.1"}}]"#;
+        let e = &parse_catalog(raw).unwrap()[0];
+        assert_eq!(
+            e.reference_pack,
+            Some(ReferencePack {
+                id: "reference-uk-v1".into(),
+                sha256: "aa".into(),
+                content_sha256: "bb".into(),
+                version: "2026.09.1".into(),
+            })
+        );
+    }
 
     #[test]
     fn the_triage_catalog_parses_and_its_hero_is_the_supervised_triage_entry() {

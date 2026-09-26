@@ -19,6 +19,14 @@
 //!
 //! On desktop this module compiles down to just `COVER_FILES` and the tests —
 //! no cover bytes are embedded, so the desktop binary is unaffected.
+//!
+//! Phase 1h M5: the triage variant also embeds the signed reference pack
+//! (`resources/packs/reference-uk-v1.kpack` + `.kpack.sig`) when `build.rs`
+//! found both at build time (`cfg(cleophis_reference_pack)`), and writes
+//! them to `<app_data>/resources/packs/` — the read-only bundled pack root
+//! `kpack::rag_lookup` reads. A build without the pack removes any copy a
+//! previous (triage) install left there. Integrity is not this module's job:
+//! `Pack::mount_lexical` verifies the curator signature on every lookup.
 
 #[cfg(mobile)]
 use std::path::PathBuf;
@@ -65,6 +73,23 @@ embedded_covers!(
 #[cfg(mobile)]
 const CATALOG_JSON: &[u8] = include_bytes!("../resources/catalog.json");
 
+/// The bundled reference pack's file names, relative to `resources/packs/`
+/// (mirrors `build.rs`; the signature name is what `Pack::mount` reads).
+#[cfg_attr(not(mobile), allow(dead_code))]
+pub(crate) const REFERENCE_PACK_FILES: [&str; 2] =
+    ["reference-uk-v1.kpack", "reference-uk-v1.kpack.sig"];
+
+/// `(pack bytes, signature bytes, sha256 of the pack)` — `Some` only in the
+/// triage build that had the pack at build time (see `build.rs`).
+#[cfg(all(mobile, cleophis_reference_pack))]
+const REFERENCE_PACK: Option<(&[u8], &[u8], &str)> = Some((
+    include_bytes!("../resources/packs/reference-uk-v1.kpack") as &[u8],
+    include_bytes!("../resources/packs/reference-uk-v1.kpack.sig") as &[u8],
+    env!("CLEOPHIS_REFERENCE_PACK_SHA256"),
+));
+#[cfg(all(mobile, not(cleophis_reference_pack)))]
+const REFERENCE_PACK: Option<(&[u8], &[u8], &str)> = None;
+
 /// Records which payload the materialized tree came from. Written last, so an
 /// interrupted materialization leaves no stamp and simply redoes itself.
 #[cfg(mobile)]
@@ -93,6 +118,17 @@ fn payload_stamp() -> String {
         h.update(name.as_bytes());
         h.update(bytes);
     }
+    // The pack by its build-time hash (not re-hashed here: it can be tens of
+    // MB), plus its signature. Absent vs present changes the stamp too, so a
+    // tutor build over a triage install rewrites the tree (and removes it).
+    match REFERENCE_PACK {
+        Some((_, sig, sha)) => {
+            h.update(b"reference-pack");
+            h.update(sha.as_bytes());
+            h.update(sig);
+        }
+        None => h.update(b"no-reference-pack"),
+    }
     format!("{:x}", h.finalize())
 }
 
@@ -119,6 +155,27 @@ pub(crate) fn materialize(app: &AppHandle) -> std::io::Result<()> {
     std::fs::write(root.join("catalog.json"), CATALOG_JSON)?;
     for (name, bytes) in COVER_FILES.iter().zip(COVER_BYTES) {
         std::fs::write(covers.join(name), bytes)?;
+    }
+    let packs = root.join("packs");
+    match REFERENCE_PACK {
+        Some((pack, sig, _)) => {
+            std::fs::create_dir_all(&packs)?;
+            for (name, bytes) in REFERENCE_PACK_FILES.iter().zip([pack, sig]) {
+                // Via a `.part` + rename, so a killed write never leaves a
+                // truncated pack under the final name.
+                let part = packs.join(format!("{name}.part"));
+                std::fs::write(&part, bytes)?;
+                std::fs::rename(&part, packs.join(name))?;
+            }
+        }
+        None => {
+            for name in REFERENCE_PACK_FILES {
+                match std::fs::remove_file(packs.join(name)) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                    _ => {}
+                }
+            }
+        }
     }
     // Last, and only once every file above landed: a stamp present means the
     // tree beside it is complete.
@@ -173,6 +230,24 @@ mod tests {
             let entries = crate::catalog::parse_catalog(&raw).expect("catalog must parse");
             assert_covers_embedded(name, &entries);
         }
+    }
+
+    /// `build.rs` decides whether to embed by these same two names; if they
+    /// drift, the cfg would name files `include_bytes!` never reads.
+    #[test]
+    fn reference_pack_names_match_build_rs() {
+        let build_rs = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build.rs"),
+        )
+        .expect("build.rs");
+        for name in super::REFERENCE_PACK_FILES {
+            assert!(build_rs.contains(&format!("\"{name}\"")), "build.rs must name {name}");
+        }
+        assert_eq!(
+            super::REFERENCE_PACK_FILES[1],
+            format!("{}.sig", super::REFERENCE_PACK_FILES[0]),
+            "the signature is <pack>.sig, the name Pack::mount reads"
+        );
     }
 
     fn assert_covers_embedded(catalog: &str, entries: &[crate::catalog::CatalogEntry]) {
