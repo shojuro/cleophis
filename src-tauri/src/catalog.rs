@@ -389,22 +389,51 @@ mod tests {
             h.adapter_file.is_some(),
             "triage hero must declare an adapter file"
         );
-        // Both hashes come from ONE rung of the v3 gate manifests, which is why
-        // they are pinned here as literals rather than described: the base is
-        // `base_q4_sha256` and the adapter is `adapter_gguf_sha256` of the
-        // `Qwen3-1.7B-armb-v3` stack in ~/cleophas-triage's
-        // work/gate-17b, work/gate-17b-v7 and work/m4-prompt-ab
-        // run-manifest.json. A device serving a different pair is not serving
+        // The base is the SERVED FORM registered for Phase 1g M10: the Q6_K
+        // build of Qwen3-1.7B made on the M8/M9 gate pods from the base f16
+        // with llama.cpp b10042. It hashed identically on all six rung-builds
+        // (1,673,006,944 bytes), and M10's registration records this sha as
+        // `served_base_sha256`, so this literal and that registration must
+        // agree. The adapter is still the `adapter_gguf_sha256` of the
+        // `Qwen3-1.7B-armb-v3` stack in ~/cleophas-triage's work/gate-17b,
+        // work/gate-17b-v7 and work/m4-prompt-ab run-manifest.json (the
+        // shipped rung v3). A device serving a different pair is not serving
         // the stack any triage number was measured on.
         assert_eq!(
             h.sha256.as_deref(),
-            Some("25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3"),
-            "base must be the v3 gate rung's base_q4_sha256"
+            Some("2588912fe87f55b8381b9fc8faacd0e905c9eb2db641a468be693f45ad6fc87a"),
+            "base must be M10's registered served_base_sha256 (the pods' Q6_K build)"
+        );
+        assert_eq!(h.quant, "Q6_K", "the served form is Q6_K");
+        assert_eq!(
+            h.file_bytes, 1_673_006_944,
+            "fileBytes is the Q6_K build's size"
         );
         assert_eq!(
             h.adapter_sha256.as_deref(),
             Some("5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20"),
             "adapter must be the v3 gate rung's adapter_gguf_sha256"
+        );
+        // `download_artifact` writes `<app_data>/models/<dist basename>`, and
+        // the pipeline derives those basenames (build_catalog.py's self-test:
+        // `models/Qwen3-1.7B/v1/Qwen3-1.7B-Instruct-Q6_K.gguf` and
+        // `adapters/triage/v3/Qwen3-1.7B/triage-v3-Qwen3-1.7B.gguf`). If the
+        // bundled basenames differ, a finished download never reads as
+        // installed — the mismatch that broke installation before M2.
+        let basename = |p: &Option<String>| {
+            p.as_deref()
+                .and_then(|p| p.rsplit('/').next())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            basename(&h.model_file).as_deref(),
+            Some("Qwen3-1.7B-Instruct-Q6_K.gguf"),
+            "modelFile's basename must be the dist basename the pipeline derives"
+        );
+        assert_eq!(
+            basename(&h.adapter_file).as_deref(),
+            Some("triage-v3-Qwen3-1.7B.gguf"),
+            "adapterFile's basename must be the dist basename the pipeline derives"
         );
         assert!(h.adapter_id.is_some());
         // No `tiers` block: the triage entry is one pinned pair, so
