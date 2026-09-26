@@ -14,8 +14,12 @@ import { applyGuard } from './triage/guard.js';
 import {
   bannerKey, bannerText, canSendInChat, crisisRuleFor, entryForChat, guardForPersistence, persistAssistantTurn,
   persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
-  shouldGroundTurn, titlePlan,
+  shouldGroundTurn, titlePlan, LOOKUP_QUERY_GUARD, triageHistory,
 } from './triage-turn.js';
+// Phase 1h M6: the reference LOOKUP mode on the supervised screen. Its
+// decisions live in lookup-turn.js (tested); this file draws them.
+import { lookupForPersistence, referencePackId, runLookupTurn } from './lookup-turn.js';
+import { LOOKUP_REPLY_TOKENS } from './prompt-assembly.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
 import {
@@ -78,7 +82,7 @@ const state = {
   // from the sidebar without re-pointing `model`. Rendering a transcript asks
   // the chat's entry; answering in it asks the entered model. Both track
   // `chatId` and are set by `setChatOwner` wherever it is.
-  chat: { model: null, entry: null, modelId: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null },
+  chat: { model: null, entry: null, modelId: null, messages: [], streaming: false, aborter: null, packPaths: [], chatId: null, mode: 'triage' },
   dl: { installed: false, partBytes: 0, active: false },
   // Task 2.2 engine-state inputs. `dlProgress` is the last download-progress
   // payload (null when no download is in flight), `turn` times the in-flight
@@ -1368,6 +1372,7 @@ async function openChat(id) {
   }));
   rebuildChatDom();
   updateGroundPill();
+  updateLookupEntry();
   closeSidebarDrawer(); // mobile: picking a chat is what the drawer is for
   await refreshChatList(); // active-row highlight moves to this chat
 }
@@ -1396,6 +1401,7 @@ async function newChat() {
   state.chat.chatId = chatId;
   setChatOwner(m, m?.id ?? null); // created with the entered model's id, above
   resetChatDom();
+  updateLookupEntry();
   await refreshChatList();
 }
 
@@ -1435,6 +1441,7 @@ function enterChat(m) {
   $('chatCover').src = m.coverUrl;
   rebuildChatDom();
   updateGroundPill();
+  updateLookupEntry();
   refreshChatList();
   closeDrawer();
   const views = $('views');
@@ -1476,6 +1483,12 @@ function rebuildChatDom() {
   const supervised = !!(chatEntry && chatEntry.supervised);
   for (const msg of state.chat.messages) {
     const view = replayMessage({ supervised, role: msg.role, content: msg.content, guard: msg.guard });
+    // Phase 1h M6: a lookup row renders from its own verdict (its cited
+    // sources, its withheld count), never a triage banner or route controls.
+    if (view.lookup) {
+      renderLookupExtras(appendBubble(msg.role, view.text), view.lookup);
+      continue;
+    }
     // A withheld reply shows nothing of its own, its sources and its
     // calculations included: they are provenance for text that is not on
     // screen.
@@ -1553,13 +1566,16 @@ function updateContextDivider() {
   // grounded (which would shrink the window further via a larger system
   // prompt), so this uses the plain systemPrompt as an honest baseline,
   // not a guarantee.
-  const { droppedCount } = windowMessages(state.chat.messages, m.systemPrompt, m.greeting, engineWindow(state.engine));
+  // Windowed over TRIAGE history (Phase 1h M6: lookup rows are never sent),
+  // then mapped back to the transcript to find the bubble.
+  const history = triageHistory(state.chat.messages);
+  const { droppedCount } = windowMessages(history, m.systemPrompt, m.greeting, engineWindow(state.engine));
   if (droppedCount <= 0) return;
   // index 0 of .msg is the greeting bubble; indices 1.. map 1:1 to
-  // state.chat.messages, so messageBubbles[droppedCount] is the first
-  // bubble still inside the window.
+  // state.chat.messages, so the first message still inside the window marks
+  // the boundary bubble.
   const messageBubbles = [...box.querySelectorAll('.msg')].slice(1);
-  const boundary = messageBubbles[droppedCount];
+  const boundary = messageBubbles[state.chat.messages.indexOf(history[droppedCount])];
   if (!boundary) return; // DOM/state out of sync for any reason — no-op, never throw
   const divider = document.createElement('div');
   divider.className = 'ctx-divider';
@@ -2010,9 +2026,49 @@ function sendMessage() {
   const permit = sendPermit();
   if (!permit.allowed) { showEngineBanner(permit.message); return; }
   input.value = '';
+  // Phase 1h M6: the mode is per turn. A lookup send puts the entry back to
+  // triage, so the next message is triage unless the health worker taps
+  // "Look up" again.
+  if (state.chat.mode === 'lookup' && lookupAvailable()) {
+    setLookupMode(false);
+    startLookup(text);
+    return;
+  }
   state.chat.messages.push({ role: 'user', content: text });
   appendBubble('user', text);
   sendCompletion(text);
+}
+
+// §7 S7-2: the chat this turn is filed in, created lazily on the first user
+// message. Moved out of `sendCompletion` unchanged (Phase 1h M6) so the lookup
+// turn files its rows the same way. `create_chat` failing degrades silently
+// to null: the chat keeps working locally, unsaved.
+async function ensureTurnChat(m, userText) {
+  let turnChatId = state.chat.chatId;
+  if (turnChatId == null) {
+    try {
+      const chat = await invoke('create_chat', {
+        title: userText.split('\n')[0].slice(0, 40).trim() || 'New chat',
+        folderId: null,
+        mountedPacks: state.chat.packPaths,
+        modelId: m?.id ?? '',
+        // B4 provenance: the hero's always-on behavioral adapter id (empty
+        // for models that declare none — the historical value).
+        adapterIds: heroAdapterId(m) ? [heroAdapterId(m)] : [],
+      });
+      turnChatId = chat.id;
+      // Only adopt it as the app's ACTIVE chat if nothing else claimed
+      // that slot while create_chat was in flight — a chat switch sets
+      // state.chat.chatId synchronously before its own await, so if
+      // it's non-null here someone else already won the race.
+      if (state.chat.chatId == null) {
+        state.chat.chatId = turnChatId;
+        setChatOwner(m, m?.id ?? null); // create_chat above used this id
+        refreshChatList();
+      }
+    } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
+  }
+  return turnChatId;
 }
 
 // `userText` is only set when called from sendMessage — retry chips (below)
@@ -2094,29 +2150,7 @@ async function sendCompletion(userText) {
   // path below.
   let turnChatId = state.chat.chatId;
   if (userText != null) {
-    if (turnChatId == null) {
-      try {
-        const chat = await invoke('create_chat', {
-          title: userText.split('\n')[0].slice(0, 40).trim() || 'New chat',
-          folderId: null,
-          mountedPacks: state.chat.packPaths,
-          modelId: m?.id ?? '',
-          // B4 provenance: the hero's always-on behavioral adapter id (empty
-          // for models that declare none — the historical value).
-          adapterIds: heroAdapterId(m) ? [heroAdapterId(m)] : [],
-        });
-        turnChatId = chat.id;
-        // Only adopt it as the app's ACTIVE chat if nothing else claimed
-        // that slot while create_chat was in flight — a chat switch sets
-        // state.chat.chatId synchronously before its own await, so if
-        // it's non-null here someone else already won the race.
-        if (state.chat.chatId == null) {
-          state.chat.chatId = turnChatId;
-          setChatOwner(m, m?.id ?? null); // create_chat above used this id
-          refreshChatList();
-        }
-      } catch (_) { turnChatId = null; /* not saved — chat keeps working locally */ }
-    }
+    turnChatId = await ensureTurnChat(m, userText);
     if (turnChatId != null) {
       invoke('append_message', { chatId: turnChatId, role: 'user', content: userText }).catch(() => {});
     }
@@ -2248,7 +2282,10 @@ async function sendCompletion(userText) {
       entry: m, groundedPrompt, sent: [], ungroundedNote: UNGROUNDED_NO_SOURCES_NOTE,
       fingerprint: promptFingerprint,
     });
-    const win = windowMessages(state.chat.messages, sys, m.greeting, engineWindow(state.engine));
+    // Phase 1h M6: over TRIAGE history only. A lookup row (query or reply)
+    // never reaches a triage turn; `triageHistory` returns a chat with no
+    // lookups element for element, so this is the old call for every such chat.
+    const win = windowMessages(triageHistory(state.chat.messages), sys, m.greeting, engineWindow(state.engine));
     // Assembled again with the windowed history now that `sys` (and thus the
     // budget it leaves for history) is known — see windowMessages above. For
     // a supervised entry this drops the greeting turn entirely; its tokens
@@ -2410,7 +2447,7 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // fresh send, else the last user message (a retry chip replays a pushed one).
   const userTurn = turn && turn.userText != null
     ? turn.userText
-    : ([...state.chat.messages].reverse().find((x) => x.role === 'user')?.content ?? '');
+    : ([...triageHistory(state.chat.messages)].reverse().find((x) => x.role === 'user')?.content ?? '');
   const verdict = supervised && shown
     ? applyGuard({
       userText: userTurn,
@@ -2563,6 +2600,220 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
         .then((applied) => { if (applied === true) refreshChatList(); })
         .catch(() => {});
     }
+  }
+}
+
+/* ---------------- Phase 1h M6: the reference lookup ----------------
+
+   "Look up a drug or condition" on the supervised screen. The turn's decisions
+   (crisis first, then rag_lookup, then the model only for a grounded page, then
+   the LOOKUP guard) are `runLookupTurn`'s, in lookup-turn.js, and tested there.
+   What is here is the drawing and the persisting.
+
+   UNAVAILABLE IS HIDDEN. An entry whose catalog record names no reference pack
+   (every entry this round, until M4b signs the pack) shows no lookup entry at
+   all. A pack that is named but cannot be opened (`rag_lookup` says
+   unavailable, or fails) answers the lookup with a plain message and no model.
+
+   NOT STREAMED. The model's words reach the screen only after the lookup guard
+   has run on the finished reply: a dose the guard withholds must never have
+   been on screen, not even for the seconds a stream takes. */
+
+function lookupAvailable() {
+  return referencePackId(state.chat.model) != null;
+}
+
+const TRIAGE_PLACEHOLDER = 'Type your question…';
+const LOOKUP_PLACEHOLDER = 'Name of a drug or condition…';
+
+function setLookupMode(on) {
+  state.chat.mode = on && lookupAvailable() ? 'lookup' : 'triage';
+  const lookup = state.chat.mode === 'lookup';
+  const btn = $('lookupBtn');
+  btn.setAttribute('aria-pressed', String(lookup));
+  btn.classList.toggle('active', lookup);
+  $('chatInput').placeholder = lookup ? LOOKUP_PLACEHOLDER : TRIAGE_PLACEHOLDER;
+}
+
+// Called wherever the entered model or the open chat changes.
+function updateLookupEntry() {
+  $('lookupBar').hidden = !lookupAvailable();
+  setLookupMode(false);
+}
+
+// A lookup's user turn: shown, marked as a lookup in memory (so it never enters
+// triage history), then run.
+function startLookup(text) {
+  if (state.chat.streaming) return;
+  state.chat.messages.push({ role: 'user', content: text, lookup: true });
+  renderLookupExtras(appendBubble('user', text), { query: true });
+  sendLookup(text, { persistUser: true });
+}
+
+// The lookup parts of a bubble, for a live turn and a replayed row alike (both
+// draw from `replayMessage`'s `lookup` view). Never the withheld sentences'
+// text: the point of withholding a dose is that nobody reads it.
+function renderLookupExtras(el, lookup) {
+  const tag = document.createElement('div');
+  tag.className = 'lookup-tag';
+  el.classList.add(lookup.query ? 'lookup-query' : 'lookup-reply');
+  tag.textContent = lookup.query ? 'Look up' : 'Reference lookup';
+  el.prepend(tag);
+  if (lookup.query) return;
+  if (lookup.withheldCount > 0) {
+    const note = document.createElement('div');
+    note.className = 'lookup-withheld';
+    note.textContent = `${lookup.withheldCount} sentence${lookup.withheldCount === 1 ? ' was' : 's were'} withheld: the reference pack does not confirm ${lookup.withheldCount === 1 ? 'it' : 'them'}.`;
+    el.appendChild(note);
+  }
+  if (lookup.citations && lookup.citations.length) renderCitations(el, lookup.citations);
+  if (lookup.candidates && lookup.candidates.length) {
+    const chips = document.createElement('div');
+    chips.className = 'lookup-candidates';
+    for (const name of lookup.candidates) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'lookupchip';
+      chip.textContent = name; // a page title from the pack: textContent only
+      chip.addEventListener('click', () => {
+        if (state.chat.streaming || !lookupAvailable()) return;
+        const permit = sendPermit();
+        if (!permit.allowed) { showEngineBanner(permit.message); return; }
+        startLookup(name);
+      });
+      chips.appendChild(chip);
+    }
+    el.appendChild(chips);
+  }
+}
+
+function restoreComposer() {
+  state.chat.streaming = false;
+  $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+  $('sendBtn').disabled = false;
+}
+
+// `persistUser` is false only for the retry chip, which replays a user turn
+// that is already on screen and already filed.
+async function sendLookup(userText, { persistUser = true } = {}) {
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
+  // Latched synchronously, before any await, for sendCompletion's reasons.
+  state.chat.streaming = true;
+  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  state.chat.aborter = new AbortController();
+  const signal = state.chat.aborter.signal;
+  document.querySelectorAll('.retrychip').forEach((el) => el.remove());
+  // The entry this lookup is SENT under, captured once (see sendCompletion).
+  const m = state.chat.model;
+  const bubble = appendBubble('assistant', 'Looking it up in the reference…');
+  bubble.classList.add('streaming');
+
+  const turnChatId = await ensureTurnChat(m, userText);
+  if (persistUser && turnChatId != null) {
+    // The marker keeps a REOPENED chat's lookup query out of triage history.
+    invoke('append_message', { chatId: turnChatId, role: 'user', content: userText, guard: LOOKUP_QUERY_GUARD })
+      .catch(() => {});
+  }
+
+  let result;
+  let started = false;
+  try {
+    result = await runLookupTurn({
+      text: userText,
+      entry: m,
+      invoke,
+      generate: async ({ messages }) => {
+        started = true;
+        markTurnStarted();
+        const sampling = samplingFor({ entry: m, maxTokens: LOOKUP_REPLY_TOKENS, temperature: 0 });
+        const out = await transport.streamTurn({
+          port: state.engine.port,
+          chatId: turnChatId,
+          baseBody: { max_tokens: sampling.maxTokens, temperature: sampling.temperature, cache_prompt: true },
+          messages,
+          // The triage contract has no calc(): no tool is offered.
+          tools: undefined,
+          runCalc: (expression) => invoke('calc', { expression }),
+          onDelta: () => markFirstDelta(),
+          signal,
+        });
+        return { content: stripLeadingThink(out.content), messageId: out.messageId };
+      },
+    });
+  } catch (err) {
+    if (started) markTurnEnded();
+    bubble.remove();
+    restoreComposer();
+    // Stop, or a chat switch: the turn is dropped. On mobile the checkpoint row
+    // may hold a partial raw reply; with no verdict it replays as unverified
+    // and, answering a lookup query, never enters triage history.
+    if (err && err.name === 'AbortError') return;
+    console.log(`[lookup] failed ${String(err?.message ?? err)}`);
+    const retry = document.createElement('button');
+    retry.className = 'retrychip';
+    retry.textContent = '⟳ The lookup didn\'t go through — tap to retry';
+    retry.onclick = () => { retry.remove(); sendLookup(userText, { persistUser: false }); };
+    $('chatMessages').appendChild(retry);
+    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+    return;
+  }
+  if (started) markTurnEnded();
+  const isActive = turnChatId === state.chat.chatId;
+  bubble.classList.remove('streaming');
+  restoreComposer();
+  // A Stop pressed while a scripted outcome was being decided: dropped, like
+  // rag_query's. (A finished model reply is kept: its row already exists.)
+  if (signal.aborted && !result.modelCalled) { bubble.remove(); return; }
+
+  if (result.outcome === 'overBudget') {
+    // A hard error, not an answer: shown, logged, never persisted.
+    console.log(`[lookup] ${result.error}`);
+    if (isActive) {
+      bubble.textContent = result.displayText;
+      bubble.classList.add('lookup-error');
+      state.chat.messages.push({ role: 'assistant', content: result.displayText, lookup: true });
+    }
+    return;
+  }
+
+  const verdict = lookupForPersistence(result.verdict, m);
+  console.log(`[lookup] outcome ${result.outcome} withheld ${verdict.withheld.length} cited ${verdict.citations.join(',') || '-'}`);
+  if (isActive) {
+    const msg = { role: 'assistant', content: result.displayText, guard: verdict, lookup: true };
+    state.chat.messages.push(msg);
+    const view = replayMessage({ supervised: true, role: 'assistant', content: msg.content, guard: verdict });
+    bubble.textContent = view.text;
+    renderLookupExtras(bubble, view.lookup);
+    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  }
+  pulseCost();
+
+  // Persisted exactly as a triage verdict is: attached to the row the mobile
+  // stream already finalized, else appended; a failed attach is retried once
+  // and then said out loud (`persistFailurePlan`).
+  const persist = persistAssistantTurn({
+    chatId: turnChatId,
+    content: result.displayText,
+    citations: result.citations,
+    guard: verdict,
+    messageId: result.messageId,
+  });
+  if (persist) {
+    const attempt = (n) => invoke(persist.command, persist.args).then((info) => {
+      if (isActive && info && info.id) {
+        const last = state.chat.messages[state.chat.messages.length - 1];
+        if (last && last.guard === verdict) last.id = info.id;
+      }
+      refreshChatList();
+    }).catch((e) => {
+      const plan = persistFailurePlan({ command: persist.command, attempt: n, error: e });
+      if (plan.action === 'ignore') return;
+      console.log(plan.log);
+      if (plan.action === 'retry') { attempt(n + 1); return; }
+      if (isActive) showEngineBanner(plan.message);
+    });
+    attempt(1);
   }
 }
 
@@ -2939,6 +3190,11 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('chatSidebar').classList.contains('open')) closeSidebarDrawer();
 });
 $('sendBtn').addEventListener('click', () => sendMessage());
+// Phase 1h M6: the lookup entry toggles the NEXT send into a lookup.
+$('lookupBtn').addEventListener('click', () => {
+  setLookupMode(state.chat.mode !== 'lookup');
+  $('chatInput').focus();
+});
 $('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 $('stopBtn').addEventListener('click', () => state.chat.aborter?.abort());
 $('newChatBtn').addEventListener('click', () => newChat());

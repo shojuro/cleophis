@@ -567,3 +567,14 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
    warning colour, so it cannot be read as one of the four routes. It carries a
    title and no line, which is why `bannerEl` omits the empty span. */
 .triage-banner--unverified{background:var(--amber);color:var(--amber-ink)}
+
+/* Phase 1h M6: the reference lookup (supervised screen only). */
+.lookupbar{display:flex;padding:8px 24px 0;background:rgba(14,18,24,.9);border-top:1px solid var(--line)}
+.lookupbtn{font-size:13px;padding:6px 12px}
+.lookupbtn.active{background:var(--teal);color:var(--teal-ink);border-color:var(--teal)}
+.is-mobile .lookupbar{padding:8px 12px 0}
+.lookup-tag{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--teal);margin:0 0 4px}
+.lookup-withheld{margin-top:6px;font-size:12.5px;color:var(--amber)}
+.lookup-candidates{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.lookupchip{border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:999px;padding:5px 12px;font-size:13px}
+.msg.lookup-error{color:var(--amber)}
