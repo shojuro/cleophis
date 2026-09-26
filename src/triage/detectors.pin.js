@@ -4,8 +4,8 @@
 export default {
  "schema": "cleophis/triage-detectors-pin/v1",
  "source": "cleophas-triage/probes/detectors.mjs",
- "source_commit": "e75c1b8",
- "sha256": "43f741cfd85603911b6797de7965ffddd7c5e4f9c9ee82c3ad571ed0d1c1239b",
- "synced_utc": "2026-09-10T00:14:30Z",
+ "source_commit": "8eb8e53",
+ "sha256": "ca0dc9f686c9ae366e3ed12e5dec8076d80e8e00fbc39c7c360955c50e0f7b18",
+ "synced_utc": "2026-09-26T20:46:03Z",
  "rule": "never edit src/triage/detectors.mjs by hand; run tools/sync-triage-detectors.sh"
 };

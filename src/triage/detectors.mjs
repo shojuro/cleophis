@@ -1316,6 +1316,8 @@ const CRISIS_STATEMENT_PATTERNS = [
   [/\b(?:i'?d |would )?rather\s+not\s+(?:be here|be alive|wake up|exist)\b/, 'rather not be here'],
   [/\bself[- ]?harm\w*\b/, 'self-harm'],
   [/\bcan(?:no|['’])?t\s+(?:go on|carry on|keep going)\b/, "can't go on"],
+  [/\bend(?:ing)?\s+things\b(?!\s+(?:with|between|off\b|on\b|up\b|early|there|here|for\s+(?:the|to)))/, 'end things'],
+  [/\b(?:want|wanted|wanting|wish(?:ing)?)\s+to\s+end\s+it\s*(?:[.!?,;]|$)/, 'want to end it'],
 ];
 
 /**
