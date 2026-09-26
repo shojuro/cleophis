@@ -106,15 +106,41 @@ class ReferenceBuild(unittest.TestCase):
             if "\n\n" in r["text"]:
                 self.assertLessEqual(r["token_count"], 256, r["chunk_id"])
 
-    def test_title_variants_include_the_core_name_and_the_bare_title(self):
-        """Round 2: clusters.py's own core() and parenthetical-free title are
-        variants (or already the title / another variant, by clusters.norm)."""
-        for e in self.titles["titles"]:
-            have = {cl.norm(x) for x in [e["title"], *e["variants"]]}
-            core = cl.core(e["title"], e["section"])
+    def test_title_variants_are_exactly_cluster_names_bare_title_and_kept_core(self):
+        """Both directions (fix round 1, M1): every committed variant is one of
+        the page's clusters.py entry_names, its parenthetical-free title or
+        clusters.py's core(); the bare title is always there (or equal to the
+        title / another variant by clusters.norm); the core is there unless it
+        removed a population tail and no other page shares it (I2)."""
+        import fetch_nhs as fn
+        groups = r"(?:children|adults|babies|pregnancy|older people|men|women|teenagers|young people)"
+        in_group = re.compile(r"\s+(?:in|during)\s+" + groups + r"$")
+        for_group = re.compile(r"\s+for\s+" + groups + r"(?:\s|$)")
+        corpus = REFERENCE / "corpus"
+        entries = self.titles["titles"]
+        cores = [cl.core(e["title"], e["section"]) for e in entries]
+        for e, core in zip(entries, cores):
+            fm, _ = fn.split_front_matter((corpus / e["section"] / f"{e['slug']}.md").read_text(encoding="utf-8"))
             bare = " ".join(cl._PAREN.sub(" ", e["title"]).split())
-            for want in (core, bare):
-                self.assertTrue(want in e["variants"] or cl.norm(want) in have, (e["title"], want))
+            allowed = set(cl.entry_names(fm)) | {bare, core}
+            extras = [v for v in e["variants"] if v not in allowed]
+            self.assertEqual(extras, [], e["title"])
+            have = {cl.norm(x) for x in [e["title"], *e["variants"]]}
+            self.assertTrue(bare in e["variants"] or cl.norm(bare) in have, (e["title"], bare))
+            n = cl.norm(cl._PAREN.sub(" ", e["title"]))
+            population = bool(in_group.search(n)) or (e["section"] == "medicines" and bool(for_group.search(n)))
+            if population and cores.count(core) < 2:
+                # Not added as a derived variant (it may still be one of the
+                # page's own clusters names, e.g. its slug words).
+                if core not in cl.entry_names(fm):
+                    self.assertNotIn(core, e["variants"], e["title"])
+            else:
+                self.assertTrue(core in e["variants"] or cl.norm(core) in have, (e["title"], core))
+
+    def test_merged_locators_span_their_lines(self):
+        for r in self.rows:
+            if "\n\n" in r["text"]:
+                self.assertRegex(r["locator"], r"^L\d+-L\d+$", r["chunk_id"])
 
     def test_no_chunk_carries_video_blocks_or_media_dates(self):
         media = re.compile(r"Media (last reviewed|review due)", re.I)

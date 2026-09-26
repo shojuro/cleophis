@@ -136,7 +136,7 @@ fn titles_json_has_one_entry_per_page_with_merged_variants_and_sources() {
     let para = &entries[2];
     let v = para["variants"].as_array().unwrap();
     assert!(v.contains(&Value::from("Calpol")) && v.contains(&Value::from("Panadol")), "brands are variants");
-    assert!(v.contains(&Value::from("paracetamol")), "the core name is a variant");
+    assert!(!v.contains(&Value::from("paracetamol")), "a unique population core is not a variant");
     assert!(copd["variants"].as_array().unwrap().contains(&Value::from("Chronic obstructive pulmonary disease")));
     assert_eq!(h["merge_target_tokens"], 150);
     assert_eq!(h["merge_max_tokens"], 256);
@@ -210,11 +210,10 @@ fn the_built_pack_mounts_lexically_and_answers_found_did_you_mean_not_found() {
     assert_eq!(source.retrieved_at.as_deref(), Some("2026-09-25"));
     assert!(!chunks.is_empty());
     assert!(matches!(retrieve_lexical(&pack, "Calpol", 3).unwrap(), LexicalOutcome::Found { .. }));
-    // Round 2: the bare core name and the parenthetical-free title.
-    let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, "paracetamol", 3).unwrap() else {
-        panic!("the core name should resolve");
-    };
-    assert_eq!(title, "Paracetamol for adults");
+    // The parenthetical-free title resolves. The fixture's only paracetamol
+    // page is population-specific ("for adults"), so its bare core name is
+    // NOT a variant (fix round 1, I2): never Found to that page.
+    assert!(!matches!(retrieve_lexical(&pack, "paracetamol", 3).unwrap(), LexicalOutcome::Found { .. }));
     assert!(matches!(
         retrieve_lexical(&pack, "chronic obstructive pulmonary disease", 3).unwrap(),
         LexicalOutcome::Found { .. }

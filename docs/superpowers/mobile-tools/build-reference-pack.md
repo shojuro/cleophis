@@ -265,9 +265,9 @@ prints these values:
 
 | Output | Value |
 |---|---|
-| Pack | `tools/reference/build/reference-uk-v1.kpack`, 16,674,816 bytes |
-| Pack sha256 | `f42aedcd050771fb9e79ede58389319c1a3d5671ca39a3272bbab40fb28b2cd7` |
-| Content sha256 | `3fbf5aa48352639edb0610bc6b19185ee91b95f18e123895404e21d0543ba2ba` |
+| Pack | `tools/reference/build/reference-uk-v1.kpack`, 16,773,120 bytes |
+| Pack sha256 | `5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853` |
+| Content sha256 | `df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5` |
 | Pages (docs, title entries) | 941 |
 | Chunks | 23,225 |
 
@@ -298,13 +298,18 @@ prints these values:
   most. It never crosses a section and never merges a table, and a list
   stays with the paragraph that introduces it. Two windows of one long
   paragraph are never joined, and a single block over 256 tokens is kept
-  as it is. The desktop's personal packs do not use this pass. The median
-  chunk is 76 tokens, against 27 before.
+  as it is. A merged chunk's locator spans all its lines, from the first
+  block's start to the last block's end (`L7-L15`). The desktop's personal
+  packs do not use this pass. The median chunk is 76 tokens, against 27
+  before.
 - **Title variants.** Each page is also findable by two derived names. One
   is the title without its parentheticals, so "irritable bowel syndrome"
   finds "Irritable bowel syndrome (IBS)". The other is `clusters.py`'s core
   name, so "salbutamol" finds "Salbutamol inhalers". A core name several
-  pages share, such as "paracetamol", gives a did-you-mean listing them.
+  pages share, such as "paracetamol", gives a did-you-mean listing them. A
+  core name made by removing a population ("in pregnancy", "for adults")
+  that only one page has is not added, so "anxiety" never finds "Anxiety in
+  pregnancy" by a derived name.
 - **Lexical only.** The manifest names no real embedder, so the desktop's
   dense `Pack::mount` refuses the pack and only `Pack::mount_lexical` opens
   it. The dense gate floor is 1.0, which fails closed, and
@@ -337,8 +342,8 @@ It writes three files into `tools/reference/build/`:
   sha256:
 
 ```
-chunks.jsonl  2c184d836527cde1aebc7b41143844d7004bbdc1c82c39f23edd615b7c6a34e8
-titles.json   235fbb40919dce79060cf0b9f6f28cdb28e8212f636c104dd0097e5b21fc65d2
+chunks.jsonl  a03e990b847c600757e86c1bafec5798051c505e5736ec32eaa1ce2f4d200a41
+titles.json   be8060dcf6504650d9d00175e7db8a9b150b8d653cfabc38257a0c3492ca4a7d
 ```
 
 After a corpus or clusters change, rebuild and commit both files. Then

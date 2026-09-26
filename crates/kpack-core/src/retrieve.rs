@@ -411,6 +411,9 @@ pub struct Citation {
     pub retrieved_at: Option<String>,
 }
 
+/// The only URL prefix a citation's `url` may carry.
+pub const NHS_WEB_URL_PREFIX: &str = "https://www.nhs.uk/";
+
 /// Where a cited page came from, for display: its public URL and retrieval
 /// date (Phase 1h M4b ruling 2). Read from the doc's row, no schema change.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -423,11 +426,15 @@ impl CitationSource {
     /// `docs.source_path` / `docs.source_mtime` for a
     /// [`crate::format::SOURCE_TYPE_NHS_WEB`] doc; nothing for any other
     /// source type — a personal pack's `source_path` is a private file path
-    /// and never leaves the pack through a citation.
+    /// and never leaves the pack through a citation. The URL must also start
+    /// with [`NHS_WEB_URL_PREFIX`]; any other value (`javascript:`, a file
+    /// path) in an `nhs-web` row is dropped.
     pub fn from_doc(doc: &format::Doc) -> CitationSource {
         if doc.source_type.as_deref() == Some(format::SOURCE_TYPE_NHS_WEB) {
             CitationSource {
-                url: doc.source_path.clone(),
+                // Only an NHS website page URL reaches the UI; anything else
+                // in a (possibly hand-made) row is dropped, never rendered.
+                url: doc.source_path.clone().filter(|u| u.starts_with(NHS_WEB_URL_PREFIX)),
                 retrieved_at: doc.source_mtime.clone(),
             }
         } else {
@@ -2089,11 +2096,14 @@ mod tests {
         personal.title = "My notes".to_string();
         personal.source_path = Some("C:\\Users\\me\\private notes.md".to_string());
         personal.source_mtime = Some("2026-01-01T00:00:00Z".to_string());
+        let mut web_bad = web.clone();
+        web_bad.title = "Bad".to_string();
+        web_bad.source_path = Some("javascript:alert(1)".to_string());
         let mut web_no_path = web.clone();
         web_no_path.title = "Asthma".to_string();
         web_no_path.source_path = None;
         let mut ids = Vec::new();
-        for (i, doc) in [web, personal, web_no_path].iter().enumerate() {
+        for (i, doc) in [web, personal, web_no_path, web_bad].iter().enumerate() {
             let doc_id = pack.insert_doc(doc).unwrap();
             ids.push(
                 pack.insert_chunk(&Chunk {
@@ -2126,5 +2136,7 @@ mod tests {
         let asthma = by_title("Asthma");
         assert_eq!(asthma.url, None);
         assert_eq!(asthma.retrieved_at.as_deref(), Some("2026-09-26"));
+        let bad = by_title("Bad");
+        assert_eq!(bad.url, None, "a non-NHS URL never reaches a citation");
     }
 }

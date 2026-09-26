@@ -4,7 +4,7 @@
     "pack_id": "reference-uk-v1",
     "pack_version": "2026.09.1",
     "pack_file": "reference-uk-v1.kpack",
-    "content_sha256": "3fbf5aa48352639edb0610bc6b19185ee91b95f18e123895404e21d0543ba2ba",
+    "content_sha256": "df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5",
     "chunk_content_sha": "sha256 of the UTF-8 compact JSON array [text, section_path, locator, title] (Python: json.dumps([...], ensure_ascii=False, separators=(\",\", \":\")))",
     "pack_content_sha": "sha256 over every chunk's content_sha in pack order, each as 64 lowercase hex characters followed by \\n",
     "chunks": 23225,
@@ -263,8 +263,7 @@
       "title": "ADHD in adults",
       "normalised_title": "adhd in adults",
       "variants": [
-        "adhd adults",
-        "adhd"
+        "adhd adults"
       ],
       "url": "https://www.nhs.uk/conditions/adhd-adults/",
       "retrieved_at": "2026-09-26"
@@ -706,9 +705,7 @@
       "section": "conditions",
       "title": "Anxiety disorders in children",
       "normalised_title": "anxiety disorders in children",
-      "variants": [
-        "anxiety disorders"
-      ],
+      "variants": [],
       "url": "https://www.nhs.uk/mental-health/children-and-young-adults/advice-for-parents/anxiety-disorders-in-children/",
       "retrieved_at": "2026-09-26"
     },
@@ -719,8 +716,7 @@
       "title": "Anxiety in pregnancy",
       "normalised_title": "anxiety in pregnancy",
       "variants": [
-        "Perinatal anxiety",
-        "anxiety"
+        "Perinatal anxiety"
       ],
       "url": "https://www.nhs.uk/pregnancy/mental-health-in-pregnancy-and-after-the-birth/anxiety-in-pregnancy/",
       "retrieved_at": "2026-09-26"
@@ -3054,8 +3050,7 @@
         "dyspraxia",
         "Dyspraxia in children",
         "developmental coordination disorder dyspraxia",
-        "Developmental co-ordination disorder in children",
-        "developmental co ordination disorder"
+        "Developmental co-ordination disorder in children"
       ],
       "url": "https://www.nhs.uk/conditions/developmental-coordination-disorder-dyspraxia/",
       "retrieved_at": "2026-09-26"
@@ -3068,8 +3063,7 @@
       "normalised_title": "dyspraxia in adults",
       "variants": [
         "Developmental co-ordination disorder (dyspraxia) in adults",
-        "developmental coordination disorder dyspraxia in adults",
-        "dyspraxia"
+        "developmental coordination disorder dyspraxia in adults"
       ],
       "url": "https://www.nhs.uk/conditions/developmental-coordination-disorder-dyspraxia-in-adults/",
       "retrieved_at": "2026-09-26"
@@ -8612,8 +8606,7 @@
       "title": "Reflux in babies",
       "normalised_title": "reflux in babies",
       "variants": [
-        "Acid reflux in babies",
-        "reflux"
+        "Acid reflux in babies"
       ],
       "url": "https://www.nhs.uk/conditions/reflux-in-babies/",
       "retrieved_at": "2026-09-26"

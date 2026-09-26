@@ -406,20 +406,30 @@ fn py_norm(s: &str) -> Result<String, CliError> {
 /// and an "in/during <group>" tail removed — "Paracetamol for children
 /// (Calpol)" -> "paracetamol", "Salbutamol inhalers" -> "salbutamol".
 pub fn core_name(title: &str, section: &str) -> Result<String, CliError> {
+    Ok(core_name_detail(title, section)?.0)
+}
+
+/// The population words `clusters.py`'s `_IN_GROUP` strips.
+const GROUPS: [&str; 9] =
+    ["children", "adults", "babies", "pregnancy", "older people", "men", "women", "teenagers", "young people"];
+
+/// [`core_name`], and whether the derivation removed a POPULATION tail:
+/// "in/during <group>", or a medicine's "for <group> ..." ("for adults",
+/// "for children"). A purpose tail ("for pain") or a dosage form is not one.
+pub fn core_name_detail(title: &str, section: &str) -> Result<(String, bool), CliError> {
     const FORMS: [&str; 34] = [
         "tablet", "tablets", "capsule", "capsules", "cream", "creams", "gel", "gels", "ointment", "ointments",
         "eye drops", "ear drops", "drops", "inhaler", "inhalers", "injection", "injections", "nasal spray",
         "nasal sprays", "spray", "sprays", "skin treatment", "skin treatments", "skin cream", "skin creams",
         "liquid", "patches", "suppositories", "mouthwash", "shampoo", "lozenges", "granules", "medicine", "medicines",
     ];
-    const GROUPS: [&str; 10] = [
-        "children", "adults", "babies", "pregnancy", "older people", "men", "women", "teenagers", "young people",
-        "",
-    ];
+    let mut population = false;
     let mut n = py_norm(&strip_parentheticals(title))?;
     if section == "medicines" {
         // _FOR: r"\s+for\s+.*$" — from the first " for " on.
         if let Some(at) = n.find(" for ") {
+            let tail = &n[at + 5..];
+            population |= GROUPS.iter().any(|g| tail == *g || tail.starts_with(&format!("{g} ")));
             n.truncate(at);
         }
         // _FORM, repeated to a fixed point: a trailing " <form>". The regex
@@ -441,29 +451,54 @@ pub fn core_name(title: &str, section: &str) -> Result<String, CliError> {
         }
     }
     // _IN_GROUP: a trailing " in|during <group>".
-    for g in GROUPS.iter().filter(|g| !g.is_empty()) {
+    for g in GROUPS {
         for prep in ["in", "during"] {
             if let Some(stem) = n.strip_suffix(&format!(" {prep} {g}")) {
-                return Ok(stem.trim().to_string());
+                return Ok((stem.trim().to_string(), true));
             }
         }
     }
-    Ok(n.trim().to_string())
+    Ok((n.trim().to_string(), population))
 }
 
 /// A page's title-index variants: its names from the clusters file (less
-/// the title), then — round 2, for lookup recall — the title without its
-/// parentheticals and its `core_name`. Duplicates by normalised form are
-/// dropped later (`title_entry_for`); a core name several pages share makes
-/// that query an honest did-you-mean listing them.
-fn page_variants(p: &CorpusPage, cluster_names: &[String]) -> Result<Vec<String>, CliError> {
+/// the title), then — for lookup recall — the title without its
+/// parentheticals and, when [`keep_core`] says so, its `core_name`.
+/// Duplicates by normalised form are dropped later (`title_entry_for`); a
+/// core name several pages share makes that query an honest did-you-mean
+/// listing them.
+fn page_variants(p: &CorpusPage, cluster_names: &[String], core_counts: &BTreeMap<String, usize>) -> Result<Vec<String>, CliError> {
     let mut v = cluster_names.to_vec();
-    for extra in [strip_parentheticals(&p.title), core_name(&p.title, &p.section)?] {
+    let mut extras = vec![strip_parentheticals(&p.title)];
+    let (core, population) = core_name_detail(&p.title, &p.section)?;
+    if keep_core(population, core_counts.get(&core).copied().unwrap_or(0)) {
+        extras.push(core);
+    }
+    for extra in extras {
         if !extra.is_empty() && !v.contains(&extra) {
             v.push(extra);
         }
     }
     Ok(v)
+}
+
+/// Whether a page's core name becomes a variant. A core that removed a
+/// population tail ("Anxiety in pregnancy" -> "anxiety") is kept only when at
+/// least two pages share it, so the bare name gives a did-you-mean listing
+/// them ("paracetamol"); a unique one would make a population-specific page
+/// the `Found` answer to a general question, so that bare name is left to
+/// the fuzzy did-you-mean tier instead.
+pub fn keep_core(population: bool, pages_sharing: usize) -> bool {
+    !population || pages_sharing >= 2
+}
+
+/// How many pages share each core name.
+fn core_counts(pages: &[CorpusPage]) -> Result<BTreeMap<String, usize>, CliError> {
+    let mut m = BTreeMap::new();
+    for p in pages {
+        *m.entry(core_name(&p.title, &p.section)?).or_insert(0) += 1;
+    }
+    Ok(m)
 }
 
 struct Clusters {
@@ -583,12 +618,13 @@ pub fn build_reference(
         }
     }
 
+    let cores = core_counts(&pages)?;
     let sources: Vec<LexicalSource> = pages
         .iter()
         .map(|p| -> Result<LexicalSource, CliError> { Ok(LexicalSource {
             title: p.title.clone(),
             slug: p.slug.clone(),
-            variants: page_variants(p, &clusters.variants[&p.key])?,
+            variants: page_variants(p, &clusters.variants[&p.key], &cores)?,
             body: p.body.clone(),
             source_type: SOURCE_TYPE_NHS_WEB.to_string(),
             source_path: Some(p.url.clone()),
@@ -839,6 +875,11 @@ mod tests {
         assert_eq!(core_name("Henoch-Schönlein purpura (HSP)", "conditions").unwrap(), "henoch schonlein purpura");
         assert_eq!(core_name("Crohn's disease", "conditions").unwrap(), "crohns disease");
         assert!(py_norm("Æsop").is_err());
+        assert_eq!(core_name_detail("Anxiety in pregnancy", "conditions").unwrap(), ("anxiety".to_string(), true));
+        assert_eq!(core_name_detail("Paracetamol for children (Calpol)", "medicines").unwrap(), ("paracetamol".to_string(), true));
+        assert_eq!(core_name_detail("Buprenorphine for pain", "medicines").unwrap(), ("buprenorphine".to_string(), false));
+        assert_eq!(core_name_detail("Salbutamol inhalers", "medicines").unwrap(), ("salbutamol".to_string(), false));
+        assert!(!keep_core(true, 1) && keep_core(true, 2) && keep_core(false, 1));
     }
 
     #[test]

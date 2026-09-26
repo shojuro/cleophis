@@ -690,8 +690,9 @@ enum DraftKind {
 ///   splits); order is preserved.
 ///
 /// A merged chunk's text is its drafts joined by a blank line, its
-/// `token_count` the tokenizer's count of that text, its `locator` the first
-/// draft's, its `prefix` the chunker's (always `""`). Deterministic.
+/// `token_count` the tokenizer's count of that text, its `locator` the span
+/// from the first draft's start line to the last draft's end line
+/// (`"L7-L15"`), its `prefix` the chunker's (always `""`). Deterministic.
 pub fn chunk_document_merged(
     doc: &Document,
     tokens: &dyn TokenCounter,
@@ -758,15 +759,34 @@ fn flush(p: &mut Pending, tokens: &dyn TokenCounter, out: &mut Vec<ChunkDraft>) 
     }
     let text = p.joined_with(None);
     let first = &p.parts[0].2;
+    let last = &p.parts[p.parts.len() - 1].2;
     out.push(ChunkDraft {
         section_path: first.section_path.clone(),
-        locator: first.locator.clone(),
+        locator: span_locator(&first.locator, &last.locator),
         prefix: first.prefix.clone(),
         token_count: tokens.token_count(&text),
         oversize_sentence: p.parts.iter().any(|(_, _, d)| d.oversize_sentence),
         text,
     });
     p.parts.clear();
+}
+
+/// A merged chunk's locator: the first draft's start line through the last
+/// draft's end line, in the parser's format (`"L12"`, `"L12-L15"`). A
+/// locator that is not in that format leaves the first draft's as it is.
+fn span_locator(first: &str, last: &str) -> String {
+    fn ends(loc: &str) -> Option<(u64, u64)> {
+        let line = |s: &str| s.strip_prefix('L').and_then(|n| n.parse::<u64>().ok());
+        match loc.split_once('-') {
+            Some((a, b)) => Some((line(a)?, line(b)?)),
+            None => line(loc).map(|a| (a, a)),
+        }
+    }
+    match (ends(first), ends(last)) {
+        (Some((a, _)), Some((_, b))) if b > a => format!("L{a}-L{b}"),
+        (Some((a, _)), Some(_)) => format!("L{a}"),
+        _ => first.to_string(),
+    }
 }
 
 fn merge_section(
@@ -1588,12 +1608,20 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("A", "L1", "one two three.\n\nfour five.", 5),
+                ("A", "L1-L3", "one two three.\n\nfour five.", 5),
                 ("A", "L5", "six seven eight nine.", 4),
                 ("B", "L8", "ten eleven.", 2),
             ]
         );
         assert!(out.iter().all(|c| c.prefix.is_empty()));
+    }
+
+    #[test]
+    fn t27_span_locator() {
+        assert_eq!(span_locator("L7", "L9"), "L7-L9");
+        assert_eq!(span_locator("L7-L8", "L13-L15"), "L7-L15");
+        assert_eq!(span_locator("L7", "L7"), "L7");
+        assert_eq!(span_locator("p.3", "p.4"), "p.3");
     }
 
     #[test]
@@ -1616,6 +1644,7 @@ mod tests {
         let m = MergeConfig { target_tokens: 8, max_tokens: 13 };
         let out = chunk_document_merged(&doc, &Words24, &ChunkConfig::default(), &m);
         assert_eq!(out[0].text, "a b c d e.\n\nSymptoms include:\n\n- x y\n- z w");
+        assert_eq!(out[0].locator, "L1-L6", "the span runs to the list's last line");
         assert_eq!(out[1].text, "H\nH: 1"); // the chunker's row-wise table text, unmerged
         assert_eq!(out[2].text, "tail.");
         // max 9: the chunk in progress (7) cannot take the list, so the intro
@@ -1623,7 +1652,7 @@ mod tests {
         let m = MergeConfig { target_tokens: 8, max_tokens: 9 };
         let out = chunk_document_merged(&doc, &Words24, &ChunkConfig::default(), &m);
         assert_eq!(out[0].text, "a b c d e.");
-        assert_eq!((out[1].text.as_str(), out[1].locator.as_str()), ("Symptoms include:\n\n- x y\n- z w", "L3"));
+        assert_eq!((out[1].text.as_str(), out[1].locator.as_str()), ("Symptoms include:\n\n- x y\n- z w", "L3-L6"));
     }
 
     #[test]

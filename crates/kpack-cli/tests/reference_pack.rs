@@ -19,7 +19,7 @@
 mod common;
 
 use common::*;
-use kpack_cli::{build_reference, core_name, fake_names, strip_parentheticals, Options};
+use kpack_cli::{build_reference, core_name_detail, fake_names, keep_core, strip_parentheticals, Options};
 use kpack_core::lookup::{normalise_title, retrieve_lexical, LexicalOutcome};
 use kpack_core::{LoadContext, Pack};
 use serde_json::Value;
@@ -29,7 +29,7 @@ use std::sync::OnceLock;
 /// sha256 of `reference-uk-v1.kpack` built from the committed corpus with
 /// SOURCE_DATE_EPOCH=1790380800. Update it (and the report) only together
 /// with a corpus, clusters or builder change.
-const PACK_SHA256: &str = "f42aedcd050771fb9e79ede58389319c1a3d5671ca39a3272bbab40fb28b2cd7";
+const PACK_SHA256: &str = "5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853";
 
 struct Built {
     pack: PathBuf,
@@ -147,29 +147,59 @@ fn every_page_title_resolves_found_to_its_own_page() {
     }
 }
 
-/// Round 2 (lookup recall): every page's bare core name ("paracetamol",
-/// "salbutamol") and its title without parentheticals ("irritable bowel
-/// syndrome") reach it — Found, or a did-you-mean when several pages share
-/// the name. None reads NotFound.
+/// Lookup recall: every page's title without parentheticals ("irritable
+/// bowel syndrome") and every KEPT core name ("paracetamol", "salbutamol")
+/// reach it — Found, or a did-you-mean when several pages share the name.
+/// A core name that removed a population tail and belongs to one page only
+/// (fix round 1, I2) is not a variant: that bare name never resolves Found
+/// through a derived variant to that population-specific page.
 #[test]
 fn every_pages_core_name_and_bare_title_resolve() {
     let pack = mounted();
-    let (mut found, mut dym) = (0, 0);
     let t: Value = serde_json::from_slice(&std::fs::read(committed().2.join("titles.json")).unwrap()).unwrap();
-    for e in t["titles"].as_array().unwrap() {
-        let (title, section) = (e["title"].as_str().unwrap(), e["section"].as_str().unwrap());
-        for q in [core_name(title, section).unwrap(), strip_parentheticals(title)] {
+    let entries = t["titles"].as_array().unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for e in entries {
+        let (core, _) = core_name_detail(e["title"].as_str().unwrap(), e["section"].as_str().unwrap()).unwrap();
+        *counts.entry(core).or_insert(0usize) += 1;
+    }
+    let mut dropped = 0;
+    for e in entries {
+        let (title, section, slug) =
+            (e["title"].as_str().unwrap(), e["section"].as_str().unwrap(), e["slug"].as_str().unwrap());
+        let (core, population) = core_name_detail(title, section).unwrap();
+        let mut queries = vec![strip_parentheticals(title)];
+        if keep_core(population, counts[&core]) {
+            queries.push(core);
+        } else {
+            dropped += 1;
+            // Dropped: only the page's own slug (the NHS's URL for it, M5's
+            // slug tier) may still find it by that bare name.
+            if let LexicalOutcome::Found { title: got, .. } = retrieve_lexical(&pack, &core, 3).unwrap() {
+                assert!(got != title || normalise_title(slug) == normalise_title(&core), "{core:?} -> {got}");
+            }
+        }
+        for q in queries {
             match retrieve_lexical(&pack, &q, 3).unwrap() {
-                LexicalOutcome::Found { .. } => found += 1,
-                LexicalOutcome::DidYouMean { candidates } => {
-                    assert!(!candidates.is_empty());
-                    dym += 1;
-                }
+                LexicalOutcome::Found { .. } => {}
+                LexicalOutcome::DidYouMean { candidates } => assert!(!candidates.is_empty()),
                 other => panic!("{q:?} ({title}) -> {other:?}"),
             }
         }
     }
-    assert_eq!(found + dym, 2 * 941);
+    assert!(dropped > 0);
+    // The reviewer's cases: never Found to a population-specific page
+    // through a derived variant.
+    for q in ["anxiety", "reflux", "adhd", "anxiety disorders"] {
+        let o = retrieve_lexical(&pack, q, 3).unwrap();
+        assert!(!matches!(o, LexicalOutcome::Found { .. }), "{q} -> {o:?}");
+    }
+    // Found through the page's OWN slug (its NHS URL), not a derived
+    // variant — unchanged since round 1, pinned so any change is visible.
+    for (q, want) in [("cataracts", "Cataracts in adults"), ("nephrotic syndrome", "Nephrotic syndrome in children")] {
+        let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, q, 3).unwrap() else { panic!("{q}") };
+        assert_eq!(title, want);
+    }
     for (q, want) in [
         ("paracetamol", vec!["Paracetamol for adults", "Paracetamol for children (Calpol)"]),
         ("ibuprofen", vec!["Ibuprofen for adults (Nurofen)", "Ibuprofen for children"]),
@@ -191,7 +221,9 @@ fn every_pages_core_name_and_bare_title_resolve() {
 }
 
 /// Round 2 (chunk merge): the manifest records the merge sizes, no merged
-/// chunk exceeds 256 tokens, and no chunk crosses a section.
+/// chunk exceeds 256 tokens, and a merged chunk's locator spans a line range
+/// (fix round 1, I1). (Never crossing a section holds by construction and is
+/// tested in kpack-core, t24.)
 #[test]
 fn merged_chunks_respect_the_limits() {
     let b = built();
@@ -204,6 +236,10 @@ fn merged_chunks_respect_the_limits() {
         let text = v["text"].as_str().unwrap();
         if text.contains("\n\n") {
             assert!(v["token_count"].as_i64().unwrap() <= 256, "{l}");
+            let loc = v["locator"].as_str().unwrap();
+            let (a, b) = loc.split_once('-').expect("a merged chunk spans lines");
+            let n = |s: &str| s.strip_prefix('L').unwrap().parse::<u64>().unwrap();
+            assert!(n(a) < n(b), "{loc}");
         }
     }
 }
