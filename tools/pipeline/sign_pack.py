@@ -126,6 +126,9 @@ def verify_pack_file(pack_path: Path, pubkey_hex: str) -> bool:
         raise SigningError(f"{pack_path} not found")
     if not sig_path.is_file():
         raise SigningError(f"{sig_path} not found")
+    size = pack_path.stat().st_size
+    if size > MAX_PACK_BYTES:
+        raise SigningError(f"{pack_path} is {size} bytes, over the {MAX_PACK_BYTES}-byte sanity cap — refusing to read it")
     with sig_path.open("rb") as fh:
         sig = fh.read(SIG_BYTES_LEN + 1)  # capped, like kpack_core's read_sig_capped
     if len(sig) != SIG_BYTES_LEN:

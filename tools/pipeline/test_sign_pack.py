@@ -98,6 +98,12 @@ class SignAndVerify(unittest.TestCase):
             with self.assertRaises(sp.SigningError):
                 sp.sign_pack_file(self.pack, env_file=self._env_with_key())
 
+    def test_verify_mode_caps_the_pack_size_before_reading(self):
+        sp.sign_pack_file(self.pack, env_file=self._env_with_key())
+        with mock.patch.object(sp, "MAX_PACK_BYTES", 10):
+            with self.assertRaises(sp.SigningError):
+                sp.verify_pack_file(self.pack, self.pub)
+
     def test_non_kpack_suffix_is_refused(self):
         other = self.dir / "catalog.json"
         other.write_bytes(b"{}")

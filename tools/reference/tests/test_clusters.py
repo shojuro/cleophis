@@ -156,6 +156,42 @@ class Split(Fixture):
         self.assertAlmostEqual(counts["calibration"] / 20000, 0.15, delta=0.015)
 
 
+class RowsEligible(Fixture):
+    def test_rows_eligible_is_rows_minus_held_out_family(self):
+        r = self.build()
+        by = {c["id"]: c for c in r["clusters"]}
+        expect = [cid for cid in r["sets"]["rows"] if not by[cid]["held_out_family"]]
+        self.assertEqual(r["sets"]["rows_eligible"], expect)
+        self.assertEqual(r["counts"]["rows_eligible"]["clusters"], len(expect))
+        for cid in r["sets"]["rows_eligible"]:
+            self.assertFalse(by[cid]["held_out_family"])
+            self.assertNotEqual(by[cid]["split"], cl.HELDOUT)
+        # the four split sets stay a partition; rows_eligible is derived, not a split
+        self.assertEqual(sorted(cl.SPLIT_SETS), sorted(["rows", "probe", "calibration", cl.HELDOUT]))
+
+
+class HashSeed(unittest.TestCase):
+    def test_output_is_independent_of_pythonhashseed(self):
+        import os
+        import subprocess
+        script = (
+            "import sys, json, tempfile; from pathlib import Path\n"
+            f"sys.path.insert(0, {str(REFERENCE / 'tests')!r}); sys.path.insert(0, {str(REFERENCE)!r})\n"
+            "import test_clusters as t, clusters as cl, fetch_nhs as fn\n"
+            "d = Path(tempfile.mkdtemp()); fn.write_corpus(d / 'c', t.MINI)\n"
+            "(d / 'b.json').write_text(json.dumps(t.BANK)); (d / 'p.json').write_text(json.dumps(t.PARTITION))\n"
+            "print(cl.render(cl.build_clusters(d / 'c', d / 'b.json', d / 'p.json', "
+            "fallbacks={'guttate psoriasis': ['conditions/psoriasis']})), end='')\n"
+        )
+        outs = []
+        for seed in ("0", "1", "12345"):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            outs.append(subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True).stdout)
+        self.assertTrue(outs[0])
+        self.assertEqual(outs[0], outs[1])
+        self.assertEqual(outs[0], outs[2])
+
+
 class Fabrication(Fixture):
     def test_real_entities_forced_into_fabrication_heldout(self):
         r = self.build()
@@ -263,6 +299,55 @@ class Committed(unittest.TestCase):
                 self.assertEqual(by_id[cid]["split"], "fabrication-heldout", name)
         self.assertEqual(self.r["fabrication"]["fake_hits"], {})
         self.assertEqual(len(self.r["fabrication"]["fakes_checked"]), 25)
+
+    def test_rows_eligible_excludes_held_out_family_and_fabrication_clusters(self):
+        by = {c["id"]: c for c in self.r["clusters"]}
+        elig = self.r["sets"]["rows_eligible"]
+        self.assertTrue(set(elig) <= set(self.r["sets"]["rows"]))
+        self.assertEqual(len(elig), len(set(elig)))
+        for cid in elig:
+            self.assertFalse(by[cid]["held_out_family"], cid)
+            self.assertNotEqual(by[cid]["split"], cl.HELDOUT, cid)
+            self.assertEqual(by[cid]["fabrication_real"], [], cid)
+        missing = [cid for cid in self.r["sets"]["rows"] if not by[cid]["held_out_family"] and cid not in elig]
+        self.assertEqual(missing, [])
+        self.assertEqual(self.r["counts"]["rows_eligible"]["clusters"], len(elig))
+
+    def test_split_sets_partition_the_clusters(self):
+        ids = [c["id"] for c in self.r["clusters"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        seen = []
+        for s in cl.SPLIT_SETS:
+            seen += self.r["sets"][s]
+            for cid in self.r["sets"][s]:
+                self.assertEqual(next(c for c in self.r["clusters"] if c["id"] == cid)["split"], s)
+        self.assertEqual(sorted(seen), sorted(ids))
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_fake_names_absent_by_scanning_the_corpus(self):
+        texts = [cl.norm(p.read_text(encoding="utf-8")) for p in sorted(CORPUS.glob("*/*.md"))]
+        self.assertEqual(len(texts), len(json.loads((CORPUS / "index.json").read_text())["entries"]))
+        for fake in self.r["fabrication"]["fakes_checked"]:
+            k = cl.norm(fake)
+            self.assertFalse([1 for t in texts if f" {k} " in f" {t} "], fake)
+
+    def test_corpus_integrity(self):
+        import hashlib
+        idx = json.loads((CORPUS / "index.json").read_text(encoding="utf-8"))
+        for key, rec in idx["entries"].items():
+            text = (CORPUS / rec["section"] / f"{rec['slug']}.md").read_text(encoding="utf-8")
+            fm, body = fn.split_front_matter(text)
+            self.assertEqual(list(fm), fn.FRONT_MATTER_ORDER, key)
+            self.assertEqual(hashlib.sha256(body.encode("utf-8")).hexdigest(), rec["sha256"], key)
+            self.assertEqual(fm["licence"], fn.LICENCE)
+            self.assertEqual(fm["attribution"], fn.ATTRIBUTION)
+            self.assertEqual(fm["url"], rec["url"])
+            self.assertTrue(fm["sources"], key)
+            for src in fm["sources"]:
+                self.assertTrue(src["url"].startswith("https://www.nhs.uk/"), key)
+                self.assertRegex(src["retrieved"], r"^\d{4}-\d{2}-\d{2}$")
+                path = fn.url_path(src["url"]).lower()
+                self.assertFalse(path.startswith(fn.EXCLUDED_PREFIXES), src["url"])
 
     @unittest.skipUnless(TRIAGE_PROHIBITIONS.is_file() and TRIAGE_PARTITION.is_file(), "triage repo not on this machine")
     def test_committed_file_regenerates_byte_identically(self):

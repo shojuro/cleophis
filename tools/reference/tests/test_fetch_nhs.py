@@ -334,6 +334,17 @@ class Politeness(unittest.TestCase):
                 f.check(u)
         f.check("https://www.nhs.uk/conditions/quitting-smoking/")  # a prefix match is by path segment
 
+    def test_redirect_hops_are_checked_before_they_are_requested(self):
+        import urllib.request
+        f = fn.Fetcher(Path("/nonexistent"), robots=fn.RobotsRules(self.ROBOTS), delay=0.0)
+        handler = fn.CheckedRedirectHandler(f)
+        req = urllib.request.Request("https://www.nhs.uk/conditions/acne/")
+        for bad in ("https://example.org/x", "https://www.nhs.uk/Conditions/acne/", "https://www.nhs.uk/smokefree/"):
+            with self.assertRaises(fn.FetchRefused, msg=bad):
+                handler.redirect_request(req, None, 301, "Moved", {}, bad)
+        ok = handler.redirect_request(req, None, 301, "Moved", {}, "https://www.nhs.uk/conditions/acne-new/")
+        self.assertEqual(ok.full_url, "https://www.nhs.uk/conditions/acne-new/")
+
     def test_offline_fetch_uses_cache_only(self):
         with tempfile.TemporaryDirectory() as d:
             f = fn.Fetcher(Path(d), robots=fn.RobotsRules(""), delay=0.0, offline=True)

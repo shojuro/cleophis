@@ -47,10 +47,12 @@ THE HELD-OUT SETS.
   * Every FAKE name of the bank must be absent from the whole corpus
     (titles, aliases, brands and bodies) — an ERROR otherwise, because a
     "fake" the reference pack can retrieve is not a fabrication probe.
+  * `sets.rows_eligible` — the `rows` split minus every held-out-family
+    cluster. This, not `sets.rows`, is the list a row builder consumes.
   * `held_out_family: true` — a cluster whose pages read as one of the
     triage partition's HELD-OUT families (`probes/items/partition.json`
     is the authority: whichever families it marks `heldOut`). The row
-    builder excludes these. The tag comes from a page-level keyword hint
+    builder excludes these (they are absent from `rows_eligible`). The tag comes from a page-level keyword hint
     (`PAGE_LEXICON`: title/alias hits weigh 2, lede/indication hits 1, a
     family counts at >= 2) and is deliberately CONSERVATIVE — any held-out
     family over threshold tags the cluster, even when another family
@@ -90,6 +92,8 @@ SCHEMA = "cleophis/reference-clusters/v1"
 SEED = "cleophis-m4a-reference-clusters-2026-09-27"
 RATIOS = (("rows", 0.70), ("probe", 0.15), ("calibration", 0.15))
 HELDOUT = "fabrication-heldout"
+SPLIT_SETS = ("rows", "probe", "calibration", HELDOUT)  # a partition of the clusters
+ROWS_ELIGIBLE = "rows_eligible"  # derived from `rows`; see build_clusters
 MIN_KEY_LEN = 3
 
 # Real fabrication-bank entities with no NHS page of their own, mapped to the
@@ -486,6 +490,19 @@ def build_clusters(corpus: Path, prohibitions: Path, partition: Path, seed: str 
             "entries": sum(len(c["entries"]) for c in cs),
             "held_out_family_clusters": sum(1 for c in cs if c["held_out_family"]),
         }
+    # The ONLY list a row builder may cut training rows from: the `rows` split
+    # minus held-out-family clusters (global constraint: held-out families are
+    # excluded from rows). Derived, not a split — the hash split is unchanged,
+    # and probe/calibration KEEP their held-out-family clusters (held-out-family
+    # evaluation). Fabrication-heldout clusters are never in `rows` to begin with.
+    # A row's own text is still swept against `fabrication_mentions` (A33).
+    by_id = {c["id"]: c for c in clusters}
+    sets[ROWS_ELIGIBLE] = [cid for cid in sets["rows"] if not by_id[cid]["held_out_family"]]
+    counts[ROWS_ELIGIBLE] = {
+        "clusters": len(sets[ROWS_ELIGIBLE]),
+        "entries": sum(len(by_id[cid]["entries"]) for cid in sets[ROWS_ELIGIBLE]),
+        "held_out_family_clusters": 0,
+    }
     return {
         "schema": SCHEMA,
         "seed": seed,

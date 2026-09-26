@@ -135,10 +135,15 @@ How it behaves:
   action links, images, figures, video, iframes, scripts and the "Page last
   reviewed" line. The review dates move to `sources[].last_reviewed`.
 - **Determinism.** Entries follow index order and sub-pages follow
-  first-link order. The body has no dates. JSON is written with sorted
+  first-link order. The body carries no fetch date. JSON is written with sorted
   keys. An `--offline` re-render is byte-identical.
 - **Aliases.** Index entries that redirect to one page collapse into one
   entry, and the extra titles become aliases.
+- **Dates the NHS prints in the page.** Text the NHS itself dates is kept
+  as published. About 90 bodies end with a video block's "Media last
+  reviewed" and "Media review due" lines. Those lines change when the NHS
+  re-reviews the media, which will change those files' content hashes on
+  a refresh.
 
 After a full run, commit `tools/reference/corpus/`.
 
@@ -194,7 +199,13 @@ The rules are documented in full in `clusters.py`'s module docstring:
   name found anywhere in the corpus.
 - **Held-out families.** `held_out_family: true` marks clusters that read
   as a family the partition holds out. This is a conservative keyword
-  hint. The row builder excludes these clusters.
+  hint. These clusters are excluded from `sets.rows_eligible`.
+- **Rows eligible.** `sets.rows_eligible` is the `rows` split minus every
+  held-out-family cluster. It is the only list a row builder may cut
+  training rows from. `sets.rows` is the hash split, kept unchanged so
+  cluster assignment stays stable. The probe and calibration sets keep
+  their held-out-family clusters on purpose, for held-out-family
+  evaluation.
 - **Mentions.** `fabrication_mentions` lists the real bank names each
   cluster's text mentions, for the row builder's bank sweep.
 
@@ -209,6 +220,7 @@ The committed clusters were built from the corpus above with seed
 | probe | 134 | 140 | 48 |
 | calibration | 128 | 137 | 46 |
 | fabrication-heldout | 25 | 28 | 11 |
+| rows_eligible (derived from rows) | 410 | 421 | 0 |
 
 How the 25 real fabrication entities resolved:
 

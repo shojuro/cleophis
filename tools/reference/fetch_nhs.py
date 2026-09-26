@@ -30,9 +30,12 @@ re-renders from disk without touching the network (`--offline` enforces
 that). Only https://www.nhs.uk/ is ever requested.
 
 DETERMINISM. Output depends only on the cached HTML: stable ordering (index
-order for entries, first-link order for sub-pages), no timestamps in the
-body (the retrieval date lives in the front matter and comes from the
-cache, not the clock), JSON written with sorted keys. Re-running
+order for entries, first-link order for sub-pages), no fetch timestamps in
+the body (the retrieval date lives in the front matter and comes from the
+cache, not the clock), JSON written with sorted keys. Page text the NHS
+itself dates is kept as published — notably ~90 bodies end with a video
+block's "Media last reviewed: <date>" lines, which WILL change when the NHS
+re-reviews the media. Re-running
 `--offline` over the same cache is byte-identical.
 
 Stdlib only (html.parser, urllib) — no new dependency for the pipeline.
@@ -752,6 +755,21 @@ def _utc_date() -> str:
     return _dt.datetime.now(_dt.timezone.utc).date().isoformat()
 
 
+class CheckedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Checks every redirect hop (host lock, excluded sites, robots.txt)
+    BEFORE it is requested — urlopen would otherwise follow the hop first and
+    only the final URL would be checked."""
+
+    def __init__(self, fetcher: "Fetcher"):
+        super().__init__()
+        self.fetcher = fetcher
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = normalise_url(newurl, req.full_url) or newurl
+        self.fetcher.check(target)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class Fetcher:
     def __init__(self, cache_dir: Path, robots: RobotsRules, delay: float = 1.0, offline: bool = False,
                  max_retries: int = 4, log=None):
@@ -763,6 +781,7 @@ class Fetcher:
         self._last = 0.0
         self.network_requests = 0
         self.log = log or (lambda msg: None)
+        self._opener = urllib.request.build_opener(CheckedRedirectHandler(self))
 
     def _key(self, url: str) -> Path:
         return self.cache / hashlib.sha256(url.encode("utf-8")).hexdigest()
@@ -808,7 +827,7 @@ class Fetcher:
             self.network_requests += 1
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with self._opener.open(req, timeout=30) as resp:
                     final = resp.geturl()
                     html = resp.read().decode(resp.headers.get_content_charset() or "utf-8", "replace")
                     status = resp.status
