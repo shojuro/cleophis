@@ -21,7 +21,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { applyGuard } from './triage/guard.js';
 import {
-  CONFIRM_ROUTES, CRISIS_ADDED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
+  CONFIRM_ROUTES, CRISIS_ADDED_ROW, CRISIS_LEADS_ROW, CRISIS_REPLACED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
   TIMEFRAME_WITHHELD_ROW, TRIAGE_EXPORT_LABEL, TRIAGE_EXPORT_UNAVAILABLE, UNCLEAR_LINE_ROW,
   confirmRequest, confirmResult, confirmState, confirmStatusText, modelRouteOf,
   offersTriageExport, receiptLabel, receiptRows, routeLabel, triageExportPlan, triageLogFileName,
@@ -353,4 +353,30 @@ test('exporting every chat at once stays desktop-only, and says why', () => {
 
 test('the menu entry names the file format it writes', () => {
   assert.strictEqual(TRIAGE_EXPORT_LABEL, 'Triage log (JSONL)');
+});
+
+/* ---------------- Phase 1h M2: the replace rule on the receipt ---------------- */
+
+test('a reply REPLACED by the crisis block says so, and lists nothing about text that is not shown', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Hmm. Take 400 mg ibuprofen every six hours.',
+    crisisRule: 'replace',
+  });
+  assert.strictEqual(v.replyShown, false);
+  assert.deepStrictEqual(receiptRows(v), [CRISIS_REPLACED_ROW]);
+});
+
+test('a reply KEPT under the crisis block keeps its removals, and says the block leads', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Call 999 now for an ambulance. Take 400 mg ibuprofen every six hours.',
+    crisisRule: 'replace',
+  });
+  assert.strictEqual(v.replyShown, true);
+  const rows = receiptRows(v);
+  assert.ok(rows.length >= 2, rows.join(' | '));
+  assert.strictEqual(rows[rows.length - 1], CRISIS_LEADS_ROW);
+  assert.ok(rows.slice(0, -1).every((r) => r.startsWith('Removed: ')), rows.join(' | '));
+  assert.strictEqual(rows.includes(CRISIS_ADDED_ROW), false, 'nothing was added UNDER the reply');
 });

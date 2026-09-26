@@ -19,7 +19,7 @@ import { createTransport } from './transport.js';
 import {
   ATTACH_FAILED_NOTICE, FOREIGN_CHAT_NOTICE, UNVERIFIED_BANNER, UNVERIFIED_TEXT,
   ROUTE_CHECK_MIN_MS,
-  bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
+  bannerKey, bannerText, canSendInChat, crisisRuleFor, entryForChat, guardForPersistence, persistAssistantTurn,
   persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
   shouldGroundTurn, supervisedTitle, titlePlan,
 } from './triage-turn.js';
@@ -661,4 +661,58 @@ test('a supervised turn never re-sends an earlier reply\'s verdict to the model'
   ]);
   assert.strictEqual(JSON.stringify(sent).includes('rawReply'), false);
   assert.strictEqual(JSON.stringify(sent).includes('within 10 minutes'), false);
+});
+
+/* ---------------- Phase 1h M2: the catalog selects the crisis rule ---------------- */
+
+test('crisisRuleFor: an entry with no crisisRule selects nothing, so applyGuard runs its append default', () => {
+  const entry = { id: 'med-triage', supervised: true, crisisLine: 'L' };
+  assert.deepStrictEqual(crisisRuleFor(entry), {});
+  assert.deepStrictEqual(crisisRuleFor(null), {});
+  const u = "i don't want to be here anymore";
+  assert.deepStrictEqual(
+    applyGuard({ userText: u, replyText: 'See your GP.', ...crisisRuleFor(entry) }),
+    applyGuard({ userText: u, replyText: 'See your GP.' }),
+  );
+});
+
+test('crisisRuleFor: crisisRule "replace" with and without crisisKeepRoutes', () => {
+  assert.deepStrictEqual(
+    crisisRuleFor({ supervised: true, crisisRule: 'replace' }),
+    { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY'] },
+  );
+  assert.deepStrictEqual(
+    crisisRuleFor({ supervised: true, crisisRule: 'replace', crisisKeepRoutes: ['EMERGENCY', 'CLINICIAN'] }),
+    { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'] },
+  );
+  const v = applyGuard({
+    userText: "i don't want to be here anymore", replyText: 'Please see your GP.',
+    ...crisisRuleFor({ supervised: true, crisisRule: 'replace' }),
+  });
+  assert.strictEqual(v.crisisReplaced, true);
+  assert.strictEqual(v.banner, null);
+});
+
+test('crisisRuleFor: a malformed catalog value never throws into the render path', () => {
+  // applyGuard refuses unknown values loudly (the probe wants that); the app
+  // must not lose a reply to a catalog typo, so the value is sanitised here.
+  assert.deepStrictEqual(crisisRuleFor({ supervised: true, crisisRule: 'REPLACE' }), {});
+  assert.deepStrictEqual(
+    crisisRuleFor({ supervised: true, crisisRule: 'replace', crisisKeepRoutes: ['ER'] }),
+    { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY'] },
+  );
+  assert.deepStrictEqual(
+    crisisRuleFor({ supervised: true, crisisRule: 'replace', crisisKeepRoutes: 'EMERGENCY' }),
+    { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY'] },
+  );
+  assert.deepStrictEqual(crisisRuleFor({ supervised: false, crisisRule: 'replace' }), {}, 'the tutor never');
+});
+
+test('a replaced verdict replays with NO banner, not the out-of-scope one', () => {
+  const guard = applyGuard({
+    userText: "i don't want to be here anymore", replyText: 'Please see your GP.', crisisRule: 'replace',
+  });
+  const view = replayMessage({ supervised: true, role: 'assistant', content: guard.displayText, guard });
+  assert.strictEqual(view.banner, null);
+  assert.strictEqual(view.withheld, false);
 });

@@ -86,6 +86,18 @@ pub struct CatalogEntry {
     /// The crisis line the guard appends, region-specific.
     #[serde(default)]
     pub crisis_line: Option<String>,
+    /// The guard's crisis rule for this entry (Phase 1h M2): `"append"` or
+    /// `"replace"`. Absent means append — the FE passes no option and
+    /// `applyGuard` runs its default. Phase 1i registers the rule; no shipped
+    /// entry sets it this round. `crisisRule` on the wire.
+    #[serde(default)]
+    pub crisis_rule: Option<String>,
+    /// Under `"replace"`, the routes whose model reply is still shown under the
+    /// product's crisis block (e.g. `["EMERGENCY"]` or
+    /// `["EMERGENCY","CLINICIAN"]`). Absent means `["EMERGENCY"]`, decided in
+    /// the FE. `crisisKeepRoutes` on the wire.
+    #[serde(default)]
+    pub crisis_keep_routes: Option<Vec<String>>,
     /// The lowest device tier this entry runs acceptably on (Phase 3 P3.3).
     /// The FE hides "Get" below it.
     #[serde(default)]
@@ -553,6 +565,36 @@ mod tests {
         assert_eq!(v[0].min_tier, None);
         assert_eq!(v[0].crisis_line, None);
         assert_eq!(v[0].prompt_fingerprint, None);
+        assert_eq!(v[0].crisis_rule, None);
+        assert_eq!(v[0].crisis_keep_routes, None);
+    }
+
+    /// Phase 1h M2: the crisis rule fields round-trip as camelCase, and the
+    /// shipped triage catalog does NOT set them yet (Phase 1i registers it).
+    #[test]
+    fn the_crisis_rule_fields_round_trip_as_camel_case_and_are_unset_in_the_shipped_catalog() {
+        let one: Vec<CatalogEntry> = parse_catalog(
+            r#"[{"id":"s","name":"S","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/s.gguf",
+                 "blurb":"b","real":true,"supervised":true,
+                 "crisisRule":"replace","crisisKeepRoutes":["EMERGENCY","CLINICIAN"]}]"#,
+        )
+        .unwrap();
+        assert_eq!(one[0].crisis_rule.as_deref(), Some("replace"));
+        assert_eq!(
+            one[0].crisis_keep_routes,
+            Some(vec!["EMERGENCY".to_string(), "CLINICIAN".to_string()])
+        );
+        let back = serde_json::to_value(&one[0]).unwrap();
+        assert_eq!(back["crisisRule"], "replace");
+        assert_eq!(back["crisisKeepRoutes"][1], "CLINICIAN");
+
+        let h = triage_hero();
+        assert_eq!(
+            h.crisis_rule, None,
+            "Phase 1i registers the rule, not this round"
+        );
+        assert_eq!(h.crisis_keep_routes, None);
     }
 
     #[test]

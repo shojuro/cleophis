@@ -12,7 +12,7 @@ import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js'
 // gated on `entry.supervised === true`; the tutor never reaches any of it.
 import { applyGuard } from './triage/guard.js';
 import {
-  bannerKey, bannerText, canSendInChat, entryForChat, guardForPersistence, persistAssistantTurn,
+  bannerKey, bannerText, canSendInChat, crisisRuleFor, entryForChat, guardForPersistence, persistAssistantTurn,
   persistFailurePlan, provisionalStep, replayMessage, samplingFor, shouldCheckRoute,
   shouldGroundTurn, titlePlan,
 } from './triage-turn.js';
@@ -2412,7 +2412,14 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
     ? turn.userText
     : ([...state.chat.messages].reverse().find((x) => x.role === 'user')?.content ?? '');
   const verdict = supervised && shown
-    ? applyGuard({ userText: userTurn, replyText: shown, crisisLine: entry.crisisLine || undefined })
+    ? applyGuard({
+      userText: userTurn,
+      replyText: shown,
+      crisisLine: entry.crisisLine || undefined,
+      // Phase 1h M2: the catalog entry's optional `crisisRule` /
+      // `crisisKeepRoutes`. Absent -> `{}` -> append, the registered default.
+      ...crisisRuleFor(entry),
+    })
     : null;
   const display = verdict ? verdict.displayText : shown;
   if (verdict) {
@@ -2423,7 +2430,10 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
       // the prepend below is what puts the verdict's own banner up — and there
       // is never a moment with two.
       bubble.textContent = display;
-      bubble.prepend(bannerEl(verdict.banner));
+      // A null banner is the `replace` crisis rule's: the product's block stood
+      // in for the model's reply, and no route banner is drawn over text the
+      // model did not write. Every other verdict carries one of the four.
+      if (verdict.banner) bubble.prepend(bannerEl(verdict.banner));
     }
   }
 

@@ -82,6 +82,13 @@ export const TIMEFRAME_WITHHELD_ROW =
   'A stated time frame could not be removed, so the model\'s own text is not shown.';
 export const UNCLEAR_LINE_ROW = 'The model stated no disposition, so the product\'s line was added.';
 export const NO_CHANGES_ROW = 'Nothing was removed from this reply.';
+// Phase 1h M2, the `replace` crisis rule. Replaced: the model's reply is not on
+// screen at all, so the one row says that and nothing is listed about text the
+// reader cannot see. Kept: the reply is shown under the block, so its removals
+// stand and the last row says what went in ABOVE it.
+export const CRISIS_REPLACED_ROW =
+  'The product\'s crisis support replaced the model\'s reply, which is not shown.';
+export const CRISIS_LEADS_ROW = 'The product\'s crisis support was placed above the reply.';
 
 /**
  * What the guard did to this reply, in rows a person can read.
@@ -104,12 +111,14 @@ export const NO_CHANGES_ROW = 'Nothing was removed from this reply.';
  */
 export function receiptRows(guard) {
   if (!guard) return [];
+  if (guard.crisisReplaced === true && guard.replyShown === false) return [CRISIS_REPLACED_ROW];
   const rows = [];
   for (const sentence of guard.prohibitedRemoved ?? []) rows.push(`Removed: ${sentence}`);
   for (const phrase of guard.timeframeStripped ?? []) rows.push(`Time frame removed: ${phrase}`);
   if (guard.timeframeUnlocated) rows.push(TIMEFRAME_WITHHELD_ROW);
   if (guard.crisisLineAppended) rows.push(CRISIS_ADDED_ROW);
   if (guard.route === 'UNCLEAR') rows.push(UNCLEAR_LINE_ROW);
+  if (guard.crisisReplaced === true) rows.push(CRISIS_LEADS_ROW);
   return rows;
 }
 

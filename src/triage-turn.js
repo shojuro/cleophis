@@ -23,7 +23,10 @@
 // identity is a test rather than a claim: every function takes `supervised`
 // (or a verdict) explicitly and returns the same thing it returned before this
 // task when that flag is false.
-import { BANNERS, ROUTE_TO_BANNER, routeOfPrefix } from './triage/guard.js';
+import {
+  BANNERS, CRISIS_RULES, REPLACE_KEEP_ROUTES_DEFAULT, ROUTE_TO_BANNER, routeOfPrefix,
+} from './triage/guard.js';
+import { ROUTE } from './triage/detectors.mjs';
 
 /**
  * A fifth banner, and the only one that is NOT a disposition.
@@ -162,6 +165,36 @@ export function samplingFor({ entry = null, maxTokens = 0, temperature = 0 } = {
   return {
     maxTokens: Number.isFinite(s.maxTokens) ? s.maxTokens : maxTokens,
     temperature: Number.isFinite(s.temperature) ? s.temperature : temperature,
+  };
+}
+
+/**
+ * The crisis rule a catalog entry selects, as `applyGuard` options (Phase 1h M2).
+ *
+ * ABSENT MEANS APPEND, and it means it by passing NOTHING: the returned `{}`
+ * spreads into `applyGuard` as no options at all, so an entry without
+ * `crisisRule` produces the same twelve-key verdict, byte for byte, as before
+ * the option existed. Phase 1i registers the rule in the catalog; until then no
+ * shipped entry sets it.
+ *
+ * SANITISED, NOT REFUSED. `applyGuard` throws on an unknown rule or route,
+ * because a probe run measuring the wrong rule must fail. The app is the other
+ * case: a catalog typo must not lose a patient's reply in `finishStream`, so an
+ * unknown rule falls back to append (the registered behaviour) and an unknown
+ * or malformed keep set to the default, EMERGENCY only — the narrower set,
+ * which shows the product's block alone more often, never less.
+ *
+ * @returns {{crisisRule?: 'replace', replaceKeepRoutes?: string[]}}
+ */
+export function crisisRuleFor(entry) {
+  if (!entry || entry.supervised !== true) return {};
+  if (!CRISIS_RULES.includes(entry.crisisRule) || entry.crisisRule === 'append') return {};
+  const known = Object.values(ROUTE);
+  const keep = entry.crisisKeepRoutes;
+  const valid = Array.isArray(keep) && keep.length > 0 && keep.every((r) => known.includes(r));
+  return {
+    crisisRule: entry.crisisRule,
+    replaceKeepRoutes: valid ? [...keep] : [...REPLACE_KEEP_ROUTES_DEFAULT],
   };
 }
 
