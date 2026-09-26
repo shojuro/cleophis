@@ -9,7 +9,10 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { assembleMessages } from './prompt-assembly.js';
+import {
+  LOOKUP_N_CTX, LOOKUP_REPLY_TOKENS, LookupBudgetError, assembleLookupMessages, assembleMessages, lookupBudget,
+} from './prompt-assembly.js';
+import { estTokens } from './context-window.js';
 
 const promptFingerprint = (s) => createHash('sha256').update(String(s ?? '')).digest('hex').slice(0, 12);
 const NOTE = ' No documents are attached to this conversation, so you have no sources to cite.';
@@ -76,4 +79,66 @@ test('history reaches the model as {role, content} and nothing else, on both pat
   }
   // ...and the caller's own array is untouched.
   assert.strictEqual(history[1].id, 9);
+});
+
+/* ---------------- Phase 1h M6: the lookup mode ---------------- */
+
+const GROUNDED = 'You answer strictly from the numbered sources.\n\nThese sources are excerpts from: Paracetamol.\n\n[1] (Paracetamol, Dosage): Take 500mg.';
+
+test('lookup: the Rust-assembled grounded prompt is the system turn and the query the ONLY user turn', () => {
+  const { system, messages } = assembleLookupMessages({ groundedPrompt: GROUNDED, query: 'paracetamol' });
+  assert.strictEqual(system, GROUNDED);
+  assert.deepStrictEqual(messages, [
+    { role: 'system', content: GROUNDED },
+    { role: 'user', content: 'paracetamol' },
+  ]);
+});
+
+test('lookup: no history, no greeting, no catalog systemPrompt can reach the lookup assembly', () => {
+  // It takes no entry and no history at all: the arguments are the whole input.
+  const out = assembleLookupMessages({
+    groundedPrompt: GROUNDED, query: 'q',
+    entry: { systemPrompt: 'TRIAGE PROMPT', greeting: 'Hi' },
+    sent: [{ role: 'user', content: 'earlier triage turn' }],
+  });
+  const wire = JSON.stringify(out.messages);
+  assert.ok(!wire.includes('TRIAGE PROMPT') && !wire.includes('earlier triage turn') && !wire.includes('Hi'));
+  assert.strictEqual(out.messages.length, 2);
+});
+
+test('lookup: a missing grounded prompt is refused, never replaced by the triage prompt', () => {
+  for (const groundedPrompt of [null, undefined, '', '   ']) {
+    assert.throws(() => assembleLookupMessages({ groundedPrompt, query: 'q' }), /grounded prompt/);
+  }
+});
+
+test('lookup budget: system + user + 320 <= 2048, by the app\'s own estimator', () => {
+  assert.strictEqual(LOOKUP_N_CTX, 2048);
+  assert.strictEqual(LOOKUP_REPLY_TOKENS, 320);
+  const b = lookupBudget({ system: GROUNDED, query: 'paracetamol' });
+  assert.strictEqual(b.tokens, estTokens(GROUNDED) + estTokens('paracetamol') + 320);
+  assert.strictEqual(b.ok, true);
+  const { tokens } = assembleLookupMessages({ groundedPrompt: GROUNDED, query: 'paracetamol' });
+  assert.ok(tokens <= 2048);
+});
+
+test('lookup budget: exactly at the limit passes, one token over is a hard error', () => {
+  // estTokens(s) = ceil(len / 3.5) + 4. Query 'q' costs 5. So the system may
+  // cost 2048 - 320 - 5 = 1723 tokens: ceil(len/3.5) = 1719 -> len 6016 fits,
+  // len 6017 (ceil = 1720) is one over.
+  const atLimit = 'x'.repeat(6016);
+  assert.strictEqual(lookupBudget({ system: atLimit, query: 'q' }).tokens, 2048);
+  assert.doesNotThrow(() => assembleLookupMessages({ groundedPrompt: atLimit, query: 'q' }));
+  const over = 'x'.repeat(6017);
+  assert.strictEqual(lookupBudget({ system: over, query: 'q' }).ok, false);
+  assert.throws(() => assembleLookupMessages({ groundedPrompt: over, query: 'q' }), (e) => {
+    assert.ok(e instanceof LookupBudgetError);
+    assert.strictEqual(e.tokens, 2049);
+    return true;
+  });
+});
+
+test('triage mode is untouched: the fingerprint throw still guards the supervised prompt', () => {
+  const entry = { supervised: true, systemPrompt: 'drifted', promptFingerprint: 'deadbeefdead', greeting: 'g' };
+  assert.throws(() => assembleMessages({ entry, sent: [], fingerprint: promptFingerprint }), /prompt fingerprint mismatch/);
 });
