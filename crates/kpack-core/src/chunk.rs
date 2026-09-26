@@ -93,12 +93,47 @@ pub struct ChunkDraft {
     pub oversize_sentence: bool,
 }
 
+/// The two things the chunker needs from a tokenizer: a token count and the
+/// hard per-chunk ceiling. Every [`Embedder`] provides both (see
+/// [`chunk_document`]); a build that embeds nothing — the lexical-only
+/// reference pack (Phase 1h M4b, `crate::wordpiece::WordPieceTokenizer`) —
+/// implements this directly, so no embedder, mock or real, is involved.
+pub trait TokenCounter {
+    /// Token count of `text` under this tokenizer (the unit
+    /// [`ChunkConfig::target_tokens`] is measured in).
+    fn token_count(&self, text: &str) -> usize;
+    /// The largest `token_count` a chunk may have (the chunker splits
+    /// anything larger — module doc: "the ceiling is enforced pack-wide").
+    fn max_input_tokens(&self) -> usize;
+}
+
+/// [`TokenCounter`] view of an [`Embedder`]: its own tokenizer and ceiling.
+struct EmbedderTokens<'a>(&'a dyn Embedder);
+
+impl TokenCounter for EmbedderTokens<'_> {
+    fn token_count(&self, text: &str) -> usize {
+        self.0.token_count(text)
+    }
+    fn max_input_tokens(&self) -> usize {
+        self.0.max_input_tokens()
+    }
+}
+
 /// Chunk every section of `doc` independently (never across sections, spec
 /// §1.3 step 1) using `embedder`'s tokenizer for token counts and `cfg`'s
 /// window parameters. Within a section, each [`Block`] is walked in
 /// document order and chunked by its own kind-specific rule (see the module
 /// doc comment); blocks never merge into the same chunk.
+///
+/// Exactly [`chunk_document_with`] over the embedder's tokenizer — the
+/// embedder is never asked to embed anything here.
 pub fn chunk_document(doc: &Document, embedder: &dyn Embedder, cfg: &ChunkConfig) -> Vec<ChunkDraft> {
+    chunk_document_with(doc, &EmbedderTokens(embedder), cfg)
+}
+
+/// [`chunk_document`] over a bare [`TokenCounter`] — the tokenizer-only
+/// path (Phase 1h M4b). Same rules, same output for the same counts.
+pub fn chunk_document_with(doc: &Document, embedder: &dyn TokenCounter, cfg: &ChunkConfig) -> Vec<ChunkDraft> {
     let mut out = Vec::new();
     for section in &doc.sections {
         let section_path = section.section_path_string();
@@ -136,7 +171,7 @@ fn push_chunk_within_ceiling(
     section_path: &str,
     locator: &str,
     text: String,
-    embedder: &dyn Embedder,
+    embedder: &dyn TokenCounter,
     ceiling: usize,
     out: &mut Vec<ChunkDraft>,
 ) {
@@ -183,7 +218,7 @@ fn chunk_paragraph(
     text: &str,
     locator: &str,
     section_path: &str,
-    embedder: &dyn Embedder,
+    embedder: &dyn TokenCounter,
     cfg: &ChunkConfig,
     out: &mut Vec<ChunkDraft>,
 ) {
@@ -348,7 +383,7 @@ fn chunk_paragraph(
 /// Pure and deterministic in `text` + `ceiling` alone (no randomness, no
 /// `HashMap`/hashing-order dependence) — required for the pack's
 /// byte-identical-rebuild guarantee (spec's K8 determinism invariant).
-fn split_to_ceiling(text: &str, embedder: &dyn Embedder, ceiling: usize) -> Vec<(String, usize)> {
+fn split_to_ceiling(text: &str, embedder: &dyn TokenCounter, ceiling: usize) -> Vec<(String, usize)> {
     let mut pieces = Vec::new();
     let mut current = String::new();
 
@@ -398,7 +433,7 @@ fn split_to_ceiling(text: &str, embedder: &dyn Embedder, ceiling: usize) -> Vec<
 /// `ceiling`, that char is still emitted alone (the minimum splittable
 /// unit) rather than looping forever — `ceiling` simply can't be honored
 /// below one code point in that case.
-fn split_word_to_ceiling(word: &str, embedder: &dyn Embedder, ceiling: usize) -> Vec<(String, usize)> {
+fn split_word_to_ceiling(word: &str, embedder: &dyn TokenCounter, ceiling: usize) -> Vec<(String, usize)> {
     let mut boundaries: Vec<usize> = word.char_indices().map(|(i, _)| i).collect();
     boundaries.push(word.len());
 
@@ -562,7 +597,7 @@ fn chunk_table(
     rows: &[Vec<String>],
     locator: &str,
     section_path: &str,
-    embedder: &dyn Embedder,
+    embedder: &dyn TokenCounter,
     cfg: &ChunkConfig,
     out: &mut Vec<ChunkDraft>,
 ) {
@@ -609,7 +644,7 @@ fn push_table_chunk(
     rows: &[String],
     locator: &str,
     section_path: &str,
-    embedder: &dyn Embedder,
+    embedder: &dyn TokenCounter,
     ceiling: usize,
     out: &mut Vec<ChunkDraft>,
 ) {
@@ -1082,7 +1117,7 @@ mod tests {
         let text = words(23, "word");
         assert!(embedder.token_count(&text) > 5);
 
-        let pieces = split_to_ceiling(&text, &embedder, 5);
+        let pieces = split_to_ceiling(&text, &EmbedderTokens(&embedder), 5);
         assert!(pieces.len() > 1, "expected the run split into multiple pieces");
         for (piece_text, piece_tokens) in &pieces {
             assert_eq!(*piece_tokens, embedder.token_count(piece_text));
@@ -1101,8 +1136,8 @@ mod tests {
     fn t16_split_to_ceiling_is_deterministic() {
         let embedder = MockEmbedder::with_max_input_tokens(8, 7);
         let text = words(41, "tok");
-        let first = split_to_ceiling(&text, &embedder, 7);
-        let second = split_to_ceiling(&text, &embedder, 7);
+        let first = split_to_ceiling(&text, &EmbedderTokens(&embedder), 7);
+        let second = split_to_ceiling(&text, &EmbedderTokens(&embedder), 7);
         assert_eq!(first, second);
         assert!(first.len() > 1);
     }
@@ -1122,7 +1157,7 @@ mod tests {
         let word: String = "café".repeat(10);
         assert!(embedder.token_count(&word) > ceiling);
 
-        let pieces = split_word_to_ceiling(&word, &embedder, ceiling);
+        let pieces = split_word_to_ceiling(&word, &EmbedderTokens(&embedder), ceiling);
         assert!(!pieces.is_empty());
         let mut reconstructed = String::new();
         for (piece_text, piece_tokens) in &pieces {
@@ -1312,5 +1347,45 @@ mod tests {
         let second = chunk_document(&doc, &embedder, &cfg);
         assert_eq!(first, second);
         assert!(first.len() > 2, "expected multiple split pieces from both the code and table blocks");
+    }
+
+    // 23. Phase 1h M4b: the tokenizer-only seam. `chunk_document_with` over
+    // a bare `TokenCounter` (no embedder anywhere) chunks byte-identically
+    // to `chunk_document` over an `Embedder` whose tokenizer counts the same
+    // way — `chunk_document` IS `chunk_document_with` behind an adapter.
+    #[test]
+    fn t23_token_counter_seam_chunks_exactly_like_the_embedder_path() {
+        struct Words {
+            ceiling: usize,
+        }
+        impl TokenCounter for Words {
+            fn token_count(&self, text: &str) -> usize {
+                text.split_whitespace().count()
+            }
+            fn max_input_tokens(&self) -> usize {
+                self.ceiling
+            }
+        }
+        let long: String = (0..90).map(|n| format!("Sentence {n} is here.")).collect::<Vec<_>>().join(" ");
+        let doc = Document {
+            title: "Seam".to_string(),
+            sections: vec![Section {
+                path: vec!["Ch".to_string()],
+                blocks: vec![
+                    Block::Paragraph { text: long, locator: "p1".to_string() },
+                    Block::Table {
+                        header: vec!["A".to_string(), "B".to_string()],
+                        rows: (0..40).map(|i| vec![format!("r{i}"), "x y z".to_string()]).collect(),
+                        locator: "t1".to_string(),
+                    },
+                    Block::Code { text: words(70, "tok"), locator: "c1".to_string() },
+                ],
+            }],
+        };
+        let cfg = ChunkConfig { target_tokens: 40, overlap_pct: 18 };
+        let via_embedder = chunk_document(&doc, &MockEmbedder::with_max_input_tokens(8, 50), &cfg);
+        let via_counter = chunk_document_with(&doc, &Words { ceiling: 50 }, &cfg);
+        assert!(via_embedder.len() > 3);
+        assert_eq!(via_counter, via_embedder);
     }
 }

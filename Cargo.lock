@@ -2437,6 +2437,7 @@ version = "0.1.0"
 dependencies = [
  "kpack-core",
  "llama-cpp-2",
+ "serde_json",
 ]
 
 [[package]]

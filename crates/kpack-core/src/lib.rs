@@ -66,12 +66,14 @@ pub mod parse;
 pub mod retrieve;
 pub mod sign;
 pub mod tree;
+pub mod wordpiece;
+mod wordpiece_tables;
 
 pub use build::{
     build_pack, build_pack_with_progress, document_from_pages, passage_input, sha256_hex,
     BuildMeta, BuildProgress, Error as BuildError, SourceContent, SourceInput,
 };
-pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
+pub use chunk::{chunk_document, chunk_document_with, ChunkConfig, ChunkDraft, TokenCounter};
 pub use contract::{
     assemble_system, contract_by_id, contract_for, contract_version, doc_context_for,
     doc_context_line, no_evidence_marker, refusal_with_offer, render_sources, render_sources_with,
@@ -96,3 +98,4 @@ pub use retrieve::{
 };
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};
+pub use wordpiece::{WordPieceTokenizer, BGE_MAX_INPUT_TOKENS};
