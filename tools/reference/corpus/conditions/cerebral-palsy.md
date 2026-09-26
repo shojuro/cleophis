@@ -106,13 +106,6 @@ Find out more about:
 
 Your care team may also be able to provide details of support groups in your local area.
 
-## Video: Cerebral palsy
-
-In this video, a cerebral palsy expert explains the causes, symptoms and treatment.
-
-Media last reviewed: 4 April 2023
-Media review due: 4 April 2026
-
 ## Symptoms
 
 **The symptoms of cerebral palsy are not usually obvious just after a baby is born. They normally become noticeable from an early age.**

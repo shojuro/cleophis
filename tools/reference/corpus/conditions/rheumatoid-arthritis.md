@@ -75,13 +75,6 @@ Making sure that rheumatoid arthritis is well controlled can help to reduce your
 
 Find out more about complications of rheumatoid arthritis.
 
-## Video: rheumatoid arthritis
-
-In this video, a rheumatologist describes the effects of rheumatoid arthritis and the symptoms and treatments.
-
-Media last reviewed: 4 April 2023
-Media review due: 4 April 2026
-
 ## Symptoms
 
 **The main symptoms of rheumatoid arthritis are joint pain, swelling and stiffness. It may also cause more general symptoms, and inflammation in other parts of the body.**

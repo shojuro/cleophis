@@ -73,13 +73,6 @@ If you have a nosebleed, you should:
 
 Holding an icepack (or a bag of frozen peas wrapped in a tea towel) on the top of the nose may help reduce the blood flow. But the evidence to show it works is not very strong.
 
-### Video: How to treat a nosebleed
-
-This video shows you how to treat a nosebleed.
-
-Media last reviewed: 1 June 2026
-Media review due: 1 June 2029
-
 ## Treatment for nosebleeds
 
 If you have a nosebleed and a doctor can see where the blood is coming from, they may use a stick with a chemical on it to stop the bleeding. This is pushed into the nostril to seal the area.

@@ -102,10 +102,3 @@ A grommet is a small tube that's placed in your child's ear during surgery. It d
 The grommet should fall out naturally within 6 to 12 months as your child's ear gets better.
 
 Great Ormond Street Hospital (GOSH) has more information about treating glue ear with grommets
-
-## Video: What is glue ear?
-
-This animation explains in detail what glue ear is, what causes it and how it's treated.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027

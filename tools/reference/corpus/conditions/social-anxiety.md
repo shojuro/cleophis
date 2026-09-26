@@ -68,13 +68,6 @@ Read more about anxiety, fear and panic and how to manage them.
 
 You may also find it useful to read an NHS self-help guide for social anxiety.
 
-### Audio: How to cope with anxiety – a relaxation technique
-
-In this audio guide, a doctor explains how you can take control of anxiety.
-
-Media last reviewed: 5 April 2025
-Media review due: 5 April 2028
-
 ## Treatments for social anxiety
 
 A number of treatments are available for social anxiety.
@@ -118,10 +111,3 @@ Treatments for social anxiety in children are similar to those for teenagers and
 Therapy will be tailored to your child's age and will often involve help from you.
 
 You may be given training and self-help materials to use between sessions. It may also take place in a small group.
-
-## Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to talking therapies services for stress, anxiety or depression. Includes British Sign Language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029

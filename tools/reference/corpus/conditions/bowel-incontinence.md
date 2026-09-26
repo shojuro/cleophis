@@ -165,10 +165,3 @@ You may get it for reasons such as if you:
 It can be a result of more than one of these things.
 
 Children can also get bowel incontinence. Sometimes they avoid going to the toilet, which means their poo hardens and runny poo leaks out, or they do not make it to the toilet in time.
-
-### Bowel incontinence
-
-In this video, an expert explains the condition. Bowel or faecal incontinence is more common than you might think.
-
-Media last reviewed: 16 April 2024
-Media review due: 16 April 2027

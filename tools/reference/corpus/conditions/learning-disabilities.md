@@ -111,13 +111,6 @@ If they say no, ask your local community learning disability team to help you ge
 
 You can also ask your doctor if there's another GP surgery in your area that provides health checks.
 
-### Video: Annual health checks for people with a learning disability
-
-This video explains what happens during an annual health check.
-
-Media last reviewed: 28 April 2026
-Media review due: 28 April 2029
-
 ### What happens during the annual health check?
 
 During the health check, a doctor or nurse will:

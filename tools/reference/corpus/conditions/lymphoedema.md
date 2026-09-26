@@ -112,13 +112,6 @@ Visit the Lymphoedema Support Network website for information and advice. They c
 
 If you continue with your treatment plan, your symptoms should eventually become less noticeable.
 
-## Video: lymphoedema - Philippa's story
-
-In this video, Philippa describes how she lives with primary lymphoedema.
-
-Media last reviewed: 2 December 2023
-Media review due: 2 December 2026
-
 ## Causes
 
 **There are 2 types of lymphoedema – primary and secondary lymphoedema – which have different causes.**

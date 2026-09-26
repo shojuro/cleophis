@@ -346,10 +346,3 @@ These are strains of bacteria that have developed resistance to many different t
 These types of infections can be serious and challenging to treat, and are becoming an increasing cause of disability and death across the world.
 
 The biggest worry is that new strains of bacteria may emerge that cannot be treated by any existing antibiotics.
-
-### Video: antibiotics do not work for everything
-
-This video explains why antibiotics do not work on viral infections. When it comes to antibiotics take your doctor’s advice.
-
-Media last reviewed: 25 January 2026
-Media review due: 25 January 2029

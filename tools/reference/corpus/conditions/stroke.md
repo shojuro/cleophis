@@ -147,13 +147,6 @@ Looking after someone who has had a stroke can be difficult, frustrating and lon
 - Different Strokes charity: life after stroke (PDF only, 25 MB)
 - Different Strokes charity: caring for somebody after a stroke (PDF only, 1.7 MB)
 
-### Jim's story
-
-In this video, Jim talks about his experience with a stroke and proves that life does go on.
-
-Media last reviewed: 16 April 2024
-Media review due: 16 April 2027
-
 ## Causes of a stroke
 
 ### What causes a stroke
@@ -193,13 +186,6 @@ If you have a stroke, or a transient ischaemic stroke (TIA, or mini-stroke), you
 - do not forget to take medicines for any underlying conditions such as high blood pressure or diabetes – talk to a GP if you have any problems with your medicine
 
 Find out more about your diet, eating well, exercise and drinking less.
-
-### Video: what is a stroke?
-
-This is an animated video explaining what happens when you have a stroke.
-
-Media last reviewed: 3 August 2024
-Media review due: 3 August 2027
 
 ## Support after a stroke
 

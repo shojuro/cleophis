@@ -89,13 +89,6 @@ Read about the complications of ankylosing spondylitis.
 
 The National Axial Spondyloarthritis Society (NASS) has information on living with the condition, including advice on working, travelling and driving.
 
-## Video: Back stretches
-
-In this video, a physiotherapist shows some simple back stretches to help prevent aches and pains.
-
-Media last reviewed: 16 November 2023
-Media review due: 16 November 2026
-
 **See exercise video safety information**
 
 The exercises in this series of videos are suitable for most people in good health with a reasonable level of fitness.

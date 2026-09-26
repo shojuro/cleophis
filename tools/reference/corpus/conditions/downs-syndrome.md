@@ -31,13 +31,6 @@ But, like everyone, people with Down's syndrome have:
 - things they like and dislike
 - things that make them who they are
 
-### Having a child with Down's syndrome
-
-3 families share their experience of having a child with Down's syndrome
-
-Media last reviewed: 13 May 2025
-Media review due: 13 May 2028
-
 ## Having a baby with Down's syndrome
 
 In almost all cases, Down's syndrome does not run in families.
@@ -124,13 +117,6 @@ For families with pre-school children with additional needs.
 - Visit their website: www.portage.org.uk
 - Find Portage services in your area
 
-### Having a child with Down's syndrome
-
-3 families share their experience of having a child with Down's syndrome
-
-Media last reviewed: 13 May 2025
-Media review due: 13 May 2028
-
 ## How to help children and young people
 
 ### Things you can do to help
@@ -213,13 +199,6 @@ Having an EHC plan can either help:
 - you apply for a place at a school that's better for your child
 
 Find out how to get an EHC plan on the GOV.UK website
-
-### Having a child with Down's syndrome
-
-3 families share their experience of having a child with Down's syndrome
-
-Media last reviewed: 13 May 2025
-Media review due: 13 May 2028
 
 ## Support for adults
 
@@ -345,13 +324,6 @@ To support and bring together families with disabled children.
 - Phone: 0808 808 3555
 - Website: www.contact.org.uk
 - Email: info@contact.org.uk
-
-### Having a child with Down's syndrome
-
-3 families share their experience of having a child with Down's syndrome
-
-Media last reviewed: 13 May 2025
-Media review due: 13 May 2028
 
 ## Other health conditions
 

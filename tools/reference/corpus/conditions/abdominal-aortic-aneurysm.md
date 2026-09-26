@@ -114,10 +114,3 @@ You’re more at risk if you:
 - have a condition such as Marfan syndrome
 
 Sometimes an abdominal aortic aneurysm can be caused by an infection, but this is rare.
-
-## Video: Abdominal aortic aneurysm
-
-This video shows what an abdominal aortic aneurysm looks like.
-
-Media last reviewed: 10 October 2024
-Media review due: 10 October 2027

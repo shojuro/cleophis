@@ -106,13 +106,6 @@ We do not know exactly what causes anorexia and other eating disorders. You may 
 - you have anxiety, low self-esteem, an obsessive personality or are a perfectionist
 - you have been emotionally, physically or sexually abused
 
-### Video: Anorexia – Katie's story
-
-In this video, Katie shares her experiences of life with anorexia and explains how she recovered.
-
-Media last reviewed: 2 August 2026
-Media review due: 2 August 2029
-
 ## Symptoms - Anorexia nervosa
 
 **The main symptom of anorexia nervosa (often called anorexia) is deliberately losing a lot of weight or keeping your body weight much lower than is healthy for your age and height.**

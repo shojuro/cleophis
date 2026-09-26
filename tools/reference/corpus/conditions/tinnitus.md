@@ -101,10 +101,3 @@ You'll usually be offered digital CBT first, which is a type of CBT that's deliv
 Tinnitus retraining therapy may be available on the NHS for people with severe or persistent tinnitus. It's unclear if tinnitus retraining therapy works for everyone. It's widely available privately.
 
 If you have hearing loss, hearing aids may be recommended.
-
-## Video: Tinnitus
-
-In this video, learn about tinnitus, its possible causes and the effects and how to deal with it.
-
-Media last reviewed: 1 June 2024
-Media review due: 1 June 2027

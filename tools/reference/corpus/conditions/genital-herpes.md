@@ -186,10 +186,3 @@ You may be offered antiviral treatment:
 - from diagnosis until the birth if you first get herpes after week 28 of pregnancy
 
 Many women with genital herpes have a vaginal delivery. You may be offered a caesarean, depending on your circumstances.
-
-## Video: Genital herpes - Marian's story
-
-In this video, Marian, from Herpes Viruses Association, talks about the symptoms, treatment and issues surrounding herpes.
-
-Media last reviewed: 13 January 2024
-Media review due: 13 January 2027

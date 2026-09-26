@@ -252,13 +252,6 @@ As a guide, the ideal range is:
 
 It's not possible to achieve these recommended ranges all the time. But if you can keep your blood glucose levels within these ranges for around 70% of the time, this will reduce your chance of getting complications in the future.
 
-##### Video: How to check your blood glucose level
-
-This video shows you how to check your blood glucose level.
-
-Media last reviewed: 16 April 2024
-Media review due: 16 April 2027
-
 #### Important: Diabetes and driving
 
 If you drive, you'll need to tell the DVLA you have diabetes and take insulin. The DVLA will not usually stop you driving, but you'll need to show you can manage hypos safely. Most people with diabetes can continue to drive.
@@ -288,13 +281,6 @@ You'll take insulin using an insulin pen or an insulin pump. It does not usually
 You'll need to adjust your dose depending on your food and drink, your blood glucose and things like how much exercise you do.
 
 Your diabetes nurse will show you how to use your pen or pump. It's important to change where you inject or put your pump each time, and use the right technique, to help prevent problems.
-
-##### Video: How to inject insulin
-
-This video shows you how to inject insulin.
-
-Media last reviewed: 16 April 2024
-Media review due: 16 April 2027
 
 ##### Find out more
 

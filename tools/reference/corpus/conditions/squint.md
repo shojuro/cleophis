@@ -152,10 +152,3 @@ Risks include:
 - loss of vision – this is very rare
 
 Speak to the surgeon about the risks of surgery before the operation.
-
-### Video: childhood squint
-
-In this video, an expert describes the causes, symptoms and treatment for a squint in children.
-
-Media last reviewed: 1 June 2026
-Media review due: 1 June 2029

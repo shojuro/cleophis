@@ -47,13 +47,6 @@ If you're pregnant, call your maternity unit if you have the number.
 
 If you've recently given birth or cannot call your maternity unit, call 111.
 
-### Video: what is pre-eclampsia and what are the warning signs?
-
-In this video, a midwife explains the warning signs of pre-eclampsia.
-
-Media last reviewed: 8 July 2026
-Media review due: 8 July 2029
-
 ## Tests for pre-eclampsia
 
 Tests for pre-eclampsia include:

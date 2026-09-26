@@ -77,10 +77,3 @@ The British Association for Behavioural and Cognitive Psychotherapies has a regi
 
 - Read more about getting help for anxiety, fear and panic.
 - The mental health charity Mind has information on anxiety and panic attacks.
-
-## Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to psychological therapies services for stress, anxiety or depression. Includes British Sign Language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029

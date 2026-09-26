@@ -112,13 +112,6 @@ Try to stay at home and avoid contact with other people if you have a high tempe
 
 **See how to wash your hands correctly**
 
-### Video: how to wash your hands
-
-Watch this video to find out the best way to wash your hands.
-
-Media last reviewed: 15 March 2026
-Media review due: 15 March 2029
-
 ## Flu vaccine
 
 The flu vaccine helps protect against flu.

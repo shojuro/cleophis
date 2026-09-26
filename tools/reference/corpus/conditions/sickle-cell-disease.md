@@ -88,13 +88,6 @@ It can lead to health problems like strokes, serious infections and lung problem
 
 Overall, the life expectancy for someone with sickle cell disease tends to be shorter than normal, but this can vary depending on the exact type of sickle cell disease they have, how it's treated and what problems they experience.
 
-## Video: sickle cell anaemia
-
-This video explains what sickle cell anaemia is and Junior describes living with the condition.
-
-Media last reviewed: 3 August 2024
-Media review due: 3 August 2027
-
 ## Carriers of sickle cell (sickle cell trait)
 
 A carrier of sickle cell is someone who carries the gene that causes sickle cell disease but does not have sickle cell disease themselves. It's also known as having the sickle cell trait.
@@ -456,13 +449,6 @@ Contact your GP or healthcare team straight away if you develop any of these sym
 If this is not possible, go to your nearest A&E. If you're not well enough to travel to hospital yourself, dial 999 for an ambulance.
 
 Make sure that the medical staff looking after you know you have sickle cell disease.
-
-### Video: sickle cell anaemia - Pamela's story
-
-In this video, Pamela talks about how to cope with sickle cell anaemia.
-
-Media last reviewed: 1 June 2026
-Media review due: 1 June 2029
 
 ## Carriers
 

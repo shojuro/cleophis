@@ -215,10 +215,3 @@ Website for children and young people with asthma.
 
 - Website: www.beatasthma.co.uk
 - Beat Asthma: information for families and children
-
-## Video: Asthma
-
-Animated video about asthma, which is a chronic condition affecting the lungs.
-
-Media last reviewed: 1 May 2024
-Media review due: 1 May 2027

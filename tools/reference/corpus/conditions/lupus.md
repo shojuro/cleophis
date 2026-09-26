@@ -126,10 +126,3 @@ More women than men get lupus, and it's more common in women with an African, Ca
 Lupus can cause complications in pregnancy.
 
 See a doctor before trying to get pregnant. They can discuss the risks and check if your medicine needs to be changed.
-
-## Video: lupus in children
-
-Watch this video to find out how lupus (an autoimmune condition) affects children.
-
-Media last reviewed: 10 August 2024
-Media review due: 10 August 2027

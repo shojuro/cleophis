@@ -70,13 +70,6 @@ Find out more about hay fever and allergic rhinitis from Allergy UK
 - your symptoms are getting worse
 - your symptoms do not improve after taking medicines from the pharmacy
 
-## Video: How to treat hay fever
-
-In this video, a pharmacist explains how to treat hay fever.
-
-Media last reviewed: 26 June 2025
-Media review due: 26 June 2028
-
 ## Treatments for hay fever from a GP
 
 The GP might prescribe a steroid treatment if you have hay fever.

@@ -88,13 +88,6 @@ These include:
 - limiting alcohol
 - not smoking
 
-## Video: transient ischaemic attack (TIA)
-
-This video explains the causes of TIA, or mini-stroke, and how to spot the symptoms.
-
-Media last reviewed: 28 November 2024
-Media review due: 28 November 2027
-
 ## Symptoms
 
 **The symptoms of a transient ischaemic attack (TIA) are the same as those of a** **stroke****, but they only last for a few minutes or hours.**

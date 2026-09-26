@@ -89,13 +89,6 @@ Back pain often improves on its own within a few weeks. There are things you can
 
 There are specific exercises and stretches you can do to help with back pain. But stop if your pain gets worse and see a GP for advice.
 
-### Video: Back stretches
-
-In this video, a physiotherapist shows some simple back stretches to help prevent aches and pains.
-
-Media last reviewed: 16 November 2023
-Media review due: 16 November 2026
-
 Other places to find back pain exercises include:
 
 - NHS back pain pilates video workout

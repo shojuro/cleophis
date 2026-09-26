@@ -134,27 +134,32 @@ How it behaves:
 - **What it drops.** Navigation, breadcrumbs, "More in" and related links,
   action links, images, figures, video, iframes, scripts and the "Page last
   reviewed" line. The review dates move to `sources[].last_reviewed`.
+- **Video blocks.** Each NHS video block (`div.app-brightcove-video`) is
+  dropped whole: its "Video: ..." heading, its one-line description and its
+  "Media last reviewed" and "Media review due" lines. They carry no
+  reference content, they would pollute lexical retrieval, and the dates
+  would read as citable. Task M4b removed them from about 90 bodies with an
+  offline re-render; a committed-corpus test keeps them out.
 - **Determinism.** Entries follow index order and sub-pages follow
   first-link order. The body carries no fetch date. JSON is written with sorted
   keys. An `--offline` re-render is byte-identical.
 - **Aliases.** Index entries that redirect to one page collapse into one
   entry, and the extra titles become aliases.
-- **Dates the NHS prints in the page.** Text the NHS itself dates is kept
-  as published. About 90 bodies end with a video block's "Media last
-  reviewed" and "Media review due" lines. Those lines change when the NHS
-  re-reviews the media, which will change those files' content hashes on
-  a refresh.
+- **Dates the NHS prints in the page.** Apart from the video blocks, text
+  the NHS itself dates is kept as published.
 
 After a full run, commit `tools/reference/corpus/`.
 
 The committed corpus came from the fetch of 2026-09-26 (UTC). That run
-made 2,693 network requests in about an hour, with no back-offs.
+made 2,693 network requests in about an hour, with no back-offs. It was
+re-rendered offline from the same cache on 2026-09-27 (Task M4b) to drop
+the video blocks. The byte counts below are after that re-render.
 
 | Section | Index links | Entries | Pages | Bytes |
 |---|---|---|---|---|
-| Medicines A-Z | 262 | 259 | 1,365 | 4,446,166 |
-| Health A-Z | 682 | 682 | 1,380 | 5,473,256 |
-| Total | 944 | 941 | 2,745 | 9,919,422 |
+| Medicines A-Z | 262 | 259 | 1,365 | 4,445,497 |
+| Health A-Z | 682 | 682 | 1,380 | 5,450,243 |
+| Total | 944 | 941 | 2,745 | 9,895,740 |
 
 Three Medicines A-Z links do not become entries:
 

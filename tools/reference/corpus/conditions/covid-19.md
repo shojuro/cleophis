@@ -89,13 +89,6 @@ It’s not always possible to treat COVID-19. But there are things you can do to
 
 **Watch a video to find out how you can help relieve breathlessness**
 
-#### Video: tips for breathlessness
-
-Find out how you can help relieve breathlessness.
-
-Media last reviewed: 2 June 2026
-Media review due: 2 June 2029
-
 #### A pharmacist can help with a cough
 
 If you have a cough, you can ask a pharmacist for advice about cough treatments.

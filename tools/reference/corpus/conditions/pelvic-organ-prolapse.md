@@ -90,13 +90,6 @@ There are things you can do yourself to help with pelvic organ prolapse.
 
 - do not smoke – stopping smoking means you're less likely to have a persistent cough that can put pressure on your pelvic floor
 
-### Video: How to do pelvic floor exercises
-
-In this video, a physiotherapist explains how to do pelvic floor exercises.
-
-Media last reviewed: 20 October 2023
-Media review due: 20 October 2026
-
 ## Causes of pelvic organ prolapse
 
 Pelvic organ prolapse can happen when the pelvic floor muscles weaken.

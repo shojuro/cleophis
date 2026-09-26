@@ -119,13 +119,6 @@ External radiotherapy is often given in short sessions, once a day from Monday t
 
 This is usually carried out for up to 7 weeks. You won't need to stay in hospital overnight between these appointments.
 
-#### Video: cancer treatment - what happens during radiotherapy?
-
-In this video, an expert describes what happens and advises what questions to ask if you're referred for radiotherapy.
-
-Media last reviewed: 6 June 2024
-Media review due: 6 June 2027
-
 Sometimes, internal radiotherapy may be needed if nasopharyngeal cancer has returned after initial treatment.
 
 A radioactive source is put into or near the cancerous area and left in place for anywhere from a few minutes to a few days.

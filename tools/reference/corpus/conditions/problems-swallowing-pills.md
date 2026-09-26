@@ -35,20 +35,6 @@ sources: [{"last_reviewed": "31 August 2023", "retrieved": "2026-09-26", "title"
 
 Do not try these techniques if you also have difficulty swallowing food and drink (not just pills), as you might choke. See a pharmacist or GP for advice.
 
-### Video: Problems swallowing pills - Lean forward technique
-
-This video shows how to swallow a pill using the "lean forward" technique.
-
-Media last reviewed: 31 October 2023
-Media review due: 31 October 2026
-
-### Video: Problems swallowing pills - Pop bottle technique
-
-This video shows how to swallow a pill using the "pop bottle" technique.
-
-Media last reviewed: 31 October 2023
-Media review due: 31 October 2026
-
 ## A pharmacist can help if you cannot swallow pills
 
 A pharmacist can advise you about:

@@ -83,13 +83,6 @@ You can refer yourself directly to an NHS talking therapies service without a re
 - Find an NHS talking therapies service
 - Mind website: treatment for phobias (including hypnotherapy for phobias)
 
-### Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to talking therapies services for stress, anxiety or depression. Includes British Sign language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029
-
 ## Causes of a phobia
 
 It’s not always clear why some phobias start but many can be linked to a frightening event or stressful situation. They usually develop as a child, teenager or young adult.

@@ -181,13 +181,6 @@ Depression can cause many symptoms, including:
 
 If you think you may be depressed, it's important to get help from a GP or your fibromyalgia healthcare professional, if you have been seeing one.
 
-### Video: fibromyalgia - Suzanne's story
-
-In this video, Suzanne talks about how fibromyalgia has affected her life and how it can be treated.
-
-Media last reviewed: 1 February 2024
-Media review due: 1 February 2027
-
 ## Causes
 
 **It's not clear why some people develop fibromyalgia. The exact cause is unknown, but it's likely that a number of factors are involved.**

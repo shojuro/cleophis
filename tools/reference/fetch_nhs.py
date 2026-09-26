@@ -32,11 +32,13 @@ that). Only https://www.nhs.uk/ is ever requested.
 DETERMINISM. Output depends only on the cached HTML: stable ordering (index
 order for entries, first-link order for sub-pages), no fetch timestamps in
 the body (the retrieval date lives in the front matter and comes from the
-cache, not the clock), JSON written with sorted keys. Page text the NHS
-itself dates is kept as published — notably ~90 bodies end with a video
-block's "Media last reviewed: <date>" lines, which WILL change when the NHS
-re-reviews the media. Re-running
-`--offline` over the same cache is byte-identical.
+cache, not the clock), JSON written with sorted keys. The NHS video blocks
+(`div.app-brightcove-video`: a "Video: ..." heading, a one-line description,
+the player and its "Media last reviewed" / "Media review due" dates) are
+dropped whole (Task M4b step 0): they carry no reference content, would
+pollute lexical retrieval, and their dates would read as citable. Other page
+text the NHS itself dates is kept as published. Re-running `--offline` over
+the same cache is byte-identical.
 
 Stdlib only (html.parser, urllib) — no new dependency for the pipeline.
 
@@ -285,6 +287,11 @@ DROP_CLASS_PARTS = (
     "nhsuk-breadcrumb", "nhsuk-back-link", "nhsuk-contents-list", "nhsuk-pagination", "hub-key-links",
     "related-links", "sibling-nav", "nhsuk-action-link", "nhsuk-review-date", "nhsuk-video", "nhsuk-image",
     "nhsuk-card--clickable", "nhsuk-caption-xl", "nhsuk-skip-link", "app-feedback", "nhsuk-promo",
+    # Task M4b step 0: the brightcove video block, whole — its "Video: ..."
+    # heading, the one-line description, the player, and the "Media last
+    # reviewed" / "Media review due" dates (substring match also covers
+    # `app-brightcove-videoplayer` and `app-brightcove-video--date`).
+    "app-brightcove-video",
 )
 DROP_IDS = {"sibling-nav", "nhsuk-feedback", "feedback"}
 BLOCK_TAGS = {

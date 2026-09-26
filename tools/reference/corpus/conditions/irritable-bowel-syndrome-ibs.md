@@ -23,13 +23,6 @@ IBS (irritable bowel syndrome) is a common condition that affects the digestive 
 - Diet changes and medicines can often help control the symptoms.
 - The exact cause is unknown – it's been linked to things like food passing through your gut too quickly or too slowly, gastroenteritis, oversensitivity in your gut, stress and a family history of IBS.
 
-### Video: What is IBS?
-
-In this video, a specialist stomach doctor (gastroenterologist) talks about IBS symptoms and what treatment may be offered.
-
-Media last reviewed: 17 October 2025
-Media review due: 17 October 2028
-
 ## Symptoms of IBS (irritable bowel syndrome)
 
 ### Main symptoms of IBS (irritable bowel syndrome)
@@ -186,13 +179,6 @@ To help ease constipation, you can:
 - you need to avoid lots of different foods to control your IBS symptoms
 
 They may refer you to a dietitian or specialist for advice, and can also suggest other treatments to try.
-
-### Video: How to treat IBS
-
-In this video, a specialist stomach doctor (gastroenterologist) talks about things you can do to help with IBS symptoms.
-
-Media last reviewed: 17 October 2025
-Media review due: 17 October 2028
 
 ## Further help and support for IBS (irritable bowel syndrome)
 

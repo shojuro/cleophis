@@ -112,13 +112,6 @@ Our guide to care and support explains your options and where you can get suppor
 
 You can also read more about working and supporting someone’s health or care on GOV.UK.
 
-## Video: Parkinson's disease - Karen's story
-
-This video explores the effect that Parkinson's has had on Karen's life.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027
-
 ## Symptoms
 
 **The symptoms of Parkinson's disease usually develop gradually and are mild at first.**

@@ -144,13 +144,6 @@ Fabricated or induced illness, which used to be known as Munchausen syndrome by 
 
 This is where a person fakes or induces illness in a person under their care, such as their child.
 
-### Video: Munchausen syndrome
-
-In this video, an expert discusses Munchausen syndrome and Munchausen by proxy (fabricated or induced illness).
-
-Media last reviewed: 7 December 2024
-Media review due: 7 December 2027
-
 ## Signs and symptoms - Munchausen syndrome
 
 **Signs and symptoms of Munchausen syndrome may include pretending to be ill, or self-harming to aggravate or induce illness.**

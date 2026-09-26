@@ -123,13 +123,6 @@ It's important to find the right support or treatment to help deal with the unde
 
 - Mind – About self-harm
 
-### Video: talking about self-harm
-
-This video explores why young people may self-harm and gives advice on how to get the right support.
-
-Media last reviewed: 2 March 2024
-Media review due: 2 March 2027
-
 ## Ways to help avoid self-harm
 
 **Finding ways to prevent or distract yourself from self-harm may help you get through a difficult moment.**

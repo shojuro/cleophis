@@ -67,13 +67,6 @@ There are some things you can do to help ease the symptoms.
 
 - do not do strenuous activities like heavy lifting or playing sports
 
-### Video: Self-care for glandular fever
-
-This video explains how to treat glandular fever yourself.
-
-Media last reviewed: 1 June 2026
-Media review due: 1 June 2029
-
 ## How to stop glandular fever spreading
 
 Glandular fever is spread through spit, so you can get it through kissing or by sharing cups or cutlery.

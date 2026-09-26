@@ -74,10 +74,3 @@ Croup usually gets better on its own within 48 hours. If 111, or a doctor, confi
 Do not drive to A&E. Ask someone to drive you or call 999 and ask for an ambulance.
 
 Bring any medicines you take with you.
-
-## Video: What is croup?
-
-In this video, a doctor explains the symptoms of croup and when to seek medical help.
-
-Media last reviewed: 23 September 2025
-Media review due: 23 September 2028

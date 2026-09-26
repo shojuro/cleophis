@@ -331,6 +331,21 @@ class Committed(unittest.TestCase):
             k = cl.norm(fake)
             self.assertFalse([1 for t in texts if f" {k} " in f" {t} "], fake)
 
+    def test_no_corpus_body_carries_video_blocks_or_media_dates(self):
+        """Task M4b step 0: the NHS video blocks and their "Media last
+        reviewed" / "Media review due" lines are stripped from every body."""
+        import re
+        media = re.compile(r"Media (last reviewed|review due)", re.I)
+        video_heading = re.compile(r"^#{1,6} Video: ", re.M)
+        bodies = 0
+        for p in sorted(CORPUS.glob("*/*.md")):
+            _fm, body = fn.split_front_matter(p.read_text(encoding="utf-8"))
+            bodies += 1
+            self.assertIsNone(media.search(body), p.name)
+            self.assertIsNone(video_heading.search(body), p.name)
+            self.assertNotIn("brightcove", body.lower(), p.name)
+        self.assertEqual(bodies, 941)
+
     def test_corpus_integrity(self):
         import hashlib
         idx = json.loads((CORPUS / "index.json").read_text(encoding="utf-8"))

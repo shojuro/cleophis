@@ -394,13 +394,6 @@ If you are having a bad flare-up and are unable to exercise, you may be offered 
 
 This is where electrodes are placed on your skin and small electrical impulses are sent to weak muscles, usually in your arms or legs.
 
-#### Video: Pulmonary rehabilitation
-
-This video explores pulmonary rehabilitation and how exercise can improve the symptoms of COPD.
-
-Media last reviewed: 1 February 2024
-Media review due: 1 February 2027
-
 ### Other treatments
 
 If you have severe symptoms or experience a particularly bad flare-up, you may sometimes need additional treatment.

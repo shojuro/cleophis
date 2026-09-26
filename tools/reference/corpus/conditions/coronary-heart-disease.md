@@ -96,13 +96,6 @@ The blood returns to your heart through veins before being pumped back to your l
 
 The heart gets its own supply of blood from a network of blood vessels on the heart's surface called coronary arteries.
 
-## Video: coronary arteries and heart disease
-
-This video shows how your heart works and what happens when your coronary arteries stop functioning properly.
-
-Media last reviewed: 7 August 2026
-Media review due: 7 August 2029
-
 ## Symptoms
 
 **The most common symptoms of coronary heart disease (CHD) are chest pain (angina) and breathlessness.**

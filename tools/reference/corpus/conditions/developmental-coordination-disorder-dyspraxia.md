@@ -83,13 +83,6 @@ For example, dyspraxia can be used to describe movement difficulties that happen
 
 Some healthcare professionals may also use the term specific developmental disorder of motor function (SDDMF) to refer to DCD.
 
-## Video: childhood dyspraxia - James' story
-
-This video is about dyspraxia, a disability that can affect movement and coordination.
-
-Media last reviewed: 30 September 2024
-Media review due: 30 September 2027
-
 ## Symptoms
 
 **Developmental co-ordination disorder (DCD) can cause a wide range of problems. Some of these may be noticeable at an early age, while others may only become obvious as your child gets older**.

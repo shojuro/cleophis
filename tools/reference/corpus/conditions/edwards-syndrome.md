@@ -92,13 +92,6 @@ But, like everyone, people with Edwards' syndrome have:
 - things they like and dislike
 - things that make them who they are
 
-### Having a child with Edwards' syndrome (trisomy 18)
-
-Three families share their experience of having a child with Edwards' syndrome, also called trisomy 18. This video contains sensitive content that some may find upsetting.
-
-Media last reviewed: 20 April 2025
-Media review due: 20 April 2028
-
 ### Find out more
 
 - SOFT UK: trisomy 18 and how many babies are affected

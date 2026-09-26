@@ -113,13 +113,6 @@ If your symptoms do not improve after CBT, medicine and connecting with a suppor
 
 The specialist will carry out an assessment and devise a treatment plan to help you manage your symptoms.
 
-### Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to talking therapies services for stress, anxiety or depression. Includes British Sign Language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029
-
 ## Things you can try yourself
 
 ### What to do during a panic attack

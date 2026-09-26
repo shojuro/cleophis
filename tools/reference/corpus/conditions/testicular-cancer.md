@@ -22,13 +22,6 @@ Testicular cancer is cancer that's found in the testicles.
 - The testicles are 2 small oval-shaped organs which hang below the penis in a pouch of skin called the scrotum. The testicles make sperm and testosterone.
 - How serious testicular cancer is depends on the type of testicular cancer, how big it is and if it has spread.
 
-### Video: testicular cancer
-
-In this video, a specialist talks about testicular cancer and 2 men who were diagnosed with testicular cancer talk about their experiences.
-
-Media last reviewed: 2 March 2024
-Media review due: 2 March 2027
-
 ## Symptoms of testicular cancer
 
 ### Main symptoms of testicular cancer

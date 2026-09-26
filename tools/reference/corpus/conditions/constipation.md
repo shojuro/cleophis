@@ -90,13 +90,6 @@ They can suggest a suitable laxative. These are medicines that help you poo more
 
 Most laxatives work within 3 days. They should only be used for a short time.
 
-### Video: How to treat constipation
-
-This video shows you how to treat constipation.
-
-Media last reviewed: 12 May 2026
-Media review due: 12 May 2029
-
 ## Non-urgent advice: See a GP if you:
 
 - are constipated and it's not getting better with treatment

@@ -281,10 +281,3 @@ If you're both well, you and your baby will normally be able to go home after 24
 You should have a blood test to check for diabetes 6 to 13 weeks after giving birth. This is because a small number of women with gestational diabetes continue to have raised blood sugar after pregnancy.
 
 If the result is normal, you'll usually be advised to have an annual test for diabetes. This is because you're at an increased risk of developing type 2 diabetes – a lifelong type of diabetes – if you've had gestational diabetes.
-
-### Video: gestational diabetes
-
-This video gives advice about gestational diabetes and Kimberley talks about her pregnancy after being diagnosed.
-
-Media last reviewed: 13 May 2025
-Media review due: 13 May 2028

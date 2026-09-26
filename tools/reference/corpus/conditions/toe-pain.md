@@ -63,13 +63,6 @@ If you have toe pain, a pharmacist can advise you about:
 - treatments for common skin and nail problems
 - whether you need to see a GP
 
-### Video: Exercises to reduce toe pain
-
-This video demonstrates exercises that can help reduce toe pain.
-
-Media last reviewed: 17 April 2025
-Media review due: 17 April 2028
-
 **See exercise video safety information**
 
 The exercises in this series of videos are suitable for most people in good health with a reasonable level of fitness.

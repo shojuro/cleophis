@@ -37,13 +37,6 @@ Symptoms of sepsis in babies and children include:
 
 Babies and children under 5 years may also not be interested in feeding or they may keep being sick (vomiting).
 
-### How to spot symptoms of sepsis in children aged under 5
-
-This video shows how to check for the symptoms of sepsis in young children.
-
-Media last reviewed: 7 June 2024
-Media review due: 7 June 2027
-
 ### Symptoms of sepsis in adults
 
 Common symptoms of sepsis in adults include:

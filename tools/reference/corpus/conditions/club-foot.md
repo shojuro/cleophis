@@ -71,13 +71,6 @@ If your child does not wear their boots and bar for as long as they need to each
 
 The clubfoot care team can answer any questions you have and offer support if you need it.
 
-### Clubfoot
-
-This video explains how club foot is treated and parents describe their experience.
-
-Media last reviewed: 12 May 2026
-Media review due: 12 May 2029
-
 ## Causes of clubfoot
 
 Usually it's not known why a baby has clubfoot.

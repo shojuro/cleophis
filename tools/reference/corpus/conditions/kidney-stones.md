@@ -81,13 +81,6 @@ They're located towards the back of the abdomen on either side of the spine.
 
 The kidneys remove waste products from the blood. The clean blood is then transferred back into the body and the waste products are passed out of the body when you pee.
 
-### Video: what are kidney stones?
-
-This animation explains how kidneys function, how to prevent kidney stones and the treatment options.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027
-
 ## Symptoms
 
 **Very small kidney stones are unlikely to cause many symptoms. They may even go undetected and pass out painlessly when you pee.**

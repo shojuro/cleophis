@@ -170,10 +170,3 @@ There are things you can do yourself to manage migraine, with help and advice fr
 ### Find out more
 
 - The Migraine Trust: living with migraine
-
-## Video: Migraine
-
-Migraines affect 10 million people in the UK. Identifying and avoiding the things that trigger migraines is an important part of managing them, says Dr Dawn Harper.
-
-Media last reviewed: 16 June 2026
-Media review due: 16 June 2029

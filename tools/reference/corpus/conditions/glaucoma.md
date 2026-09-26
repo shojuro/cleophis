@@ -133,13 +133,6 @@ There are also lots of practical ways you can adapt your lifestyle to make it sa
 - Glaucoma UK: living with glaucoma
 - RNIB: living with sight loss
 
-## What is glaucoma?
-
-This video explains what glaucoma is and why it's important to have regular eye tests
-
-Media last reviewed: 7 April 2026
-Media review due: 7 April 2029
-
 ## Help and support for glaucoma
 
 As well as support from your doctor and specialist eye doctor, you may find it helpful to get support from other people with glaucoma, either at a local support group or online.

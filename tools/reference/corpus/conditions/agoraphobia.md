@@ -295,13 +295,6 @@ As you become more confident, more challenging goals can be set, such as going t
 
 A course of CBT usually consists of 12 to 15 weekly sessions, with each session lasting about an hour.
 
-#### Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to talking therapies services for stress, anxiety or depression. Includes British Sign Language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029
-
 #### Applied relaxation
 
 Applied relaxation is based on the premise that people with agoraphobia and related panic disorder have lost their ability to relax. The aim of applied relaxation is therefore to teach you how to relax.

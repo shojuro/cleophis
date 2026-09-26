@@ -150,10 +150,3 @@ It's thought that an enlarged prostate may be caused by changes in your hormone 
 An enlarged prostate is very common. You may be more likely to get it if you're over 50, and if others in your family have an enlarged prostate.
 
 An enlarged prostate is not caused by prostate cancer, and does not increase your risk of getting prostate cancer.
-
-## Video: prostate enlargement
-
-This animation explains the possible causes of prostate enlargement or benign prostatic hyperplasia.
-
-Media last reviewed: 12 January 2024
-Media review due: 12 January 2027

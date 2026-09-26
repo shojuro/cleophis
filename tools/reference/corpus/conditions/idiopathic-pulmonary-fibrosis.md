@@ -106,13 +106,6 @@ If doctors think there is nothing more they can do to slow down the progression 
 
 - Treating and managing IPF (Asthma + Lung UK)
 
-### Video: Pulmonary rehabilitation
-
-This video explores pulmonary rehabilitation and how exercise can improve the symptoms of lung conditions like COPD and pulmonary fibrosis.
-
-Media last reviewed: 1 February 2024
-Media review due: 1 February 2027
-
 ## Things you can do to ease breathlessness
 
 If you have idiopathic pulmonary fibrosis, there are some things you can do to help.

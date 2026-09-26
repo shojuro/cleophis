@@ -41,13 +41,6 @@ If your BMI is under 35, you can use the waist to height ratio calculator to hel
 
 You should try to keep your waist size to less than half your height.
 
-### How to measure your waist
-
-This video explains how to measure your waist so you can calculate your waist to height ratio.
-
-Media last reviewed: 11 October 2023
-Media review due: 11 October 2026
-
 ## Risks of living with overweight and obesity
 
 Living with overweight and obesity increases your risk of developing many other serious health conditions, including:

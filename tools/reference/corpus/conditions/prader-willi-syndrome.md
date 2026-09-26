@@ -92,13 +92,6 @@ If your child has Prader-Willi syndrome, your clinical team will pass informatio
 
 The NCARDRS helps scientists look for better ways to prevent and treat Prader-Willi syndrome. You can opt out of the register at any time.
 
-## Video: Prader-Willi syndrome
-
-In this video, a psychiatrist explains the different symptoms of Prader-Willi syndrome.
-
-Media last reviewed: 12 May 2025
-Media review due: 12 May 2028
-
 ## Symptoms
 
 **Prader-Willi syndrome can cause a wide range of symptoms, and affect a person's physical, psychological and behavioural development.**

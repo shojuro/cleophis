@@ -429,10 +429,3 @@ You may be entitled to 1 or more of the following types of financial support:
 - if you're caring for someone with rheumatoid arthritis, you may be entitled to Carer's Allowance
 
 You may be eligible for other benefits if you have children living at home or a low household income.
-
-### Video: osteoarthritis - Elaine's story
-
-In this video, Elaine explains how she manages her osteoarthritis.
-
-Media last reviewed: 25 January 2024
-Media review due: 25 January 2027

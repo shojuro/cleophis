@@ -108,13 +108,6 @@ In some cases, surgery to remove both your ovaries may be necessary, in which ca
 
 Make sure you talk to your surgeon about the potential effects on your fertility before your operation.
 
-### Video: Ovarian cysts
-
-This video explores the symptoms ovarian cysts can cause, the long-term effects, and the treatment options.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027
-
 ## Causes
 
 **Ovarian cysts are linked with the menstrual cycle and often go away without causing any problems.**

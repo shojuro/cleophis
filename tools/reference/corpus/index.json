@@ -2,22 +2,22 @@
  "attribution": "Information from the NHS website, licensed under the Open Government Licence v3.0",
  "counts": {
   "conditions": {
-   "bytes": 5473256,
+   "bytes": 5450243,
    "entries": 682,
    "pages": 1380
   },
   "medicines": {
-   "bytes": 4446166,
+   "bytes": 4445497,
    "entries": 259,
    "pages": 1365
   }
  },
  "entries": {
   "conditions/abdominal-aortic-aneurysm": {
-   "bytes": 4733,
+   "bytes": 4560,
    "pages": 1,
    "section": "conditions",
-   "sha256": "20b37c3658cbd719770685152e205ca4cc3a5d53f08c90577092d94f63533ae4",
+   "sha256": "bcaf36dd27182f1fc8c6ef80553f51aee91d7f6ae7d19840c4d99dbb3ee04981",
    "slug": "abdominal-aortic-aneurysm",
    "title": "Abdominal aortic aneurysm",
    "url": "https://www.nhs.uk/conditions/abdominal-aortic-aneurysm/"
@@ -194,10 +194,10 @@
    "url": "https://www.nhs.uk/conditions/age-related-macular-degeneration-amd/"
   },
   "conditions/agoraphobia": {
-   "bytes": 19521,
+   "bytes": 19233,
    "pages": 6,
    "section": "conditions",
-   "sha256": "f30fde82ce227cca4328d986b5d45760d35c0604f2091711760711da79698f78",
+   "sha256": "3ce22ca640541a346b4eed24fa6a5c62c6987dda2bd9fe7d4556ac3dd726fd34",
    "slug": "agoraphobia",
    "title": "Agoraphobia",
    "url": "https://www.nhs.uk/mental-health/conditions/agoraphobia/"
@@ -221,10 +221,10 @@
    "url": "https://www.nhs.uk/conditions/alcohol-poisoning/"
   },
   "conditions/alcohol-related-liver-disease-arld": {
-   "bytes": 7582,
+   "bytes": 7373,
    "pages": 1,
    "section": "conditions",
-   "sha256": "3b5dbf52c1abd01145c3f2d7b20d8764c163f3edbd7eaadecfb93c5b792fdf7d",
+   "sha256": "7f252aa9a11d047446fe3b3cb05b49f17e5cbed65a597f1bd1c6fc48f832b518",
    "slug": "alcohol-related-liver-disease-arld",
    "title": "Alcohol-related liver disease (ARLD)",
    "url": "https://www.nhs.uk/conditions/alcohol-related-liver-disease-arld/"
@@ -347,10 +347,10 @@
    "url": "https://www.nhs.uk/conditions/angelman-syndrome/"
   },
   "conditions/angina": {
-   "bytes": 6477,
+   "bytes": 6304,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a42c202ac466d10cc58dca81636815d40f71665b2faf2eb9c16d50539380a538",
+   "sha256": "a762b70de80ff8926f7ce81d49b650de59a8bc1c8328868bfa76057b4a537d19",
    "slug": "angina",
    "title": "Angina",
    "url": "https://www.nhs.uk/conditions/angina/"
@@ -374,19 +374,19 @@
    "url": "https://www.nhs.uk/conditions/animal-and-human-bites/"
   },
   "conditions/ankylosing-spondylitis": {
-   "bytes": 23909,
+   "bytes": 23709,
    "pages": 6,
    "section": "conditions",
-   "sha256": "0e0e855d5a31d71f8c3adb9ce781836683c6bbc72f33df7dbede90151be976ac",
+   "sha256": "4f0f774cd217f8f4c308120c04d7989cb77f07eb938790734db5904a2a29e02e",
    "slug": "ankylosing-spondylitis",
    "title": "Ankylosing spondylitis",
    "url": "https://www.nhs.uk/conditions/ankylosing-spondylitis/"
   },
   "conditions/anorexia": {
-   "bytes": 18389,
+   "bytes": 18183,
    "pages": 4,
    "section": "conditions",
-   "sha256": "48305835b9aae1a6625c99ca0466812c5a3b6329c8802957d9fd4f2d7abd610b",
+   "sha256": "2cb49ec9481a3661e5d08a4bef423e2fb128666d198b13e26596e3db9c38d967",
    "slug": "anorexia",
    "title": "Anorexia nervosa",
    "url": "https://www.nhs.uk/mental-health/conditions/anorexia/"
@@ -428,10 +428,10 @@
    "url": "https://www.nhs.uk/conditions/aphasia/"
   },
   "conditions/appendicitis": {
-   "bytes": 9367,
+   "bytes": 9188,
    "pages": 1,
    "section": "conditions",
-   "sha256": "c31d2491a207870d7603676b36b14b7dfc1175f842281eeee83b39cdcf35058f",
+   "sha256": "48a6e25fed166044cbb1f3aab0ca50404db9e41c08b2f061fc9f812d4de51644",
    "slug": "appendicitis",
    "title": "Appendicitis",
    "url": "https://www.nhs.uk/conditions/appendicitis/"
@@ -473,10 +473,10 @@
    "url": "https://www.nhs.uk/conditions/aspergillosis/"
   },
   "conditions/asthma": {
-   "bytes": 10235,
+   "bytes": 10075,
    "pages": 1,
    "section": "conditions",
-   "sha256": "85566034ac3f325df40e61beb2a225fe4cf0872b36df11363ebe5c0b7574e0de",
+   "sha256": "4b48793fe2a97093e7aa8da2788f23b89195e15f002315f2490b87816da9b086",
    "slug": "asthma",
    "title": "Asthma",
    "url": "https://www.nhs.uk/conditions/asthma/"
@@ -545,10 +545,10 @@
    "url": "https://www.nhs.uk/conditions/auditory-processing-disorder/"
   },
   "conditions/autism": {
-   "bytes": 24855,
+   "bytes": 24650,
    "pages": 8,
    "section": "conditions",
-   "sha256": "dbcd4e2ca36e2d5b593cb98de7eddbabddce60bfb337fd903081779a9406cbdb",
+   "sha256": "870ef5e306f96e941702f59b1aac27d1fb606d89089b25ca3563241bf866c262",
    "slug": "autism",
    "title": "Autism",
    "url": "https://www.nhs.uk/conditions/autism/"
@@ -572,10 +572,10 @@
    "url": "https://www.nhs.uk/conditions/autosomal-recessive-polycystic-kidney-disease-arpkd/"
   },
   "conditions/back-pain": {
-   "bytes": 4907,
+   "bytes": 4706,
    "pages": 1,
    "section": "conditions",
-   "sha256": "b0548cdd89903ef3515c6ce71e9bc28bcdd97ece31b1360e34775e26fb542f0d",
+   "sha256": "508610a163b0b621ace182c38cf1605286ef5e28f1625f3188ad06f305d6f186",
    "slug": "back-pain",
    "title": "Back pain",
    "url": "https://www.nhs.uk/conditions/back-pain/"
@@ -806,10 +806,10 @@
    "url": "https://www.nhs.uk/conditions/bowel-cancer/"
   },
   "conditions/bowel-incontinence": {
-   "bytes": 7634,
+   "bytes": 7426,
    "pages": 1,
    "section": "conditions",
-   "sha256": "4d95169d56c9718c2bdc711d22e654066b148e03a312fdf846e7640614d46d4d",
+   "sha256": "c5e71548332069e15492d596d07983ccfb4728ba0dfa05be8a6f400fd01869b3",
    "slug": "bowel-incontinence",
    "title": "Bowel incontinence",
    "url": "https://www.nhs.uk/conditions/bowel-incontinence/"
@@ -1148,10 +1148,10 @@
    "url": "https://www.nhs.uk/conditions/cellulitis/"
   },
   "conditions/cerebral-palsy": {
-   "bytes": 17962,
+   "bytes": 17785,
    "pages": 5,
    "section": "conditions",
-   "sha256": "a56097cb9b834398298521550d60eb72e41bbb90836bb932b1b50b3cc9fed408",
+   "sha256": "b73f029c705e993db1280a8eba58968f1d891fe506556d45a65bc2f64a0ded3b",
    "slug": "cerebral-palsy",
    "title": "Cerebral palsy",
    "url": "https://www.nhs.uk/conditions/cerebral-palsy/"
@@ -1301,10 +1301,10 @@
    "url": "https://www.nhs.uk/conditions/chronic-myeloid-leukaemia/"
   },
   "conditions/chronic-obstructive-pulmonary-disease-copd": {
-   "bytes": 31730,
+   "bytes": 31523,
    "pages": 6,
    "section": "conditions",
-   "sha256": "86f00f02638d3472163db6591341785784e7fda8debbebbd0e553382cd22dcfe",
+   "sha256": "369dbeb4ca09009d6e561128a93bccb1ae40395fe029c0ebb56b7010553aa04b",
    "slug": "chronic-obstructive-pulmonary-disease-copd",
    "title": "Chronic obstructive pulmonary disease (COPD)",
    "url": "https://www.nhs.uk/conditions/chronic-obstructive-pulmonary-disease-copd/"
@@ -1355,10 +1355,10 @@
    "url": "https://www.nhs.uk/conditions/cleft-lip-and-palate/"
   },
   "conditions/club-foot": {
-   "bytes": 3964,
+   "bytes": 3801,
    "pages": 1,
    "section": "conditions",
-   "sha256": "48a418f20781f7f575c382febd1539031251b6df0261ae55242ce4ca8f0fefae",
+   "sha256": "5969b8a3472dc48fb478445c787899bfc3b60dec8690a2ad46696b414d4f2a70",
    "slug": "club-foot",
    "title": "Clubfoot",
    "url": "https://www.nhs.uk/conditions/club-foot/"
@@ -1409,10 +1409,10 @@
    "url": "https://www.nhs.uk/conditions/colour-vision-deficiency/"
   },
   "conditions/common-cold": {
-   "bytes": 5803,
+   "bytes": 5637,
    "pages": 1,
    "section": "conditions",
-   "sha256": "db9cd64c26be15433ed0eda2c53959493df06c529c7fcbe091651ce35accce71",
+   "sha256": "68ad32ddb0c2777b402f828f8ae55f4e121f1c88dce409e31bcb8dfc254a5a4a",
    "slug": "common-cold",
    "title": "Common cold",
    "url": "https://www.nhs.uk/conditions/common-cold/"
@@ -1454,10 +1454,10 @@
    "url": "https://www.nhs.uk/conditions/conjunctivitis/"
   },
   "conditions/constipation": {
-   "bytes": 4827,
+   "bytes": 4676,
    "pages": 1,
    "section": "conditions",
-   "sha256": "3c81f8ed10a9314c7a231f2d66e697eba547c248fedde10e4e03a4435ca885c7",
+   "sha256": "8ac48bc417a5abfa2c5a7a063fd251469f1b8d5b75102433fd2cf713b629b1d9",
    "slug": "constipation",
    "title": "Constipation",
    "url": "https://www.nhs.uk/conditions/constipation/"
@@ -1481,10 +1481,10 @@
    "url": "https://www.nhs.uk/conditions/corns-and-calluses/"
   },
   "conditions/coronary-heart-disease": {
-   "bytes": 30025,
+   "bytes": 29799,
    "pages": 7,
    "section": "conditions",
-   "sha256": "fc0cc28f1f14f5375b10b6bef6f8c093d4c3b9d1046a854275ea5b59d3965b23",
+   "sha256": "30a8650eeffbfdb7ad21c7eaec94cfb257ce92bd787d57348bc6d625679e543e",
    "slug": "coronary-heart-disease",
    "title": "Coronary heart disease",
    "url": "https://www.nhs.uk/conditions/coronary-heart-disease/"
@@ -1508,10 +1508,10 @@
    "url": "https://www.nhs.uk/conditions/costochondritis/"
   },
   "conditions/covid-19": {
-   "bytes": 15824,
+   "bytes": 15672,
    "pages": 4,
    "section": "conditions",
-   "sha256": "be58414bd0956c39037b4252b486bf7278f153b8e595748122966d8139083262",
+   "sha256": "c1485a6a6509263a49f4ffe24f31e5a95c65e1f9c18f177c83db2b97e267bf75",
    "slug": "covid-19",
    "title": "COVID-19",
    "url": "https://www.nhs.uk/conditions/covid-19/"
@@ -1544,19 +1544,19 @@
    "url": "https://www.nhs.uk/conditions/creutzfeldt-jakob-disease-cjd/"
   },
   "conditions/crohns-disease": {
-   "bytes": 10333,
+   "bytes": 10142,
    "pages": 1,
    "section": "conditions",
-   "sha256": "58b974698ec95518fbbadec1129439960bdee9b9db1dd471ce76e13a1ee2b907",
+   "sha256": "c0e40934dccd53003f3c6e633a94c0fdc6b4b29730382a691615c687e643a3a4",
    "slug": "crohns-disease",
    "title": "Crohn's disease",
    "url": "https://www.nhs.uk/conditions/crohns-disease/"
   },
   "conditions/croup": {
-   "bytes": 3572,
+   "bytes": 3383,
    "pages": 1,
    "section": "conditions",
-   "sha256": "388564e0c7ac826895845ff02e97b787037059d907dbea35353cb865b9686eec",
+   "sha256": "63e4a7f1881416e53a86a0699f83f30680eb12761acbf432bac6283dc4536794",
    "slug": "croup",
    "title": "Croup",
    "url": "https://www.nhs.uk/conditions/croup/"
@@ -1643,19 +1643,19 @@
    "url": "https://www.nhs.uk/conditions/deep-vein-thrombosis-dvt/"
   },
   "conditions/dehydration": {
-   "bytes": 5265,
+   "bytes": 5096,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a1cf62766d8f309e4f73830a78fb76bb5129b6dbcbba6cbf7ea9ce71169c0063",
+   "sha256": "3c130b8fa63a49afca03672bbc760b86e07dc90a6b16d750f28a05fb697d1761",
    "slug": "dehydration",
    "title": "Dehydration",
    "url": "https://www.nhs.uk/conditions/dehydration/"
   },
   "conditions/dementia": {
-   "bytes": 150047,
+   "bytes": 148811,
    "pages": 30,
    "section": "conditions",
-   "sha256": "45430dccbb34160b005352722ce4156bc25f9d03d5d47ae6728736418f6ba6ca",
+   "sha256": "a87bf508c52e8532d020fc79703272bb0e15ea306d9d9e4f93d2401651901834",
    "slug": "dementia",
    "title": "Dementia",
    "url": "https://www.nhs.uk/conditions/dementia/"
@@ -1697,10 +1697,10 @@
    "url": "https://www.nhs.uk/mental-health/conditions/depression/"
   },
   "conditions/depression-in-adults": {
-   "bytes": 40777,
+   "bytes": 40071,
    "pages": 8,
    "section": "conditions",
-   "sha256": "58aa9debe27110aff0a41f0f8733df31e960d00c12ef5d506009e76f1d706e52",
+   "sha256": "dc49e56623eaed07805e689043753f7e344c4b53a33d5d6d7ce914bc033b7d57",
    "slug": "depression-in-adults",
    "title": "Depression in adults",
    "url": "https://www.nhs.uk/mental-health/conditions/depression-in-adults/"
@@ -1715,10 +1715,10 @@
    "url": "https://www.nhs.uk/conditions/detached-retina-retinal-detachment/"
   },
   "conditions/developmental-coordination-disorder-dyspraxia": {
-   "bytes": 19074,
+   "bytes": 18864,
    "pages": 4,
    "section": "conditions",
-   "sha256": "31303ec616993867f346af8c1b4740ec0f8fe616c12e62dc76f63579d32486c8",
+   "sha256": "55e60c9d54d56c5f968eeb4c2aabedbf91f7667a3f78f70d9b3cb1dd74b1eec5",
    "slug": "developmental-coordination-disorder-dyspraxia",
    "title": "Developmental co-ordination disorder (dyspraxia) in children",
    "url": "https://www.nhs.uk/conditions/developmental-coordination-disorder-dyspraxia/"
@@ -1850,10 +1850,10 @@
    "url": "https://www.nhs.uk/conditions/diverticular-disease-and-diverticulitis/"
   },
   "conditions/downs-syndrome": {
-   "bytes": 15384,
+   "bytes": 14668,
    "pages": 6,
    "section": "conditions",
-   "sha256": "ed89e321a0365c59292f12c0fa89cefa2026260c6f82a2744abafccc0af06955",
+   "sha256": "54a579a1a5d8ab717df2f0ac7a80f99fcd320a4c6ab17fc3e11cd4437fd2908e",
    "slug": "downs-syndrome",
    "title": "Down's syndrome",
    "url": "https://www.nhs.uk/conditions/downs-syndrome/"
@@ -1985,10 +1985,10 @@
    "url": "https://www.nhs.uk/conditions/ectropion/"
   },
   "conditions/edwards-syndrome": {
-   "bytes": 6619,
+   "bytes": 6322,
    "pages": 1,
    "section": "conditions",
-   "sha256": "b0695a5c6ee2243094829e2f2dfdacf0f00569ed3c87578c3380858d29bbacbf",
+   "sha256": "6dba0e3b8cebe6f076b0e50ec38b4440391971df7faeb7a2fed25bb507ae69e5",
    "slug": "edwards-syndrome",
    "title": "Edwards' syndrome (trisomy 18)",
    "url": "https://www.nhs.uk/conditions/edwards-syndrome/"
@@ -2039,10 +2039,10 @@
    "url": "https://www.nhs.uk/conditions/endometriosis/"
   },
   "conditions/enlarged-prostate": {
-   "bytes": 7647,
+   "bytes": 7441,
    "pages": 1,
    "section": "conditions",
-   "sha256": "d0df7aff714f77c382e44a756a392f31bb2b86b535fab19907d824f4dc5906e1",
+   "sha256": "3649148ceb0b58d201388791ed967f23940683afefac20f6b1d48087005f3882",
    "slug": "enlarged-prostate",
    "title": "Enlarged prostate",
    "url": "https://www.nhs.uk/conditions/enlarged-prostate/"
@@ -2075,10 +2075,10 @@
    "url": "https://www.nhs.uk/conditions/epiglottitis/"
   },
   "conditions/epilepsy": {
-   "bytes": 11446,
+   "bytes": 11259,
    "pages": 1,
    "section": "conditions",
-   "sha256": "144fde7bc2eeb596cdf12d82aa90f8fbb6e3ec840441b898ae86034de2783c52",
+   "sha256": "42ac3361970884500088e1e4b0c69a731671058ed544dd27c575295ccd78d035",
    "slug": "epilepsy",
    "title": "Epilepsy",
    "url": "https://www.nhs.uk/conditions/epilepsy/"
@@ -2201,10 +2201,10 @@
    "url": "https://www.nhs.uk/conditions/febrile-seizures/"
   },
   "conditions/female-genital-mutilation-fgm": {
-   "bytes": 18033,
+   "bytes": 17642,
    "pages": 2,
    "section": "conditions",
-   "sha256": "51657d3993bc628a208f9b9ac709d8e728a2e77e1c0a7b2a8198a01eec0f36c2",
+   "sha256": "4b0a99d36e8e10df0c40f0891960b9113c63f1ba21f2ba5a66e53369524581fa",
    "slug": "female-genital-mutilation-fgm",
    "title": "Female genital mutilation (FGM)",
    "url": "https://www.nhs.uk/conditions/female-genital-mutilation-fgm/"
@@ -2228,10 +2228,10 @@
    "url": "https://www.nhs.uk/conditions/fibroids/"
   },
   "conditions/fibromyalgia": {
-   "bytes": 17426,
+   "bytes": 17209,
    "pages": 6,
    "section": "conditions",
-   "sha256": "8b180a7e20b817cc3b02c169deebcb8ac8dd9aa8eda0b4433a81db3d632ab021",
+   "sha256": "fb58699100892c88a216a8fdc32264a6e659bc37ead14cc8dbffdb8a6b72d6dd",
    "slug": "fibromyalgia",
    "title": "Fibromyalgia",
    "url": "https://www.nhs.uk/conditions/fibromyalgia/"
@@ -2255,10 +2255,10 @@
    "url": "https://www.nhs.uk/conditions/flat-head-syndrome-plagiocephaly-brachycephaly/"
   },
   "conditions/flu": {
-   "bytes": 4835,
+   "bytes": 4669,
    "pages": 1,
    "section": "conditions",
-   "sha256": "0a373675078d951850aa1507e286a43fe76b65d437f41e49475fc31028531008",
+   "sha256": "007114f1c1dffc3416fb06e7205431184925f6d05b55f8f97734ef227ec19d70",
    "slug": "flu",
    "title": "Flu",
    "url": "https://www.nhs.uk/conditions/flu/"
@@ -2345,10 +2345,10 @@
    "url": "https://www.nhs.uk/conditions/gallbladder-cancer/"
   },
   "conditions/gallstones": {
-   "bytes": 4667,
+   "bytes": 4488,
    "pages": 1,
    "section": "conditions",
-   "sha256": "43c94fe5102cc50e09b714e856902ebf19a195cf5df1fbef6b20c1a9eb10d79a",
+   "sha256": "9c65f559a907c81588bd51f58a9a8b78c4bad2e516485b9a72704a7980b40990",
    "slug": "gallstones",
    "title": "Gallstones",
    "url": "https://www.nhs.uk/conditions/gallstones/"
@@ -2408,10 +2408,10 @@
    "url": "https://www.nhs.uk/mental-health/conditions/generalised-anxiety-disorder-gad/"
   },
   "conditions/genital-herpes": {
-   "bytes": 8087,
+   "bytes": 7848,
    "pages": 1,
    "section": "conditions",
-   "sha256": "12c939e57393d2aa2757141f005b95f55350650f332839a3f5338ac53d27ab90",
+   "sha256": "a9a84728ef69d9ad82771e62e5cf13ee21ab22974eb65632dd11cb44971af857",
    "slug": "genital-herpes",
    "title": "Genital herpes",
    "url": "https://www.nhs.uk/conditions/genital-herpes/"
@@ -2426,10 +2426,10 @@
    "url": "https://www.nhs.uk/conditions/genital-warts/"
   },
   "conditions/gestational-diabetes": {
-   "bytes": 16688,
+   "bytes": 16476,
    "pages": 2,
    "section": "conditions",
-   "sha256": "0b6ea7cff01b7d6152ca2bcad890fdc04e45e6c7768a1fe6b771aa5b5686caa5",
+   "sha256": "aacbec5993b89cf4db627eed873bac838e944b0217500d2829f7f28b290ed672",
    "slug": "gestational-diabetes",
    "title": "Gestational diabetes",
    "url": "https://www.nhs.uk/conditions/gestational-diabetes/"
@@ -2453,19 +2453,19 @@
    "url": "https://www.nhs.uk/conditions/gilberts-syndrome/"
   },
   "conditions/glandular-fever": {
-   "bytes": 3853,
+   "bytes": 3687,
    "pages": 1,
    "section": "conditions",
-   "sha256": "df9baf7af646b164860c7c9ae75063813bdc033b22e218cd3e15126cfde95c9f",
+   "sha256": "0b8486ea4d73f8113f8339890e234540ae4d6abf992c031ed3227f11ae5a0bf6",
    "slug": "glandular-fever",
    "title": "Glandular fever",
    "url": "https://www.nhs.uk/conditions/glandular-fever/"
   },
   "conditions/glaucoma": {
-   "bytes": 6059,
+   "bytes": 5884,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a898a324e45fb8c5ac516a68b9272e5511fc13bc5bcd529f93891b7c0112dcc6",
+   "sha256": "807439aad8ccc3ffbbd30d0bb22636aad81d005630284588fa8ed360dab6a424",
    "slug": "glaucoma",
    "title": "Glaucoma",
    "url": "https://www.nhs.uk/conditions/glaucoma/"
@@ -2480,10 +2480,10 @@
    "url": "https://www.nhs.uk/conditions/glomerulonephritis/"
   },
   "conditions/glue-ear": {
-   "bytes": 4386,
+   "bytes": 4201,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a870e18bf9d41a001e6ed03a2c2b7f92436d6e5d5c012ca3dcc8adf98b7950fe",
+   "sha256": "df297aaa5bf910b012915cc960dfc0f217694adb5055d6ea16468f9b35f2c988",
    "slug": "glue-ear",
    "title": "Glue ear",
    "url": "https://www.nhs.uk/conditions/glue-ear/"
@@ -2507,10 +2507,10 @@
    "url": "https://www.nhs.uk/conditions/gonorrhoea/"
   },
   "conditions/gout": {
-   "bytes": 5566,
+   "bytes": 5393,
    "pages": 1,
    "section": "conditions",
-   "sha256": "7ab042b1da9b99fe32123397f936adf177e68cc342bb991e9d0840d4783d7e78",
+   "sha256": "41e167c7775df56813e56f219380ae712a5bbf745a029cb98dbd0252c31cd369",
    "slug": "gout",
    "title": "Gout",
    "url": "https://www.nhs.uk/conditions/gout/"
@@ -2624,10 +2624,10 @@
    "url": "https://www.nhs.uk/conditions/hantavirus/"
   },
   "conditions/hay-fever": {
-   "bytes": 3567,
+   "bytes": 3405,
    "pages": 1,
    "section": "conditions",
-   "sha256": "c310c2901cb479f57921535b7b9e0fd3a6052da1708612f047cba1bbcb26f881",
+   "sha256": "8977fe83b386fcbff29e4c85f6253c0676eaa956cffc681370d48be3daeac278",
    "slug": "hay-fever",
    "title": "Hay fever",
    "url": "https://www.nhs.uk/conditions/hay-fever/"
@@ -2660,10 +2660,10 @@
    "url": "https://www.nhs.uk/symptoms/headaches/"
   },
   "conditions/health-anxiety": {
-   "bytes": 3779,
+   "bytes": 3487,
    "pages": 1,
    "section": "conditions",
-   "sha256": "2b3689b74174194b118098bcb64a6bc4d0e7c0ff2fb0456d6c5439124762a8e5",
+   "sha256": "4150b45152a4d8e1a9046aa8b4473342a1ab2689f949df0e7491b718919c662a",
    "slug": "health-anxiety",
    "title": "Health anxiety",
    "url": "https://www.nhs.uk/mental-health/conditions/health-anxiety/"
@@ -2948,10 +2948,10 @@
    "url": "https://www.nhs.uk/conditions/human-papilloma-virus-hpv/"
   },
   "conditions/huntingtons-disease": {
-   "bytes": 6276,
+   "bytes": 6070,
    "pages": 1,
    "section": "conditions",
-   "sha256": "f7c69219a96ef468889dd92b135df0acc7149158f4cb46ce8da083ad515c92a7",
+   "sha256": "a81bf88031f4e0427f6f450008f0236651b0ec237c2feb50b5fb4b6e1fc423ae",
    "slug": "huntingtons-disease",
    "title": "Huntington's disease",
    "url": "https://www.nhs.uk/conditions/huntingtons-disease/"
@@ -3020,10 +3020,10 @@
    "url": "https://www.nhs.uk/conditions/ichthyosis/"
   },
   "conditions/idiopathic-pulmonary-fibrosis": {
-   "bytes": 6823,
+   "bytes": 6573,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a89abd18b9de6da33010f206a699fc398303293464840b617f1256b3ee8e0d9c",
+   "sha256": "2dc43ac7637463420ff8e72c99d333de51e908f119804c481414fb18464d448b",
    "slug": "idiopathic-pulmonary-fibrosis",
    "title": "Idiopathic pulmonary fibrosis",
    "url": "https://www.nhs.uk/conditions/idiopathic-pulmonary-fibrosis/"
@@ -3128,10 +3128,10 @@
    "url": "https://www.nhs.uk/conditions/iron-deficiency-anaemia/"
   },
   "conditions/irritable-bowel-syndrome-ibs": {
-   "bytes": 10784,
+   "bytes": 10339,
    "pages": 6,
    "section": "conditions",
-   "sha256": "3089efefc6e1de2ed29be74368f74b0f0a48aa52f468eda1f07a3f9f676eaf62",
+   "sha256": "56cddb17eadfeb25c2c14a389c62d2462b1ba5b8cb9e8c784e2441936de521b0",
    "slug": "irritable-bowel-syndrome-ibs",
    "title": "Irritable bowel syndrome (IBS)",
    "url": "https://www.nhs.uk/conditions/irritable-bowel-syndrome-ibs/"
@@ -3245,10 +3245,10 @@
    "url": "https://www.nhs.uk/conditions/kidney-infection/"
   },
   "conditions/kidney-stones": {
-   "bytes": 12198,
+   "bytes": 11993,
    "pages": 6,
    "section": "conditions",
-   "sha256": "0907e5058dd3ac7e17065c70fd9ae87786729e87ce361379bd0e4edf05e54d52",
+   "sha256": "0f7e648eb686b9ba1c6234b591ef595c0187e999182fb77c07c94e445932017b",
    "slug": "kidney-stones",
    "title": "Kidney stones",
    "url": "https://www.nhs.uk/conditions/kidney-stones/"
@@ -3290,19 +3290,19 @@
    "url": "https://www.nhs.uk/conditions/kyphosis/"
   },
   "conditions/labial-fusion": {
-   "bytes": 3899,
+   "bytes": 3713,
    "pages": 1,
    "section": "conditions",
-   "sha256": "d54533fd37811acf9352769cfa6746885246ffd1a6c9d7b49831977197a84d8c",
+   "sha256": "cefe3015b99d518309f3e485b1072a9b972e2a30f3a8c5ee66fb7ba636cf558a",
    "slug": "labial-fusion",
    "title": "Labial fusion",
    "url": "https://www.nhs.uk/conditions/labial-fusion/"
   },
   "conditions/labyrinthitis": {
-   "bytes": 4985,
+   "bytes": 4749,
    "pages": 1,
    "section": "conditions",
-   "sha256": "aac18915c9e9eaa629375b69d7869061e2154f0d77309ea12edacb6bc414f3d5",
+   "sha256": "557ebfdeeedcc8e4d9db61c47534ec0ace86f9b229c3d3391b9109e4da92088c",
    "slug": "labyrinthitis",
    "title": "Labyrinthitis and vestibular neuritis",
    "url": "https://www.nhs.uk/conditions/labyrinthitis/"
@@ -3353,10 +3353,10 @@
    "url": "https://www.nhs.uk/conditions/lazy-eye/"
   },
   "conditions/learning-disabilities": {
-   "bytes": 18168,
+   "bytes": 17964,
    "pages": 4,
    "section": "conditions",
-   "sha256": "d125d985ca3e6da615059a5cba97caa40a9c2d499d1a2ad0c7e173dae092a2c2",
+   "sha256": "58569ef310611a581df8fde69b59db61aed3fc7bfcf722ed6682f24408a26ad2",
    "slug": "learning-disabilities",
    "title": "Learning disabilities",
    "url": "https://www.nhs.uk/conditions/learning-disabilities/"
@@ -3542,10 +3542,10 @@
    "url": "https://www.nhs.uk/conditions/lung-cancer/"
   },
   "conditions/lupus": {
-   "bytes": 4830,
+   "bytes": 4647,
    "pages": 1,
    "section": "conditions",
-   "sha256": "d70e7c46bf2586b1ba3935757a2c8bd9e7f737e6c5d36c2d55ff3693180f43e6",
+   "sha256": "701eb09476ccd28e17a9beed984d5abdc0887760cad780cf4fab20c1c73d6443",
    "slug": "lupus",
    "title": "Lupus",
    "url": "https://www.nhs.uk/conditions/lupus/"
@@ -3560,10 +3560,10 @@
    "url": "https://www.nhs.uk/conditions/lyme-disease/"
   },
   "conditions/lymphoedema": {
-   "bytes": 20691,
+   "bytes": 20502,
    "pages": 5,
    "section": "conditions",
-   "sha256": "9111686ca8a222fbdcedb576ee74086d6bba4d293e132635bf488ae0ce2ee355",
+   "sha256": "e1faa36a886fd120646118dd92bf1efa43b253e0a627aba087729b022117311a",
    "slug": "lymphoedema",
    "title": "Lymphoedema",
    "url": "https://www.nhs.uk/conditions/lymphoedema/"
@@ -3749,10 +3749,10 @@
    "url": "https://www.nhs.uk/conditions/middle-east-respiratory-syndrome-mers/"
   },
   "conditions/migraine": {
-   "bytes": 6327,
+   "bytes": 6075,
    "pages": 1,
    "section": "conditions",
-   "sha256": "607d6b793eceaac0bff7b18fec9298d1b20933b18bf504cf3906f050081e2417",
+   "sha256": "3a2fce5f96621f4609e8fa960dd6f64b93d5d50cf11ca2d304acc9462db64cc2",
    "slug": "migraine",
    "title": "Migraine",
    "url": "https://www.nhs.uk/conditions/migraine/"
@@ -3812,10 +3812,10 @@
    "url": "https://www.nhs.uk/conditions/motion-sickness/"
   },
   "conditions/motor-neurone-disease": {
-   "bytes": 8002,
+   "bytes": 7797,
    "pages": 1,
    "section": "conditions",
-   "sha256": "3c944d716c6a432111c9dc0c3c545f66f2718d3285c94c46b56cfc4594954493",
+   "sha256": "1161b445d923b2aba6f4069447eff64af91c707b8466c3a26a66fcf5d84858ba",
    "slug": "motor-neurone-disease",
    "title": "Motor neurone disease (MND)",
    "url": "https://www.nhs.uk/conditions/motor-neurone-disease/"
@@ -3848,10 +3848,10 @@
    "url": "https://www.nhs.uk/conditions/mpox/"
   },
   "conditions/mrsa": {
-   "bytes": 4283,
+   "bytes": 4094,
    "pages": 1,
    "section": "conditions",
-   "sha256": "83a580ac3b7442a3304d8408389b6c5fa890b885621bc878a18741c7cd05fafa",
+   "sha256": "bd1c7a00615588d254b856622b98b02dff52c132bca9cf5c7a900e271e1fe13b",
    "slug": "mrsa",
    "title": "MRSA",
    "url": "https://www.nhs.uk/conditions/mrsa/"
@@ -3893,10 +3893,10 @@
    "url": "https://www.nhs.uk/conditions/mumps/"
   },
   "conditions/munchausen-syndrome": {
-   "bytes": 12757,
+   "bytes": 12540,
    "pages": 3,
    "section": "conditions",
-   "sha256": "d8ca726a067947deb3c7f339e3ac50252ebdd2cfe7a805e0bf9f581244eb9852",
+   "sha256": "00c1a1afb8818bfcfd69abbefb7a76a0591f214baf22768639cb08a5b197a682",
    "slug": "munchausen-syndrome",
    "title": "Munchausen syndrome",
    "url": "https://www.nhs.uk/mental-health/conditions/munchausen-syndrome/"
@@ -3983,10 +3983,10 @@
    "url": "https://www.nhs.uk/conditions/nasal-polyps/"
   },
   "conditions/nasopharyngeal-cancer": {
-   "bytes": 9201,
+   "bytes": 8951,
    "pages": 1,
    "section": "conditions",
-   "sha256": "473915d1207ca801c77b85acac87c51ac6fec5f454ed18077f131ca50cdf97cf",
+   "sha256": "d527adc329ae5a9b21f11c788062d9cd3f3dc99604f5b271746bfad68973e45d",
    "slug": "nasopharyngeal-cancer",
    "title": "Nasopharyngeal cancer",
    "url": "https://www.nhs.uk/conditions/nasopharyngeal-cancer/"
@@ -4127,19 +4127,19 @@
    "url": "https://www.nhs.uk/conditions/norovirus/"
   },
   "conditions/nosebleed": {
-   "bytes": 3798,
+   "bytes": 3649,
    "pages": 1,
    "section": "conditions",
-   "sha256": "162db6934e6ae82150b6c0bf546937b17b34e0c6f934968d6c5adc772ee6ddb1",
+   "sha256": "7afe42fc5725df104edc32345a6e19745dfdb9c769e82b4eb5e7bae718ee6f8d",
    "slug": "nosebleed",
    "title": "Nosebleed",
    "url": "https://www.nhs.uk/conditions/nosebleed/"
   },
   "conditions/obsessive-compulsive-disorder-ocd": {
-   "bytes": 16464,
+   "bytes": 16177,
    "pages": 4,
    "section": "conditions",
-   "sha256": "3313e2fc1a29991cc9e387a43f3ade0a9dfc4ae9645e749cbc7ee5e86ae789e0",
+   "sha256": "5c896417057d2937f02080a48e54deeb6e2c68aa82dcc47f08250542bb99b473",
    "slug": "obsessive-compulsive-disorder-ocd",
    "title": "Obsessive compulsive disorder (OCD)",
    "url": "https://www.nhs.uk/mental-health/conditions/obsessive-compulsive-disorder-ocd/"
@@ -4190,10 +4190,10 @@
    "url": "https://www.nhs.uk/conditions/orf/"
   },
   "conditions/osteoarthritis": {
-   "bytes": 25678,
+   "bytes": 25494,
    "pages": 4,
    "section": "conditions",
-   "sha256": "147b9898e22ba2d166d353b12f4f4ebc3fcf0e69ffa2f120c3626b4dde511ba4",
+   "sha256": "1dd40b498311a70051013a5b1dfd3e24efa4cf130d84b74d829a9d96405ac199",
    "slug": "osteoarthritis",
    "title": "Osteoarthritis",
    "url": "https://www.nhs.uk/conditions/osteoarthritis/"
@@ -4244,10 +4244,10 @@
    "url": "https://www.nhs.uk/conditions/ovarian-cancer/"
   },
   "conditions/ovarian-cyst": {
-   "bytes": 12546,
+   "bytes": 12345,
    "pages": 3,
    "section": "conditions",
-   "sha256": "f3586f0229e316b153ec1dd2837b054faae8172f57e3f457175da8976e09c431",
+   "sha256": "592f8a41fd848e6234a988a64620ceae5f76700cc4eabdbc69e85bf90efba295",
    "slug": "ovarian-cyst",
    "title": "Ovarian cyst",
    "url": "https://www.nhs.uk/conditions/ovarian-cyst/"
@@ -4262,10 +4262,10 @@
    "url": "https://www.nhs.uk/conditions/overactive-thyroid-hyperthyroidism/"
   },
   "conditions/overweight-and-obesity": {
-   "bytes": 9860,
+   "bytes": 9661,
    "pages": 1,
    "section": "conditions",
-   "sha256": "7519b2ecd7eb29a76c4b1b119ce174d436937cda7e5f428ebe3c4979c8255400",
+   "sha256": "959dfb5ef65ce2dbc2990d82c9702ac01168afdd9f2a24ccd59e023994a6b18e",
    "slug": "overweight-and-obesity",
    "title": "Overweight and obesity in adults",
    "url": "https://www.nhs.uk/conditions/overweight-and-obesity/"
@@ -4298,19 +4298,19 @@
    "url": "https://www.nhs.uk/conditions/pancreatic-cancer/"
   },
   "conditions/panic-disorder": {
-   "bytes": 8014,
+   "bytes": 7727,
    "pages": 1,
    "section": "conditions",
-   "sha256": "a1fe26deb04a6f2e00dba82672e7eb9023646c05b9726d0679959ba44a876c7b",
+   "sha256": "28f7ceda28ae001ffa5d33f12a43145737174ff2d7cbd9145453ed8cf3f57a38",
    "slug": "panic-disorder",
    "title": "Panic disorder",
    "url": "https://www.nhs.uk/mental-health/conditions/panic-disorder/"
   },
   "conditions/parkinsons-disease": {
-   "bytes": 32815,
+   "bytes": 32628,
    "pages": 6,
    "section": "conditions",
-   "sha256": "a47a4eef36e98461e45bad01f3529ace56e457d2a84be6e546ff6fb592490b0c",
+   "sha256": "acd2e174b0d2dd69ec245207de6474a9d1587984daaa90d3b2be54c36b973a6d",
    "slug": "parkinsons-disease",
    "title": "Parkinson's disease",
    "url": "https://www.nhs.uk/conditions/parkinsons-disease/"
@@ -4334,10 +4334,10 @@
    "url": "https://www.nhs.uk/conditions/pelvic-inflammatory-disease-pid/"
   },
   "conditions/pelvic-organ-prolapse": {
-   "bytes": 5746,
+   "bytes": 5552,
    "pages": 1,
    "section": "conditions",
-   "sha256": "8ad412e8bc1629763d783ae22c131d5813116586caf2a22ba69ec9d15654c464",
+   "sha256": "608c6f92e5b125fb1d375d7586c3760f36af78a5213d2d07de3d715d4a79a2cb",
    "slug": "pelvic-organ-prolapse",
    "title": "Pelvic organ prolapse",
    "url": "https://www.nhs.uk/conditions/pelvic-organ-prolapse/"
@@ -4460,10 +4460,10 @@
    "url": "https://www.nhs.uk/conditions/phlebitis/"
   },
   "conditions/phobias": {
-   "bytes": 3945,
+   "bytes": 3658,
    "pages": 1,
    "section": "conditions",
-   "sha256": "9b6afa3ed28b5216ea13fa7ab7ede4ae4fca3f9d71c6b1496ae5a558a710df2e",
+   "sha256": "65e6c6d02e91544453b79350d4ec112691ba0ba5076cd4278c79449a1f0ee26d",
    "slug": "phobias",
    "title": "Phobias",
    "url": "https://www.nhs.uk/mental-health/conditions/phobias/"
@@ -4640,19 +4640,19 @@
    "url": "https://www.nhs.uk/conditions/postural-tachycardia-syndrome/"
   },
   "conditions/prader-willi-syndrome": {
-   "bytes": 29297,
+   "bytes": 29111,
    "pages": 5,
    "section": "conditions",
-   "sha256": "82a72473965615282e38579f4277613e505d6d77f4e3158a2fee721ecc7e837a",
+   "sha256": "b88d8a1287b36cb19dc94a6279b2a48c78e33b78b3edec47dde2773dee036e60",
    "slug": "prader-willi-syndrome",
    "title": "Prader-Willi syndrome",
    "url": "https://www.nhs.uk/conditions/prader-willi-syndrome/"
   },
   "conditions/pre-eclampsia": {
-   "bytes": 6037,
+   "bytes": 5836,
    "pages": 1,
    "section": "conditions",
-   "sha256": "1d993bf1e8ae2c57890e48a01be0a0f8773893f9dfb4c9ca00204d26dd4cabab",
+   "sha256": "c541d0b0d689500382fb912f0688e6a93e6ffaff8db4d91bc5536c9a07fd2692",
    "slug": "pre-eclampsia",
    "title": "Pre-eclampsia",
    "url": "https://www.nhs.uk/conditions/pre-eclampsia/"
@@ -4667,10 +4667,10 @@
    "url": "https://www.nhs.uk/conditions/pre-menstrual-syndrome/"
   },
   "conditions/pregnancy": {
-   "bytes": 244381,
+   "bytes": 242093,
    "pages": 61,
    "section": "conditions",
-   "sha256": "63c48c4be8ae8784646a3d68009bc9f1fa8ee4517b0a663db1c09f0526e874fe",
+   "sha256": "56741aa3ac474ae396a59c89eaaa2d3862dc40fbf7355702ca0da5769b620171",
    "slug": "pregnancy",
    "title": "Pregnancy",
    "url": "https://www.nhs.uk/pregnancy/"
@@ -4694,10 +4694,10 @@
    "url": "https://www.nhs.uk/conditions/primary-biliary-cholangitis-pbc/"
   },
   "conditions/problems-swallowing-pills": {
-   "bytes": 2550,
+   "bytes": 2132,
    "pages": 1,
    "section": "conditions",
-   "sha256": "886bbd6fb6fb2fc239b9bec262af6e3bad1eaade7f99fab38a1380efd6697033",
+   "sha256": "520b3ee9b4a12e4f8b5032415cd02c977d6efa8e5c4cfd1a83bdf52412e1b84f",
    "slug": "problems-swallowing-pills",
    "title": "Problems swallowing pills",
    "url": "https://www.nhs.uk/conditions/problems-swallowing-pills/"
@@ -4964,10 +4964,10 @@
    "url": "https://www.nhs.uk/conditions/rheumatic-fever/"
   },
   "conditions/rheumatoid-arthritis": {
-   "bytes": 37315,
+   "bytes": 37105,
    "pages": 7,
    "section": "conditions",
-   "sha256": "d439139db30150c20f5c8b5ce2350a76e1e9d9a898c2a1d3780a8f5ba7e13adf",
+   "sha256": "ac62514ff71da40720b3cc5f499b607a47d752a30e0503654b7a01f986fef39b",
    "slug": "rheumatoid-arthritis",
    "title": "Rheumatoid arthritis",
    "url": "https://www.nhs.uk/conditions/rheumatoid-arthritis/"
@@ -4991,10 +4991,10 @@
    "url": "https://www.nhs.uk/conditions/ringworm/"
   },
   "conditions/rosacea": {
-   "bytes": 3609,
+   "bytes": 3446,
    "pages": 1,
    "section": "conditions",
-   "sha256": "70d17e5723db8f93af9a10929e4898b360a9fc630bfc8d11bdece0efd85c1fe2",
+   "sha256": "131a3814851716ec48fb57570ffbec386d1715759e6610d7c8e46549b4052c31",
    "slug": "rosacea",
    "title": "Rosacea",
    "url": "https://www.nhs.uk/conditions/rosacea/"
@@ -5054,10 +5054,10 @@
    "url": "https://www.nhs.uk/conditions/scarlet-fever/"
   },
   "conditions/scars": {
-   "bytes": 4372,
+   "bytes": 4181,
    "pages": 1,
    "section": "conditions",
-   "sha256": "18f58c01346a821778e0e59846952b2e16d7f5836e3cefd15ffc517d1bf968b0",
+   "sha256": "6559f8af410611a13dabcea76c0e3a363cde9e6b8f2661e1538d15f35b99a05c",
    "slug": "scars",
    "title": "Scars",
    "url": "https://www.nhs.uk/conditions/scars/"
@@ -5081,10 +5081,10 @@
    "url": "https://www.nhs.uk/mental-health/conditions/schizophrenia/"
   },
   "conditions/sciatica": {
-   "bytes": 5107,
+   "bytes": 4954,
    "pages": 1,
    "section": "conditions",
-   "sha256": "24f4cea9108d6289c4180b357357019e197ae3378e4b60f39462ddf6e90bfae9",
+   "sha256": "24eac358e78cef20e5562328221a3e680bb55f38995af4ee90833cc3eb6e16bc",
    "slug": "sciatica",
    "title": "Sciatica",
    "url": "https://www.nhs.uk/conditions/sciatica/"
@@ -5135,19 +5135,19 @@
    "url": "https://www.nhs.uk/mental-health/conditions/selective-mutism/"
   },
   "conditions/self-harm": {
-   "bytes": 16730,
+   "bytes": 16526,
    "pages": 7,
    "section": "conditions",
-   "sha256": "0347a435b59e0c0c677184a886ea5d95a3f9c14e99940c5fc29c6486550797da",
+   "sha256": "3d76b4bbc2a19b7d0037dfe4709078fd4942d06abc9eb8676213450d28940d56",
    "slug": "self-harm",
    "title": "Self-harm",
    "url": "https://www.nhs.uk/mental-health/feelings-symptoms-behaviours/behaviours/self-harm/"
   },
   "conditions/sepsis": {
-   "bytes": 8828,
+   "bytes": 8626,
    "pages": 1,
    "section": "conditions",
-   "sha256": "018c99558db537f820dd0f7a0aff699ece6c9f58ca7fa402af8fd4a5e97ebf2b",
+   "sha256": "28ec90f3e9da9e02d5b373ebaeb5ef0f7a43ca41b8a58a51978d0d06c0421883",
    "slug": "sepsis",
    "title": "Sepsis",
    "url": "https://www.nhs.uk/conditions/sepsis/"
@@ -5216,10 +5216,10 @@
    "url": "https://www.nhs.uk/conditions/sick-building-syndrome/"
   },
   "conditions/sickle-cell-disease": {
-   "bytes": 29431,
+   "bytes": 29049,
    "pages": 7,
    "section": "conditions",
-   "sha256": "d126b9412a217a05324fb497e099825eaaaf108e7b4ce8a88e9474af06933f82",
+   "sha256": "bd746fa46376a6e25d82a5d228b6b1f42080158150516439ff043b698d214a0c",
    "slug": "sickle-cell-disease",
    "title": "Sickle cell disease",
    "url": "https://www.nhs.uk/conditions/sickle-cell-disease/"
@@ -5342,10 +5342,10 @@
    "url": "https://www.nhs.uk/conditions/snake-bites/"
   },
   "conditions/social-anxiety": {
-   "bytes": 6338,
+   "bytes": 5845,
    "pages": 1,
    "section": "conditions",
-   "sha256": "df295f3aa0d6a727b886a6d27a917c77e85cc250d68e4d786e2c59b040ea12f7",
+   "sha256": "9e1eeb703a71b40f098e22b0de08e717174993b9b9d045f5971b7e003db3f622",
    "slug": "social-anxiety",
    "title": "Social anxiety (social phobia)",
    "url": "https://www.nhs.uk/mental-health/conditions/social-anxiety/"
@@ -5396,10 +5396,10 @@
    "url": "https://www.nhs.uk/conditions/sprains-and-strains/"
   },
   "conditions/squint": {
-   "bytes": 8996,
+   "bytes": 8806,
    "pages": 2,
    "section": "conditions",
-   "sha256": "951ac4576635be1c28ddc9701ce52fc5994b98bced5420ecc81eb8e3f2e63ec8",
+   "sha256": "be1d292da1bc5379cde91fff0a885e638a44d8507b26ac67855b0a49f9c60e9a",
    "slug": "squint",
    "title": "Squint",
    "url": "https://www.nhs.uk/conditions/squint/"
@@ -5432,10 +5432,10 @@
    "url": "https://www.nhs.uk/conditions/stevens-johnson-syndrome/"
   },
   "conditions/stillbirth": {
-   "bytes": 19274,
+   "bytes": 19085,
    "pages": 4,
    "section": "conditions",
-   "sha256": "97812277b444cf395d4d21cd99b88fa26049338f2be1e65081eed1701ba8432d",
+   "sha256": "bccc6944ceaf7c4fbb6f334098c3e8acd05241f45973da5059d7c919a495b3c2",
    "slug": "stillbirth",
    "title": "Stillbirth",
    "url": "https://www.nhs.uk/conditions/stillbirth/"
@@ -5477,10 +5477,10 @@
    "url": "https://www.nhs.uk/conditions/stretch-marks/"
   },
   "conditions/stroke": {
-   "bytes": 9413,
+   "bytes": 9061,
    "pages": 7,
    "section": "conditions",
-   "sha256": "7fd2407b953daf3fc2b285a8cfbf685fae6926c9ae05bc930ec76009c9bbf351",
+   "sha256": "bddee22fe86420ca9ca544c767f4a4ab32a60c6ec406d45a67a65692e49f8e33",
    "slug": "stroke",
    "title": "Stroke",
    "url": "https://www.nhs.uk/conditions/stroke/"
@@ -5576,10 +5576,10 @@
    "url": "https://www.nhs.uk/conditions/temporomandibular-disorder-tmd/"
   },
   "conditions/tendonitis": {
-   "bytes": 4386,
+   "bytes": 4225,
    "pages": 1,
    "section": "conditions",
-   "sha256": "634c4782230ec6a913e2fff86f859295e65d188156b92dc8ab4b4472b247f7dc",
+   "sha256": "05f4cc71b8a2d7df3ffd4dbb9c9d08d9598bcc0a10fb593120bf42184161f76e",
    "slug": "tendonitis",
    "title": "Tendonitis",
    "url": "https://www.nhs.uk/conditions/tendonitis/"
@@ -5603,10 +5603,10 @@
    "url": "https://www.nhs.uk/conditions/tension-headaches/"
   },
   "conditions/testicular-cancer": {
-   "bytes": 12268,
+   "bytes": 12031,
    "pages": 7,
    "section": "conditions",
-   "sha256": "960c0f908b6b570c74624df2505f7a9776a8a8af2a4ccba01792148ae5cae7c5",
+   "sha256": "bfcbbc85813706997bcc7375194c3c5ac92b39fa6d84a71a5ad65157ab1f638e",
    "slug": "testicular-cancer",
    "title": "Testicular cancer",
    "url": "https://www.nhs.uk/conditions/testicular-cancer/"
@@ -5693,19 +5693,19 @@
    "url": "https://www.nhs.uk/conditions/tics/"
   },
   "conditions/tinnitus": {
-   "bytes": 4275,
+   "bytes": 4092,
    "pages": 1,
    "section": "conditions",
-   "sha256": "9f411e1a9472fe4ce32e88a8234ffa9f74057fb52a0e60e6b5f488b4db4dc02d",
+   "sha256": "021c3744a007587b72ec9c84b6a63e3d187d9c0686e7e38cf77f906c5c363c93",
    "slug": "tinnitus",
    "title": "Tinnitus",
    "url": "https://www.nhs.uk/conditions/tinnitus/"
   },
   "conditions/toe-pain": {
-   "bytes": 4995,
+   "bytes": 4820,
    "pages": 1,
    "section": "conditions",
-   "sha256": "9e195dd47edfa01613f668ae6fa0c97a73007cb39d7473343375d268d6983fc0",
+   "sha256": "23b99c4d48a25492dc357b9248b904649eb0e9b52cd5cf2a2a5363d30edeaace",
    "slug": "toe-pain",
    "title": "Toe pain",
    "url": "https://www.nhs.uk/symptoms/foot-pain/toe-pain/"
@@ -5738,10 +5738,10 @@
    "url": "https://www.nhs.uk/conditions/tooth-decay/"
   },
   "conditions/tourette-syndrome": {
-   "bytes": 4857,
+   "bytes": 4651,
    "pages": 1,
    "section": "conditions",
-   "sha256": "f8992a4b06ad8abe13db3534c63cc6e3e3f734211171dbbd35d65d90cfe28fa3",
+   "sha256": "60b438a266805a5faeded82b2271a6e25cdf18d80b47b4f14e49fd091e1a6a71",
    "slug": "tourette-syndrome",
    "title": "Tourette syndrome",
    "url": "https://www.nhs.uk/conditions/tourette-syndrome/"
@@ -5774,10 +5774,10 @@
    "url": "https://www.nhs.uk/conditions/toxoplasmosis/"
   },
   "conditions/transient-ischaemic-attack-tia": {
-   "bytes": 22682,
+   "bytes": 22478,
    "pages": 6,
    "section": "conditions",
-   "sha256": "70ca44b60e2c0f031b835ad5fddee15c7fdf29b290213314fdaa2186ad6c86d7",
+   "sha256": "9d47480d88204f5f25637c6eb2d6a2d6ae7aaac9f1cf5284753be3ead920ac47",
    "slug": "transient-ischaemic-attack-tia",
    "title": "Transient ischaemic attack (TIA)",
    "url": "https://www.nhs.uk/conditions/transient-ischaemic-attack-tia/"
@@ -5837,10 +5837,10 @@
    "url": "https://www.nhs.uk/conditions/turner-syndrome/"
   },
   "conditions/type-1-diabetes": {
-   "bytes": 24516,
+   "bytes": 24186,
    "pages": 7,
    "section": "conditions",
-   "sha256": "f7ea6ce20cd0683b0b36365cb48120ad60807352570823abfdd8c6f3dc186f2d",
+   "sha256": "fc39a3b205598297d197141c53a27e7a967db33f5eaa2aed01a57e0631599cef",
    "slug": "type-1-diabetes",
    "title": "Type 1 diabetes",
    "url": "https://www.nhs.uk/conditions/type-1-diabetes/"
@@ -5918,10 +5918,10 @@
    "url": "https://www.nhs.uk/conditions/urethritis/"
   },
   "conditions/urinary-incontinence": {
-   "bytes": 47056,
+   "bytes": 46861,
    "pages": 8,
    "section": "conditions",
-   "sha256": "e98261b39ff6bcc1757823a16f1ff996a4ccc2b715170414839ef56302ec3cfc",
+   "sha256": "cc934eda91d8db0060568fbb11476648139152a2e7a6ba76d4ca777d3d630686",
    "slug": "urinary-incontinence",
    "title": "Urinary incontinence",
    "url": "https://www.nhs.uk/conditions/urinary-incontinence/"
@@ -6089,10 +6089,10 @@
    "url": "https://www.nhs.uk/conditions/whiplash/"
   },
   "conditions/whooping-cough": {
-   "bytes": 5330,
+   "bytes": 5130,
    "pages": 1,
    "section": "conditions",
-   "sha256": "1b0949e1208ec1b85d9bd3c43c44546bcfc5f24a14339fea8d96b3ddf4424df2",
+   "sha256": "b968cfeaa19a67350843329fc23d22ed44d9b3cc2f04eb9e63e8d048e8973252",
    "slug": "whooping-cough",
    "title": "Whooping cough",
    "url": "https://www.nhs.uk/conditions/whooping-cough/"
@@ -6260,10 +6260,10 @@
    "url": "https://www.nhs.uk/medicines/antacids/"
   },
   "medicines/antibiotics": {
-   "bytes": 17749,
+   "bytes": 17498,
    "pages": 5,
    "section": "medicines",
-   "sha256": "376185c38704cdd7ce579640e1df7bcdd0afaa49ef8e74da3e24ff0a256aedcd",
+   "sha256": "22b83b936fc966450748e83d3020b4eb494efddab5561d6a2d848b6e5d4c1522",
    "slug": "antibiotics",
    "title": "Antibiotics",
    "url": "https://www.nhs.uk/medicines/antibiotics/"
@@ -7358,10 +7358,10 @@
    "url": "https://www.nhs.uk/medicines/ibuprofen-for-adults/"
   },
   "medicines/ibuprofen-for-children": {
-   "bytes": 10172,
+   "bytes": 9963,
    "pages": 1,
    "section": "medicines",
-   "sha256": "39638d6c57d1cccb732362d75f2e52968bf2e9cea04586f4d2cb13e0c87d87c0",
+   "sha256": "d6e087282c3dbe92b10687942bad50e3c19c2bbe37f50fc2a5bd34822a68caf8",
    "slug": "ibuprofen-for-children",
    "title": "Ibuprofen for children",
    "url": "https://www.nhs.uk/medicines/ibuprofen-for-children/"
@@ -7934,10 +7934,10 @@
    "url": "https://www.nhs.uk/medicines/paracetamol-for-adults/"
   },
   "medicines/paracetamol-for-children": {
-   "bytes": 9244,
+   "bytes": 9035,
    "pages": 1,
    "section": "medicines",
-   "sha256": "5f9029616744721cfb98e4a05721b1b07bb5309435756ea56a48578084a51886",
+   "sha256": "9874dedf255bf5c9d69d432cb87ff1a808a3477500272ba1a4f40e5a86b30e40",
    "slug": "paracetamol-for-children",
    "title": "Paracetamol for children (Calpol)",
    "url": "https://www.nhs.uk/medicines/paracetamol-for-children/"

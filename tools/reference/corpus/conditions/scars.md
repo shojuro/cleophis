@@ -42,13 +42,6 @@ At your appointment, a trained professional will colour match the creams and pow
 
 You can get the products on a prescription or buy them.
 
-### Video: scars - skin camouflage
-
-In this video, an expert explains how skin camouflage is used to cover marks and scars.
-
-Media last reviewed: 23 June 2026
-Media review due: 23 June 2029
-
 ### Find out more
 
 - Changing Faces: Skin camouflage

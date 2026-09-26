@@ -112,10 +112,3 @@ You can:
 
 - call the Changing Faces support and information helpline on 0300 012 0275
 - find out more about the Changing Faces Skin Camouflage Service
-
-## Video: Rosacea
-
-This video describes symptoms, causes and treatment options for rosacea.
-
-Media last reviewed: 10 August 2024
-Media review due: 10 August 2027

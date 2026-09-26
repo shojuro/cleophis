@@ -120,10 +120,3 @@ If you're pregnant you should also have the whooping cough vaccine. You usually 
 Speak to your GP surgery or midwife if you're 20 weeks pregnant and have not been offered the whooping cough vaccine.
 
 Find out more about the whooping cough vaccination in pregnancy
-
-## What is whooping cough?
-
-In this video, a doctor explains the symptoms of whooping cough and when to seek medical help.
-
-Media last reviewed: 23 September 2025
-Media review due: 23 September 2028

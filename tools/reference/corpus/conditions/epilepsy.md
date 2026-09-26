@@ -238,10 +238,3 @@ Charity providing support dogs for people with conditions including epilepsy.
 
 - Website: www.supportdogs.org.uk
 - Support Dogs: epilepsy seizure alert
-
-## Video: epilepsy research - MRI
-
-In this video, a professor outlines the benefits of participating in MRI research.
-
-Media last reviewed: 5 August 2025
-Media review due: 5 August 2028

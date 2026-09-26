@@ -829,13 +829,6 @@ Breathe normally and relax while you’re doing pelvic floor exercises. Aim to g
 
 You may have to do pelvic floor exercises for a few months before you see any benefits.
 
-#### Video: How to do pelvic floor exercises
-
-In this video, a physiotherapist explains how to do pelvic floor exercises.
-
-Media last reviewed: 20 October 2023
-Media review due: 20 October 2026
-
 ### Stop smoking
 
 If you smoke, you put yourself at risk of incontinence, because coughing puts strain on your pelvic floor muscles.

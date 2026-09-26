@@ -136,13 +136,6 @@ It's usually performed under local anaesthetic in a clinic and you will not norm
 
 A small number of women need either a general anaesthetic or an injection in their back (epidural), which may involve a short stay in hospital.
 
-## Video: female genital mutilation (FGM)
-
-This video raises awareness of female genital mutilation (FGM) and has advice if you or someone else are at risk.
-
-Media last reviewed: 6 June 2024
-Media review due: 6 June 2027
-
 ## Why FGM is carried out
 
 FGM is practised for a variety of cultural and social reasons, including tradition, community acceptance, and beliefs about marriageability, virginity and cleanliness.
@@ -171,13 +164,6 @@ It's an offence to:
 Anyone who performs FGM can face up to 14 years in prison.
 
 Anyone found guilty of failing to protect a girl from FGM can face up to 7 years in prison.
-
-## Video: female genital mutilation - the facts
-
-This video dispels myths surrounding FGM and religion.
-
-Media last reviewed: 1 July 2025
-Media review due: 1 July 2028
 
 ## Download the statement opposing FGM
 

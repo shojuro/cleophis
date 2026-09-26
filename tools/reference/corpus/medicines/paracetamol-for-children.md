@@ -134,13 +134,6 @@ If you're told to go to A&E, do not drive. Ask someone to drive you or call 999 
 
 Bring the paracetamol packet or leaflet inside it, any remaining medicine, and any other medicines your child takes.
 
-### Video: how to give medicine to a child using an oral syringe
-
-This video describes how to give medicine to a child using an oral syringe.
-
-Media last reviewed: 17 July 2025
-Media review due: 17 July 2028
-
 ### More advice about giving medicine to children
 
 - How to give different types of medicines (Medicines for Children website)

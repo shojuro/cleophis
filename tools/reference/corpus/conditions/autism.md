@@ -28,13 +28,6 @@ Autism is a difference in how your brain develops that affects how you see a
 - Autism is something you’re born with. It’s not an illness and there is no treatment or cure, but there are ways of managing it and getting support.
 - It’s not known what causes autism, but it can sometimes affect people in the same family. It is not caused by vaccines or medicines.
 
-#### We are autistic
-
-This video shows how autism can affect everyday life and how you can help support and understand autistic people.
-
-Media last reviewed: 29 March 2024
-Media review due: 29 March 2027
-
 ## Signs of autism in children
 
 ### Main signs of autism

@@ -857,13 +857,6 @@ Read more about what to do if you've just been diagnosed with dementia.
 
 Sign up for Dementia Information Service emails
 
-### Video: Living with dementia
-
-This video provides advice, help, and support for people suffering from dementia and their carers.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027
-
 ## Causes of dementia
 
 Dementia is a term used to describe the symptoms that occur when there's a decline in brain function.
@@ -987,13 +980,6 @@ Sign up to take part in trials on the NHS Join Dementia Research website.
 
 Sign up for the Dementia Information Service emails
 
-### Video: Early onset dementia
-
-In this video, an expert explains the value of early diagnosis and planning for the future.
-
-Media last reviewed: 8 October 2024
-Media review due: 8 October 2027
-
 ## Can dementia be prevented?
 
 There's no certain way to prevent all types of dementia, as researchers are still investigating how the condition develops.
@@ -1090,13 +1076,6 @@ The NHS Health Check can help find early signs and tell you if you're at higher 
 If you're over age 65, you'll be told the signs and symptoms of dementia to look out for. You'll also be given advice on how to lower your risk of dementia.
 
 If you have not been invited for an NHS Health Check, ask your GP surgery.
-
-### Video: Living with dementia
-
-This video provides advice, help, and support for people suffering from dementia and their carers.
-
-Media last reviewed: 1 April 2024
-Media review due: 1 April 2027
 
 ## What are the treatments for dementia?
 
@@ -1399,13 +1378,6 @@ The most common symptoms of advanced dementia include:
 - Communicating with someone with dementia
 - Coping with behavioural changes with dementia
 - Alzheimer's Society: eating and drinking
-
-### Video: Early onset dementia
-
-In this video, an expert explains the value of early diagnosis and planning for the future.
-
-Media last reviewed: 8 October 2024
-Media review due: 8 October 2027
 
 ## How to get a dementia diagnosis
 
@@ -1827,13 +1799,6 @@ Find out more about getting a needs assessment
 
 Find out more about help and support for people with dementia
 
-### Video: Dementia – Singing for the Brain
-
-In this video, a group of people with dementia and their carers talk about the benefits of Singing for the Brain.
-
-Media last reviewed: 3 May 2024
-Media review due: 3 May 2027
-
 ## Staying independent with dementia
 
 Being diagnosed with dementia will have a big impact on you and your life. You and your family may worry about how long you can look after yourself, particularly if you live alone.
@@ -1941,13 +1906,6 @@ These plans can include:
 - making a will – if you haven't done so already
 
 Read more about managing legal affairs when you have dementia.
-
-### Video: Dementia - Singing for the Brain
-
-In this video, a group of people with dementia and their carers talk about the benefits of Singing for the Brain.
-
-Media last reviewed: 3 May 2024
-Media review due: 3 May 2027
 
 ## Activities for dementia
 

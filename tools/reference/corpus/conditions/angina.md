@@ -142,10 +142,3 @@ You may also need to think about practical things like always carrying your angi
 
 - British Heart Foundation: understanding angina booklet
 - British Heart Foundation: support with everyday life
-
-## Video: Angina
-
-In this video an expert describes the symptoms, stages and treatment of angina.
-
-Media last reviewed: 12 November 2024
-Media review due: 12 November 2027

@@ -1163,13 +1163,6 @@ You can also get more information about staying smoke-free on the Better Health 
 
 Sign up for Best Start in Life’s emails for expert advice, videos and tips on pregnancy, birth and beyond.
 
-### Video: should I give up smoking?
-
-In this video, a midwife explains how smoking can harm your baby.
-
-Media last reviewed: 1 February 2026
-Media review due: 1 February 2029
-
 ## Illegal drugs in pregnancy
 
 Using illegal or street drugs during pregnancy, including cannabis, ecstasy, cocaine and heroin, could have a serious effect on your unborn baby.
@@ -1439,13 +1432,6 @@ You can buy vitamin supplements from pharmacies, supermarkets and online.
 If you need higher dose folic acid or other supplements, speak to a GP.
 
 You may also be able to get free vitamin supplements with Healthy Start.
-
-### Video: Should I take supplements during my pregnancy?
-
-In this video, a midwife explains which supplements you can take during pregnancy.
-
-Media last reviewed: 2 February 2026
-Media review due: 2 February 2029
 
 ### Get Best Start in Life pregnancy and baby emails
 
@@ -1905,13 +1891,6 @@ If you're HIV positive, talk to your doctor or midwife about your own health and
 
 The British HIV Association (BHIVA) has more information on HIV and pregnancy
 
-#### Video: HIV and pregnancy
-
-This video explores Sarah's story of HIV and pregnancy.
-
-Media last reviewed: 16 November 2023
-Media review due: 16 November 2026
-
 ### Slapped cheek syndrome in pregnancy
 
 Slapped cheek syndrome is common in children. It typically causes a rash on the face.
@@ -2014,13 +1993,6 @@ Keep up your normal daily activity or exercise, unless you have been advised by 
 Your midwife or GP may have special advice for you if you have a body mass index (BMI) of over 30 or below 18.5
 
 If you're concerned about your weight or any other aspect of your health while pregnant, ask your midwife or GP for advice.
-
-### Video: Where does my pregnancy weight come from?
-
-In this video, a midwife discusses where the extra weight in pregnancy comes from.
-
-Media last reviewed: 14 March 2026
-Media review due: 14 March 2029
 
 ### Further information
 
@@ -2165,25 +2137,11 @@ Find out more about incontinence.
 
 Find out more about keeping fit and healthy after you've had your baby.
 
-#### How and when should I do pelvic floor exercises?
-
-In this video, a midwife explains how to do pelvic floor exercises and when you can practise them.
-
-Media last reviewed: 25 January 2023
-Media review due: 25 January 2026
-
 ### Need activity ideas for the rest of the family?
 
 For ideas to help get your family more active visit the Better Health – Healthier Families website.
 
 Please bear in mind that the activity plans are not designed for use during pregnancy but can be useful for your partner, children and other family members.
-
-### Video: What can I do during pregnancy to make birth easier?
-
-In this video, a midwife describes things women can do during pregnancy to help make giving birth easier.
-
-Media last reviewed: 3 February 2026
-Media review due: 3 February 2029
 
 ### Get Best Start in Life pregnancy and baby emails
 
@@ -2357,13 +2315,6 @@ All these services – including community contraceptive clinics – are confide
 
 If you're under 25 and would prefer advice specifically for young people, the sexual health charity Brook provides a range of services for young people. The Brook website contains information on pregnancy choices. You can also use the Ask Brook 24/7 service.
 
-### Video: Is the pregnancy test accurate?
-
-In this video, a midwife explains when you can take a pregnancy test and how to do it properly.
-
-Media last reviewed: 2 February 2026
-Media review due: 2 February 2029
-
 ## Signs and symptoms that might mean you're pregnant
 
 There can be lots of different signs and symptoms that might mean you're pregnant. Every pregnancy is different, so you may not have all these symptoms.
@@ -2406,13 +2357,6 @@ If a test shows you are pregnant, get information on what to do when you first f
 - Doing a pregnancy test
 - Due date calculator
 - Antenatal (pregnancy care) and appointments
-
-### Video: What pregnancy symptoms are normal?
-
-In this video, a midwife describes which symptoms during pregnancy are normal.
-
-Media last reviewed: 9 March 2026
-Media review due: 9 March 2029
 
 ### Get advice if you're worried
 
@@ -2873,13 +2817,6 @@ Some hospitals have a policy of not telling patients the sex of their baby. Spea
 
 You will need to check if your hospital provides this service. If they do, there may be a charge.
 
-### Video: What happens at a scan and what will they tell me?
-
-In this video, a midwife explains what happens at your ultrasound scans during pregnancy.
-
-Media last reviewed: 4 April 2023
-Media review due: 4 April 2026
-
 ## 20-week screening scan
 
 The 20-week screening scan, also called the anomaly scan, is an ultrasound scan to look for 11 different conditions in your baby. It also checks your baby's growth. It's usually done when you're between 18 and 21 weeks pregnant.
@@ -3061,13 +2998,6 @@ You will also be offered newborn screening tests for your baby after they're bor
 | Usually between 11 and 14 weeks | 12-week scan (looking for signs of some health conditions, such as spina bifida)Screening for Down's syndrome, Edwards' syndrome and Patau's syndrome (called the combined test) |
 | Usually between 14 and 20 weeks | Screening for Down's syndrome (called the quadruple blood screening test) – this is offered if the combined test was not possible |
 | Usually between 18 and 21 weeks | 20-week scan (screening for 11 health conditions) |
-
-#### Video: Screening tests for you and your baby
-
-This video shows which tests are available during pregnancy and after your baby has been born.
-
-Media last reviewed: 14 March 2026
-Media review due: 14 March 2029
 
 #### Find out more
 
@@ -4694,13 +4624,6 @@ Other things you can try include:
 There are medicines that can help soothe the inflammation around your anus. These treat the symptoms, but not the cause, of piles.
 
 Ask your doctor, midwife or pharmacist if they can suggest a suitable treatment to help soothe the area. Don't use a cream or medicine without checking with them first.
-
-#### Video: What can I do about haemorrhoids?
-
-In this video, a midwife explains ways you can treat or prevent haemorrhoids during pregnancy.
-
-Media last reviewed: 2 February 2026
-Media review due: 2 February 2029
 
 ## Stomach pain in pregnancy
 

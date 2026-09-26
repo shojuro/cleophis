@@ -78,13 +78,6 @@ If you:
 
 Our social care and support guide explains your options and where you can get support.
 
-### Video: Clinical depression – Lawrence's story
-
-In this video, Lawrence talks about his experience of clinical depression.
-
-Media last reviewed: 1 June 2024
-Media review due: 1 June 2027
-
 ## Symptoms - Depression in adults
 
 **The symptoms of depression can be complex and vary widely between people. If you're depressed, you may feel sad, hopeless and lose interest in things you used to enjoy.**
@@ -387,13 +380,6 @@ See a GP for more information about accessing talking therapies. They can refer 
 You also have the option of self-referral. This means that if you prefer not to talk to a GP, you can go directly to an NHS talking therapies service.
 
 Waiting times for talking therapies can be several weeks or months. A GP can tell you how long you might need to wait, and what to do if your condition gets worse or you need support during this time.
-
-#### Video: Talking therapies for stress, anxiety and depression
-
-Animated video explaining self-referral to talking therapies services for stress, anxiety or depression. Includes British Sign Language (BSL) translation.
-
-Media last reviewed: 6 March 2026
-Media review due: 6 March 2029
 
 ### Antidepressants
 
@@ -726,10 +712,3 @@ Visit the Timebanking UK website to find out what's available in your area
 There are lots of treatment options for depression, including talking therapies, antidepressants and self-help of various kinds.
 
 If you have been feeling down for more than 2 weeks, visit your GP to discuss your symptoms.
-
-#### Audio: Self-help for low mood and depression
-
-In this audio guide, a doctor explains what you can do to help yourself cope with low mood and depression.
-
-Media last reviewed: 2 March 2024
-Media review due: 2 March 2027

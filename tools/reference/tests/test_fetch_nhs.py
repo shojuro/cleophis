@@ -185,6 +185,46 @@ class OldFormatCaption(unittest.TestCase):
         self.assertTrue(body.startswith("# Alzheimer's disease\n\nMemory problems.\n\n## Symptoms\n"))
 
 
+class VideoBlocks(unittest.TestCase):
+    """Task M4b step 0: the NHS brightcove video block (its heading, its
+    one-line description, the player and the "Media last reviewed" / "Media
+    review due" lines) is dropped whole. It carries no reference content,
+    pollutes lexical retrieval, and its dates would read as citable."""
+
+    HTML = """<main id="maincontent"><h1>Gout</h1>
+<p class="nhsuk-lede-text">Gout is a type of arthritis.</p>
+<section><h2 id="complications">Complications of gout</h2><p>Kidney stones.</p></section>
+<section>
+<div class="app-brightcove-video">
+  <div class="nhsuk-card__content"><h2 >Video: gout</h2>
+    <p >This video explains how gout affects the body, and what treatments are available.</p></div>
+  <div class="app-brightcove-videoplayer">
+    <video id="703295047001" data-video-id="703295047001" class="video-js vjs-fluid" controls></video>
+    <script src="//players.brightcove.net/79855382001/EkC1XU82e_default/index.min.js"></script>
+  </div>
+  <div class="app-brightcove-video--date">
+    Media last reviewed: 16 February 2026<br>
+    Media review due: 16 February 2029
+  </div>
+</div>
+</section>
+<section><h3>Video</h3><p>Real text after the block stays.</p></section>
+<div><p class="nhsuk-body-s">Page last reviewed: 24 August 2023<br>Next review due: 24 August 2026</p></div>
+</main>"""
+
+    def test_video_block_and_media_dates_are_dropped(self):
+        p = fn.extract_page(self.HTML, "https://www.nhs.uk/conditions/gout/")
+        for gone in ("Media last reviewed", "Media review due", "Video: gout", "This video explains",
+                     "2029", "16 February 2026", "brightcove"):
+            self.assertNotIn(gone, p.body, gone)
+        self.assertEqual(
+            p.body,
+            "Gout is a type of arthritis.\n\n## Complications of gout\n\nKidney stones.\n\n"
+            "### Video\n\nReal text after the block stays.\n",
+        )
+        self.assertEqual(p.last_reviewed, "24 August 2023")
+
+
 class SubpageDiscovery(unittest.TestCase):
     def test_prefix_bounded_ordered_and_excludes_other_entries(self):
         subs = fn.discover_subpages(

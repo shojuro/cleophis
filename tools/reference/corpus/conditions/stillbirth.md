@@ -51,13 +51,6 @@ Not all stillbirths can be prevented, but there are some things you can do to re
 - making sure all your vaccinations are up to date – speak to your midwife or GP for advice
 - limiting the amount of caffeine you consume during pregnancy
 
-### Video: Coping with grief after a stillbirth
-
-In this video Lisa and Jason describe how they coped with a stillbirth
-
-Media last reviewed: 16 April 2024
-Media review due: 16 April 2027
-
 ## Causes
 
 **A large proportion of stillbirths happen in otherwise healthy babies, and the reason often can't be explained. But there are some causes we do know about.**

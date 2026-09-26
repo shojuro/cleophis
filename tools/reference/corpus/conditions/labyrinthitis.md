@@ -96,10 +96,3 @@ Vestibular rehabilitation is a series of exercises that can help restore balance
 You can ask a GP to refer you to a physiotherapist, or it may be possible to refer yourself directly.
 
 Waiting lists for accessing NHS physiotherapy can be long and you may prefer to pay for private treatment. Most private physiotherapists accept direct self-referrals.
-
-## Video: labyrinthitis and vertigo (BPPV) - Hazel's story
-
-In this video, Hazel talks about how labyrinthitis affected her balance and perception and how she found help.
-
-Media last reviewed: 12 May 2026
-Media review due: 12 May 2029

@@ -185,10 +185,3 @@ The appendix is a small pouch that's joined to your bowel in the lower right sid
 Appendicitis happens when your appendix becomes infected and swollen. This is often caused by something getting stuck in your appendix, such as a small piece of undigested food or hard poo.
 
 Appendicitis is common. It can happen at any age, but it's most common in children over 10 years old and young adults. It's rare in babies under 12 months old.
-
-## Video: what is appendicitis?
-
-Watch this animation to learn about what causes appendicitis and how it's treated.
-
-Media last reviewed: 1 May 2024
-Media review due: 1 May 2027

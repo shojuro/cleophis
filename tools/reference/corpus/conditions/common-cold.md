@@ -144,10 +144,3 @@ The best ways to avoid catching a cold are:
 The flu vaccine does not prevent colds.
 
 **See how to wash your hands correctly**
-
-### Video: How to wash your hands
-
-Watch this video to find out the best way to wash your hands.
-
-Media last reviewed: 15 March 2026
-Media review due: 15 March 2029
