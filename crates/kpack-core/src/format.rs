@@ -107,6 +107,14 @@ pub struct Pack {
     dims: usize,
 }
 
+/// `docs.source_type` of a page from the NHS website (Phase 1h M4b, the
+/// bundled reference pack). For THIS source type only, `source_path` holds
+/// the page's public URL and `source_mtime` its retrieval date (ISO 8601
+/// `YYYY-MM-DD`), and citations expose both
+/// (`retrieve::CitationSource::from_doc`). For every other source type
+/// `source_path` may be a private file path and is never exposed.
+pub const SOURCE_TYPE_NHS_WEB: &str = "nhs-web";
+
 /// One source document (spec §1.1). `id` is ignored by `insert_doc` (SQLite
 /// assigns the rowid); it's populated on read. `title`, `sha256`, and
 /// `added_at` are required; everything else is nullable — `source_path` is

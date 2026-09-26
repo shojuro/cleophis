@@ -84,7 +84,7 @@ pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, 
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
 pub use epub::{document_from_epub, Error as EpubError};
-pub use format::{Chunk, Doc, Error, Pack, TitleEntry, MIN_SCHEMA_VERSION, SCHEMA_VERSION};
+pub use format::{Chunk, Doc, Error, Pack, TitleEntry, MIN_SCHEMA_VERSION, SCHEMA_VERSION, SOURCE_TYPE_NHS_WEB};
 pub use html::html_to_document;
 pub use lookup::{
     assemble_lexical, damerau_levenshtein, lookup_contract, max_edits, normalise_title,
@@ -94,7 +94,7 @@ pub use lookup::{
 pub use manifest::{check_load, check_load_lexical, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
 pub use retrieve::{
-    retrieve_pack, rrf, safe_fts5_query, Candidate, Error as RetrieveError, DEFAULT_K_RRF,
+    retrieve_pack, rrf, safe_fts5_query, Candidate, CitationSource, Error as RetrieveError, DEFAULT_K_RRF,
 };
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};

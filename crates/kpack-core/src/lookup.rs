@@ -29,7 +29,7 @@
 
 use crate::contract;
 use crate::format::{Chunk, Error, Pack, TitleEntry};
-use crate::retrieve::{render_grounded, GroundedItem, RetrievalResult};
+use crate::retrieve::{render_grounded, CitationSource, GroundedItem, RetrievalResult};
 
 /// The most chunks a lexical `Found` ever carries — `retrieve::Tier::Small`'s
 /// budget (k = 3, the 2048-token floor-tier budget, design ruling I1).
@@ -41,11 +41,14 @@ pub const DID_YOU_MEAN_MAX: usize = 5;
 /// The outcome of one lexical lookup. See the module doc comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LexicalOutcome {
-    /// The page exists: its title-index `doc_id`, display `title`, and its
-    /// first ≤ k chunks in section order (never empty).
+    /// The page exists: its title-index `doc_id`, display `title`, where
+    /// it came from (`source`: URL and retrieval date for an `nhs-web`
+    /// page, empty otherwise — Phase 1h M4b), and its first ≤ k chunks in
+    /// section order (never empty).
     Found {
         doc_id: i64,
         title: String,
+        source: CitationSource,
         chunks: Vec<Chunk>,
     },
     /// No exact match; these display titles are close (or the query was an
@@ -174,9 +177,14 @@ pub fn retrieve_lexical(pack: &Pack, query: &str, k: usize) -> Result<LexicalOut
                     // A title with no body is no evidence.
                     return Ok(LexicalOutcome::NotFound);
                 }
+                let source = pack
+                    .get_doc(e.doc_id)?
+                    .map(|doc| CitationSource::from_doc(&doc))
+                    .unwrap_or_default();
                 return Ok(LexicalOutcome::Found {
                     doc_id: e.doc_id,
                     title: e.title.clone(),
+                    source,
                     chunks,
                 });
             }
@@ -324,8 +332,9 @@ pub fn lookup_contract() -> &'static contract::PromptContract {
 /// `contract::assemble_system(lookup_contract() /* triage */, doc_context =
 /// the page title's doc-context line, the page's ≤ 3 chunks)` — THE
 /// assembler, reached through `retrieve::render_grounded` (which adds only
-/// the citations). Citations carry `pack_id`. Empty `chunks` → `NoEvidence`.
-pub fn assemble_lexical(pack_id: &str, title: &str, chunks: &[Chunk]) -> RetrievalResult {
+/// the citations). Citations carry `pack_id` and the page's `source` (URL
+/// and retrieval date, from `Found::source`). Empty `chunks` → `NoEvidence`.
+pub fn assemble_lexical(pack_id: &str, title: &str, source: &CitationSource, chunks: &[Chunk]) -> RetrievalResult {
     let items: Vec<GroundedItem<'_>> = chunks
         .iter()
         .take(LEXICAL_MAX_K)
@@ -333,6 +342,7 @@ pub fn assemble_lexical(pack_id: &str, title: &str, chunks: &[Chunk]) -> Retriev
             pack_id,
             chunk,
             title,
+            source,
         })
         .collect();
     render_grounded(lookup_contract(), &items)
@@ -796,7 +806,7 @@ mod tests {
             panic!()
         };
         let RetrievalResult::Grounded { prompt, citations } =
-            assemble_lexical("reference-test", &title, &chunks)
+            assemble_lexical("reference-test", &title, &CitationSource::default(), &chunks)
         else {
             panic!("expected Grounded")
         };
@@ -831,6 +841,78 @@ mod tests {
         assert_eq!(citations[0].n, 1);
         assert_eq!(citations[0].pack_id, "reference-test");
         assert_eq!(citations[0].doc_title, "Ibuprofen");
-        assert_eq!(assemble_lexical("p", "t", &[]), RetrievalResult::NoEvidence);
+        assert_eq!(assemble_lexical("p", "t", &CitationSource::default(), &[]), RetrievalResult::NoEvidence);
+    }
+
+    // Phase 1h M4b ruling 2: a `Found` page from an `nhs-web` doc carries
+    // its URL and retrieval date (a docs join), and so does every citation
+    // `assemble_lexical` builds from it. The pack's other docs carry none.
+    #[test]
+    fn found_page_and_its_citations_carry_the_nhs_web_source() {
+        use crate::format::{Doc, SOURCE_TYPE_NHS_WEB};
+        let dir = unique_dir("nhs-web-source");
+        let pack = Pack::open_or_create(dir.join("ref.kpack"), 8).unwrap();
+        let mut ids = Vec::new();
+        for (title, st, path, date) in [
+            ("Gout", SOURCE_TYPE_NHS_WEB, Some("https://www.nhs.uk/conditions/gout/"), Some("2026-09-26")),
+            ("Notes", "md", Some("/home/me/notes.md"), Some("2026-01-01")),
+        ] {
+            let doc_id = pack
+                .insert_doc(&Doc {
+                    id: 0,
+                    title: title.to_string(),
+                    source_type: Some(st.to_string()),
+                    sha256: "00".repeat(32),
+                    source_path: path.map(str::to_string),
+                    source_size: None,
+                    source_mtime: date.map(str::to_string),
+                    extraction_quality: None,
+                    added_at: "2026-09-26T00:00:00Z".to_string(),
+                })
+                .unwrap();
+            pack.insert_title(&TitleEntry {
+                doc_id,
+                title: title.to_string(),
+                normalised_title: normalise_title(title),
+                slug: slugify(title),
+                variants: vec![],
+            })
+            .unwrap();
+            for section in ["Symptoms", "Treatment"] {
+                pack.insert_chunk(&Chunk {
+                    id: 0,
+                    doc_id,
+                    section_path: format!("{title} > {section}"),
+                    locator: "L1".to_string(),
+                    prefix: String::new(),
+                    text: format!("{title} {section} text."),
+                    token_count: 3,
+                })
+                .unwrap();
+            }
+            ids.push(doc_id);
+        }
+        let LexicalOutcome::Found { title, source, chunks, .. } = retrieve_lexical(&pack, "gout", 3).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(
+            source,
+            CitationSource {
+                url: Some("https://www.nhs.uk/conditions/gout/".to_string()),
+                retrieved_at: Some("2026-09-26".to_string()),
+            }
+        );
+        let RetrievalResult::Grounded { citations, .. } = assemble_lexical("reference-test", &title, &source, &chunks) else {
+            panic!("expected Grounded");
+        };
+        assert_eq!(citations.len(), 2);
+        for c in &citations {
+            assert_eq!(c.url.as_deref(), Some("https://www.nhs.uk/conditions/gout/"));
+            assert_eq!(c.retrieved_at.as_deref(), Some("2026-09-26"));
+        }
+        let LexicalOutcome::Found { source, .. } = retrieve_lexical(&pack, "notes", 3).unwrap() else {
+            panic!("expected Found");
+        };
+        assert_eq!(source, CitationSource::default());
     }
 }

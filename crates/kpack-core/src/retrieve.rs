@@ -403,6 +403,37 @@ pub struct Citation {
     pub doc_title: String,
     pub section_path: String,
     pub locator: String,
+    /// The cited page's public URL — `Some` only for an `nhs-web` doc
+    /// (see [`CitationSource::from_doc`]).
+    pub url: Option<String>,
+    /// The cited page's retrieval date (ISO 8601 `YYYY-MM-DD`) — `Some`
+    /// only for an `nhs-web` doc. The UI shows it as "as at <date>".
+    pub retrieved_at: Option<String>,
+}
+
+/// Where a cited page came from, for display: its public URL and retrieval
+/// date (Phase 1h M4b ruling 2). Read from the doc's row, no schema change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CitationSource {
+    pub url: Option<String>,
+    pub retrieved_at: Option<String>,
+}
+
+impl CitationSource {
+    /// `docs.source_path` / `docs.source_mtime` for a
+    /// [`crate::format::SOURCE_TYPE_NHS_WEB`] doc; nothing for any other
+    /// source type — a personal pack's `source_path` is a private file path
+    /// and never leaves the pack through a citation.
+    pub fn from_doc(doc: &format::Doc) -> CitationSource {
+        if doc.source_type.as_deref() == Some(format::SOURCE_TYPE_NHS_WEB) {
+            CitationSource {
+                url: doc.source_path.clone(),
+                retrieved_at: doc.source_mtime.clone(),
+            }
+        } else {
+            CitationSource::default()
+        }
+    }
 }
 
 /// The outcome of a full retrieval + assembly pass (spec §4.1–4.2):
@@ -604,12 +635,15 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         return Ok(RetrievalResult::NoEvidence);
     }
 
+    let sources: Vec<CitationSource> = resolved.iter().map(|(_, _, doc)| CitationSource::from_doc(doc)).collect();
     let items: Vec<GroundedItem<'_>> = resolved
         .iter()
-        .map(|(pack_index, chunk, doc)| GroundedItem {
+        .zip(&sources)
+        .map(|((pack_index, chunk, doc), source)| GroundedItem {
             pack_id: &hits[*pack_index].manifest.pack_id,
             chunk,
             title: &doc.title,
+            source,
         })
         .collect();
     Ok(render_grounded(
@@ -624,6 +658,7 @@ pub(crate) struct GroundedItem<'a> {
     pub pack_id: &'a str,
     pub chunk: &'a format::Chunk,
     pub title: &'a str,
+    pub source: &'a CitationSource,
 }
 
 /// [`assemble`]'s step 5, shared with the lexical reference lookup
@@ -669,6 +704,8 @@ pub(crate) fn render_grounded(
             doc_title: item.title.to_string(),
             section_path: item.chunk.section_path.clone(),
             locator: item.chunk.locator.clone(),
+            url: item.source.url.clone(),
+            retrieved_at: item.source.retrieved_at.clone(),
         })
         .collect();
 
@@ -2033,5 +2070,61 @@ mod tests {
                 contract::system_contract().trim_end()
             )
         );
+    }
+
+    // 31. Phase 1h M4b ruling 2: a citation carries the page URL and the
+    // retrieval date for an `nhs-web` doc (from `docs.source_path` /
+    // `docs.source_mtime`) and NOTHING for any other source type — a
+    // personal pack's `source_path` is a private file path and must never
+    // reach a citation.
+    #[test]
+    fn t31_citations_carry_url_and_retrieval_date_only_for_nhs_web_docs() {
+        let pack = empty_pack("t31-citation-source");
+        let mut web = sample_doc();
+        web.title = "Gout".to_string();
+        web.source_type = Some(crate::format::SOURCE_TYPE_NHS_WEB.to_string());
+        web.source_path = Some("https://www.nhs.uk/conditions/gout/".to_string());
+        web.source_mtime = Some("2026-09-26".to_string());
+        let mut personal = sample_doc();
+        personal.title = "My notes".to_string();
+        personal.source_path = Some("C:\\Users\\me\\private notes.md".to_string());
+        personal.source_mtime = Some("2026-01-01T00:00:00Z".to_string());
+        let mut web_no_path = web.clone();
+        web_no_path.title = "Asthma".to_string();
+        web_no_path.source_path = None;
+        let mut ids = Vec::new();
+        for (i, doc) in [web, personal, web_no_path].iter().enumerate() {
+            let doc_id = pack.insert_doc(doc).unwrap();
+            ids.push(
+                pack.insert_chunk(&Chunk {
+                    id: 0,
+                    doc_id,
+                    section_path: format!("S{i}"),
+                    locator: "L1".to_string(),
+                    prefix: String::new(),
+                    text: format!("text {i}"),
+                    token_count: 2,
+                })
+                .unwrap(),
+            );
+        }
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: ids.iter().map(|&id| candidate(id, 0.9)).collect(),
+        };
+        let RetrievalResult::Grounded { citations, .. } = assemble(&[hit], Tier::Large).unwrap() else {
+            panic!("expected Grounded");
+        };
+        let by_title = |t: &str| citations.iter().find(|c| c.doc_title == t).unwrap().clone();
+        let gout = by_title("Gout");
+        assert_eq!(gout.url.as_deref(), Some("https://www.nhs.uk/conditions/gout/"));
+        assert_eq!(gout.retrieved_at.as_deref(), Some("2026-09-26"));
+        let notes = by_title("My notes");
+        assert_eq!((notes.url, notes.retrieved_at), (None, None));
+        let asthma = by_title("Asthma");
+        assert_eq!(asthma.url, None);
+        assert_eq!(asthma.retrieved_at.as_deref(), Some("2026-09-26"));
     }
 }

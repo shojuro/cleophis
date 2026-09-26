@@ -1001,7 +1001,8 @@ pub async fn cancel_build(builds: State<'_, Builds>) -> Result<(), String> {
 
 /// A camelCase, front-end-facing view of `kpack_core::retrieve::Citation` —
 /// the numbered source mapping a chat UI (§7, later) shows next to the
-/// model's answer.
+/// model's answer. `url` / `retrievedAt` are set only for a bundled
+/// reference page (`nhs-web`; Phase 1h M4b) and `null` otherwise.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CitationInfo {
@@ -1011,6 +1012,8 @@ pub struct CitationInfo {
     pub doc_title: String,
     pub section_path: String,
     pub locator: String,
+    pub url: Option<String>,
+    pub retrieved_at: Option<String>,
 }
 
 impl From<Citation> for CitationInfo {
@@ -1022,6 +1025,8 @@ impl From<Citation> for CitationInfo {
             doc_title: c.doc_title,
             section_path: c.section_path,
             locator: c.locator,
+            url: c.url,
+            retrieved_at: c.retrieved_at,
         }
     }
 }
@@ -1355,8 +1360,8 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
         candidates: Vec::new(),
     };
     match outcome {
-        LexicalOutcome::Found { title, chunks, .. } => {
-            match assemble_lexical(pack_id, &title, &chunks) {
+        LexicalOutcome::Found { title, source, chunks, .. } => {
+            match assemble_lexical(pack_id, &title, &source, &chunks) {
                 RetrievalResult::Grounded { prompt, citations } => RagLookupResult {
                     status: "grounded".to_string(),
                     prompt: Some(prompt),
@@ -1604,6 +1609,8 @@ mod tests {
             doc_title: "Doc".to_string(),
             section_path: "Sec".to_string(),
             locator: "p.1".to_string(),
+            url: Some("https://www.nhs.uk/conditions/gout/".to_string()),
+            retrieved_at: Some("2026-09-26".to_string()),
         };
         let info = CitationInfo::from(c);
         assert_eq!(info.n, 1);
@@ -1612,6 +1619,11 @@ mod tests {
         assert_eq!(info.doc_title, "Doc");
         assert_eq!(info.section_path, "Sec");
         assert_eq!(info.locator, "p.1");
+        assert_eq!(info.url.as_deref(), Some("https://www.nhs.uk/conditions/gout/"));
+        assert_eq!(info.retrieved_at.as_deref(), Some("2026-09-26"));
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["retrievedAt"], "2026-09-26");
+        assert_eq!(json["url"], "https://www.nhs.uk/conditions/gout/");
     }
 
     #[test]
@@ -1623,6 +1635,8 @@ mod tests {
             doc_title: "Doc".to_string(),
             section_path: "Sec".to_string(),
             locator: "p.1".to_string(),
+            url: None,
+            retrieved_at: None,
         };
         let result = RetrievalResult::Grounded {
             prompt: "the prompt".to_string(),
@@ -2421,7 +2435,15 @@ mod tests {
             token_count: 4,
         };
         let r = map_lookup_outcome(
-            LexicalOutcome::Found { doc_id: 1, title: "Paracetamol".into(), chunks: vec![chunk] },
+            LexicalOutcome::Found {
+                doc_id: 1,
+                title: "Paracetamol".into(),
+                source: kpack_core::CitationSource {
+                    url: Some("https://www.nhs.uk/medicines/paracetamol-for-adults/".into()),
+                    retrieved_at: Some("2026-09-26".into()),
+                },
+                chunks: vec![chunk],
+            },
             "reference-uk-v1",
         );
         assert_eq!(r.status, "grounded");
@@ -2433,6 +2455,11 @@ mod tests {
         assert_eq!(lookup_contract().contract_id, "triage");
         assert_eq!(r.citations.len(), 1);
         assert_eq!(r.citations[0].pack_id, "reference-uk-v1");
+        assert_eq!(
+            r.citations[0].url.as_deref(),
+            Some("https://www.nhs.uk/medicines/paracetamol-for-adults/")
+        );
+        assert_eq!(r.citations[0].retrieved_at.as_deref(), Some("2026-09-26"));
 
         let r = map_lookup_outcome(
             LexicalOutcome::DidYouMean { candidates: vec!["Paracetamol".into()] },
