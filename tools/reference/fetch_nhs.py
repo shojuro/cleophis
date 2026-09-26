@@ -309,6 +309,7 @@ class PageDoc:
     brands: list = dataclasses.field(default_factory=list)
     last_reviewed: str = ""
     next_review: str = ""
+    heading: str = ""  # the page's own H1 text: == title, except on old-format pages ("Symptoms")
 
 
 def _inline(n, in_heading: bool = False) -> str:
@@ -354,7 +355,12 @@ class _Renderer:
         def flush():
             if run:
                 t = _clean_inline("".join(_inline(x) for x in run))
-                if t:
+                label_only = all(
+                    (isinstance(x, str) and not x.strip())
+                    or (isinstance(x, Node) and "nhsuk-u-visually-hidden" in x.cls())
+                    for x in run
+                )
+                if t and not label_only:
                     out.append(t)
                 run.clear()
 
@@ -503,16 +509,23 @@ class _Renderer:
         return "\n".join(ln.replace("|  |", "| |") for ln in lines)
 
 
-def _title_and_caption(main: Node, root: Node) -> tuple[str, str]:
+def _title_and_caption(main: Node, root: Node) -> tuple[str, str, bool]:
+    """(h1 text without its caption, caption text, caption-is-bottom).
+
+    New-format pages: the H1 is the entity ("Ibuprofen for adults (Nurofen)")
+    and an optional caption lists brands. Old-format multi-page conditions:
+    the H1 is the SECTION ("Overview", "Symptoms") and a `nhsuk-caption--bottom`
+    caption carries the entity name ("Alzheimer's disease")."""
     h1 = main.find("h1")
     if h1 is None:
         t = root.find("title")
         title = _squash(t.text()) if t else ""
-        return re.sub(r"\s+-\s+NHS\s*$", "", title), ""
+        return re.sub(r"\s+-\s+NHS\s*$", "", title), "", False
     title = _squash(_inline(h1, in_heading=True))  # the caption is a DROP class, so it is excluded here
-    caption = ""
+    caption, bottom = "", False
     for n in h1.iter():
         if "nhsuk-caption-xl" in n.cls():
+            bottom = "nhsuk-caption--bottom" in n.cls()
             caption = _squash(
                 "".join(
                     (c if isinstance(c, str) else ("" if "nhsuk-u-visually-hidden" in c.cls() else c.text()))
@@ -520,26 +533,28 @@ def _title_and_caption(main: Node, root: Node) -> tuple[str, str]:
                 )
             )
             break
-    return title, caption
+    return title, caption, bottom
 
 
 def extract_page(html: str, url: str) -> PageDoc:
     root = parse_html(html)
     main = main_node(root)
-    title, caption = _title_and_caption(main, root)
+    heading, caption, bottom = _title_and_caption(main, root)
+    title = caption if (bottom and caption) else heading
     r = _Renderer()
     blocks = r.blocks(main)
-    if caption:
+    if caption and not bottom:
         blocks.insert(0, caption)
     brands: list[str] = []
-    m = _BRANDS.search(caption) if caption else None
+    m = _BRANDS.search(caption) if (caption and not bottom) else None
     if m:
         brands = [b.strip() for b in re.split(r",|\band\b", m.group(1)) if b.strip()]
     body = "\n\n".join(b for b in blocks if b.strip())
     body = "\n".join(ln.rstrip() for ln in body.split("\n"))
     body = re.sub(r"\n{3,}", "\n\n", body).strip("\n")
     body = body + "\n" if body else ""
-    return PageDoc(url=url, title=title, body=body, brands=brands, last_reviewed=r.reviewed[0], next_review=r.reviewed[1])
+    return PageDoc(url=url, title=title, body=body, brands=brands, last_reviewed=r.reviewed[0],
+                   next_review=r.reviewed[1], heading=heading)
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +632,7 @@ def entry_front_matter(e: EntryDoc) -> dict:
         "aliases": aliases,
         "brands": hub.brands,
         "sources": [
-            {"url": p.url, "title": p.title, "retrieved": d, "last_reviewed": p.last_reviewed}
+            {"url": p.url, "title": p.heading or p.title, "retrieved": d, "last_reviewed": p.last_reviewed}
             for p, d in e.pages
         ],
     }
@@ -633,7 +648,7 @@ def entry_body(e: EntryDoc) -> str:
     if hub.body:
         parts.append(hub.body)
     for p, _d in e.pages[1:]:
-        chunk = f"## {p.title}\n"
+        chunk = f"## {p.heading or p.title}\n"
         if p.body:
             chunk += "\n" + _demote(p.body)
         parts.append(chunk)
@@ -857,6 +872,10 @@ def crawl(fetcher: Fetcher, sections: list[str], limit: int | None, log) -> tupl
                 continue
             if f.status != 200 or not f.html:
                 skipped.append({"url": e.url, "why": f"HTTP {f.status}"})
+                continue
+            if "no-longer-available" in url_path(f.final_url):
+                # a retired entry redirected to a generic tombstone page: not content
+                skipped.append({"url": e.url, "why": f"redirects to {f.final_url} (page no longer available)"})
                 continue
             if f.final_url in by_final:
                 prev = resolved[by_final[f.final_url]][0]

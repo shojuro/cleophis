@@ -48,6 +48,7 @@ ARTICLE_HTML = """<html><body><header>SITE HEADER</header>
     <figure><img src="/y.png"><figcaption>Credit: stock library</figcaption></figure>
     <iframe src="https://www.youtube.com/embed/abc"></iframe>
   </section>
+  <div class="nhsuk-inset-text"><span class="nhsuk-u-visually-hidden">Information: </span><p>Separate page for children.</p></div>
   <section><h2>Dose</h2>
     <details class="nhsuk-details"><summary class="nhsuk-details__summary"><span class="nhsuk-details__summary-text">200mg tablets</span></summary>
       <div class="nhsuk-details__text"><ol><li>swallow 1 or 2 tablets</li><li>wait 4 hours</li></ol></div></details>
@@ -133,6 +134,9 @@ class ArticleExtraction(unittest.TestCase):
         self.assertIn("#### Urgent advice: Get help from NHS 111 if:", body)
         self.assertIn("- you took too much", body)
         self.assertIn("**Doses by age**", body)
+        # a screen-reader-only label standing alone is dropped; one inside a heading stays
+        self.assertIn("\n\nSeparate page for children.\n\n", body)
+        self.assertNotIn("Information:", body)
         self.assertIn("| Age | Dose |\n| --- | --- |\n| 3 to 6 months | 2.5ml \\| once |", body)
 
     def test_boilerplate_images_embeds_scripts_dropped(self):
@@ -151,6 +155,34 @@ class ArticleExtraction(unittest.TestCase):
         self.assertNotIn("\n\n\n", body)
         for line in body.splitlines():
             self.assertEqual(line, line.rstrip(), repr(line))
+
+
+class OldFormatCaption(unittest.TestCase):
+    HTML = """<main><h1><span role="text">Symptoms
+    <span class="nhsuk-caption-xl nhsuk-caption--bottom"><span class="nhsuk-u-visually-hidden"> - </span>
+      Alzheimer&#x27;s disease</span></span></h1><p>Memory problems.</p></main>"""
+
+    def test_bottom_caption_is_the_entity_and_h1_the_section(self):
+        p = fn.extract_page(self.HTML, "https://www.nhs.uk/conditions/alzheimers-disease/symptoms/")
+        self.assertEqual(p.title, "Alzheimer's disease")
+        self.assertEqual(p.heading, "Symptoms")
+        self.assertEqual(p.brands, [])
+        self.assertEqual(p.body, "Memory problems.\n")
+
+    def test_new_format_heading_is_the_title(self):
+        p = fn.extract_page(ARTICLE_HTML, "https://www.nhs.uk/medicines/ibuprofen-for-adults/")
+        self.assertEqual(p.heading, "Ibuprofen for adults (Nurofen)")
+
+    def test_subpage_section_uses_the_heading(self):
+        hub = fn.extract_page(self.HTML.replace("Symptoms", "Overview"), "https://www.nhs.uk/conditions/alzheimers-disease/")
+        sub = fn.extract_page(self.HTML, "https://www.nhs.uk/conditions/alzheimers-disease/symptoms/")
+        e = fn.EntryDoc("conditions", "alzheimers-disease", hub.url, "Alzheimer's disease", [],
+                        [(hub, "2026-09-27"), (sub, "2026-09-27")])
+        fm, body = fn.split_front_matter(fn.render_entry(e))
+        self.assertEqual(fm["title"], "Alzheimer's disease")
+        self.assertEqual(fm["aliases"], [])
+        self.assertEqual([s["title"] for s in fm["sources"]], ["Overview", "Symptoms"])
+        self.assertTrue(body.startswith("# Alzheimer's disease\n\nMemory problems.\n\n## Symptoms\n"))
 
 
 class SubpageDiscovery(unittest.TestCase):
@@ -230,6 +262,30 @@ class OutputShape(unittest.TestCase):
             before = (root / "index.json").read_bytes()
             fn.write_corpus(root, [self._entry()])
             self.assertEqual((root / "index.json").read_bytes(), before)
+
+
+class Crawl(unittest.TestCase):
+    def test_redirects_to_a_tombstone_page_are_skipped_and_duplicates_merge(self):
+        idx = """<main><ul class="nhsuk-list">
+<li><a href="/medicines/aciclovir/">Aciclovir</a></li>
+<li><a href="/medicines/budesonide-nasal-spray/">Budesonide nasal spray</a></li>
+<li><a href="/medicines/zovirax/">Zovirax</a></li>
+</ul></main>"""
+        with tempfile.TemporaryDirectory() as d:
+            f = fn.Fetcher(Path(d), robots=fn.RobotsRules(""), delay=0.0, offline=True)
+            f.store(fn.SECTIONS["medicines"], fn.SECTIONS["medicines"], idx, "2026-09-27")
+            f.store("https://www.nhs.uk/medicines/aciclovir/", "https://www.nhs.uk/medicines/aciclovir/",
+                    "<main><h1>Aciclovir</h1><p>Antiviral.</p></main>", "2026-09-27")
+            f.store("https://www.nhs.uk/medicines/budesonide-nasal-spray/",
+                    "https://www.nhs.uk/medicine-page-no-longer-available/",
+                    "<main><h1>Medicine page no longer available</h1></main>", "2026-09-27")
+            f.store("https://www.nhs.uk/medicines/zovirax/", "https://www.nhs.uk/medicines/aciclovir/",
+                    "<main><h1>Aciclovir</h1><p>Antiviral.</p></main>", "2026-09-27")
+            docs, stats = fn.crawl(f, ["medicines"], None, lambda m: None)
+        self.assertEqual([x.slug for x in docs], ["aciclovir"])
+        self.assertEqual(docs[0].aliases, ["Zovirax"])
+        self.assertEqual(len(stats["medicines"]["skipped"]), 1)
+        self.assertIn("no longer available", stats["medicines"]["skipped"][0]["why"])
 
 
 class Slugs(unittest.TestCase):
