@@ -28,7 +28,7 @@
 //! enforced in `Pack::mount` instead (K3; see the `// K3:` seam comment in
 //! `check_load` and the doc comment on `mount` for why).
 
-use crate::format::{Error, Pack, SCHEMA_VERSION};
+use crate::format::{Error, Pack, MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 use ed25519_dalek::VerifyingKey;
 use std::path::{Path, PathBuf};
 
@@ -275,12 +275,33 @@ pub struct LoadContext<'a> {
 ///
 /// Signature verification (curated packs only) is explicitly NOT here.
 pub fn check_load(manifest: &Manifest, ctx: &LoadContext, pack: &Pack) -> Result<(), Error> {
+    check_load_inner(manifest, ctx, pack, true)
+}
+
+/// [`check_load`] for the LEXICAL-ONLY path (Phase 1h M5, the reference
+/// lookup): every check EXCEPT the embedder hash — dims, schema version,
+/// vec format version, the v2 `titles` table. The embedder check exists
+/// because stored dense vectors are meaningless without the exact embedder
+/// that produced them; the lexical lookup never reads a vector or runs an
+/// embedder (Android ships none), so requiring one would refuse a pack
+/// this path can serve correctly. Never use this ahead of dense retrieval.
+pub fn check_load_lexical(manifest: &Manifest, ctx: &LoadContext, pack: &Pack) -> Result<(), Error> {
+    check_load_inner(manifest, ctx, pack, false)
+}
+
+fn check_load_inner(
+    manifest: &Manifest,
+    ctx: &LoadContext,
+    pack: &Pack,
+    require_embedder: bool,
+) -> Result<(), Error> {
     // 1. Embedder hash: the pack refuses to mount if this device lacks an
     // embedder with this exact hash (spec §1.2).
-    if !ctx
-        .available_embedder_sha256
-        .iter()
-        .any(|h| h.eq_ignore_ascii_case(&manifest.embedder_sha256))
+    if require_embedder
+        && !ctx
+            .available_embedder_sha256
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(&manifest.embedder_sha256))
     {
         let hash_prefix: String = manifest.embedder_sha256.chars().take(8).collect();
         return Err(Error::Schema(format!(
@@ -300,25 +321,34 @@ pub fn check_load(manifest: &Manifest, ctx: &LoadContext, pack: &Pack) -> Result
         )));
     }
 
-    // 3. Schema version: v1 requires an exact match. Migrations don't exist
-    // yet, so "older" isn't safe to accept either (that also let a tampered
-    // `0`/negative schema_version through); distinguish the two directions
-    // since the fix differs (update the app vs. rebuild the pack).
-    if manifest.schema_version != SCHEMA_VERSION {
-        let reason = if manifest.schema_version > SCHEMA_VERSION {
-            format!(
-                "this pack was built by a newer version of the app (pack schema {}, \
-                 this build supports {}) — please update",
-                manifest.schema_version, SCHEMA_VERSION
-            )
-        } else {
-            format!(
-                "this pack was built by an older schema (pack schema {}, this build \
-                 supports {}) — rebuild the pack",
-                manifest.schema_version, SCHEMA_VERSION
-            )
-        };
-        return Err(Error::Schema(reason));
+    // 3. Schema version: accepted iff MIN_SCHEMA_VERSION..=SCHEMA_VERSION
+    // (v1 and v2 today — v2 only ADDED the `titles` table, so a v1 pack is
+    // still fully readable by every dense/fts path; the lexical lookup
+    // reports `Unavailable` on it). Below the range (incl. a tampered
+    // `0`/negative value) or above it is refused; the two directions are
+    // distinguished since the fix differs (update the app vs. rebuild).
+    if manifest.schema_version > SCHEMA_VERSION {
+        return Err(Error::Schema(format!(
+            "this pack was built by a newer version of the app (pack schema {}, \
+             this build supports {}) — please update",
+            manifest.schema_version, SCHEMA_VERSION
+        )));
+    }
+    if manifest.schema_version < MIN_SCHEMA_VERSION {
+        return Err(Error::Schema(format!(
+            "this pack was built by an older schema (pack schema {}, this build \
+             supports {}–{}) — rebuild the pack",
+            manifest.schema_version, MIN_SCHEMA_VERSION, SCHEMA_VERSION
+        )));
+    }
+    // 3b. A pack CLAIMING v2+ must actually carry the v2 table: a manifest
+    // that says 2 over a v1 body is corrupt or tampered, not "old".
+    if manifest.schema_version >= 2 && !pack.has_titles()? {
+        return Err(Error::Schema(format!(
+            "this pack declares schema {} but has no title index — the pack is \
+             corrupt or was tampered with",
+            manifest.schema_version
+        )));
     }
 
     // 4. Vector format version: the on-disk `vec0` format is a
@@ -395,26 +425,40 @@ impl Pack {
     /// `verify_file` ahead of `Pack::mount` in the wrapper is a prerequisite
     /// for K9 to ever serve a real CDN-sourced curated pack.
     pub fn mount<P: AsRef<Path>>(path: P, ctx: &LoadContext) -> Result<(Pack, Manifest), Error> {
-        let path = path.as_ref();
-        let pack = Pack::open(path)?;
-        let manifest = Manifest::read(&pack)?;
-        check_load(&manifest, ctx, &pack)?;
-
-        if manifest.pack_tier == PackTier::Curated {
-            let key = ctx.curator_key.ok_or_else(|| {
-                Error::Schema(
-                    "no curator key was supplied to verify this curated pack".to_string(),
-                )
-            })?;
-            // Reuses `sign::verify_file` (Fix 1) rather than re-reading the
-            // pack/sig bytes here itself, so there is exactly one crypto
-            // path for curated-pack verification regardless of whether the
-            // caller is this in-mount check or a wrapper's pre-open gate.
-            crate::sign::verify_file(path, &sig_path_for(path), &key)?;
-        }
-
-        Ok((pack, manifest))
+        mount_inner(path.as_ref(), ctx, true)
     }
+
+    /// [`Pack::mount`] for the lexical-only reference lookup (Phase 1h M5):
+    /// identical — open, manifest read, the gate, and the curated-tier
+    /// signature check, which is NOT relaxed — except that the gate runs
+    /// [`check_load_lexical`] (no embedder-hash requirement; see its doc
+    /// comment). A pack mounted this way must only ever be queried through
+    /// `lookup::retrieve_lexical`, never the dense lane.
+    pub fn mount_lexical<P: AsRef<Path>>(
+        path: P,
+        ctx: &LoadContext,
+    ) -> Result<(Pack, Manifest), Error> {
+        mount_inner(path.as_ref(), ctx, false)
+    }
+}
+
+fn mount_inner(path: &Path, ctx: &LoadContext, require_embedder: bool) -> Result<(Pack, Manifest), Error> {
+    let pack = Pack::open(path)?;
+    let manifest = Manifest::read(&pack)?;
+    check_load_inner(&manifest, ctx, &pack, require_embedder)?;
+
+    if manifest.pack_tier == PackTier::Curated {
+        let key = ctx.curator_key.ok_or_else(|| {
+            Error::Schema("no curator key was supplied to verify this curated pack".to_string())
+        })?;
+        // Reuses `sign::verify_file` (Fix 1) rather than re-reading the
+        // pack/sig bytes here itself, so there is exactly one crypto
+        // path for curated-pack verification regardless of whether the
+        // caller is this in-mount check or a wrapper's pre-open gate.
+        crate::sign::verify_file(path, &sig_path_for(path), &key)?;
+    }
+
+    Ok((pack, manifest))
 }
 
 /// `<path>.sig` — same path, `.sig` appended to the whole file name (so
@@ -1003,5 +1047,85 @@ mod tests {
         let err = Pack::mount(&path, &ctx).map(|_| ()).unwrap_err();
         assert!(matches!(err, Error::Schema(_)));
         assert!(err.to_string().contains("malformed"), "error was: {err}");
+    }
+
+    // 23. Schema versions: v1 (MIN) still passes the gate; below MIN
+    // (0) is refused as "older"; a v2 claim over a body with no `titles`
+    // table is refused as corrupt.
+    #[test]
+    fn t23_gate_accepts_v1_and_v2_refuses_below_min_and_v2_without_titles() {
+        let dir = unique_dir("t23");
+        let pack = Pack::open_or_create(dir.join("t23.kpack"), TEST_DIMS).unwrap();
+        let mut m = sample_manifest();
+        let ctx = LoadContext {
+            available_embedder_sha256: std::slice::from_ref(&m.embedder_sha256),
+            curator_key: None,
+        };
+
+        m.schema_version = SCHEMA_VERSION;
+        check_load(&m, &ctx, &pack).unwrap();
+        m.schema_version = MIN_SCHEMA_VERSION;
+        check_load(&m, &ctx, &pack).unwrap();
+
+        m.schema_version = MIN_SCHEMA_VERSION - 1;
+        let err = check_load(&m, &ctx, &pack).unwrap_err();
+        assert!(err.to_string().contains("older"), "{err}");
+
+        // v1-shaped body (no titles table): v1 passes, a v2 claim refuses.
+        pack.manifest_set("schema_version", "1").unwrap();
+        drop(pack);
+        let conn = rusqlite::Connection::open(dir.join("t23.kpack")).unwrap();
+        conn.execute_batch("DROP TABLE titles;").unwrap();
+        drop(conn);
+        let pack = Pack::open(dir.join("t23.kpack")).unwrap();
+        m.schema_version = 1;
+        check_load(&m, &ctx, &pack).unwrap();
+        m.schema_version = 2;
+        let err = check_load(&m, &ctx, &pack).unwrap_err();
+        assert!(err.to_string().contains("title index"), "{err}");
+    }
+
+    // 24. mount_lexical: no embedder required (empty available set) for a
+    // personal pack; a curated pack STILL needs a valid signature.
+    #[test]
+    fn t24_mount_lexical_skips_embedder_but_not_signature() {
+        let dir = unique_dir("t24");
+        let empty: Vec<String> = Vec::new();
+
+        let mut personal = sample_manifest();
+        personal.pack_tier = PackTier::Personal;
+        let p_path = dir.join("personal.kpack");
+        {
+            let pack = Pack::open_or_create(&p_path, TEST_DIMS).unwrap();
+            personal.write(&pack).unwrap();
+        }
+        let ctx = LoadContext {
+            available_embedder_sha256: &empty,
+            curator_key: None,
+        };
+        assert!(Pack::mount(&p_path, &ctx).is_err(), "dense mount needs the embedder");
+        let (_p, got) = Pack::mount_lexical(&p_path, &ctx).unwrap();
+        assert_eq!(got, personal);
+
+        let curated = sample_manifest();
+        let c_path = dir.join("curated.kpack");
+        {
+            let pack = Pack::open_or_create(&c_path, TEST_DIMS).unwrap();
+            curated.write(&pack).unwrap();
+        }
+        let sk = test_curator_signing_key();
+        // Unsigned -> refused even on the lexical path.
+        let ctx_key = LoadContext {
+            available_embedder_sha256: &empty,
+            curator_key: Some(sk.verifying_key()),
+        };
+        assert!(Pack::mount_lexical(&c_path, &ctx_key).is_err());
+        // Signed by the wrong key -> refused.
+        sign_pack_file(&c_path, &other_curator_signing_key());
+        assert!(Pack::mount_lexical(&c_path, &ctx_key).is_err());
+        // Signed by the curator key -> mounts with no embedder installed.
+        sign_pack_file(&c_path, &sk);
+        let (_c, got) = Pack::mount_lexical(&c_path, &ctx_key).unwrap();
+        assert_eq!(got, curated);
     }
 }

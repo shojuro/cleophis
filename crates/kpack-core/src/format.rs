@@ -43,6 +43,14 @@
 //!   desyncs from `chunks` without erroring.
 //! - `manifest(key, value)` — flat key/value store; `schema_version` and
 //!   `embedding_dims` are written on create.
+//! - `titles(doc_id, title, normalised_title, slug, variants)` — schema v2
+//!   (Phase 1h M5): one row per document, the pack's TITLE INDEX for the
+//!   lexical reference lookup (`crate::lookup`). `normalised_title` is
+//!   `lookup::normalise_title(title)`, `slug` a URL-style id, `variants` a
+//!   JSON array of strings (aliases/synonyms, from the source's front matter
+//!   or a caller). A v1 pack has no `titles` table: it still mounts
+//!   (`manifest::check_load` accepts both), and the lexical lookup answers
+//!   `LexicalOutcome::Unavailable` for it rather than failing.
 //!
 //! ## API split
 //! `insert_chunk` writes the chunk row + its fts row (fts5 indexing has no
@@ -60,9 +68,20 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Once;
 
-/// Current on-disk schema version. Bump on any incompatible schema change;
-/// K2's load-time gate compares this against a pack's stored value.
-pub const SCHEMA_VERSION: i64 = 1;
+/// Current on-disk schema version — what every newly-created pack records.
+/// Bump on any schema change; K2's load-time gate accepts
+/// `MIN_SCHEMA_VERSION..=SCHEMA_VERSION`.
+///
+/// v2 (Phase 1h M5) adds the `titles` table (the lexical title index). The
+/// change is additive: a v1 pack has every table v2 reads for dense/fts
+/// retrieval, so it stays mountable; only the lexical lookup is unavailable
+/// on it.
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// The oldest on-disk schema version this build still mounts. v1 = every
+/// pack built before the `titles` table existed (personal packs already on
+/// users' devices).
+pub const MIN_SCHEMA_VERSION: i64 = 1;
 
 static VEC_INIT: Once = Once::new();
 
@@ -121,6 +140,18 @@ pub struct Chunk {
     pub prefix: String,
     pub text: String,
     pub token_count: i64,
+}
+
+/// One row of the `titles` table (schema v2): a document's entry in the
+/// pack's title index (see the module doc comment). `variants` round-trips
+/// through a JSON array of strings in the `variants` column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleEntry {
+    pub doc_id: i64,
+    pub title: String,
+    pub normalised_title: String,
+    pub slug: String,
+    pub variants: Vec<String>,
 }
 
 /// Errors from opening/reading/writing a `.kpack`. Hand-rolled (no
@@ -396,6 +427,116 @@ impl Pack {
             .map_err(Error::from)
     }
 
+    /// True if this pack carries the `titles` table (schema v2+). A v1 pack
+    /// answers `false` — the lexical lookup's `Unavailable` signal.
+    pub fn has_titles(&self) -> Result<bool> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='titles')",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
+    /// Insert (or replace) one document's title-index row. `pub` so a
+    /// pack-building CLI can write richer variants than front matter
+    /// carries; `build::build_pack` writes one row per source itself.
+    pub fn insert_title(&self, entry: &TitleEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO titles (doc_id, title, normalised_title, slug, variants)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(doc_id) DO UPDATE SET
+                title = excluded.title,
+                normalised_title = excluded.normalised_title,
+                slug = excluded.slug,
+                variants = excluded.variants",
+            params![
+                entry.doc_id,
+                entry.title,
+                entry.normalised_title,
+                entry.slug,
+                encode_json_string_array(&entry.variants),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every title-index row, ascending `doc_id` (deterministic). A pack
+    /// without the table (v1) is a `Schema` error here — callers check
+    /// [`Pack::has_titles`] first. A malformed `variants` value is a
+    /// `Schema` error too (never a silently-dropped variant).
+    pub fn titles(&self) -> Result<Vec<TitleEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT doc_id, title, normalised_title, slug, variants
+             FROM titles ORDER BY doc_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(doc_id, title, normalised_title, slug, variants)| {
+                let variants = decode_json_string_array(&variants).ok_or_else(|| {
+                    Error::Schema(format!(
+                        "titles.variants for doc {doc_id} is not a JSON array of strings"
+                    ))
+                })?;
+                Ok(TitleEntry {
+                    doc_id,
+                    title,
+                    normalised_title,
+                    slug,
+                    variants,
+                })
+            })
+            .collect()
+    }
+
+    /// Every chunk of one document, ascending `id` — insertion order, which
+    /// `build_pack` makes document (section) order.
+    pub fn chunks_for_doc(&self, doc_id: i64) -> Result<Vec<Chunk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, doc_id, section_path, locator, prefix, text, token_count
+             FROM chunks WHERE doc_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![doc_id], |row| {
+                Ok(Chunk {
+                    id: row.get(0)?,
+                    doc_id: row.get(1)?,
+                    section_path: row.get(2)?,
+                    locator: row.get(3)?,
+                    prefix: row.get(4)?,
+                    text: row.get(5)?,
+                    token_count: row.get(6)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// fts5 search restricted to ONE document's chunks: matching chunk ids,
+    /// best bm25 rank first (ties by id). `query` must already be a safe
+    /// fts5 MATCH expression (the caller quotes every term).
+    pub fn fts_search_in_doc(&self, query: &str, doc_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT fts.rowid FROM fts JOIN chunks ON chunks.id = fts.rowid
+             WHERE fts MATCH ?1 AND chunks.doc_id = ?2
+             ORDER BY fts.rank, fts.rowid",
+        )?;
+        let rows = stmt
+            .query_map(params![query, doc_id], |row| row.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// The pack's ACTUAL `vec0` embedding column width, parsed directly out
     /// of the virtual table's own stored DDL in `sqlite_master` — deliberately
     /// independent of the `embedding_dims` manifest key (which is a plain
@@ -467,7 +608,7 @@ fn read_dims(conn: &Connection) -> Result<usize> {
     }
 }
 
-/// Apply the full §1.1 schema (docs, chunks, vec, fts, manifest) to a fresh
+/// Apply the full §1.1 schema (docs, chunks, titles, vec, fts, manifest) to a fresh
 /// connection, then record `schema_version` and `embedding_dims`.
 fn create_schema(conn: &Connection, dims: usize) -> Result<()> {
     conn.execute_batch(
@@ -498,6 +639,16 @@ fn create_schema(conn: &Connection, dims: usize) -> Result<()> {
             value TEXT
         );
 
+        CREATE TABLE titles (
+            doc_id INTEGER PRIMARY KEY REFERENCES docs(id),
+            title TEXT NOT NULL,
+            normalised_title TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            variants TEXT NOT NULL DEFAULT '[]'
+        );
+
+        CREATE INDEX titles_normalised_title ON titles(normalised_title);
+
         CREATE VIRTUAL TABLE fts USING fts5(
             text, prefix, section_path,
             content='chunks', content_rowid='id',
@@ -522,6 +673,128 @@ fn create_schema(conn: &Connection, dims: usize) -> Result<()> {
         params![dims.to_string()],
     )?;
     Ok(())
+}
+
+/// `variants` column encoding: a JSON array of strings. Hand-rolled (this
+/// crate carries no serde) — `"` and `\` are escaped, every other control
+/// character becomes `\u00XX`; everything else is written as-is (UTF-8).
+fn encode_json_string_array(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        for c in item.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    }
+    out.push(']');
+    out
+}
+
+/// Strict decoder for [`encode_json_string_array`]'s format — any JSON
+/// array of strings (whitespace, every JSON escape, surrogate pairs).
+/// Anything else (a non-array, a non-string element, trailing garbage, an
+/// invalid escape) is `None`.
+fn decode_json_string_array(raw: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    let skip_ws = |i: &mut usize| {
+        while *i < chars.len() && matches!(chars[*i], ' ' | '\t' | '\n' | '\r') {
+            *i += 1;
+        }
+    };
+    let hex4 = |i: &mut usize| -> Option<u32> {
+        if *i + 4 > chars.len() {
+            return None;
+        }
+        let s: String = chars[*i..*i + 4].iter().collect();
+        *i += 4;
+        u32::from_str_radix(&s, 16).ok()
+    };
+    skip_ws(&mut i);
+    if chars.get(i) != Some(&'[') {
+        return None;
+    }
+    i += 1;
+    let mut out = Vec::new();
+    skip_ws(&mut i);
+    if chars.get(i) == Some(&']') {
+        i += 1;
+        skip_ws(&mut i);
+        return (i == chars.len()).then_some(out);
+    }
+    loop {
+        skip_ws(&mut i);
+        if chars.get(i) != Some(&'"') {
+            return None;
+        }
+        i += 1;
+        let mut item = String::new();
+        loop {
+            let c = *chars.get(i)?;
+            i += 1;
+            match c {
+                '"' => break,
+                '\\' => {
+                    let e = *chars.get(i)?;
+                    i += 1;
+                    match e {
+                        '"' => item.push('"'),
+                        '\\' => item.push('\\'),
+                        '/' => item.push('/'),
+                        'b' => item.push('\u{8}'),
+                        'f' => item.push('\u{c}'),
+                        'n' => item.push('\n'),
+                        'r' => item.push('\r'),
+                        't' => item.push('\t'),
+                        'u' => {
+                            let hi = hex4(&mut i)?;
+                            let code = if (0xD800..0xDC00).contains(&hi) {
+                                if chars.get(i) != Some(&'\\') || chars.get(i + 1) != Some(&'u') {
+                                    return None;
+                                }
+                                i += 2;
+                                let lo = hex4(&mut i)?;
+                                if !(0xDC00..0xE000).contains(&lo) {
+                                    return None;
+                                }
+                                0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+                            } else {
+                                hi
+                            };
+                            item.push(char::from_u32(code)?);
+                        }
+                        _ => return None,
+                    }
+                }
+                c if (c as u32) < 0x20 => return None,
+                c => item.push(c),
+            }
+        }
+        out.push(item);
+        skip_ws(&mut i);
+        match chars.get(i) {
+            Some(',') => i += 1,
+            Some(']') => {
+                i += 1;
+                break;
+            }
+            _ => return None,
+        }
+    }
+    skip_ws(&mut i);
+    (i == chars.len()).then_some(out)
 }
 
 /// Pack a `&[i8]` embedding into the raw byte blob `vec_int8()` expects (one
@@ -588,7 +861,7 @@ mod tests {
         let path = dir.join("t1.kpack");
         let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
 
-        for name in ["docs", "chunks", "vec", "fts", "manifest"] {
+        for name in ["docs", "chunks", "titles", "vec", "fts", "manifest"] {
             let exists: bool = pack
                 .conn
                 .query_row(
@@ -869,5 +1142,86 @@ mod tests {
             result.is_err(),
             "inserting a chunk with a non-existent doc_id should fail with FK enforcement on"
         );
+    }
+
+    // 11. Schema v2: the `titles` table round-trips a row, variants
+    //     included (JSON array, escapes and non-ASCII intact), and
+    //     `has_titles` reports it.
+    #[test]
+    fn t11_titles_table_round_trips() {
+        let dir = unique_dir("t11");
+        let path = dir.join("t11.kpack");
+        let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+        assert!(pack.has_titles().unwrap());
+        let doc_id = pack.insert_doc(&sample_doc()).unwrap();
+        let entry = TitleEntry {
+            doc_id,
+            title: "Ménière's disease".to_string(),
+            normalised_title: "meniere disease".to_string(),
+            slug: "menieres-disease".to_string(),
+            variants: vec![
+                "Meniere disease".to_string(),
+                "quote \" back\\slash\nnewline".to_string(),
+                "𝄞 clef".to_string(),
+            ],
+        };
+        pack.insert_title(&entry).unwrap();
+        assert_eq!(pack.titles().unwrap(), vec![entry.clone()]);
+
+        // Upsert replaces, never duplicates.
+        let mut updated = entry.clone();
+        updated.variants = vec![];
+        pack.insert_title(&updated).unwrap();
+        assert_eq!(pack.titles().unwrap(), vec![updated]);
+    }
+
+    // 12. A v1-shaped pack (no `titles` table) answers has_titles == false.
+    #[test]
+    fn t12_v1_pack_without_titles_table_reports_false() {
+        let dir = unique_dir("t12");
+        let path = dir.join("t12.kpack");
+        let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+        pack.conn.execute_batch("DROP TABLE titles;").unwrap();
+        assert!(!pack.has_titles().unwrap());
+    }
+
+    // 13. JSON string-array codec: strict, round-trips, rejects garbage.
+    #[test]
+    fn t13_json_string_array_codec() {
+        let items = vec!["a".to_string(), "".to_string(), "x\u{1}y\t\"\\".to_string()];
+        let enc = encode_json_string_array(&items);
+        assert_eq!(decode_json_string_array(&enc), Some(items));
+        assert_eq!(decode_json_string_array("[]"), Some(vec![]));
+        assert_eq!(
+            decode_json_string_array(" [ \"a\" , \"\\u00e9\\ud834\\udd1e\" ] "),
+            Some(vec!["a".to_string(), "é𝄞".to_string()])
+        );
+        for bad in ["", "[", "[1]", "[\"a\",]", "[\"a\"] x", "{}", "[\"\\q\"]", "[\"\\ud834\"]"] {
+            assert_eq!(decode_json_string_array(bad), None, "{bad:?} must not decode");
+        }
+    }
+
+    // 14. fts_search_in_doc only returns chunks of the named doc, and
+    //     chunks_for_doc returns them in insertion (id) order.
+    #[test]
+    fn t14_chunks_for_doc_and_fts_search_in_doc() {
+        let dir = unique_dir("t14");
+        let path = dir.join("t14.kpack");
+        let pack = Pack::open_or_create(&path, TEST_DIMS).unwrap();
+        let d1 = pack.insert_doc(&sample_doc()).unwrap();
+        let d2 = pack.insert_doc(&sample_doc()).unwrap();
+        let mut c = sample_chunk(d1);
+        c.text = "alpha beta".to_string();
+        let a = pack.insert_chunk(&c).unwrap();
+        c.text = "gamma".to_string();
+        let b = pack.insert_chunk(&c).unwrap();
+        let mut c2 = sample_chunk(d2);
+        c2.text = "alpha".to_string();
+        let other = pack.insert_chunk(&c2).unwrap();
+
+        let ids: Vec<i64> = pack.chunks_for_doc(d1).unwrap().iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![a, b]);
+        assert_eq!(pack.fts_search_in_doc("\"alpha\"", d1).unwrap(), vec![a]);
+        assert_eq!(pack.fts_search_in_doc("\"alpha\"", d2).unwrap(), vec![other]);
     }
 }

@@ -604,58 +604,75 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         return Ok(RetrievalResult::NoEvidence);
     }
 
-    let render_chunks: Vec<RenderChunk<'_>> = resolved
+    let items: Vec<GroundedItem<'_>> = resolved
         .iter()
-        .map(|(_, chunk, doc)| RenderChunk {
-            source_title: &doc.title,
-            section_path: &chunk.section_path,
-            locator: &chunk.locator,
-            text: &chunk.text,
+        .map(|(pack_index, chunk, doc)| GroundedItem {
+            pack_id: &hits[*pack_index].manifest.pack_id,
+            chunk,
+            title: &doc.title,
         })
         .collect();
-    // RAG-quality quick win: the book/document's TITLE lives in doc
-    // metadata (`doc.title`, already shown in each citation), not the
-    // searchable body text -- so retrieval alone can never surface it as a
-    // "match", and a query like "what is the title?" / "what is this
-    // about?" would otherwise have nothing to ground on. The DISTINCT
-    // titles of the docs actually cited (first-seen order) are stated as a
-    // short context line the model can answer identity questions from --
-    // without touching the numbered-sources semantics. The line's exact
-    // text lives in `contract::doc_context_line` so the golden fixtures pin
-    // it alongside the contract.
+    Ok(render_grounded(
+        contract::contract_for(contract::ContractId::Tutor),
+        &items,
+    ))
+}
+
+/// One resolved source for [`render_grounded`]: the chunk, the title of the
+/// document it came from, and the id of the pack it came from.
+pub(crate) struct GroundedItem<'a> {
+    pub pack_id: &'a str,
+    pub chunk: &'a format::Chunk,
+    pub title: &'a str,
+}
+
+/// [`assemble`]'s step 5, shared with the lexical reference lookup
+/// (`crate::lookup::assemble_lexical`, Phase 1h M5). A THIN wrapper: the
+/// system message itself comes from `contract::assemble_system` — the ONE
+/// assembler, byte-pinned by the golden fixtures in
+/// `tests/fixtures/contract-golden/` — with `c` choosing the contract
+/// (tutor for [`assemble`], triage for the lookup). This function only adds
+/// what `assemble_system` does not own: mapping resolved sources to
+/// `RenderChunk`s, the doc-context line (`contract::doc_context_for` — the
+/// DISTINCT titles of the docs actually cited, first-seen order; the
+/// book/document's TITLE lives in doc metadata, not the searchable body
+/// text, so this line is what lets the model answer identity questions),
+/// and the 1:1 citations. Zero sources is `NoEvidence` — never a
+/// citation-less grounded prompt.
+pub(crate) fn render_grounded(
+    c: &contract::PromptContract,
+    items: &[GroundedItem<'_>],
+) -> RetrievalResult {
+    let render_chunks: Vec<RenderChunk<'_>> = items
+        .iter()
+        .map(|item| RenderChunk {
+            source_title: item.title,
+            section_path: &item.chunk.section_path,
+            locator: &item.chunk.locator,
+            text: &item.chunk.text,
+        })
+        .collect();
     let doc_context = contract::doc_context_for(&render_chunks);
 
-    // Adapter v2: the grounded system prompt is the VERSIONED CONTRACT
-    // (`contracts/prompt-contract.v1.toml`) + the runtime-only doc-context
-    // line + the sources block, assembled by `contract::assemble_system` --
-    // the ONE function that defines the full system message, byte-pinned by
-    // the golden fixtures in `tests/fixtures/contract-golden/` (the adapter
-    // training data and the triage repo's ports reproduce these bytes).
-    let prompt = match contract::assemble_system(
-        contract::contract_for(contract::ContractId::Tutor),
-        doc_context.as_deref(),
-        &render_chunks,
-    ) {
+    let prompt = match contract::assemble_system(c, doc_context.as_deref(), &render_chunks) {
         Ok(prompt) => prompt,
-        // Unreachable (`resolved` is non-empty above), but never a
-        // citation-less grounded prompt: NO_EVIDENCE instead.
-        Err(contract::AssembleError::NoChunks) => return Ok(RetrievalResult::NoEvidence),
+        Err(contract::AssembleError::NoChunks) => return RetrievalResult::NoEvidence,
     };
 
-    let citations: Vec<Citation> = resolved
+    let citations: Vec<Citation> = items
         .iter()
         .enumerate()
-        .map(|(i, (pack_index, chunk, doc))| Citation {
+        .map(|(i, item)| Citation {
             n: i + 1,
-            pack_id: hits[*pack_index].manifest.pack_id.clone(),
-            chunk_id: chunk.id,
-            doc_title: doc.title.clone(),
-            section_path: chunk.section_path.clone(),
-            locator: chunk.locator.clone(),
+            pack_id: item.pack_id.to_string(),
+            chunk_id: item.chunk.id,
+            doc_title: item.title.to_string(),
+            section_path: item.chunk.section_path.clone(),
+            locator: item.chunk.locator.clone(),
         })
         .collect();
 
-    Ok(RetrievalResult::Grounded { prompt, citations })
+    RetrievalResult::Grounded { prompt, citations }
 }
 
 /// Spec §4's top-level retrieval entry point — the one function a caller

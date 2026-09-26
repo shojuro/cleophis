@@ -47,7 +47,10 @@
 //! XHTML," so `epub::document_from_epub` reuses `html::html_to_document`
 //! per chapter rather than re-parsing HTML itself) — both pure Rust, both
 //! BINARY formats that skip `parse::parse` and go straight to
-//! `SourceContent::Prebuilt`, same as PDF.
+//! `SourceContent::Prebuilt`, same as PDF. Phase 1h M5 adds `lookup` — the
+//! lexical-only reference lookup over schema v2's `titles` index (exact /
+//! normalised title match, deterministic did-you-mean, no embedder), for
+//! the phone, which ships no embedder.
 
 pub mod build;
 pub mod chunk;
@@ -57,6 +60,7 @@ pub mod embed;
 pub mod epub;
 pub mod format;
 pub mod html;
+pub mod lookup;
 pub mod manifest;
 pub mod parse;
 pub mod retrieve;
@@ -78,9 +82,13 @@ pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, 
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
 pub use epub::{document_from_epub, Error as EpubError};
-pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
+pub use format::{Chunk, Doc, Error, Pack, TitleEntry, MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 pub use html::html_to_document;
-pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
+pub use lookup::{
+    assemble_lexical, damerau_levenshtein, max_edits, normalise_title, retrieve_lexical, slugify,
+    LexicalOutcome, DID_YOU_MEAN_MAX, LEXICAL_MAX_K,
+};
+pub use manifest::{check_load, check_load_lexical, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
 pub use retrieve::{
     retrieve_pack, rrf, safe_fts5_query, Candidate, Error as RetrieveError, DEFAULT_K_RRF,

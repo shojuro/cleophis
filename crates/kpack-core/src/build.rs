@@ -58,7 +58,7 @@
 
 use crate::chunk::{chunk_document, ChunkConfig};
 use crate::embed::{l2_normalize, quantize_int8, EmbedError, Embedder};
-use crate::format::{self, Chunk, Doc, Pack};
+use crate::format::{self, Chunk, Doc, Pack, TitleEntry};
 use crate::manifest::{Manifest, PackTier, VEC_FORMAT_VERSION};
 use crate::parse;
 use crate::tree::{Block, Document, Section};
@@ -481,9 +481,28 @@ fn build_pack_into_with_progress(
     // that function's and `sha256_hex`'s doc comments for why the two
     // schemes deliberately differ.
     for (i, source) in sources.iter().enumerate() {
+        // Phase 1h M5: Markdown front matter (`slug`, `variants`/`aliases`,
+        // `title`) feeds the `titles` index and is stripped before parsing
+        // so it never becomes chunk text. The doc's `sha256`/`source_size`
+        // stay over the RAW text, unchanged.
+        let front_matter = match &source.content {
+            SourceContent::Raw(text)
+                if matches!(source.source_type.as_str(), "md" | "markdown") =>
+            {
+                split_front_matter(text)
+            }
+            _ => None,
+        };
         let (document, sha256, extraction_quality, source_size) = match &source.content {
             SourceContent::Raw(text) => (
-                parse::parse(text, &source.title, &source.source_type),
+                parse::parse(
+                    front_matter
+                        .as_ref()
+                        .map(|(_, body)| *body)
+                        .unwrap_or(text.as_str()),
+                    &source.title,
+                    &source.source_type,
+                ),
                 sha256_hex(text.as_bytes()),
                 parse::extraction_quality(text),
                 text.len() as i64,
@@ -511,6 +530,11 @@ fn build_pack_into_with_progress(
             added_at: rfc3339_now(),
         };
         let doc_id = pack.insert_doc(&doc_row)?;
+        pack.insert_title(&title_entry(
+            doc_id,
+            &source.title,
+            front_matter.as_ref().map(|(fm, _)| fm),
+        ))?;
 
         for draft in chunk_document(&document, embedder, cfg) {
             let chunk_row = Chunk {
@@ -585,6 +609,148 @@ fn build_pack_into_with_progress(
     manifest.write(&pack)?;
 
     Ok(total_chunks)
+}
+
+/// The title-index fields a Markdown source's front matter can carry
+/// (Phase 1h M5). Every field optional; unknown keys are ignored.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct FrontMatter {
+    title: Option<String>,
+    slug: Option<String>,
+    /// `variants:` and `aliases:` (both accepted), in file order.
+    variants: Vec<String>,
+}
+
+/// Split a leading front-matter block off `text`: the text must START with
+/// a `---` line and contain a later closing `---` (or `...`) line, and
+/// every line in between must be blank, a `#` comment, a `key: value`
+/// line, or a `- item` list line — anything else means "this is not front
+/// matter" (a document that merely opens with a thematic break) and the
+/// whole text is left alone (`None`). Returns the parsed fields and the
+/// body after the closing line.
+///
+/// A deliberately tiny YAML subset: scalars (optionally single/double
+/// quoted), inline lists `[a, "b, c"]`, and block lists (`key:` then
+/// `- item` lines).
+fn split_front_matter(text: &str) -> Option<(FrontMatter, &str)> {
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
+    let mut fm = FrontMatter::default();
+    let mut list_key: Option<String> = None;
+    let mut offset = text.len() - rest.len();
+    for line in rest.split_inclusive('\n') {
+        offset += line.len();
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == "---" || trimmed == "..." {
+            return Some((fm, &text[offset..]));
+        }
+        let t = trimmed.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(item) = t.strip_prefix("- ").or_else(|| (t == "-").then_some("")) {
+            let key = list_key.as_deref()?;
+            push_front_matter_value(&mut fm, key, vec![unquote(item.trim())]);
+            continue;
+        }
+        let (key, value) = t.split_once(':')?;
+        let key = key.trim();
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return None;
+        }
+        let value = value.trim();
+        if value.is_empty() {
+            list_key = Some(key.to_string());
+            continue;
+        }
+        list_key = None;
+        let values = match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+            Some(inner) => split_inline_list(inner),
+            None => vec![unquote(value)],
+        };
+        push_front_matter_value(&mut fm, key, values);
+    }
+    None // no closing line: not front matter
+}
+
+fn push_front_matter_value(fm: &mut FrontMatter, key: &str, values: Vec<String>) {
+    match key {
+        "title" => fm.title = values.into_iter().next(),
+        "slug" => fm.slug = values.into_iter().next(),
+        "variants" | "aliases" => fm.variants.extend(values),
+        _ => {}
+    }
+}
+
+/// Split an inline list's inner text on commas outside quotes.
+fn split_inline_list(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in inner.chars() {
+        match (quote, c) {
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            (Some(q), c) if c == q => {
+                quote = None;
+                cur.push(c);
+            }
+            (None, ',') => {
+                out.push(unquote(cur.trim()));
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(unquote(cur.trim()));
+    }
+    out
+}
+
+fn unquote(v: &str) -> String {
+    for q in ['"', '\''] {
+        if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
+            return v[1..v.len() - 1].to_string();
+        }
+    }
+    v.to_string()
+}
+
+/// One source's `titles` row: `title` is the source's display title (the
+/// same string as `docs.title`, so citations and the index agree); `slug`
+/// is the front matter's (slugified) or derived from the title; `variants`
+/// are the front matter's `variants`/`aliases`, plus its `title` when that
+/// differs from the display title — empty and duplicate (by normalised
+/// form) entries dropped, file order kept.
+fn title_entry(doc_id: i64, title: &str, fm: Option<&FrontMatter>) -> TitleEntry {
+    let normalised_title = crate::lookup::normalise_title(title);
+    let slug = fm
+        .and_then(|f| f.slug.as_deref())
+        .map(crate::lookup::slugify)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| crate::lookup::slugify(title));
+    let mut variants: Vec<String> = Vec::new();
+    let mut seen: Vec<String> = vec![normalised_title.clone()];
+    if let Some(f) = fm {
+        for v in f.variants.iter().chain(f.title.iter()) {
+            let n = crate::lookup::normalise_title(v);
+            if !n.is_empty() && !seen.contains(&n) {
+                seen.push(n);
+                variants.push(v.trim().to_string());
+            }
+        }
+    }
+    TitleEntry {
+        doc_id,
+        title: title.to_string(),
+        normalised_title,
+        slug,
+        variants,
+    }
 }
 
 /// `<path>.part` — same path, `.part` appended to the whole file name.
@@ -1552,5 +1718,44 @@ Verify the installation by checking the reported version string.
             assert_eq!(hit_a[0].1, 0.0, "pack A's stored vector should exactly match the recomputed one");
             assert_eq!(hit_b[0].1, 0.0, "pack B's stored vector should exactly match the recomputed one");
         }
+    }
+
+    // Phase 1h M5: front matter parsing.
+    #[test]
+    fn front_matter_is_parsed_and_split_or_left_alone() {
+        let (fm, body) = split_front_matter(
+            "---\ntitle: \"Crohn's\"\nslug: crohns-disease\naliases:\n  - Crohns\n  - 'IBD, Crohn type'\nvariants: [a, \"b, c\"]\nother: ignored\n---\n# Body\n",
+        )
+        .unwrap();
+        assert_eq!(fm.title.as_deref(), Some("Crohn's"));
+        assert_eq!(fm.slug.as_deref(), Some("crohns-disease"));
+        assert_eq!(fm.variants, vec!["Crohns", "IBD, Crohn type", "a", "b, c"]);
+        assert_eq!(body, "# Body\n");
+
+        // CRLF line endings.
+        let (fm, body) = split_front_matter("---\r\nslug: x\r\n---\r\nText").unwrap();
+        assert_eq!(fm.slug.as_deref(), Some("x"));
+        assert_eq!(body, "Text");
+
+        // Not front matter: no opening, no closing, or a prose line inside.
+        assert!(split_front_matter("# Title\n---\n").is_none());
+        assert!(split_front_matter("---\nslug: x\n").is_none());
+        assert!(split_front_matter("---\nJust a sentence here.\n---\n").is_none());
+        assert!(split_front_matter("---\n- orphan item\n---\n").is_none());
+    }
+
+    #[test]
+    fn title_entry_dedupes_variants_by_normalised_form() {
+        let fm = FrontMatter {
+            title: Some("Crohn's Disease".to_string()),
+            slug: None,
+            variants: vec!["Crohns".into(), "crohns".into(), "".into(), "Crohn disease".into()],
+        };
+        let e = title_entry(7, "Crohn's disease", Some(&fm));
+        assert_eq!(e.doc_id, 7);
+        assert_eq!(e.normalised_title, "crohn disease");
+        assert_eq!(e.slug, "crohn-disease");
+        // "Crohn disease" and the fm title normalise to the title itself.
+        assert_eq!(e.variants, vec!["Crohns".to_string()]);
     }
 }
