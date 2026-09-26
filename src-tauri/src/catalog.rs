@@ -217,6 +217,34 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
     }
 }
 
+/// Phase 1g M1 (defense in depth): refuse a signed-catalog artifact whose
+/// `sha256` is none of the hero's pinned shas — base, adapter and contract
+/// adapter, across EVERY tier. The FE already picks by these shas
+/// (`src/dist-pick.js`); this is the Rust side refusing to write any other
+/// file into `models/` even if the FE is wrong or bypassed.
+///
+/// Every tier, not just the effective one: a tier switch downloads the
+/// TARGET tier's files before `complete_tier_switch` persists it, so the
+/// effective tier at download time is still the old one. The set is still
+/// exactly the bytes this build pins; a flat entry resolves the same variant
+/// on every tier. Hex case is ignored; an empty sha never matches.
+pub fn check_artifact_pinned(hero: &CatalogEntry, sha256: &str) -> Result<(), String> {
+    let want = sha256.trim();
+    let pinned = !want.is_empty()
+        && ["low", "mid", "high"].iter().any(|tier| {
+            let v = hero_variant(hero, tier);
+            [v.sha256, v.adapter_sha256, v.contract_adapter_sha256]
+                .iter()
+                .flatten()
+                .any(|p| p.trim().eq_ignore_ascii_case(want))
+        });
+    if pinned {
+        Ok(())
+    } else {
+        Err("That file isn't one this build installs — please update the app.".to_string())
+    }
+}
+
 pub fn parse_catalog(json: &str) -> Result<Vec<CatalogEntry>, String> {
     serde_json::from_str(json).map_err(|e| format!("catalog.json invalid: {e}"))
 }
@@ -532,4 +560,62 @@ mod tests {
         assert_eq!(resolved.base_model, None);
     }
 
+    // ---- Phase 1g M1: download_artifact refuses an unpinned sha ----------
+
+    fn triage_hero() -> CatalogEntry {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        hero(&entries).unwrap().clone()
+    }
+
+    fn tutor_hero() -> CatalogEntry {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        hero(&entries).unwrap().clone()
+    }
+
+    #[test]
+    fn pin_check_accepts_the_flat_heros_pinned_base_and_adapter() {
+        let h = triage_hero();
+        assert!(check_artifact_pinned(&h, h.sha256.as_deref().unwrap()).is_ok());
+        assert!(check_artifact_pinned(&h, h.adapter_sha256.as_deref().unwrap()).is_ok());
+        // Hex case is not identity.
+        let upper = h.sha256.as_deref().unwrap().to_ascii_uppercase();
+        assert!(check_artifact_pinned(&h, &upper).is_ok());
+    }
+
+    #[test]
+    fn pin_check_refuses_an_unpinned_sha() {
+        let h = triage_hero();
+        // The tutor's behavioral 1.7B adapter shares the triage base_model in
+        // the signed catalog; a file like it is exactly what must not land.
+        let err = check_artifact_pinned(&h, &"61ac4957".repeat(8)).unwrap_err();
+        assert!(err.contains("isn't one this build installs"), "{err}");
+        assert!(check_artifact_pinned(&h, "").is_err());
+    }
+
+    #[test]
+    fn pin_check_refuses_everything_for_an_entry_that_pins_nothing() {
+        let v = parse_catalog(SAMPLE).unwrap();
+        // SAMPLE's hero pins no sha256 at all: nothing may be downloaded for it.
+        assert!(check_artifact_pinned(&v[0], &"a".repeat(64)).is_err());
+        assert!(check_artifact_pinned(&v[0], "").is_err());
+    }
+
+    #[test]
+    fn pin_check_accepts_every_tier_of_a_tiered_hero_including_the_contract_adapter() {
+        // A tier switch downloads the TARGET tier's files before
+        // `complete_tier_switch` persists it, so every tier's pins must pass.
+        let h = tutor_hero();
+        let tiers = h.tiers.as_ref().unwrap();
+        for v in [&tiers.low, &tiers.mid, &tiers.high] {
+            assert!(check_artifact_pinned(&h, &v.sha256).is_ok());
+            assert!(check_artifact_pinned(&h, &v.adapter_sha256).is_ok());
+            if let Some(c) = v.contract_adapter_sha256.as_deref() {
+                assert!(check_artifact_pinned(&h, c).is_ok());
+            }
+        }
+        assert!(tiers.mid.contract_adapter_sha256.is_some(), "fixture exercises a contract pin");
+        // The triage pair is not pinned by the tutor build.
+        let t = triage_hero();
+        assert!(check_artifact_pinned(&h, t.adapter_sha256.as_deref().unwrap()).is_err());
+    }
 }
