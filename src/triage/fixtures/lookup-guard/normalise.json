@@ -1,5 +1,5 @@
 {
-  "_comment": "normaliseDoseText: input -> the normalised text (dose-cite-v2). Spelling only, never quantity; no unit is converted into another.",
+  "_comment": "normaliseDoseText: input -> the normalised text (dose-cite-v3). Spelling only, never quantity; no unit is converted into another.",
   "cases": [
     {
       "input": "500 milligrams three times a day",
@@ -368,6 +368,58 @@
     {
       "input": "5͏00 mg",
       "normalised": "500mg"
+    },
+    {
+      "input": "Take it at 8 am.",
+      "normalised": "take it at 8am"
+    },
+    {
+      "input": "8 a.m.",
+      "normalised": "8am"
+    },
+    {
+      "input": "38 degrees",
+      "normalised": "38c"
+    },
+    {
+      "input": "38°C",
+      "normalised": "38c"
+    },
+    {
+      "input": "each hour",
+      "normalised": "every 1 hours"
+    },
+    {
+      "input": "per hour",
+      "normalised": "every 1 hours"
+    },
+    {
+      "input": "an hour",
+      "normalised": "every 1 hours"
+    },
+    {
+      "input": "each minute",
+      "normalised": "every 1 minutes"
+    },
+    {
+      "input": "half an hour",
+      "normalised": "1/2 hours"
+    },
+    {
+      "input": "2 x 500mg tablets",
+      "normalised": "2 500mg tablets"
+    },
+    {
+      "input": "Take 1 tablet once a day",
+      "normalised": "take 1tablets/day"
+    },
+    {
+      "input": "after 1 week",
+      "normalised": "after 1 weeks"
+    },
+    {
+      "input": "2 weeks",
+      "normalised": "2 weeks"
     }
   ]
 }

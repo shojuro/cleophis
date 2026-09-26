@@ -1,42 +1,50 @@
 {
-  "_comment": "Pins every dose-cite-v2 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
-  "rule": "dose-cite-v2",
+  "_comment": "Pins every dose-cite-v3 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
+  "rule": "dose-cite-v3",
   "files": {
     "boundaries.json": {
-      "sha256": "4e0114a9321d9e2276ad93cdb14543c2ad7c43fbe7c729124011953f6023adf2",
-      "count": 34
+      "sha256": "08211f7f9d3d6c4831968b9b0009c8288e7252a742ccb20c6505465489310a2a",
+      "count": 39
     },
     "citations.json": {
       "sha256": "c9388e52b3f8cfec81547b2948e8695ab8d7058495184f97c084b1186c3ee530",
       "count": 7
     },
     "normalise.json": {
-      "sha256": "81ac0d8c498f43ec1c3829c56ac304a057c1322359bd22536de6759e9aa9d932",
-      "count": 92
+      "sha256": "f6a12d198fe6107922232d5292e4c0bd3720377410dc4c867917c69502bc32ed",
+      "count": 105
     },
     "overdose-sections.json": {
       "sha256": "d672ff84749528a4c1d0a29376ef1b3976c14d03bfe57f0c8d8d7fcf63b86f7a",
       "count": 15
+    },
+    "overdose-sentences.json": {
+      "sha256": "1f555ff6bbabf5230cb0fe9843aad5e982a4e162795ec24b37680f0966bfa056",
+      "count": 14
     },
     "sentences.json": {
       "sha256": "38f13d774ec05b7c41774304644e30878d0ce92b590e10f5754c956eddde5f62",
       "count": 7
     },
     "sources.json": {
-      "sha256": "86b78d26c8022a5ccedbc814288696a318b2615653febed47a72bf233979fb48",
+      "sha256": "572b052096b5a18305b738a995ce80c54f1e5e93f2347209e68758348077a57a",
       "count": 6
     },
     "spans.json": {
-      "sha256": "3ca38064fc592200ee67b3b6475fb1bea7f63e8d92072f4d30f873d44cf09f45",
-      "count": 36
+      "sha256": "d3050cbdbb0f0a70ddb2f307c2fa6f68ec2636ad189d4ab92ccc2643d0cacc5d",
+      "count": 46
+    },
+    "titles.json": {
+      "sha256": "26c745788ee11b0d4c10c14116334e67fd284ba3e1289efbc375f0977e1de84a",
+      "count": 6
     },
     "units.json": {
-      "sha256": "a0ed74190203de9405db37556d5fba27957d8881be17f1599eac24b87cb4fe3b",
+      "sha256": "b99e434bf18a6624eab8d9bad988fd0b9b6aaf32ad533840bb8d9285da6f5703",
       "count": 32
     },
     "verdicts.json": {
-      "sha256": "611879ee68c9d64854be0dad83232c25a80d1e1669d362ccb15f53dbfc155750",
-      "count": 116
+      "sha256": "cf341688a95a82448c353007071ee3f43e8905c99c3a6adb7953bee3dbdf5bc0",
+      "count": 163
     }
   }
 }

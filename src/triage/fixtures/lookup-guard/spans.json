@@ -1,5 +1,5 @@
 {
-  "_comment": "numericScan(normaliseDoseText(input)): every numeric span, left to right, never overlapping; unclassifiable is true only when a digit is left that no span explains (the catch-all number form makes that unreachable today). Citation brackets and a leading list marker are not spans.",
+  "_comment": "numericScan(normaliseDoseText(input)): every numeric span, left to right, never overlapping. A purely numeric bare number is keyed with the word before it (aged_16, _16 at the start). unclassifiable is true only when a digit is left that no span explains. Citation brackets and a leading list marker (listMarker option, default true) are not spans.",
   "cases": [
     {
       "input": "Take 500 mg twice a day, every 4 hours.",
@@ -21,7 +21,7 @@
     {
       "input": "It is sold in packs of 16.",
       "spans": [
-        "16"
+        "of_16"
       ],
       "unclassifiable": false
     },
@@ -128,21 +128,21 @@
     {
       "input": "take 2 oz",
       "spans": [
-        "2"
+        "take_2"
       ],
       "unclassifiable": false
     },
     {
       "input": "take 3 grains",
       "spans": [
-        "3"
+        "take_3"
       ],
       "unclassifiable": false
     },
     {
       "input": "He is 6 years old.",
       "spans": [
-        "6"
+        "is_6"
       ],
       "unclassifiable": false
     },
@@ -205,7 +205,7 @@
     {
       "input": "The dose is mg 500.",
       "spans": [
-        "500"
+        "mg_500"
       ],
       "unclassifiable": false
     },
@@ -253,6 +253,73 @@
     },
     {
       "input": "This one is safer.",
+      "spans": [],
+      "unclassifiable": false
+    },
+    {
+      "input": "Take 1 to 2 tablets if aged 16 or over.",
+      "spans": [
+        "1-2tablets",
+        "aged_16"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "For people aged 16 and over.",
+      "spans": [
+        "aged_16"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "Take any one of 16.",
+      "spans": [
+        "of_16"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "Take a third tablet.",
+      "spans": [
+        "third"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "The dose can be doubled.",
+      "spans": [
+        "doubled"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "Take iv tablets.",
+      "spans": [
+        "iv"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "It can be given IV.",
+      "spans": [],
+      "unclassifiable": false
+    },
+    {
+      "input": "Take it at 8 am.",
+      "spans": [
+        "8am"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "Above 38 degrees.",
+      "spans": [
+        "38c"
+      ],
+      "unclassifiable": false
+    },
+    {
+      "input": "16. Take this many tablets.",
       "spans": [],
       "unclassifiable": false
     }

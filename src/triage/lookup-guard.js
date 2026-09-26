@@ -41,7 +41,7 @@
 // dose-unrecognised is gone: in v2 every number is a span and is checked.
 import pin from './detectors.pin.js';
 
-export const LOOKUP_RULE = 'dose-cite-v2';
+export const LOOKUP_RULE = 'dose-cite-v3';
 
 /**
  * The scripted refusal for a lookup with no evidence. Defined ONCE, here, and
@@ -60,6 +60,7 @@ export const WITHHELD_REASONS = Object.freeze({
   CITATION_MALFORMED: 'citation-malformed',
   CITATION_OUT_OF_RANGE: 'citation-out-of-range',
   OVERDOSE_SECTION: 'overdose-section',
+  OVERDOSE_SENTENCE: 'overdose-sentence',
   DOSE_UNCITED: 'dose-uncited',
   DOSE_NOT_IN_SOURCE: 'dose-not-in-source',
 });
@@ -83,6 +84,34 @@ export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
 export function isOverdoseSection(sectionPath) {
   const s = String(sectionPath ?? '');
   return OVERDOSE_SECTION_PATTERNS.some((re) => re.test(s));
+}
+
+/**
+ * v3 (fix round 3, controller ruling): overdose, maximum-dose and harm wording
+ * at SENTENCE level, seeded from the re-review's proposal. A SOURCE sentence
+ * that matches, and the source sentence immediately before one that matches,
+ * can never be the sentence that verifies a reply's numbers; a REPLY sentence
+ * that matches is withheld outright. Deliberately broad: it also catches benign
+ * "do not take more than" advice, which is the founder's registered cost.
+ */
+export const OVERDOSE_SENTENCE_PATTERNS = Object.freeze([
+  /\bmore than\b/i,
+  /\bmaximum\b|\bmax\b/i,
+  /\bliver damage\b/i,
+  /\ba ?& ?e\b|\baccident and emergency\b/i,
+  /\bemergency\b/i,
+  /\bfatal\b/i,
+  /\bharm(?:s|ed|ful)?\b/i,
+  /\bdangerous\b/i,
+  /\boverdos/i,
+  /\btoo much\b/i,
+  /\btoo many\b/i,
+]);
+
+/** Does this sentence carry overdose, maximum-dose or harm wording? */
+export function isOverdoseSentence(sentence) {
+  const s = String(sentence ?? '');
+  return OVERDOSE_SENTENCE_PATTERNS.some((re) => re.test(s)) || isOverdoseSection(s);
 }
 
 // ── The unit table ──────────────────────────────────────────────────────────
@@ -269,7 +298,11 @@ export function normaliseDoseText(text) {
   s = s.replace(/(\d)[ \t]*(?:hours?|hrs?|h)(?![a-z0-9])/g, '$1 hours');
   s = s.replace(/(\d)[ \t]*(?:minutes?|mins?)(?![a-z0-9])/g, '$1 minutes');
   s = s.replace(/(\d)[ \t]*days?(?![a-z0-9])/g, '$1 days');
-  s = s.replace(/\bevery[ \t]+hour\b|\bhourly\b/g, 'every 1 hours');
+  s = s.replace(/(\d)[ \t]*weeks?(?![a-z0-9])/g, '$1 weeks');
+  // clock times: "8 am", "8 a.m.", "8AM" -> "8am"
+  s = s.replace(/(\d)[ \t]*([ap])\.?[ \t]?m\b\.?/g, '$1$2m');
+  s = s.replace(/\b(?:every|each|per|an?)[ \t]+hour\b|\bhourly\b/g, 'every 1 hours');
+  s = s.replace(/\b(?:every|each|per|an?)[ \t]+minute\b/g, 'every 1 minutes');
   s = s.replace(/\bevery[ \t]+other[ \t]+day\b/g, 'every 2 days');
   s = s.replace(new RegExp(`\\ban?[ \\t]+(?=(?:${ALL_SPELLINGS})(?![a-z0-9%]))`, 'g'), '1 ');
   for (const [canon, re] of UNIT_GLUE) s = s.replace(re, `$1${canon}`);
@@ -277,11 +310,19 @@ export function normaliseDoseText(text) {
   // "a 500mg tablet" states a count of one: "1 500mg tablets"
   s = s.replace(new RegExp(`\\ban?[ \\t]+(?=\\d+(?:\\.\\d+)?(?:${STRENGTH_ALT})(?:\\/[a-z0-9.]+)* (?:${COUNT_ALT})(?![a-z0-9%]))`, 'g'), '1 ');
   s = s.replace(new RegExp(`(\\d|\\b(?:${ALL_SPELLINGS}))[ \\t]*[x×*][ \\t]*(?=\\d)`, 'g'), '$1x');
+  // "2 x 500mg tablets" states the same count of the same strength as
+  // "2 500mg tablets": one form (a bare "2 x 500mg" stays a product)
+  s = s.replace(new RegExp(`\\b(\\d+(?:-\\d+)?)x(\\d+(?:\\.\\d+)?(?:${STRENGTH_ALT})) (${COUNT_ALT})(?![a-z0-9%])`, 'g'), '$1 $2 $3');
+  // temperatures: "38 degrees", "38°c", "38 c" -> "38c"
+  s = s.replace(/(\d)[ \t]*(?:°[ \t]*c?|degrees?(?:[ \t]+c(?:elsius|entigrade)?)?|c)(?![a-z0-9])/g, '$1c');
   s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b|\\bin\\b(?:[ \\t]+(?:each|every))?)[ \\t]*(\\d+(?:\\.\\d+)?)(ml)(?![a-z0-9%])`, 'g'), '$1/$2$3');
   s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b(?:[ \\t]+(?:each|every|1))?|\\ba\\b|\\bfor[ \\t]+(?:each|every)\\b|\\beach\\b|\\bevery\\b)[ \\t]*(?:kg|kilograms?|kilogrammes?|kilos?)\\b(?:[ \\t]+of[ \\t]+body[ \\t]*weight)?`, 'g'), '$1/kg');
   s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+day\b/g, '/day').replace(/[ \t]+daily\b/g, '/day');
   s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+week\b/g, '/week').replace(/[ \t]+weekly\b/g, '/week');
   s = s.replace(new RegExp(`(${STRENGTH_ALT}|kg)[ \\t]*\\/[ \\t]*(kg|dose|day|week)\\b`, 'g'), '$1/$2');
+  // "1 tablet once a day" states what "1 tablet daily" states: once per period
+  // after an amount is the bare period
+  s = s.replace(new RegExp(`(\\d(?:${UNIT_ALT})(?:\\/[a-z0-9.]+)*) 1 times(\\/(?:day|week))`, 'g'), '$1$2');
   return s.replace(/\s+/g, ' ').trim();
 }
 
@@ -312,65 +353,118 @@ export const NUMERIC_SPAN_FORMS = Object.freeze([
   Object.freeze({ name: 'duration', src: `${NUMR} ${PERIOD_UNIT}` }),
   // an amount: "500mg", "1/2tablets", "10mg/kg/day", "250mg/5ml", "1-2puffs"
   Object.freeze({ name: 'amount', src: `${NUMR}(?:${UNIT_ALT})${SUFFIX}${AFTER_UNIT}` }),
-  // frequency and multiplier words with no digit: "/day", "double", "nightly", roman numerals
-  Object.freeze({ name: 'word', src: `\\/(?:day|week)\\b|\\b(?:double|triple|quadruple|nightly|fortnightly)\\b|\\b(?:ii|iii|vi|vii|viii|xi|xii)\\b` }),
+  // frequency, multiplier, ordinal and roman-numeral words with no digit:
+  // "/day", "double(d)", "triple", "nightly"; "a third tablet", "a second
+  // dose"; "ii tablets", and iv/v/x/ix only before a count word (iv alone is
+  // the intravenous abbreviation)
+  Object.freeze({ name: 'word', src: `\\/(?:day|week)\\b|\\b(?:doubl|tripl|quadrupl)[a-z]*|\\b(?:nightly|fortnightly)\\b|\\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\\b(?= (?:${ALL_SPELLINGS})(?![a-z]))|\\b(?:ii|iii|vi|vii|viii|xi|xii)\\b|\\b(?:iv|v|x|ix)\\b(?= (?:${ALL_SPELLINGS})(?![a-z]))` }),
   // any other number, with any letters glued to it: "16", "6-11", "2k", "1st"
   Object.freeze({ name: 'number', src: `${NUMR}[a-z]*(?:\\/[a-z0-9.]+)*` }),
 ].map((f) => Object.freeze({ ...f })));
 
 const SPAN_RE = new RegExp(NUMERIC_SPAN_FORMS.map((f) => `(${f.src})`).join('|'), 'g');
+const NUMBER_FORM_GROUP = NUMERIC_SPAN_FORMS.findIndex((f) => f.name === 'number') + 1;
 const CITATION_BRACKET = /\[([^\]\n]*)\]/g;
-const LIST_MARKER = /^\s*(?:[-•]\s*)?\d+[.)](?=\s)/;
+const LIST_MARKER = /^\s*(?:[-•]\s*)?(\d+)[.)](?=\s)/;
 
 /**
  * The numeric spans of already-normalised text, left to right, and whether a
- * digit is left over that no span explains. Citation brackets and a leading
- * list marker ("1.") are not numbers of the sentence.
+ * digit is left over that no span explains. Citation brackets are not numbers
+ * of the sentence; a leading list marker ("1.") is not either when
+ * `listMarker` is true (the caller decides: see `listMarkersAreASequence`).
+ *
+ * A bare, purely numeric number (the `number` form with no letters glued to
+ * it) is written with the word before it,
+ * "aged_16", "take_16", "_16" at the start: "aged 16" in a source must not
+ * verify "take 16" in a reply (fix round 3, R4).
  *
  * @returns {{spans: string[], unclassifiable: boolean}}
  */
-export function numericScan(normalised) {
-  const text = String(normalised ?? '').replace(CITATION_BRACKET, ' ').replace(LIST_MARKER, ' ');
+export function numericScan(normalised, { listMarker = true } = {}) {
+  let text = String(normalised ?? '').replace(CITATION_BRACKET, ' ');
+  if (listMarker) text = text.replace(LIST_MARKER, (m) => ' '.repeat(m.length));
   const spans = [];
   let rest = text;
   for (const m of text.matchAll(SPAN_RE)) {
-    spans.push(m[0]);
+    let span = m[0];
+    // only a PURELY numeric span is keyed: "38c" and "8am" carry their own
+    // letters and mean the same thing whatever word comes before them
+    if (m[NUMBER_FORM_GROUP] !== undefined && /^[\d./ -]+$/.test(m[0])) {
+      const before = /([a-z]+)[^a-z0-9\n]*$/.exec(text.slice(0, m.index));
+      span = `${before ? before[1] : ''}_${m[0]}`;
+    }
+    spans.push(span);
     rest = rest.slice(0, m.index) + ' '.repeat(m[0].length) + rest.slice(m.index + m[0].length);
   }
   return { spans, unclassifiable: /\d/.test(rest) };
 }
 
+/**
+ * Are the reply's leading list markers a real list — 1, 2, 3, ... in order?
+ * Only then is a marker not a number of its sentence. "16. Take this many
+ * tablets." alone is a count, not a list item.
+ */
+export function listMarkersAreASequence(sentences) {
+  const markers = sentences.map((t) => LIST_MARKER.exec(t)).filter(Boolean).map((m) => Number(m[1]));
+  return markers.length > 0 && markers.every((n, i) => n === i + 1);
+}
+
 // Sub-spans a source span also states: the strength inside a count of a
-// strength ("500mg" in "1-2 500mg tablets"), a factor of a product ("500mg" in
-// "2x500mg"), the interval inside a frequency ("every 4 hours" in "1 times
-// every 4 hours"), and a trailing period ("/day"). NEVER a range endpoint
-// ("2tablets" is not stated by "1-2tablets") and never a unit-stripped number
-// ("10mg" is not stated by "10mg/kg").
+// strength ("500mg" in "1-2 500mg tablets") and its count ("1-2tablets"), an
+// amount factor of a product ("500mg" in "2x500mg"), the interval inside a
+// frequency ("every 4 hours" in "1 times every 4 hours"), and a trailing period
+// ("/day"). NEVER a range endpoint and never a unit-stripped number.
 const COMPONENT_RES = [
   new RegExp(`(?<=^|[ x])(?:${NUMR}(?:${UNIT_ALT})${SUFFIX}${AFTER_UNIT}|every ${NUMR} ${PERIOD_UNIT})`, 'g'),
   /\/(?:day|week)$/g,
 ];
+const COUNT_OF_STRENGTH_PARTS = new RegExp(`^(${NUMR}) ${NUM}(?:${STRENGTH_ALT})${SUFFIX} (${COUNT_ALT})$`);
 
-/**
- * Every span a source's TEXT states: the spans of each of its sentences, and
- * their components, skipping any sentence that names overdose material (N7).
- * @returns {Set<string>}
- */
-export function sourceSpans(sourceText) {
-  const out = new Set();
-  for (const { text } of splitSentences(sourceText)) {
-    if (isOverdoseSection(text)) continue;
-    for (const span of numericScan(normaliseDoseText(text)).spans) {
-      out.add(span);
-      for (const re of COMPONENT_RES) for (const c of span.matchAll(re)) if (c[0] !== span) out.add(c[0]);
-    }
-  }
+function withComponents(span) {
+  const out = [span];
+  for (const re of COMPONENT_RES) for (const c of span.matchAll(re)) if (c[0] !== span) out.push(c[0]);
+  const cos = COUNT_OF_STRENGTH_PARTS.exec(span);
+  if (cos) out.push(`${cos[1]}${cos[2]}`);
   return out;
 }
 
-/** Does the source text state this span, as a whole? */
+/** A source title's key: its first word (letters and inner hyphens), lower-cased, if 4+ characters ("paracetamol", "co-codamol"). */
+export function titleKey(docTitle) {
+  const m = /[a-z](?:[a-z-]*[a-z])?/.exec(String(docTitle ?? '').normalize('NFKC').toLowerCase().replace(/[‐‑‒–—−]/g, '-'));
+  return m && m[0].length >= 4 ? m[0] : null;
+}
+
+const hasWord = (text, word) => new RegExp(`\\b${word}\\b`).test(text);
+
+/**
+ * The span sets of each ELIGIBLE sentence of a source's text, in order. A
+ * sentence is not eligible when it carries overdose, maximum-dose or harm
+ * wording (`isOverdoseSentence`), or when the sentence right after it does.
+ * Each set holds the sentence's spans and their components. Rule 3 asks for ONE
+ * of these sets to hold every span of a reply sentence.
+ *
+ * @returns {{text: string, normalised: string, spans: Set<string>}[]}
+ */
+export function sourceSentenceSpans(sourceText) {
+  const sentences = splitSentences(sourceText).map((x) => x.text);
+  const out = [];
+  sentences.forEach((text, i) => {
+    if (isOverdoseSentence(text) || (i + 1 < sentences.length && isOverdoseSentence(sentences[i + 1]))) return;
+    const normalised = normaliseDoseText(text);
+    const spans = new Set(numericScan(normalised).spans.flatMap(withComponents));
+    out.push({ text, normalised, spans });
+  });
+  return out;
+}
+
+/** Every span a source's text states, over its eligible sentences. */
+export function sourceSpans(sourceText) {
+  return new Set(sourceSentenceSpans(sourceText).flatMap((x) => [...x.spans]));
+}
+
+/** Does ONE eligible sentence of the source text state this span? */
 export function sourceHasSpan(sourceText, span) {
-  return sourceSpans(sourceText).has(span);
+  return sourceSentenceSpans(sourceText).some((x) => x.spans.has(span));
 }
 
 // ── Sentences and citations ─────────────────────────────────────────────────
@@ -460,12 +554,14 @@ export function citationsIn(sentence) {
 const hasOwnContent = (sentence) => /[\p{L}\p{N}]/u.test(String(sentence).replace(CITATION_BRACKET, ''));
 
 /**
- * Judge one sentence. `sources` is the lookup's ordered source list; a
- * source's `n` is its 1-based position.
+ * Judge one sentence. `ctx` carries the sources, their title keys, each
+ * source's eligible sentence span sets (cached) and whether list markers are
+ * a real list.
  *
  * @returns {{keep: true, cites: number[]}|{keep: false, reason: string}}
  */
-function judgeSentence(sentence, sources, spansOf) {
+function judgeSentence(sentence, ctx) {
+  const { sources, keys, sentencesOf, listMarker } = ctx;
   const { numbers, malformed } = citationsIn(sentence);
   if (malformed) return { keep: false, reason: WITHHELD_REASONS.CITATION_MALFORMED };
   if (numbers.some((n) => !Number.isInteger(n) || n < 1 || n > sources.length)) {
@@ -475,17 +571,25 @@ function judgeSentence(sentence, sources, spansOf) {
   if (cites.some((n) => isOverdoseSection(sources[n - 1] && sources[n - 1].sectionPath))) {
     return { keep: false, reason: WITHHELD_REASONS.OVERDOSE_SECTION };
   }
-  const { spans, unclassifiable } = numericScan(normaliseDoseText(sentence));
-  if (spans.length || unclassifiable) {
-    if (!cites.length) return { keep: false, reason: WITHHELD_REASONS.DOSE_UNCITED };
-    // Defensive: the catch-all `number` form leaves no digit unexplained, so
-    // this cannot fire today; if a future form change ever let one through,
-    // the digit is unverifiable and the sentence is withheld.
-    if (unclassifiable) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
-    const everySpanSourced = spans.every((span) => cites.some((n) => spansOf(n).has(span)));
-    if (!everySpanSourced) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
-  }
-  return { keep: true, cites };
+  if (isOverdoseSentence(sentence)) return { keep: false, reason: WITHHELD_REASONS.OVERDOSE_SENTENCE };
+  // Citation brackets come out with NOTHING in their place before normalising:
+  // "1[1]6 tablets" is 16 tablets on screen, so it is 16 tablets here (R1).
+  const normalised = normaliseDoseText(sentence.replace(CITATION_BRACKET, ''));
+  const { spans, unclassifiable } = numericScan(normalised, { listMarker });
+  if (!spans.length && !unclassifiable) return { keep: true, cites };
+  if (!cites.length) return { keep: false, reason: WITHHELD_REASONS.DOSE_UNCITED };
+  if (unclassifiable) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
+  // A reply that names a source's title ("paracetamol") takes its numbers only
+  // from a source with that title (R5).
+  const named = new Set(keys.filter((k) => k && hasWord(normalised, k)));
+  const candidates = cites.filter((n) => !named.size || named.has(keys[n - 1]));
+  const satisfied = candidates.some((n) => sentencesOf(n).some((src) => {
+    // a source sentence naming ANOTHER source's title the reply does not name
+    // speaks about that other drug, and verifies nothing for this one
+    const foreign = keys.some((k, i) => k && i !== n - 1 && k !== keys[n - 1] && !named.has(k) && hasWord(src.normalised, k));
+    return !foreign && spans.every((span) => src.spans.has(span));
+  }));
+  return satisfied ? { keep: true, cites } : { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
 }
 
 /**
@@ -499,7 +603,7 @@ function judgeSentence(sentence, sources, spansOf) {
  * `attach_guard`, replayed by `replayMessage`):
  *
  *   kind          'lookup' — what tells a lookup verdict from a triage one
- *   rule          'dose-cite-v2'
+ *   rule          'dose-cite-v3'
  *   outcome       'grounded', or 'noEvidence' when nothing citable was left
  *   displayText   what is shown and what `attach_guard` writes as the row text
  *   rawReply      the reply as the model wrote it
@@ -512,17 +616,24 @@ export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
   const raw = String(replyText ?? '');
   const list = Array.isArray(sources) ? sources : [];
   const cache = new Map();
-  const spansOf = (n) => {
-    if (!cache.has(n)) cache.set(n, sourceSpans(list[n - 1] && list[n - 1].text));
+  const sentencesOf = (n) => {
+    if (!cache.has(n)) cache.set(n, sourceSentenceSpans(list[n - 1] && list[n - 1].text));
     return cache.get(n);
+  };
+  const split = splitSentences(raw);
+  const ctx = {
+    sources: list,
+    keys: list.map((src) => titleKey(src && src.docTitle)),
+    sentencesOf,
+    listMarker: listMarkersAreASequence(split.map((x) => x.text)),
   };
   const kept = [];
   const withheld = [];
   const cited = new Set();
   let display = '';
   let lastWasWithheld = false;
-  for (const { text, sep } of splitSentences(raw)) {
-    const verdict = judgeSentence(text, list, spansOf);
+  for (const { text, sep } of split) {
+    const verdict = judgeSentence(text, ctx);
     if (verdict.keep) {
       kept.push(text);
       if (hasOwnContent(text)) verdict.cites.forEach((n) => cited.add(n));

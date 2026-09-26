@@ -1,0 +1,61 @@
+{
+  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS (and the section list). A matching SOURCE sentence, and the one right before it, verify nothing; a matching REPLY sentence is withheld.",
+  "cases": [
+    {
+      "sentence": "Do not take more than 8 tablets in 24 hours.",
+      "overdose": true
+    },
+    {
+      "sentence": "Maximum 4 doses in 24 hours.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking too many can cause serious liver damage.",
+      "overdose": true
+    },
+    {
+      "sentence": "Go to A&E straight away.",
+      "overdose": true
+    },
+    {
+      "sentence": "Call 999 in an emergency.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be fatal.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can harm your liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "This is dangerous.",
+      "overdose": true
+    },
+    {
+      "sentence": "This is an overdose.",
+      "overdose": true
+    },
+    {
+      "sentence": "If you take too much, get help.",
+      "overdose": true
+    },
+    {
+      "sentence": "Take 1 or 2 tablets every 4 to 6 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "It is harmless in normal doses.",
+      "overdose": false
+    },
+    {
+      "sentence": "Paracetamol is a painkiller.",
+      "overdose": false
+    },
+    {
+      "sentence": "Leave 4 hours between doses.",
+      "overdose": false
+    }
+  ]
+}

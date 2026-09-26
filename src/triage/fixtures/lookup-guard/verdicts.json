@@ -1,5 +1,5 @@
 {
-  "_comment": "dose-cite-v2 verdict fixtures, one named group per clause of the rule. Each case: a reply + a source set (a name from sources.json, or an inline array) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. \"probe N\" cases are the fix-round-1 re-review adversarial pairs (all withheld). The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
+  "_comment": "dose-cite-v3 verdict fixtures, one named group per clause of the rule. Each case: a reply + a source set (a name from sources.json, or an inline array) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. \"probe N\" cases are the re-reviews' adversarial pairs (all withheld); \"benign BN\" cases are correctly cited sentences, kept where v3 fixed the normalisation and withheld (group over-withholding-residual) where the cost is the founder's. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
   "groups": {
     "citation-range": [
       {
@@ -1368,6 +1368,408 @@
             1
           ]
         }
+      },
+      {
+        "name": "probe A5: a citation inside a number, uncited sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "For 1 week, take 6 tablets."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 1[1]6 tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 1[1]6 tablets.",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A5b: a citation inside a number, cited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "For 1 week, take 6 tablets."
+          }
+        ],
+        "replyText": "Take 1[1]6 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 1[1]6 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A6: a citation splitting 500",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Age 5: 00 mg."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 5[1]00 mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 5[1]00 mg.",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A43: a citation inside a decimal",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 2. Then 5ml."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 2.[1]5 ml.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2.[1]5 ml.",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A22: an ordinal count",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take a third tablet if the pain continues.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take a third tablet if the pain continues.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A23: an ordinal dose",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. If it does not work, take a second dose straight away.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "If it does not work, take a second dose straight away.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A29: doubled",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. The dose can be doubled.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "The dose can be doubled.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A15: iv before a count word",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take iv tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take iv tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A16: v before a count word",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take v tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take v tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A17: x before a count word",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take x tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take x tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A18: IX before a count word",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take IX tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take IX tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe A50: a lone list marker is a count",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. \n16. Take this many tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "16. Take this many tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "iv alone is not a number (the intravenous abbreviation)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "It can be given IV in hospital."
+          }
+        ],
+        "replyText": "It can be given IV in hospital [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "It can be given IV in hospital [1].",
+          "kept": [
+            "It can be given IV in hospital [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "first as a plain word is not a number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "First, check the label [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "First, check the label [1].",
+          "kept": [
+            "First, check the label [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a real numbered list keeps its markers out of the check",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 500 mg. Drink water."
+          }
+        ],
+        "replyText": "1. Take 500mg [1].\n2. Drink water [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "1. Take 500mg [1].\n2. Drink water [1].",
+          "kept": [
+            "1. Take 500mg [1].",
+            "2. Drink water [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
       }
     ],
     "verbatim-presence": [
@@ -1723,18 +2125,23 @@
           ],
           "citations": []
         }
-      }
-    ],
-    "range-handling": [
+      },
       {
-        "name": "a range with an en dash matches the source's written range",
-        "sources": "salbutamol",
-        "replyText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+        "name": "benign B3: once a day after an amount is daily",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 tablet daily."
+          }
+        ],
+        "replyText": "Take 1 tablet once a day [1].",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+          "displayText": "Take 1 tablet once a day [1].",
           "kept": [
-            "Take 1-2 puffs every 4 to 6 hours when needed [1]."
+            "Take 1 tablet once a day [1]."
           ],
           "withheld": [],
           "citations": [
@@ -1742,6 +2149,390 @@
           ]
         }
       },
+      {
+        "name": "benign B4: the count of a count of a strength is stated",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take one or two 500mg tablets."
+          }
+        ],
+        "replyText": "Take 1 to 2 tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1 to 2 tablets [1].",
+          "kept": [
+            "Take 1 to 2 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "benign B5: 8am is 8 am",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take it at 8 am."
+          }
+        ],
+        "replyText": "Take it at 8am [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take it at 8am [1].",
+          "kept": [
+            "Take it at 8am [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "benign B7: 2 x 500mg tablets is 2 500mg tablets",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 500mg tablets."
+          }
+        ],
+        "replyText": "Take 2 x 500mg tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 x 500mg tablets [1].",
+          "kept": [
+            "Take 2 x 500mg tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "benign B29: 38 degrees is 38C",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Get help if their temperature is 38C or above."
+          }
+        ],
+        "replyText": "Get help if the temperature is above 38 degrees [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Get help if the temperature is above 38 degrees [1].",
+          "kept": [
+            "Get help if the temperature is above 38 degrees [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "one-source-sentence": [
+      {
+        "name": "probe A7: an adult dose recombined with a child age range",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: 2 tablets 4 times a day. Children aged 10 to 15: 1 tablet 2 times a day."
+          }
+        ],
+        "replyText": "Children aged 10 to 15: 2 tablets 4 times a day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Children aged 10 to 15: 2 tablets 4 times a day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A12: a pack size recombined with a strength",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1-2 500mg tablets. Pack of 4 tablets."
+          }
+        ],
+        "replyText": "Take 4 tablets of 500mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 4 tablets of 500mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A44: an age does not verify a count",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "For people aged 16 and over."
+          }
+        ],
+        "replyText": "Take 16 [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A38: an age does not verify a count, pronoun form",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "16 years and over."
+          }
+        ],
+        "replyText": "Take any one of 16 [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take any one of 16 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "all spans from one source sentence are kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: 2 tablets 4 times a day. Children aged 10 to 15: 1 tablet 2 times a day."
+          }
+        ],
+        "replyText": "Children aged 10 to 15 take 1 tablet 2 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 10 to 15 take 1 tablet 2 times a day [1].",
+          "kept": [
+            "Children aged 10 to 15 take 1 tablet 2 times a day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the same age keyed by the same word is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "For people aged 16 and over."
+          }
+        ],
+        "replyText": "It is for people aged 16 and over [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "It is for people aged 16 and over [1].",
+          "kept": [
+            "It is for people aged 16 and over [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "spans split across two source sentences are withheld",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets. Do this 4 times a day."
+          }
+        ],
+        "replyText": "Take 2 tablets 4 times a day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets 4 times a day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "source-title": [
+      {
+        "name": "probe A8: a dose from another drug's source, both cited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol",
+            "sectionPath": "Dosage",
+            "text": "Paracetamol: take 1 tablet."
+          },
+          {
+            "n": 2,
+            "docTitle": "Ibuprofen",
+            "sectionPath": "Dosage",
+            "text": "Ibuprofen: take 2 tablets."
+          }
+        ],
+        "replyText": "Paracetamol: take 2 tablets [1][2].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol: take 2 tablets [1][2].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A9: a dose from another drug's source, only it cited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol",
+            "sectionPath": "Dosage",
+            "text": "Paracetamol: take 1 tablet."
+          },
+          {
+            "n": 2,
+            "docTitle": "Ibuprofen",
+            "sectionPath": "Dosage",
+            "text": "Ibuprofen: take 2 tablets."
+          }
+        ],
+        "replyText": "Paracetamol: take 2 tablets [2].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol: take 2 tablets [2].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a dose from the named drug's source is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol",
+            "sectionPath": "Dosage",
+            "text": "Paracetamol: take 1 tablet."
+          },
+          {
+            "n": 2,
+            "docTitle": "Ibuprofen",
+            "sectionPath": "Dosage",
+            "text": "Ibuprofen: take 2 tablets."
+          }
+        ],
+        "replyText": "Paracetamol: take 1 tablet [1][2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol: take 1 tablet [1][2].",
+          "kept": [
+            "Paracetamol: take 1 tablet [1][2]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "a source sentence about another source's drug verifies nothing for an unnamed reply",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol",
+            "sectionPath": "Dosage",
+            "text": "Ibuprofen: take 2 tablets."
+          },
+          {
+            "n": 2,
+            "docTitle": "Ibuprofen",
+            "sectionPath": "Dosage",
+            "text": "Take 1 tablet."
+          }
+        ],
+        "replyText": "Take 2 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "range-handling": [
       {
         "name": "one end of a source range is not the range",
         "sources": "children",
@@ -1831,6 +2622,29 @@
             }
           ],
           "citations": []
+        }
+      },
+      {
+        "name": "a range with an en dash matches the source's written range",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 or 2 puffs when you need them, every 4–6 hours."
+          }
+        ],
+        "replyText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+          "kept": [
+            "Take 1-2 puffs every 4 to 6 hours when needed [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
         }
       }
     ],
@@ -2342,6 +3156,78 @@
             1
           ]
         }
+      },
+      {
+        "name": "probe F1: each hour",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets each hour [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets each hour [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe F2: per hour",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets per hour [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets per hour [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe F3: an hour",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets an hour [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets an hour [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
       }
     ],
     "overdose-section": [
@@ -2426,6 +3312,147 @@
             }
           ],
           "citations": []
+        }
+      },
+      {
+        "name": "probe A1: liver damage wording",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults take 2 tablets. Taking 16 tablets at once can cause serious liver damage."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A2: the sentence before an overdose sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults take 2 tablets. Some people take 16 tablets. This is an overdose."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe A3: a maximum restated as a dose",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Take 8 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 8 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a dose sentence right before a maximum sentence verifies nothing",
+        "sources": "salbutamol",
+        "replyText": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 1-2 puffs every 4 to 6 hours when needed [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a reply sentence with maximum-dose wording is withheld outright",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Do not take more than 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Do not take more than 8 tablets in 24 hours [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a reply sentence with emergency wording is withheld even with no number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. In an emergency, call for help.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "In an emergency, call for help.",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": [
+            1
+          ]
         }
       }
     ],
@@ -2595,6 +3622,176 @@
             {
               "sentence": "Take 500 mg.",
               "reason": "dose-uncited"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "over-withholding-residual": [
+      {
+        "name": "benign B1: a single age is not the stated age range",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Children aged 6 to 11: 1 tablet."
+          }
+        ],
+        "replyText": "It can be given to children aged 6 [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It can be given to children aged 6 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B2: 4 times in 24 hours is not 4 times a day",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets up to 4 times a day."
+          }
+        ],
+        "replyText": "Take 2 tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets up to 4 times in 24 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B6: no unit conversion: 1g is not 1,000mg",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults can take 1,000mg."
+          }
+        ],
+        "replyText": "Adults can take 1g [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Adults can take 1g [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B11: a duration is not a gap between doses",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Always leave 4 hours between doses."
+          }
+        ],
+        "replyText": "Wait 4 hours before taking more [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Wait 4 hours before taking more [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B23: packs of 16 is not 16 tablets",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol comes in packs of 16 tablets."
+          }
+        ],
+        "replyText": "It comes in packs of 16 [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It comes in packs of 16 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B25: the source sentence says more than, so it verifies nothing",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "See a GP if pain lasts more than a week."
+          }
+        ],
+        "replyText": "If you still have pain after 1 week, see a GP [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "If you still have pain after 1 week, see a GP [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "benign B30: one 5ml spoonful is not 5ml",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 5ml."
+          }
+        ],
+        "replyText": "Give one 5ml spoonful [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give one 5ml spoonful [1].",
+              "reason": "dose-not-in-source"
             }
           ],
           "citations": []

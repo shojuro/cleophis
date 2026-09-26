@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared source sets for the dose-cite-v2 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance.",
+  "_comment": "Shared source sets for the dose-cite-v3 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance.",
   "paracetamol": [
     {
       "n": 1,

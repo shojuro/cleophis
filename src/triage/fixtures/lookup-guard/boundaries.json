@@ -1,5 +1,5 @@
 {
-  "_comment": "sourceHasSpan(source, span): the span must EQUAL one of the spans the source text states (its sentences spans plus their components: a strength inside a count of it, a factor of a product, the interval inside a frequency, a trailing period), skipping overdose sentences. Never a substring, a range endpoint, or a unit-stripped number.",
+  "_comment": "sourceHasSpan(source, span): ONE eligible sentence of the source states the span (its spans plus their components). A sentence with overdose, maximum or harm wording, and the sentence right before one, is not eligible. Never a substring, a range endpoint, or a unit-stripped number.",
   "cases": [
     {
       "source": "take 500mg tablets",
@@ -123,7 +123,7 @@
     },
     {
       "source": "Adults: take 2 x 500 mg.",
-      "span": "2",
+      "span": "take_2",
       "present": false
     },
     {
@@ -159,7 +159,7 @@
     {
       "source": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage.",
       "span": "2tablets",
-      "present": true
+      "present": false
     },
     {
       "source": "Take 1 500mg tablet.",
@@ -168,8 +168,33 @@
     },
     {
       "source": "Aged 16 or over.",
-      "span": "16",
+      "span": "aged_16",
       "present": true
+    },
+    {
+      "source": "Take 2 tablets. Do this 4 times a day.",
+      "span": "4 times/day",
+      "present": true
+    },
+    {
+      "source": "Take 1 or 2 puffs every 4 to 6 hours. Do not use more than 8 puffs in 24 hours.",
+      "span": "1-2puffs",
+      "present": false
+    },
+    {
+      "source": "Adults take 2 tablets. Some people take 16 tablets. This is an overdose.",
+      "span": "16tablets",
+      "present": false
+    },
+    {
+      "source": "Take one or two 500mg tablets.",
+      "span": "1-2tablets",
+      "present": true
+    },
+    {
+      "source": "For people aged 16 and over.",
+      "span": "take_16",
+      "present": false
     }
   ]
 }
