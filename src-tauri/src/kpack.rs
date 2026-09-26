@@ -93,7 +93,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kpack_core::lookup::{assemble_lexical, retrieve_lexical, LexicalOutcome, LEXICAL_MAX_K};
+use kpack_core::lookup::{
+    assemble_lexical, lookup_contract, retrieve_lexical, LexicalOutcome, LEXICAL_MAX_K,
+};
 use kpack_core::retrieve::{retrieve, Citation, RetrievalResult, Tier};
 use kpack_core::{
     build_pack_with_progress, BuildMeta, BuildProgress, ChunkConfig, LoadContext, Manifest, Pack,
@@ -1326,12 +1328,14 @@ fn find_lookup_pack(
 
 /// The `rag_lookup` command's camelCase result. `status` is one of:
 /// - `"grounded"` — the page exists; `prompt` is the assembled grounded
-///   prompt (contract + page title + the page's ≤ 3 chunks), `citations`
+///   prompt (`assemble_system` over the TRIAGE contract + the page title's
+///   doc-context line + the page's ≤ 3 chunks), `citations`
 ///   1:1 with its sources.
 /// - `"didYouMean"` — no exact page; `candidates` are close page titles (the
 ///   UI scripts the question; no model runs). `prompt` is `None`.
-/// - `"noEvidence"` — no page, nothing close; `prompt` is the contract's
-///   `no_evidence_marker()` (scripted, no model).
+/// - `"noEvidence"` — no page, nothing close; `prompt` is the triage
+///   contract's `no_evidence_marker` (`lookup_contract()`; scripted, no
+///   model).
 /// - `"unavailable"` — the pack has no title index (a schema-v1 pack).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1361,7 +1365,7 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
                 },
                 RetrievalResult::NoEvidence => empty(
                     "noEvidence",
-                    Some(kpack_core::contract::no_evidence_marker().to_string()),
+                    Some(lookup_contract().no_evidence_marker.clone()),
                 ),
             }
         }
@@ -1373,7 +1377,7 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
         },
         LexicalOutcome::NotFound => empty(
             "noEvidence",
-            Some(kpack_core::contract::no_evidence_marker().to_string()),
+            Some(lookup_contract().no_evidence_marker.clone()),
         ),
         LexicalOutcome::Unavailable => empty("unavailable", None),
     }
@@ -2422,6 +2426,11 @@ mod tests {
         );
         assert_eq!(r.status, "grounded");
         assert!(r.prompt.as_deref().unwrap().contains("These sources are excerpts from: Paracetamol."));
+        assert!(
+            r.prompt.as_deref().unwrap().starts_with(lookup_contract().system_contract.trim_end()),
+            "the lookup prompt is assembled over the triage contract"
+        );
+        assert_eq!(lookup_contract().contract_id, "triage");
         assert_eq!(r.citations.len(), 1);
         assert_eq!(r.citations[0].pack_id, "reference-uk-v1");
 
@@ -2434,7 +2443,7 @@ mod tests {
 
         let r = map_lookup_outcome(LexicalOutcome::NotFound, "p");
         assert_eq!(r.status, "noEvidence");
-        assert_eq!(r.prompt.as_deref(), Some(kpack_core::contract::no_evidence_marker()));
+        assert_eq!(r.prompt.as_deref(), Some(lookup_contract().no_evidence_marker.as_str()));
 
         let r = map_lookup_outcome(LexicalOutcome::Unavailable, "p");
         assert_eq!((r.status.as_str(), r.prompt.is_none()), ("unavailable", true));

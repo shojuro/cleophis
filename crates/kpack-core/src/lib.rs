@@ -85,7 +85,8 @@ pub use epub::{document_from_epub, Error as EpubError};
 pub use format::{Chunk, Doc, Error, Pack, TitleEntry, MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 pub use html::html_to_document;
 pub use lookup::{
-    assemble_lexical, damerau_levenshtein, max_edits, normalise_title, retrieve_lexical, slugify,
+    assemble_lexical, damerau_levenshtein, lookup_contract, max_edits, normalise_title,
+    retrieve_lexical, slugify,
     LexicalOutcome, DID_YOU_MEAN_MAX, LEXICAL_MAX_K,
 };
 pub use manifest::{check_load, check_load_lexical, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};

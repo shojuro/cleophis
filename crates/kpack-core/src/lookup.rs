@@ -25,7 +25,7 @@
 //! match (design ruling I4 — it removes the circular calibration). NO_EVIDENCE
 //! and did-you-mean are scripted by the caller; no model runs for either.
 //! [`assemble_lexical`] renders a `Found` page into the grounded prompt via
-//! `retrieve`'s one assembler.
+//! `contract::assemble_system` over the TRIAGE contract ([`lookup_contract`]).
 
 use crate::contract;
 use crate::format::{Chunk, Error, Pack, TitleEntry};
@@ -311,15 +311,20 @@ fn select_page_chunks(
         .collect())
 }
 
-/// Render a [`LexicalOutcome::Found`] page as the grounded prompt through
-/// `retrieve`'s one assembler (the same sources rendering and
-/// `doc_context` line as [`crate::retrieve::assemble`]; `doc_context` is the
-/// page title). Citations carry `pack_id`. Empty `chunks` → `NoEvidence`.
-///
-/// SEAM (M3): the system text is `contract::system_contract()` today. When
-/// the triage contract lands (`contract::assemble_system`, Task M3), pass
-/// its system text here instead — `render_grounded` takes it as a
-/// parameter, so that is a one-argument change.
+/// The contract the lookup path assembles its grounded prompt with, and
+/// whose `no_evidence_marker` / `refusal_with_offer` the caller scripts:
+/// the TRIAGE contract (`contracts/prompt-contract.triage.v1.toml`, Task
+/// M3) — no arithmetic delegation, doses quoted exactly as cited, refusal
+/// refers the user on. The one place the lookup path picks its contract.
+pub fn lookup_contract() -> &'static contract::PromptContract {
+    contract::contract_for(contract::ContractId::Triage)
+}
+
+/// Render a [`LexicalOutcome::Found`] page as the grounded prompt:
+/// `contract::assemble_system(lookup_contract() /* triage */, doc_context =
+/// the page title's doc-context line, the page's ≤ 3 chunks)` — THE
+/// assembler, reached through `retrieve::render_grounded` (which adds only
+/// the citations). Citations carry `pack_id`. Empty `chunks` → `NoEvidence`.
 pub fn assemble_lexical(pack_id: &str, title: &str, chunks: &[Chunk]) -> RetrievalResult {
     let items: Vec<GroundedItem<'_>> = chunks
         .iter()
@@ -330,7 +335,7 @@ pub fn assemble_lexical(pack_id: &str, title: &str, chunks: &[Chunk]) -> Retriev
             title,
         })
         .collect();
-    render_grounded(contract::contract_for(contract::ContractId::Tutor), &items)
+    render_grounded(lookup_contract(), &items)
 }
 
 #[cfg(test)]
@@ -795,7 +800,31 @@ mod tests {
         else {
             panic!("expected Grounded")
         };
-        assert!(prompt.starts_with(contract::system_contract().trim_end()));
+        // Byte-for-byte THE assembler over the TRIAGE contract, with the
+        // page title as the doc-context line.
+        let render: Vec<contract::RenderChunk<'_>> = chunks
+            .iter()
+            .map(|c| contract::RenderChunk {
+                source_title: &title,
+                section_path: &c.section_path,
+                locator: &c.locator,
+                text: &c.text,
+            })
+            .collect();
+        let triage = contract::contract_for(contract::ContractId::Triage);
+        let expected = contract::assemble_system(
+            triage,
+            contract::doc_context_line([title.as_str()]).as_deref(),
+            &render,
+        )
+        .unwrap();
+        assert_eq!(prompt, expected);
+        assert_eq!(lookup_contract().contract_id, "triage");
+        assert!(prompt.starts_with(triage.system_contract.trim_end()));
+        assert!(
+            !prompt.contains(contract::system_contract().trim_end()),
+            "never the tutor contract"
+        );
         assert!(prompt.contains("These sources are excerpts from: Ibuprofen."));
         assert!(prompt.contains("Ibuprofen is an anti-inflammatory."));
         assert_eq!(citations.len(), chunks.len());
