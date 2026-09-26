@@ -13,6 +13,9 @@ members = [
     "crates/kpack-embed",
     "crates/kpack-pdf",
     "crates/kpack-calc",
+    # Offline pack-building CLI (Phase 1h M4b): the bundled NHS reference
+    # pack, `chunks.jsonl`, `titles.json`. No Tauri, no network, no embedder.
+    "crates/kpack-cli",
     # In-process inference engine (EngineBackend + llama-cpp-2 backend) for
     # mobile. Standalone during the P0 spike; folded into the workspace at the
     # P1 gate (its own `[workspace]` table was deleted). Default features are

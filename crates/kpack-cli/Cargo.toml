@@ -1,0 +1,24 @@
+[package]
+name = "kpack-cli"
+version = "0.1.0"
+edition = "2021"
+
+# Phase 1h Task M4b: the offline pack-building CLI (`build-reference`,
+# `verify`). A plain binary: no Tauri, no network, no embedder, no LLM. It
+# builds the bundled, lexical-only NHS reference pack from the committed
+# corpus and writes the two contract files the triage repo consumes
+# (`chunks.jsonl`, `titles.json`). Never depends on kpack-core's `test-util`
+# feature (the mock embedder is test-only).
+[dependencies]
+kpack-core = { path = "../kpack-core" }
+# EXACT pins to the versions already in the workspace lockfile (src-tauri's),
+# so this crate adds no new crate to the resolved graph.
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+# Signs a test-built pack with a throwaway key so `Pack::mount_lexical`'s
+# curated signature check runs in the built-pack tests. Same exact pin as
+# kpack-core's.
+ed25519-dalek = "=2.2.0"

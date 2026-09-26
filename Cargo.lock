@@ -2416,6 +2416,17 @@ name = "kpack-calc"
 version = "0.1.0"
 
 [[package]]
+name = "kpack-cli"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "kpack-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "kpack-core"
 version = "0.1.0"
 dependencies = [
