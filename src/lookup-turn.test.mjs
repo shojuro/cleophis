@@ -241,3 +241,55 @@ test('lookupForPersistence stamps model and pack provenance on a copy', () => {
   });
   assert.strictEqual(lookupForPersistence(null, ENTRY), null);
 });
+
+/* ---------------- citation display rule (controller ruling, M4a's NHS reuse terms) ---------------- */
+
+import { LOOKUP_SOURCE_FOOTER, lookupCitationRow, lookupFooterFor } from './lookup-turn.js';
+
+test('the reuse footer is one constant with the ruled wording', () => {
+  assert.strictEqual(LOOKUP_SOURCE_FOOTER,
+    "Reference pages: NHS website, Open Government Licence v3.0. The wording above is the assistant's, not the NHS's.");
+});
+
+test('the footer goes under a grounded reply only, never under a scripted refusal or the crisis block', () => {
+  assert.strictEqual(lookupFooterFor('grounded'), LOOKUP_SOURCE_FOOTER);
+  for (const outcome of ['noEvidence', 'crisis', 'didYouMean', 'unavailable', 'overBudget', undefined]) {
+    assert.strictEqual(lookupFooterFor(outcome), null, String(outcome));
+  }
+});
+
+test('a citation row shows title, section path, URL link and "as at" date when the source carries them', () => {
+  assert.deepStrictEqual(lookupCitationRow({
+    n: 1, docTitle: 'Paracetamol for adults', sectionPath: 'How and when to take it',
+    url: 'https://www.nhs.uk/medicines/paracetamol-for-adults/', retrievedAt: '2026-09-20', locator: 'L1',
+  }), {
+    n: 1, title: 'Paracetamol for adults', sectionPath: 'How and when to take it',
+    url: 'https://www.nhs.uk/medicines/paracetamol-for-adults/', asAt: 'as at 2026-09-20',
+  });
+});
+
+test('a citation row renders what exists when the source has no URL or date', () => {
+  assert.deepStrictEqual(lookupCitationRow({ n: 2, docTitle: 'Paracetamol', sectionPath: 'Dosage', locator: 'L1' }),
+    { n: 2, title: 'Paracetamol', sectionPath: 'Dosage', url: null, asAt: null });
+});
+
+test('a locator that is an https URL is the link; anything but https is never a link', () => {
+  assert.strictEqual(lookupCitationRow({ n: 1, docTitle: 'x', locator: 'https://www.nhs.uk/conditions/asthma/' }).url,
+    'https://www.nhs.uk/conditions/asthma/');
+  for (const bad of ['javascript:alert(1)', 'http://www.nhs.uk/', 'file:///etc/passwd', 'data:text/html,x', 'nhs.uk', '']) {
+    assert.strictEqual(lookupCitationRow({ n: 1, docTitle: 'x', url: bad, locator: bad }).url, null, bad);
+  }
+});
+
+test('the persisted verdict keeps each source\'s url and retrievedAt (null when absent), never its text', async () => {
+  const cites = [{ ...CITATIONS[0], url: 'https://www.nhs.uk/medicines/paracetamol-for-adults/', retrievedAt: '2026-09-20' }, CITATIONS[1]];
+  const r = await runLookupTurn({
+    text: 'paracetamol', entry: ENTRY, invoke: mockInvoke({ ...GROUNDED, citations: cites }),
+    generate: mockModel('The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].'),
+  });
+  assert.strictEqual(r.verdict.sources[0].url, 'https://www.nhs.uk/medicines/paracetamol-for-adults/');
+  assert.strictEqual(r.verdict.sources[0].retrievedAt, '2026-09-20');
+  assert.strictEqual(r.verdict.sources[1].url, null);
+  assert.strictEqual(r.verdict.sources[1].retrievedAt, null);
+  assert.ok(r.verdict.sources.every((s) => !('text' in s)));
+});

@@ -27,6 +27,7 @@ import {
   BANNERS, CRISIS_RULES, REPLACE_KEEP_ROUTES_DEFAULT, ROUTE_TO_BANNER, routeOfPrefix,
 } from './triage/guard.js';
 import { ROUTE } from './triage/detectors.mjs';
+import { lookupFooterFor } from './lookup-turn.js';
 
 /**
  * A fifth banner, and the only one that is NOT a disposition.
@@ -487,6 +488,8 @@ function replayLookup({ role, content, guard }) {
       withheldReasons: withheld.map((w) => w.reason),
       citations: sources.filter((src) => cited.includes(src.n)),
       candidates: Array.isArray(guard.candidates) ? guard.candidates : [],
+      // The NHS reuse footer: grounded replies only (controller ruling).
+      footer: lookupFooterFor(guard.outcome),
     },
   };
 }

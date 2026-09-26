@@ -18,7 +18,7 @@ import {
 } from './triage-turn.js';
 // Phase 1h M6: the reference LOOKUP mode on the supervised screen. Its
 // decisions live in lookup-turn.js (tested); this file draws them.
-import { lookupForPersistence, referencePackId, runLookupTurn } from './lookup-turn.js';
+import { lookupCitationRow, lookupForPersistence, referencePackId, runLookupTurn } from './lookup-turn.js';
 import { LOOKUP_REPLY_TOKENS } from './prompt-assembly.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
@@ -2666,7 +2666,15 @@ function renderLookupExtras(el, lookup) {
     note.textContent = `${lookup.withheldCount} sentence${lookup.withheldCount === 1 ? ' was' : 's were'} withheld: the reference pack does not confirm ${lookup.withheldCount === 1 ? 'it' : 'them'}.`;
     el.appendChild(note);
   }
-  if (lookup.citations && lookup.citations.length) renderCitations(el, lookup.citations);
+  if (lookup.citations && lookup.citations.length) renderLookupCitations(el, lookup.citations);
+  // The NHS reuse footer: present on a grounded reply only (`lookup.footer`
+  // is null for the refusal, the did-you-mean list and the crisis block).
+  if (lookup.footer) {
+    const foot = document.createElement('div');
+    foot.className = 'lookup-footer';
+    foot.textContent = lookup.footer;
+    el.appendChild(foot);
+  }
   if (lookup.candidates && lookup.candidates.length) {
     const chips = document.createElement('div');
     chips.className = 'lookup-candidates';
@@ -2685,6 +2693,64 @@ function renderLookupExtras(el, lookup) {
     }
     el.appendChild(chips);
   }
+}
+
+// A lookup's sources (controller ruling, from M4a's NHS reuse terms): title,
+// section path, the source URL as a link and "as at <date>", each only when
+// the source carries it (`lookupCitationRow`). Same collapsed grammar as
+// `renderCitations`, which the tutor keeps unchanged. textContent only: every
+// string here comes from pack content.
+//
+// A tap on the link never navigates the webview. It asks the opener plugin
+// when the front end has it; otherwise the URL is on screen to read.
+function renderLookupCitations(afterEl, citations) {
+  const rows = citations.map(lookupCitationRow);
+  const box = document.createElement('div');
+  box.className = 'citations';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'citetoggle';
+  const label = (open) => `${open ? '⌃' : '⌄'} ${rows.length} source${rows.length === 1 ? '' : 's'}`;
+  toggle.textContent = label(false);
+  toggle.addEventListener('click', () => {
+    const open = box.classList.toggle('expanded');
+    toggle.textContent = label(open);
+  });
+  box.appendChild(toggle);
+  const list = document.createElement('div');
+  list.className = 'citelist';
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.className = 'cite';
+    const main = document.createElement('div');
+    main.className = 'cite-main';
+    main.textContent = `[${r.n}] ${r.title}${r.sectionPath ? ` · ${r.sectionPath}` : ''}`;
+    row.appendChild(main);
+    if (r.url) {
+      const link = document.createElement('a');
+      link.className = 'cite-url';
+      link.href = r.url;
+      link.textContent = r.url;
+      link.rel = 'noopener noreferrer';
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const opener = window.__TAURI__ && window.__TAURI__.opener;
+        if (opener && typeof opener.openUrl === 'function') opener.openUrl(r.url).catch(() => {});
+      });
+      row.appendChild(link);
+    }
+    if (r.asAt) {
+      const date = document.createElement('div');
+      date.className = 'cite-pack';
+      date.textContent = r.asAt;
+      row.appendChild(date);
+    }
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+  afterEl.insertAdjacentElement('afterend', box);
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+  return box;
 }
 
 function restoreComposer() {

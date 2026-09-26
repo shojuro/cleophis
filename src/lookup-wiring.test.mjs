@@ -46,3 +46,15 @@ test('the lookup entry exists, hidden by default, on the chat screen', () => {
   assert.match(HTML, /<div class="lookupbar" id="lookupBar" hidden>/);
   assert.match(HTML, /id="lookupBtn"[^>]*>Look up a drug or condition</);
 });
+
+test('a lookup row draws its sources with the lookup renderer and its footer from the view', () => {
+  const start = APP.indexOf('function renderLookupExtras(');
+  const extras = APP.slice(start, APP.indexOf('\nfunction ', start + 1));
+  assert.ok(extras.includes('renderLookupCitations(el, lookup.citations)'));
+  assert.ok(!extras.includes('renderCitations('));
+  assert.ok(extras.includes('lookup.footer'));
+  const r = APP.indexOf('function renderLookupCitations(');
+  const renderer = APP.slice(r, APP.indexOf('\nfunction ', r + 1));
+  assert.ok(renderer.includes('lookupCitationRow') && renderer.includes('e.preventDefault()'));
+  assert.ok(!renderer.includes('innerHTML'));
+});

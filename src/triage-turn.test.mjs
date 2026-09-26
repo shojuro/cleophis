@@ -722,7 +722,7 @@ test('a replaced verdict replays with NO banner, not the out-of-scope one', () =
 import {
   LOOKUP_QUERY_GUARD, TURN_MODES, isLookupMessage, triageHistory,
 } from './triage-turn.js';
-import { runLookupTurn } from './lookup-turn.js';
+import { LOOKUP_SOURCE_FOOTER, runLookupTurn } from './lookup-turn.js';
 
 const LOOKUP_REPLY_GUARD = Object.freeze({
   kind: 'lookup', rule: 'dose-cite-v1', outcome: 'grounded',
@@ -809,7 +809,15 @@ test('replayMessage renders a lookup reply with its citations and its verdict, n
     withheldReasons: ['dose-uncited'],
     citations: [LOOKUP_REPLY_GUARD.sources[0]],
     candidates: [],
+    footer: LOOKUP_SOURCE_FOOTER,
   });
+});
+
+test('replayMessage puts the reuse footer under a grounded lookup only, never a refusal or the crisis block', () => {
+  for (const outcome of ['noEvidence', 'crisis', 'didYouMean', 'unavailable']) {
+    const guard = { kind: 'lookup', outcome, displayText: 't', withheld: [], citations: [], sources: [] };
+    assert.strictEqual(replayMessage({ supervised: true, role: 'assistant', content: 't', guard }).lookup.footer, null, outcome);
+  }
 });
 
 test('replayMessage shows the verdict\'s displayText, never a raw reply left in content', () => {
@@ -825,7 +833,7 @@ test('replayMessage renders a lookup query row as the user\'s words, marked as a
 test('replayMessage renders a scripted lookup (did you mean) with its candidates and no citations', () => {
   const guard = { kind: 'lookup', outcome: 'didYouMean', displayText: 'Did you mean: A?', withheld: [], citations: [], sources: [], candidates: ['A'] };
   const view = replayMessage({ supervised: true, role: 'assistant', content: 'Did you mean: A?', guard });
-  assert.deepStrictEqual(view.lookup, { outcome: 'didYouMean', withheldCount: 0, withheldReasons: [], citations: [], candidates: ['A'] });
+  assert.deepStrictEqual(view.lookup, { outcome: 'didYouMean', withheldCount: 0, withheldReasons: [], citations: [], candidates: ['A'], footer: null });
 });
 
 test('replayMessage is unchanged for triage rows', () => {

@@ -116,9 +116,60 @@ function scripted(outcome, displayText, extra = {}) {
   };
 }
 
+// `url` and `retrievedAt` are the field names this app expects on a
+// `rag_lookup` citation once M4b's pack build carries them (camelCase over IPC,
+// so `url` / `retrieved_at` Rust-side). Kept on the persisted source record as
+// null when absent, so every record has one shape.
+const optString = (v) => (typeof v === 'string' && v.trim() ? v : null);
 const sourceRecord = (c) => ({
   n: c.n, packId: c.packId, chunkId: c.chunkId, docTitle: c.docTitle, sectionPath: c.sectionPath, locator: c.locator,
+  url: optString(c.url), retrievedAt: optString(c.retrievedAt),
 });
+
+// ── How a lookup row shows its sources (controller ruling, from M4a's NHS
+// reuse-terms finding) ──────────────────────────────────────────────────────
+
+/**
+ * The fixed footer under every GROUNDED lookup reply. One constant: the
+ * founder may reword it here and nowhere else. Never under the scripted
+ * refusal, the did-you-mean list, the unavailable message or the crisis block.
+ */
+export const LOOKUP_SOURCE_FOOTER =
+  "Reference pages: NHS website, Open Government Licence v3.0. The wording above is the assistant's, not the NHS's.";
+
+/** The footer for a lookup outcome, or null. */
+export function lookupFooterFor(outcome) {
+  return outcome === 'grounded' ? LOOKUP_SOURCE_FOOTER : null;
+}
+
+// Only an https URL is ever a link: a pack is signed, but the renderer does not
+// lean on that for what it lets a tap open.
+function httpsUrl(v) {
+  if (typeof v !== 'string') return null;
+  try {
+    const u = new URL(v.trim());
+    return u.protocol === 'https:' && u.hostname ? u.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * One rendered citation: title, section path, the source URL as a link (the
+ * citation's `url`, else a `locator` that is itself an https URL) and
+ * "as at <retrievedAt>" when the source carries a retrieval date. What the
+ * source does not carry is null, and the renderer leaves it out.
+ */
+export function lookupCitationRow(c) {
+  const date = optString(c && c.retrievedAt);
+  return {
+    n: c.n,
+    title: optString(c.docTitle) ?? '',
+    sectionPath: optString(c.sectionPath),
+    url: httpsUrl(c.url) ?? httpsUrl(c.locator),
+    asAt: date ? `as at ${date}` : null,
+  };
+}
 
 /**
  * Run one lookup turn.
