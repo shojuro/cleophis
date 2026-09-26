@@ -1,0 +1,15 @@
+{
+  "_comment": "Shared sources for the dose-cite-v1 fixtures. Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance.",
+  "paracetamol": [
+    { "n": 1, "docTitle": "Paracetamol for adults", "sectionPath": "How and when to take it", "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Always leave at least 4 hours between doses." },
+    { "n": 2, "docTitle": "Paracetamol for adults", "sectionPath": "About paracetamol", "text": "Paracetamol is a common painkiller used to treat aches and pains. It can also be used to reduce a high temperature." },
+    { "n": 3, "docTitle": "Paracetamol for adults", "sectionPath": "If you take too much", "text": "Taking 2 extra tablets by accident is unlikely to be harmful. Go to A&E straight away if you take more than 8 tablets in 24 hours." }
+  ],
+  "salbutamol": [
+    { "n": 1, "docTitle": "Salbutamol inhaler", "sectionPath": "Dosage", "text": "Take 1 or 2 puffs when you need them, every 4–6 hours. Do not use more than 8 puffs in 24 hours." },
+    { "n": 2, "docTitle": "Salbutamol inhaler", "sectionPath": "Maximum dose", "text": "Never take more than 8 puffs in 24 hours." }
+  ],
+  "amoxicillin": [
+    { "n": 1, "docTitle": "Amoxicillin", "sectionPath": "Dosage > Adults", "text": "The usual dose is 500 milligrams three times a day. The liquid is 250 mg/5 ml." }
+  ]
+}
