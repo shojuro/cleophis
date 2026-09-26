@@ -410,12 +410,83 @@ export function canSendInChat({ entered = null, chat = null } = {}) {
  * fixed note; `rawReply` is not lost, because the row itself still holds the
  * text and the export still reads it.
  *
- * @returns {{banner: string|null, text: string, withheld: boolean}}
+ * A LOOKUP row (Phase 1h M6, `guard.kind === 'lookup'`) renders from its own
+ * verdict instead, and its view carries a fourth key, `lookup` — see
+ * `replayLookup`. Every other row's view is the three keys it always was.
+ *
+ * @returns {{banner: string|null, text: string, withheld: boolean, lookup?: object}}
  */
 export function replayMessage({ supervised = false, role = 'assistant', content = '', guard = null } = {}) {
+  if (guard && guard.kind === 'lookup') return replayLookup({ role, content, guard });
   if (guard) return { banner: guard.banner, text: content, withheld: false };
   if (supervised && role === 'assistant') {
     return { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true };
   }
   return { banner: null, text: content, withheld: false };
+}
+
+// ── Phase 1h M6: the lookup mode ────────────────────────────────────────────
+//
+// The supervised screen has two per-turn modes. `triage` is everything above,
+// untouched. `lookup` is a SINGLE-TURN reference lookup (see lookup-turn.js):
+// it sends no history, and its rows are never part of triage history.
+
+export const TURN_MODES = Object.freeze(['triage', 'lookup']);
+
+/**
+ * The marker persisted on a lookup's USER row (through `append_message`'s
+ * `guard` argument), so a reopened chat still knows that row was a lookup
+ * query and keeps it out of triage history. It carries no route, no banner,
+ * and no `detectorsSha`; the export skips user rows and `confirmState` skips
+ * every lookup verdict.
+ */
+export const LOOKUP_QUERY_GUARD = Object.freeze({ kind: 'lookup', role: 'query' });
+
+/** A lookup row: the in-memory flag, or a persisted lookup verdict or marker. */
+export function isLookupMessage(msg) {
+  return !!msg && (msg.lookup === true || (!!msg.guard && msg.guard.kind === 'lookup'));
+}
+
+/**
+ * The messages a TRIAGE turn may window and send: every lookup row out, and
+ * also the assistant row that answers a lookup query even when it carries no
+ * verdict (a lookup reply whose `attach_guard` never landed still holds the
+ * model's raw reply to a lookup, which is not triage history either).
+ * A chat with no lookups comes back element for element as it went in.
+ */
+export function triageHistory(messages) {
+  const out = [];
+  let afterLookupQuery = false;
+  for (const msg of messages ?? []) {
+    const lookup = isLookupMessage(msg);
+    const answersLookup = afterLookupQuery && msg && msg.role === 'assistant';
+    afterLookupQuery = lookup && msg.role === 'user';
+    if (!lookup && !answersLookup) out.push(msg);
+  }
+  return out;
+}
+
+/**
+ * A stored lookup row. The query row is the user's words; the reply row is
+ * the verdict's `displayText` (never a raw reply that might sit in `content`),
+ * with the sources its kept sentences cite, and no triage banner — a lookup
+ * has no route.
+ */
+function replayLookup({ role, content, guard }) {
+  if (role === 'user') return { banner: null, text: content, withheld: false, lookup: { query: true } };
+  const cited = Array.isArray(guard.citations) ? guard.citations : [];
+  const sources = Array.isArray(guard.sources) ? guard.sources : [];
+  const withheld = Array.isArray(guard.withheld) ? guard.withheld : [];
+  return {
+    banner: null,
+    text: typeof guard.displayText === 'string' ? guard.displayText : content,
+    withheld: false,
+    lookup: {
+      outcome: guard.outcome,
+      withheldCount: withheld.length,
+      withheldReasons: withheld.map((w) => w.reason),
+      citations: sources.filter((src) => cited.includes(src.n)),
+      candidates: Array.isArray(guard.candidates) ? guard.candidates : [],
+    },
+  };
 }

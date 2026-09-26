@@ -380,3 +380,14 @@ test('a reply KEPT under the crisis block keeps its removals, and says the block
   assert.ok(rows.slice(0, -1).every((r) => r.startsWith('Removed: ')), rows.join(' | '));
   assert.strictEqual(rows.includes(CRISIS_ADDED_ROW), false, 'nothing was added UNDER the reply');
 });
+
+/* ---------------- Phase 1h M6: a lookup row has no route to confirm ---------------- */
+
+test('a lookup reply or query row draws no confirmation controls and no receipt', () => {
+  for (const guard of [
+    { kind: 'lookup', rule: 'dose-cite-v1', outcome: 'grounded', displayText: 'x [1].', withheld: [], citations: [1] },
+    { kind: 'lookup', role: 'query' },
+  ]) {
+    assert.deepStrictEqual(confirmState({ supervised: true, message: { id: 7, guard } }), NO_CONFIRM_STATE);
+  }
+});

@@ -716,3 +716,122 @@ test('a replaced verdict replays with NO banner, not the out-of-scope one', () =
   assert.strictEqual(view.banner, null);
   assert.strictEqual(view.withheld, false);
 });
+
+/* ---------------- Phase 1h M6: the lookup mode ---------------- */
+
+import {
+  LOOKUP_QUERY_GUARD, TURN_MODES, isLookupMessage, triageHistory,
+} from './triage-turn.js';
+import { runLookupTurn } from './lookup-turn.js';
+
+const LOOKUP_REPLY_GUARD = Object.freeze({
+  kind: 'lookup', rule: 'dose-cite-v1', outcome: 'grounded',
+  displayText: 'The usual dose is 500mg [1]. [A sentence was withheld: the reference pack does not confirm it.]',
+  rawReply: 'The usual dose is 500mg [1]. Take 1g.',
+  kept: ['The usual dose is 500mg [1].'],
+  withheld: [{ sentence: 'Take 1g.', reason: 'dose-uncited' }],
+  citations: [1],
+  detectorsSha: 'x',
+  sources: [
+    { n: 1, packId: 'reference-uk-v1', chunkId: 1, docTitle: 'Paracetamol', sectionPath: 'Dosage', locator: '' },
+    { n: 2, packId: 'reference-uk-v1', chunkId: 2, docTitle: 'Paracetamol', sectionPath: 'About', locator: '' },
+  ],
+});
+
+test('the two turn modes', () => {
+  assert.deepStrictEqual([...TURN_MODES], ['triage', 'lookup']);
+  assert.ok(Object.isFrozen(TURN_MODES));
+  assert.deepStrictEqual({ ...LOOKUP_QUERY_GUARD }, { kind: 'lookup', role: 'query' });
+});
+
+test('isLookupMessage: in-memory flag or a persisted lookup verdict, nothing else', () => {
+  assert.ok(isLookupMessage({ role: 'user', content: 'q', lookup: true }));
+  assert.ok(isLookupMessage({ role: 'user', content: 'q', guard: LOOKUP_QUERY_GUARD }));
+  assert.ok(isLookupMessage({ role: 'assistant', content: 'a', guard: LOOKUP_REPLY_GUARD }));
+  assert.ok(!isLookupMessage({ role: 'assistant', content: 'a', guard: { route: 'CLINICIAN', banner: 'clinician' } }));
+  assert.ok(!isLookupMessage({ role: 'user', content: 'q' }));
+  assert.ok(!isLookupMessage(null));
+});
+
+test('a lookup row never enters triage history, and neither does the reply to a lookup query', () => {
+  const messages = [
+    { role: 'user', content: 'chest pain' },
+    { role: 'assistant', content: 'triage reply', guard: { route: 'EMERGENCY', banner: 'emergency' } },
+    { role: 'user', content: 'paracetamol', guard: LOOKUP_QUERY_GUARD },
+    { role: 'assistant', content: 'lookup reply', guard: LOOKUP_REPLY_GUARD },
+    { role: 'user', content: 'ibuprofen', lookup: true },
+    // a lookup reply whose attach_guard never landed: no verdict, but it
+    // answers a lookup query, so it is still not triage history
+    { role: 'assistant', content: 'raw unguarded lookup reply' },
+    { role: 'user', content: 'now a headache' },
+  ];
+  assert.deepStrictEqual(triageHistory(messages).map((m) => m.content), ['chest pain', 'triage reply', 'now a headache']);
+  // and it is what the triage turn windows and sends
+  const entry = { supervised: true, systemPrompt: 'S', greeting: 'g' };
+  const win = windowMessages(triageHistory(messages), 'S', 'g', 4096);
+  const wire = JSON.stringify(assembleMessages({ entry, sent: win.sent }).messages);
+  for (const leaked of ['paracetamol', 'lookup reply', 'ibuprofen', 'raw unguarded lookup reply']) {
+    assert.ok(!wire.includes(leaked), leaked);
+  }
+});
+
+test('triageHistory leaves a chat with no lookups exactly as it was', () => {
+  const messages = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }];
+  assert.deepStrictEqual(triageHistory(messages), messages);
+  assert.deepStrictEqual(triageHistory(undefined), []);
+});
+
+test('the lookup turn never reads the chat history: its model call is the grounded prompt + query only', async () => {
+  const calls = [];
+  const r = await runLookupTurn({
+    text: 'paracetamol',
+    entry: { supervised: true, referencePack: { id: 'p' } },
+    invoke: async () => ({
+      status: 'grounded',
+      prompt: 'C\n\n[1] (Paracetamol, Dosage): Take 500mg.',
+      citations: [{ n: 1, docTitle: 'Paracetamol', sectionPath: 'Dosage', locator: '' }],
+    }),
+    generate: async (req) => { calls.push(req); return { content: 'Take 500mg [1].', messageId: null }; },
+  });
+  assert.strictEqual(r.outcome, 'grounded');
+  assert.strictEqual(calls[0].messages.length, 2);
+  assert.deepStrictEqual(calls[0].messages.map((m) => m.role), ['system', 'user']);
+});
+
+test('replayMessage renders a lookup reply with its citations and its verdict, no triage banner', () => {
+  const view = replayMessage({ supervised: true, role: 'assistant', content: LOOKUP_REPLY_GUARD.displayText, guard: LOOKUP_REPLY_GUARD });
+  assert.strictEqual(view.banner, null);
+  assert.strictEqual(view.withheld, false);
+  assert.strictEqual(view.text, LOOKUP_REPLY_GUARD.displayText);
+  assert.deepStrictEqual(view.lookup, {
+    outcome: 'grounded',
+    withheldCount: 1,
+    withheldReasons: ['dose-uncited'],
+    citations: [LOOKUP_REPLY_GUARD.sources[0]],
+    candidates: [],
+  });
+});
+
+test('replayMessage shows the verdict\'s displayText, never a raw reply left in content', () => {
+  const view = replayMessage({ supervised: true, role: 'assistant', content: 'raw text', guard: LOOKUP_REPLY_GUARD });
+  assert.strictEqual(view.text, LOOKUP_REPLY_GUARD.displayText);
+});
+
+test('replayMessage renders a lookup query row as the user\'s words, marked as a lookup', () => {
+  const view = replayMessage({ supervised: true, role: 'user', content: 'paracetamol', guard: LOOKUP_QUERY_GUARD });
+  assert.deepStrictEqual(view, { banner: null, text: 'paracetamol', withheld: false, lookup: { query: true } });
+});
+
+test('replayMessage renders a scripted lookup (did you mean) with its candidates and no citations', () => {
+  const guard = { kind: 'lookup', outcome: 'didYouMean', displayText: 'Did you mean: A?', withheld: [], citations: [], sources: [], candidates: ['A'] };
+  const view = replayMessage({ supervised: true, role: 'assistant', content: 'Did you mean: A?', guard });
+  assert.deepStrictEqual(view.lookup, { outcome: 'didYouMean', withheldCount: 0, withheldReasons: [], citations: [], candidates: ['A'] });
+});
+
+test('replayMessage is unchanged for triage rows', () => {
+  const guard = { route: 'CLINICIAN', banner: 'clinician' };
+  assert.deepStrictEqual(replayMessage({ supervised: true, role: 'assistant', content: 'x', guard }),
+    { banner: 'clinician', text: 'x', withheld: false });
+  assert.deepStrictEqual(replayMessage({ supervised: true, role: 'assistant', content: 'x' }),
+    { banner: UNVERIFIED_BANNER, text: UNVERIFIED_TEXT, withheld: true });
+});

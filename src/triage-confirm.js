@@ -185,6 +185,9 @@ export function confirmState({ supervised = false, message = null } = {}) {
   const msg = message || {};
   const guard = msg.guard;
   if (supervised !== true || !guard) return NO_CONFIRM_STATE;
+  // Phase 1h M6: a reference lookup has no route, so there is nothing for the
+  // health worker to confirm and no triage receipt to draw.
+  if (guard.kind === 'lookup') return NO_CONFIRM_STATE;
 
   const modelRoute = modelRouteOf(guard);
   const confirmedRoute = msg.confirmedRoute ?? null;
