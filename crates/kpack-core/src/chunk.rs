@@ -655,6 +655,171 @@ fn push_table_chunk(
     push_chunk_within_ceiling(section_path, locator, text, embedder, ceiling, out);
 }
 
+/// The curated-pack merge post-pass's sizes (Phase 1h M4b round 2): merged
+/// chunks aim at `target_tokens`, and a list may join the paragraph that
+/// introduces it up to `max_tokens`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeConfig {
+    pub target_tokens: usize,
+    pub max_tokens: usize,
+}
+
+/// The kind of block a draft came from, for the merge rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraftKind {
+    Paragraph,
+    List,
+    Atomic, // table or code: never merged
+}
+
+/// [`chunk_document_with`], then a CURATED-ONLY merge post-pass (Phase 1h
+/// M4b round 2 — the desktop's personal-pack path never calls this). The
+/// chunker's one-draft-per-block output leaves many tiny chunks (a heading's
+/// one-line lead-in, a short list); this joins consecutive drafts of the
+/// SAME section into chunks of about `merge.target_tokens`:
+///
+/// - never across a section boundary (sections are merged independently);
+/// - tables and code blocks are never merged (the chunker's own rule that a
+///   table never shares a chunk with prose);
+/// - two drafts of the same block (the windows of one long paragraph, which
+///   overlap) are never joined, so no text is duplicated;
+/// - a list stays with the paragraph that introduces it (a paragraph ending
+///   in `:`): they join up to `merge.max_tokens`, and when the chunk in
+///   progress cannot take both, the intro moves forward to the list;
+/// - a draft already over the limits is kept as it is (merging never
+///   splits); order is preserved.
+///
+/// A merged chunk's text is its drafts joined by a blank line, its
+/// `token_count` the tokenizer's count of that text, its `locator` the first
+/// draft's, its `prefix` the chunker's (always `""`). Deterministic.
+pub fn chunk_document_merged(
+    doc: &Document,
+    tokens: &dyn TokenCounter,
+    cfg: &ChunkConfig,
+    merge: &MergeConfig,
+) -> Vec<ChunkDraft> {
+    let mut out = Vec::new();
+    for section in &doc.sections {
+        // (kind, block index, draft), in document order.
+        let mut drafts: Vec<(DraftKind, usize, ChunkDraft)> = Vec::new();
+        for (bi, block) in section.blocks.iter().enumerate() {
+            let kind = match block {
+                Block::Paragraph { text, .. } if is_list_text(text) => DraftKind::List,
+                Block::Paragraph { .. } => DraftKind::Paragraph,
+                _ => DraftKind::Atomic,
+            };
+            let one = Document {
+                title: doc.title.clone(),
+                sections: vec![crate::tree::Section {
+                    path: section.path.clone(),
+                    blocks: vec![block.clone()],
+                }],
+            };
+            for d in chunk_document_with(&one, tokens, cfg) {
+                drafts.push((kind, bi, d));
+            }
+        }
+        merge_section(drafts, tokens, merge, &mut out);
+    }
+    out
+}
+
+/// A flattened list block (the parser writes each item as a `- ` line).
+fn is_list_text(text: &str) -> bool {
+    text.starts_with("- ")
+}
+
+fn is_intro(d: &ChunkDraft) -> bool {
+    d.text.trim_end().ends_with(':')
+}
+
+/// The chunk being built: its drafts, with their kinds and block indices.
+struct Pending {
+    parts: Vec<(DraftKind, usize, ChunkDraft)>,
+}
+
+impl Pending {
+    fn joined_with(&self, next: Option<&ChunkDraft>) -> String {
+        let mut texts: Vec<&str> = self.parts.iter().map(|(_, _, d)| d.text.as_str()).collect();
+        if let Some(n) = next {
+            texts.push(&n.text);
+        }
+        texts.join("\n\n")
+    }
+}
+
+fn flush(p: &mut Pending, tokens: &dyn TokenCounter, out: &mut Vec<ChunkDraft>) {
+    if p.parts.is_empty() {
+        return;
+    }
+    if p.parts.len() == 1 {
+        out.push(p.parts.pop().unwrap().2);
+        return;
+    }
+    let text = p.joined_with(None);
+    let first = &p.parts[0].2;
+    out.push(ChunkDraft {
+        section_path: first.section_path.clone(),
+        locator: first.locator.clone(),
+        prefix: first.prefix.clone(),
+        token_count: tokens.token_count(&text),
+        oversize_sentence: p.parts.iter().any(|(_, _, d)| d.oversize_sentence),
+        text,
+    });
+    p.parts.clear();
+}
+
+fn merge_section(
+    drafts: Vec<(DraftKind, usize, ChunkDraft)>,
+    tokens: &dyn TokenCounter,
+    merge: &MergeConfig,
+    out: &mut Vec<ChunkDraft>,
+) {
+    let mut p = Pending { parts: Vec::new() };
+    for (kind, bi, d) in drafts {
+        if kind == DraftKind::Atomic {
+            flush(&mut p, tokens, out);
+            out.push(d);
+            continue;
+        }
+        let Some(&(last_kind, last_bi, ref last)) = p.parts.last() else {
+            p.parts.push((kind, bi, d));
+            continue;
+        };
+        if last_bi == bi {
+            // A later window of the same block: never joined (overlap).
+            flush(&mut p, tokens, out);
+            p.parts.push((kind, bi, d));
+            continue;
+        }
+        let fits = |p: &Pending, limit: usize| tokens.token_count(&p.joined_with(Some(&d))) <= limit;
+        if kind == DraftKind::List && last_kind == DraftKind::Paragraph && is_intro(last) {
+            if fits(&p, merge.max_tokens) {
+                p.parts.push((kind, bi, d));
+            } else {
+                // Move the intro forward to its list.
+                let intro = p.parts.pop().unwrap();
+                flush(&mut p, tokens, out);
+                p.parts.push(intro);
+                if fits(&p, merge.max_tokens) {
+                    p.parts.push((kind, bi, d));
+                } else {
+                    flush(&mut p, tokens, out);
+                    p.parts.push((kind, bi, d));
+                }
+            }
+            continue;
+        }
+        if fits(&p, merge.target_tokens) {
+            p.parts.push((kind, bi, d));
+        } else {
+            flush(&mut p, tokens, out);
+            p.parts.push((kind, bi, d));
+        }
+    }
+    flush(&mut p, tokens, out);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1387,5 +1552,93 @@ mod tests {
         let via_counter = chunk_document_with(&doc, &Words { ceiling: 50 }, &cfg);
         assert!(via_embedder.len() > 3);
         assert_eq!(via_counter, via_embedder);
+    }
+
+    // 24. Phase 1h M4b round 2: the curated merge post-pass.
+    struct Words24;
+    impl TokenCounter for Words24 {
+        fn token_count(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+        fn max_input_tokens(&self) -> usize {
+            512
+        }
+    }
+
+    fn para(t: &str, l: &str) -> Block {
+        Block::Paragraph { text: t.to_string(), locator: l.to_string() }
+    }
+
+    #[test]
+    fn t24_merge_joins_small_siblings_within_a_section_only() {
+        let doc = Document {
+            title: "T".to_string(),
+            sections: vec![
+                Section {
+                    path: vec!["A".to_string()],
+                    blocks: vec![para("one two three.", "L1"), para("four five.", "L3"), para("six seven eight nine.", "L5")],
+                },
+                Section { path: vec!["B".to_string()], blocks: vec![para("ten eleven.", "L8")] },
+            ],
+        };
+        let m = MergeConfig { target_tokens: 7, max_tokens: 10 };
+        let out = chunk_document_merged(&doc, &Words24, &ChunkConfig::default(), &m);
+        let got: Vec<(&str, &str, &str, usize)> =
+            out.iter().map(|c| (c.section_path.as_str(), c.locator.as_str(), c.text.as_str(), c.token_count)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("A", "L1", "one two three.\n\nfour five.", 5),
+                ("A", "L5", "six seven eight nine.", 4),
+                ("B", "L8", "ten eleven.", 2),
+            ]
+        );
+        assert!(out.iter().all(|c| c.prefix.is_empty()));
+    }
+
+    #[test]
+    fn t25_a_list_stays_with_its_intro_and_tables_stay_alone() {
+        let doc = Document {
+            title: "T".to_string(),
+            sections: vec![Section {
+                path: vec!["S".to_string()],
+                blocks: vec![
+                    para("a b c d e.", "L1"),
+                    para("Symptoms include:", "L3"),
+                    para("- x y\n- z w", "L5-L6"),
+                    Block::Table { header: vec!["H".to_string()], rows: vec![vec!["1".to_string()]], locator: "L8".to_string() },
+                    para("tail.", "L12"),
+                ],
+            }],
+        };
+        // target 8: "a b c d e." (5) + intro (2) = 7 fits; + list (6, the "-"
+        // markers count) = 13 > target but <= max 13, so the list joins its intro.
+        let m = MergeConfig { target_tokens: 8, max_tokens: 13 };
+        let out = chunk_document_merged(&doc, &Words24, &ChunkConfig::default(), &m);
+        assert_eq!(out[0].text, "a b c d e.\n\nSymptoms include:\n\n- x y\n- z w");
+        assert_eq!(out[1].text, "H\nH: 1"); // the chunker's row-wise table text, unmerged
+        assert_eq!(out[2].text, "tail.");
+        // max 9: the chunk in progress (7) cannot take the list, so the intro
+        // moves forward to it (2 + 6 = 8 <= 9).
+        let m = MergeConfig { target_tokens: 8, max_tokens: 9 };
+        let out = chunk_document_merged(&doc, &Words24, &ChunkConfig::default(), &m);
+        assert_eq!(out[0].text, "a b c d e.");
+        assert_eq!((out[1].text.as_str(), out[1].locator.as_str()), ("Symptoms include:\n\n- x y\n- z w", "L3"));
+    }
+
+    #[test]
+    fn t26_windows_of_one_long_block_are_never_joined_and_zero_limits_are_the_plain_chunker() {
+        let long = (0..30).map(|i| format!("s{i} w.")).collect::<Vec<_>>().join(" ");
+        let doc = doc_with_section(vec!["S"], vec![para(&long, "L1"), para("short.", "L3")]);
+        let cfg = ChunkConfig { target_tokens: 20, overlap_pct: 18 };
+        let plain = chunk_document_with(&doc, &Words24, &cfg);
+        assert!(plain.len() > 2);
+        let zero = chunk_document_merged(&doc, &Words24, &cfg, &MergeConfig { target_tokens: 0, max_tokens: 0 });
+        assert_eq!(zero, plain);
+        let big = chunk_document_merged(&doc, &Words24, &cfg, &MergeConfig { target_tokens: 1000, max_tokens: 1000 });
+        // Windows stay apart; only the last window may take the next block.
+        assert_eq!(big.len(), plain.len() - 1);
+        assert!(big.last().unwrap().text.ends_with("\n\nshort."));
+        assert_eq!(chunk_document_merged(&doc, &Words24, &cfg, &MergeConfig { target_tokens: 1000, max_tokens: 1000 }), big);
     }
 }

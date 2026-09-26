@@ -491,6 +491,7 @@ pub fn build_reference(
             ("corpus_index_sha256".to_string(), index_sha.clone()),
             ("clusters_sha256".to_string(), clusters.sha256.clone()),
         ],
+        merge: None,
     };
     let cfg = ChunkConfig::default();
     std::fs::create_dir_all(out_dir).map_err(|e| CliError(format!("cannot create {}: {e}", out_dir.display())))?;

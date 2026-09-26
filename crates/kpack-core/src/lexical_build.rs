@@ -2,6 +2,9 @@
 //! pack's writer. Same chunker, same parser and same `docs`/`chunks`/
 //! `titles`/`fts` rows as [`crate::build::build_pack`], but:
 //!
+//! - **Merged (curated).** With `LexicalBuildMeta::merge`, small sibling
+//!   chunks of a section are joined (`chunk::chunk_document_merged`); the
+//!   sizes go to the manifest (`merge_target_tokens`, `merge_max_tokens`).
 //! - **No embedder.** Chunks are measured by a [`TokenCounter`] (the BGE
 //!   WordPiece port, [`crate::wordpiece`]) through
 //!   [`chunk_document_with`], so the pack chunks exactly as the desktop
@@ -26,7 +29,7 @@
 //!   `retrieve::CitationSource`).
 
 use crate::build::{part_path_for, rfc3339_from_system_time, sha256_hex, title_entry_for, Error};
-use crate::chunk::{chunk_document_with, ChunkConfig, TokenCounter};
+use crate::chunk::{chunk_document_merged, chunk_document_with, ChunkConfig, MergeConfig, TokenCounter};
 use crate::format::{self, Chunk, Doc, Pack};
 use crate::manifest::{Manifest, PackTier, VEC_FORMAT_VERSION};
 use crate::parse;
@@ -48,6 +51,9 @@ pub const MANIFEST_CONTENT_SHA256: &str = "content_sha256";
 pub const MANIFEST_SOURCE_DATE_EPOCH: &str = "source_date_epoch";
 /// Manifest key recording the retrieval mode (`"lexical"`).
 pub const MANIFEST_RETRIEVAL_MODE: &str = "retrieval_mode";
+/// Manifest keys recording the curated merge post-pass's sizes.
+pub const MANIFEST_MERGE_TARGET_TOKENS: &str = "merge_target_tokens";
+pub const MANIFEST_MERGE_MAX_TOKENS: &str = "merge_max_tokens";
 
 /// One page of a lexical pack, as the caller read it.
 #[derive(Debug, Clone)]
@@ -83,6 +89,10 @@ pub struct LexicalBuildMeta {
     pub source_date_epoch: u64,
     /// Further manifest keys, written verbatim after the standard ones.
     pub extra_manifest: Vec<(String, String)>,
+    /// The curated merge post-pass (`chunk::chunk_document_merged`), or
+    /// `None` for the plain chunker. Curated packs only: `Some` with
+    /// `PackTier::Personal` is refused.
+    pub merge: Option<MergeConfig>,
 }
 
 /// What [`build_lexical_pack`] wrote.
@@ -154,6 +164,9 @@ pub fn build_lexical_pack(
     meta: &LexicalBuildMeta,
     out_path: &Path,
 ) -> Result<LexicalBuildReport, Error> {
+    if meta.merge.is_some() && meta.pack_tier != PackTier::Curated {
+        return Err(schema("the chunk merge post-pass is for curated packs only".to_string()));
+    }
     let mut slugs: Vec<String> = Vec::with_capacity(sources.len());
     for s in sources {
         let slug = crate::lookup::slugify(&s.slug);
@@ -214,7 +227,10 @@ fn build_into(
         })?;
         let variants: Vec<&str> = source.variants.iter().map(String::as_str).collect();
         pack.insert_title(&title_entry_for(doc_id, &source.title, Some(&source.slug), &variants))?;
-        let drafts = chunk_document_with(&document, tokens, cfg);
+        let drafts = match &meta.merge {
+            Some(m) => chunk_document_merged(&document, tokens, cfg, m),
+            None => chunk_document_with(&document, tokens, cfg),
+        };
         if drafts.is_empty() {
             return Err(schema(format!("source {:?} yields no chunk", source.slug)));
         }
@@ -255,6 +271,10 @@ fn build_into(
     pack.manifest_set(MANIFEST_RETRIEVAL_MODE, "lexical")?;
     pack.manifest_set(MANIFEST_CONTENT_SHA256, &content_sha256)?;
     pack.manifest_set(MANIFEST_SOURCE_DATE_EPOCH, &meta.source_date_epoch.to_string())?;
+    if let Some(m) = &meta.merge {
+        pack.manifest_set(MANIFEST_MERGE_TARGET_TOKENS, &m.target_tokens.to_string())?;
+        pack.manifest_set(MANIFEST_MERGE_MAX_TOKENS, &m.max_tokens.to_string())?;
+    }
     for (k, v) in &meta.extra_manifest {
         pack.manifest_set(k, v)?;
     }
@@ -336,6 +356,7 @@ mod tests {
             license_ref: Some("OGL v3".to_string()),
             source_date_epoch: epoch,
             extra_manifest: vec![("tokenizer".to_string(), "words".to_string())],
+            merge: None,
         }
     }
 
@@ -450,5 +471,35 @@ mod tests {
         let e = build_lexical_pack(&empty, &Words, &ChunkConfig::default(), &meta(0), &out);
         assert!(e.unwrap_err().to_string().contains("yields no chunk"));
         assert!(!out.exists() && !part_path_for(&out).exists());
+    }
+
+    #[test]
+    fn the_merge_pass_is_curated_only_recorded_and_shrinks_the_chunk_count() {
+        let dir = unique_dir("merge");
+        let m = MergeConfig { target_tokens: 150, max_tokens: 256 };
+        let mut personal = meta(0);
+        personal.merge = Some(m);
+        let e = build_lexical_pack(&sources(), &Words, &ChunkConfig::default(), &personal, &dir.join("p.kpack"));
+        assert!(e.unwrap_err().to_string().contains("curated packs only"));
+        let mut curated = personal.clone();
+        curated.pack_tier = PackTier::Curated;
+        let mut srcs = sources();
+        srcs.push(page("Flu", "flu", &[], "# Flu\n\nFlu is common.\n\nIt spreads easily.\n\nMost people recover.\n"));
+        let merged = build_lexical_pack(&srcs, &Words, &ChunkConfig::default(), &curated, &dir.join("c.kpack")).unwrap();
+        let mut plain_meta = curated.clone();
+        plain_meta.merge = None;
+        let plain = build_lexical_pack(&srcs, &Words, &ChunkConfig::default(), &plain_meta, &dir.join("n.kpack")).unwrap();
+        assert_eq!((merged.chunks, plain.chunks), (6, 8));
+        assert_ne!(merged.content_sha256, plain.content_sha256);
+        let pack = Pack::open(dir.join("c.kpack")).unwrap();
+        assert_eq!(pack.manifest_get(MANIFEST_MERGE_TARGET_TOKENS).unwrap().as_deref(), Some("150"));
+        assert_eq!(pack.manifest_get(MANIFEST_MERGE_MAX_TOKENS).unwrap().as_deref(), Some("256"));
+        // Never across a section: Asthma keeps its lede and its Symptoms apart.
+        let asthma = pack.chunks_for_doc(1).unwrap();
+        assert_eq!(asthma.len(), 2);
+        assert_ne!(asthma[0].section_path, asthma[1].section_path);
+        let flu = pack.chunks_for_doc(4).unwrap();
+        assert_eq!(flu.len(), 1);
+        assert_eq!(flu[0].text, "Flu is common.\n\nIt spreads easily.\n\nMost people recover.");
     }
 }

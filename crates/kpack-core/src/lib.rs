@@ -74,7 +74,7 @@ pub use build::{
     build_pack, build_pack_with_progress, document_from_pages, passage_input, sha256_hex,
     BuildMeta, BuildProgress, Error as BuildError, SourceContent, SourceInput,
 };
-pub use chunk::{chunk_document, chunk_document_with, ChunkConfig, ChunkDraft, TokenCounter};
+pub use chunk::{chunk_document, chunk_document_merged, chunk_document_with, ChunkConfig, ChunkDraft, MergeConfig, TokenCounter};
 pub use contract::{
     assemble_system, contract_by_id, contract_for, contract_version, doc_context_for,
     doc_context_line, no_evidence_marker, refusal_with_offer, render_sources, render_sources_with,
