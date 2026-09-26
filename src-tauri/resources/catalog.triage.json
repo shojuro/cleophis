@@ -10,6 +10,7 @@
     "fileBytes": 1282439008,
     "modelFile": "models/Qwen3-1.7B-Q4_K_M.gguf",
     "sha256": "25162bffd5a8cf20079f78e6cac079f7b4f8fdd31403dd1a38177f2af450bfa3",
+    "baseModel": "Qwen3-1.7B",
     "adapterFile": "models/triage-armb-v3-Qwen3-1.7B.gguf",
     "adapterSha256": "5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20",
     "adapterId": "triage-armb-v3-qwen3-1.7b",

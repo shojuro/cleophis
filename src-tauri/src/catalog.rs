@@ -15,6 +15,13 @@ pub struct CatalogEntry {
     pub model_file: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Dist-catalog `base_model` label for a FLAT (tier-less) entry, e.g.
+    /// `"Qwen3-1.7B"` for the triage hero. A tiered entry carries it per
+    /// [`TierVariant`] instead. Without it the flat branch of [`hero_variant`]
+    /// resolves no base model and the app cannot say what to install
+    /// (Phase 1g M1). `baseModel` on the wire.
+    #[serde(default)]
+    pub base_model: Option<String>,
     /// The LoRA adapter loaded alongside the base via llama.cpp `--lora`
     /// (never merged). When set, the hero is treated as not-installed until
     /// this file is present too — see `inference::resolve_launch`.
@@ -195,7 +202,7 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
         }
     } else {
         ResolvedHero {
-            base_model: None,
+            base_model: entry.base_model.clone(),
             size_params: Some(entry.size_params.clone()),
             model_file: entry.model_file.clone(),
             sha256: entry.sha256.clone(),
@@ -380,6 +387,37 @@ mod tests {
         assert_eq!(resolved.adapter_file, h.adapter_file);
     }
 
+    /// Phase 1g M1: the flat triage entry declares its dist `base_model`,
+    /// and `hero_variant`'s flat branch carries it, so `begin_tier_switch`
+    /// and the FE no longer see an empty base model.
+    #[test]
+    fn the_flat_triage_hero_resolves_its_declared_base_model() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert_eq!(h.base_model.as_deref(), Some("Qwen3-1.7B"));
+        for tier in ["low", "mid", "high"] {
+            assert_eq!(
+                hero_variant(h, tier).base_model.as_deref(),
+                Some("Qwen3-1.7B"),
+                "flat entry resolves the same base model on {tier}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_base_model_round_trips_as_camel_case() {
+        let one = parse_catalog(
+            r#"[{"id":"f","name":"F","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/f.gguf",
+                 "baseModel":"Qwen3-1.7B","blurb":"b","real":true}]"#,
+        )
+        .unwrap();
+        assert_eq!(one[0].base_model.as_deref(), Some("Qwen3-1.7B"));
+        let wire = serde_json::to_value(&one[0]).unwrap();
+        assert_eq!(wire["baseModel"], "Qwen3-1.7B");
+    }
+
     #[test]
     fn the_general_catalog_shows_the_triage_tile_but_does_not_launch_it() {
         let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
@@ -490,6 +528,8 @@ mod tests {
         assert!(entry.tiers.is_none());
         let resolved = hero_variant(entry, "mid");
         assert_eq!(resolved.model_file.as_deref(), Some("models/a.gguf"));
-        assert_eq!(resolved.base_model, None); // flat entries pin no base_model
+        // SAMPLE declares no `baseModel`, so the flat branch resolves none.
+        assert_eq!(resolved.base_model, None);
     }
+
 }
