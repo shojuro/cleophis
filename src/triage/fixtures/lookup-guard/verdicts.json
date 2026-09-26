@@ -1,5 +1,5 @@
 {
-  "_comment": "dose-cite-v1 verdict fixtures, one named group per clause of the rule. Each case: a reply + a named source set (sources.json) -> the expected verdict fields. WITHHELD stands for lookup-guard.js's WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. The canonical rule is src/triage/lookup-guard.js; the triage repo's probes/dose-cite.mjs vendors it and asserts identity group by group.",
+  "_comment": "dose-cite-v2 verdict fixtures, one named group per clause of the rule. Each case: a reply + a source set (a name from sources.json, or an inline array) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. \"probe N\" cases are the fix-round-1 re-review adversarial pairs (all withheld). The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
   "groups": {
     "citation-range": [
       {
@@ -109,7 +109,7 @@
         }
       }
     ],
-    "dose-recognition": [
+    "number-bearing": [
       {
         "name": "number words and pills",
         "sources": "noDose",
@@ -552,7 +552,23 @@
         }
       },
       {
-        "name": "a unit outside the table, uncited, is still a dose",
+        "name": "once as a conjunction is not a dose",
+        "sources": "noDose",
+        "replyText": "Once you feel better, stop taking it [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Once you feel better, stop taking it [1].",
+          "kept": [
+            "Once you feel better, stop taking it [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a number with a unit outside the table, uncited, is withheld",
         "sources": "noDose",
         "replyText": "Paracetamol is a painkiller [1]. Take 2 oz.",
         "expected": {
@@ -573,7 +589,7 @@
         }
       },
       {
-        "name": "a cited quantity in a unit outside the table cannot be verified",
+        "name": "a cited number with a unit outside the table must still be in the source",
         "sources": "noDose",
         "replyText": "Paracetamol is a painkiller [1]. Take 3 grains [1].",
         "expected": {
@@ -585,7 +601,7 @@
           "withheld": [
             {
               "sentence": "Take 3 grains [1].",
-              "reason": "dose-unrecognised"
+              "reason": "dose-not-in-source"
             }
           ],
           "citations": [
@@ -594,14 +610,735 @@
         }
       },
       {
-        "name": "a number that is not a dose is prose",
+        "name": "a cited bare number the source does not state is withheld, dose or not",
         "sources": "noDose",
         "replyText": "It is sold in packs of 16 [1].",
         "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It is sold in packs of 16 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 5: a hyphen between number and unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 5 mg."
+          }
+        ],
+        "replyText": "Take a 500-mg tablet [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take a 500-mg tablet [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 6: a hyphenated dose adjective, uncited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take a 500-mg tablet.",
+        "expected": {
           "outcome": "grounded",
-          "displayText": "It is sold in packs of 16 [1].",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "It is sold in packs of 16 [1]."
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take a 500-mg tablet.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 7: a hyphenated spelled unit, uncited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take a 500-milligram tablet.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take a 500-milligram tablet.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 8: a line break between number and unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500\nmg every time.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD\nmg every time.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "mg every time."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 9: number and unit on separate lines",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Adults take\n1000\nmilligrams.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. Adults take\nWITHHELD\nmilligrams.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "Adults take",
+            "milligrams."
+          ],
+          "withheld": [
+            {
+              "sentence": "1000",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 10: number and unit in separate list items",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. - Adults: 500\n- mg",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD\n- mg",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "- mg"
+          ],
+          "withheld": [
+            {
+              "sentence": "- Adults: 500",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 11: a markdown table row",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. | Dose | 500 | mg |",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "| Dose | 500 | mg |",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 12: bold number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take **500** mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take **500** mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 13: bold unit, cited against a different dose",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 5 mg."
+          }
+        ],
+        "replyText": "Take 500 **mg** [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 500 **mg** [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 14: italic unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 _mg_.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 _mg_.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 15: number in brackets",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take (500)mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take (500)mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 16: unit in brackets",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Adults: 500 (mg).",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Adults: 500 (mg).",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 29: Arabic-Indic digits",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take ٥٠٠ mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take ٥٠٠ mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 30: Devanagari digits",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take ५०० mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take ५०० mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 31: a misspelled unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 miligrams.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 miligrams.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 32: a dotted unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 m.g. now.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD now.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "now."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 m.g.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 33: a spaced unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 m g.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 m g.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 34: letters glued to the number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 2k mg.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2k mg.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 36: a bare count after a cited strength",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol comes in 500mg tablets."
+          }
+        ],
+        "replyText": "Paracetamol comes in 500mg tablets [1]. Take 8 at once.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol comes in 500mg tablets [1]. WITHHELD",
+          "kept": [
+            "Paracetamol comes in 500mg tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 8 at once.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 37: a bare number stated as the amount",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol comes in 500mg tablets."
+          }
+        ],
+        "replyText": "Paracetamol comes in 500mg tablets [1]. The adult amount is 8.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol comes in 500mg tablets [1]. WITHHELD",
+          "kept": [
+            "Paracetamol comes in 500mg tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "The adult amount is 8.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 38: a count of them",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 8 of them at once.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 8 of them at once.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 40: the unit before the number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. The dose is mg 500.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "The dose is mg 500.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 41: a roman numeral count",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take ii tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take ii tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 42: a Cyrillic unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 мг.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 мг.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe 43: a precomposed accented unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take 500 mǵ.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 500 mǵ.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the pronoun one is not a number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol also comes as a liquid."
+          }
+        ],
+        "replyText": "This one is the liquid form [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "This one is the liquid form [1].",
+          "kept": [
+            "This one is the liquid form [1]."
           ],
           "withheld": [],
           "citations": [
@@ -610,14 +1347,21 @@
         }
       },
       {
-        "name": "once as a conjunction is not a dose",
-        "sources": "noDose",
-        "replyText": "Once you feel better, stop taking it [1].",
+        "name": "a list marker is not a number of the sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 500 mg."
+          }
+        ],
+        "replyText": "1. Take 500mg [1].",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Once you feel better, stop taking it [1].",
+          "displayText": "1. Take 500mg [1].",
           "kept": [
-            "Once you feel better, stop taking it [1]."
+            "1. Take 500mg [1]."
           ],
           "withheld": [],
           "citations": [
@@ -874,6 +1618,111 @@
           ],
           "citations": []
         }
+      },
+      {
+        "name": "probe 39: a count of them against a strength-only source",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol comes in 500mg tablets."
+          }
+        ],
+        "replyText": "Paracetamol comes in 500mg tablets [1]. Take 2 of them [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol comes in 500mg tablets [1]. WITHHELD",
+          "kept": [
+            "Paracetamol comes in 500mg tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 of them [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a number in another source than the one cited is withheld",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "About",
+            "text": "Pain relief info."
+          },
+          {
+            "n": 2,
+            "docTitle": "P",
+            "sectionPath": "Dosage",
+            "text": "Take 500mg."
+          }
+        ],
+        "replyText": "Take 500mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 500mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "unit case is spelling: 5 mL is 5ml",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 5ml."
+          }
+        ],
+        "replyText": "Give 5 mL [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 5 mL [1].",
+          "kept": [
+            "Give 5 mL [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a comma decimal is not the point decimal",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 2.5ml."
+          }
+        ],
+        "replyText": "Give 2,5 ml [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 2,5 ml [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
       }
     ],
     "range-handling": [
@@ -959,6 +1808,540 @@
           ],
           "citations": []
         }
+      },
+      {
+        "name": "a wider range is not the range",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 to 2 tablets."
+          }
+        ],
+        "replyText": "Take 1-8 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 1-8 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "multipliers": [
+      {
+        "name": "probe 1: N x amount is a product, not its factor",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: 500mg tablets."
+          }
+        ],
+        "replyText": "Take 2 x 500 mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 x 500 mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 2: NxAmount glued",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: 500mg tablets."
+          }
+        ],
+        "replyText": "Take 2x500mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2x500mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 3: the multiplication sign",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: 500mg tablets."
+          }
+        ],
+        "replyText": "Take 4 × 500mg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 4 × 500mg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 4: unit x N",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets."
+          }
+        ],
+        "replyText": "Take tablets x 8 [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take tablets x 8 [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 27: N dozen",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets."
+          }
+        ],
+        "replyText": "Take 2 dozen tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 dozen tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 28: a dozen, uncited",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol is a painkiller."
+          }
+        ],
+        "replyText": "Paracetamol is a painkiller [1]. Take a dozen tablets.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take a dozen tablets.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the same product as the source is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults: take 2 x 500 mg."
+          }
+        ],
+        "replyText": "Adults take 2x500mg [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Adults take 2x500mg [1].",
+          "kept": [
+            "Adults take 2x500mg [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "per-kg-and-period": [
+      {
+        "name": "probe 17: per every kilogram",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10mg."
+          }
+        ],
+        "replyText": "Give 10 mg per every kilogram [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg per every kilogram [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 18: every kilogram",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10 mg."
+          }
+        ],
+        "replyText": "Give 10 mg every kilogram [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg every kilogram [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 19: per 1 kg",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10 mg."
+          }
+        ],
+        "replyText": "Give 10 mg per 1 kg [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg per 1 kg [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 20: a per-day suffix after /kg",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10mg/kg."
+          }
+        ],
+        "replyText": "Give 10mg/kg/day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10mg/kg/day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 21: per day after mg/kg",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10 mg/kg."
+          }
+        ],
+        "replyText": "Give 10 mg/kg per day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg/kg per day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 22: daily after mg/kg",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10 mg/kg."
+          }
+        ],
+        "replyText": "Give 10 mg/kg daily [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 10 mg/kg daily [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 23: a larger /kg/day",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 60 mg/kg."
+          }
+        ],
+        "replyText": "Give 60 mg/kg/day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 60 mg/kg/day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the same per-kg per-day dose is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 10 mg per kilogram per day."
+          }
+        ],
+        "replyText": "Give 10mg/kg/day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 10mg/kg/day [1].",
+          "kept": [
+            "Give 10mg/kg/day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "intervals": [
+      {
+        "name": "probe 24: every hour against every 4 hours",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets every hour [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets every hour [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 25: hourly",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets hourly [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets hourly [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe 26: every 30 minutes",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets every 30 minutes [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets every 30 minutes [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the interval in words matches the source interval",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 15 mg/kg every 6 hours."
+          }
+        ],
+        "replyText": "Give 15mg/kg every six hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 15mg/kg every six hours [1].",
+          "kept": [
+            "Give 15mg/kg every six hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a different interval in words is withheld",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Give 15 mg/kg every 6 hours."
+          }
+        ],
+        "replyText": "Give 15mg/kg every four hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 15mg/kg every four hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "every other day is an interval",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 tablet every 2 days."
+          }
+        ],
+        "replyText": "Take 1 tablet every other day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1 tablet every other day [1].",
+          "kept": [
+            "Take 1 tablet every other day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
       }
     ],
     "overdose-section": [
@@ -1019,6 +2402,30 @@
           "citations": [
             1
           ]
+        }
+      },
+      {
+        "name": "probe 35: a number only in an overdose sentence of an ordinary chunk verifies nothing",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
         }
       }
     ],

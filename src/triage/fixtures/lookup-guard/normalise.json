@@ -1,5 +1,5 @@
 {
-  "_comment": "normaliseDoseText: input -> the normalised text. Spelling only, never quantity; no unit is converted into another.",
+  "_comment": "normaliseDoseText: input -> the normalised text (dose-cite-v2). Spelling only, never quantity; no unit is converted into another.",
   "cases": [
     {
       "input": "500 milligrams three times a day",
@@ -252,6 +252,122 @@
     {
       "input": "take 2 oz",
       "normalised": "take 2 oz"
+    },
+    {
+      "input": "Take ٥٠٠ mg.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "Take ५०० mg.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "Take ５００ｍｇ.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "Take **500** mg.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "| Dose | 500 | mg |",
+      "normalised": "dose 500mg"
+    },
+    {
+      "input": "Take (500)mg.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "Adults: 500 (mg).",
+      "normalised": "adults: 500mg ."
+    },
+    {
+      "input": "Take a 500-mg tablet.",
+      "normalised": "take 1 500mg tablets."
+    },
+    {
+      "input": "Take a 500-milligram tablet.",
+      "normalised": "take 1 500mg tablets."
+    },
+    {
+      "input": "Take 500 m.g. now.",
+      "normalised": "take 500mg now."
+    },
+    {
+      "input": "Take 500 m g.",
+      "normalised": "take 500mg."
+    },
+    {
+      "input": "5 mc g",
+      "normalised": "5mcg"
+    },
+    {
+      "input": "2 dozen tablets",
+      "normalised": "2x12tablets"
+    },
+    {
+      "input": "a dozen tablets",
+      "normalised": "12tablets"
+    },
+    {
+      "input": "Take 2 x 500 mg.",
+      "normalised": "take 2x500mg."
+    },
+    {
+      "input": "4 × 500mg",
+      "normalised": "4x500mg"
+    },
+    {
+      "input": "tablets x 8",
+      "normalised": "tabletsx8"
+    },
+    {
+      "input": "10 mg per every kilogram",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "10 mg every kilogram",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "10 mg per 1 kg",
+      "normalised": "10mg/kg"
+    },
+    {
+      "input": "10 mg/kg per day",
+      "normalised": "10mg/kg/day"
+    },
+    {
+      "input": "10 mg/kg daily",
+      "normalised": "10mg/kg/day"
+    },
+    {
+      "input": "every hour",
+      "normalised": "every 1 hours"
+    },
+    {
+      "input": "hourly",
+      "normalised": "every 1 hours"
+    },
+    {
+      "input": "every 30 minutes",
+      "normalised": "every 30 minutes"
+    },
+    {
+      "input": "every other day",
+      "normalised": "every 2 days"
+    },
+    {
+      "input": "no one knows",
+      "normalised": "no pronone knows"
+    },
+    {
+      "input": "this one",
+      "normalised": "this pronone"
+    },
+    {
+      "input": "5͏00 mg",
+      "normalised": "500mg"
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "_comment": "DOSE_UNITS, the one table of dose units dose-cite-v1 recognises, in application order. Each canon is a distinct unit: spellings collapse to it, nothing converts between units. kind strength|count. lookup-guard.js carries the same table; a test asserts equality. A port builds its recogniser from this file.",
+  "_comment": "DOSE_UNITS, the one table of dose units dose-cite-v2 recognises, in application order. Each canon is a distinct unit: spellings collapse to it, nothing converts between units. kind strength|count. lookup-guard.js carries the same table; a test asserts equality. A port builds its recogniser from this file.",
   "units": [
     {
       "canon": "mcg",

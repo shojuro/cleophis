@@ -1,4 +1,4 @@
-// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v1`.
+// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v2`.
 //
 // Phase 1h M6. The reference lookup lets the model state a dose only when the
 // dose is CITED from the bundled reference pack. This module is the product's
@@ -8,44 +8,46 @@
 //
 // THIS FILE IS THE CANONICAL RULE. The triage repo's `probes/dose-cite.mjs`
 // (Task T4) vendors it and asserts identity over every file in
-// `src/triage/fixtures/lookup-guard/` (see that directory's manifest.json: one
-// sha256 and one case count per file). Change the rule here, update the
-// fixtures, re-vendor. Never fork it.
+// `src/triage/fixtures/lookup-guard/` (manifest.json pins each file's sha256
+// and case count). Change the rule here, update the fixtures, re-vendor.
 //
-// The founder's rule, read strictly: a dose the source does not state, in any
-// spelling, is never shown uncited. So every doubt resolves toward WITHHOLDING.
+// v2 (M6 fix round 2, controller ruling): FAIL CLOSED AT THE SENTENCE LEVEL.
+// An enumerated dose grammar keeps losing to an adversary, so the rule no
+// longer asks "is this a dose?". It asks "does this sentence carry a number?",
+// and every number it carries must be checked.
 //
 // The rule, per sentence of the reply:
 //   1. every `[n]` must name a source in range (1..sources.length). An
 //      out-of-range or unparseable citation withholds the sentence;
-//   2. every DOSE TOKEN must sit in a sentence that cites, and must EQUAL, as a
-//      whole canonical token, a dose token of one of the sources that sentence
-//      cites. Tokens come from `doseScan` over `normaliseDoseText`: an amount
-//      with a unit from `DOSE_UNITS` (ranges kept as ranges, fractions kept as
-//      fractions, per-kg and concentration suffixes kept), a count of a
-//      strength ("1-2 500mg tablets"), or a frequency form. A number beside a
-//      dose-like word that is NOT in the table cannot be verified and withholds
-//      the sentence (the fail-closed backstop);
-//   3. a sentence citing a source whose section path matches
-//      `OVERDOSE_SECTION_PATTERNS` is withheld, dose or not;
-//   4. a withheld sentence is replaced by `WITHHELD_BANNER` (a run of withheld
-//      sentences by one banner). Everything else is kept as written;
-//   5. if no kept sentence with content of its own carries a valid citation,
-//      nothing citable is left and the reply is `LOOKUP_NO_EVIDENCE_TEXT`.
+//   2. a sentence citing a source whose section path matches
+//      `OVERDOSE_SECTION_PATTERNS` is withheld, number or not;
+//   3. a sentence is NUMBER-BEARING when, after `normaliseDoseText`, it holds
+//      any numeric span (`numericScan`): a number of any kind (any Unicode
+//      decimal digit, a number word, a fraction, a mixed number, a roman
+//      numeral) with whatever unit, per-kg, concentration, per-period or
+//      multiplier is attached to it, or a frequency word ("/day", "double",
+//      "nightly"). A number-bearing sentence is KEPT only if it cites at least
+//      one in-range source AND every one of its spans EQUALS, as a whole
+//      string, a span of one of the sources it cites (`sourceSpans`);
+//   4. a sentence with no number is kept (it states no dose);
+//   5. a withheld sentence is replaced by `WITHHELD_BANNER` (a run of withheld
+//      sentences by one banner);
+//   6. if no kept sentence with content of its own carries a valid citation,
+//      the reply is `LOOKUP_NO_EVIDENCE_TEXT`.
 //
-// Precedence when a sentence breaks more than one clause: the first of
-// citation-malformed, citation-out-of-range, overdose-section, dose-uncited,
-// dose-unrecognised, dose-not-in-source is the recorded reason.
+// Precedence: citation-malformed, citation-out-of-range, overdose-section,
+// dose-uncited (number-bearing, no citation), dose-not-in-source (a span the
+// cited sources do not hold, or a digit no span explains). v1's
+// dose-unrecognised is gone: in v2 every number is a span and is checked.
 import pin from './detectors.pin.js';
 
-export const LOOKUP_RULE = 'dose-cite-v1';
+export const LOOKUP_RULE = 'dose-cite-v2';
 
 /**
  * The scripted refusal for a lookup with no evidence. Defined ONCE, here, and
- * used for all no-evidence paths: retrieval found nothing (`rag_lookup` →
- * noEvidence), and a grounded reply with nothing citable left. Product
- * wording, deliberately not the contract's `refusal_with_offer` (the contract
- * text is never re-typed outside its TOML).
+ * used for all no-evidence paths. Product wording, deliberately not the
+ * contract's `refusal_with_offer` (the contract text is never re-typed
+ * outside its TOML).
  */
 export const LOOKUP_NO_EVIDENCE_TEXT =
   'The reference pack has nothing on that, so no answer is given. Ask a pharmacist or clinician.';
@@ -59,16 +61,14 @@ export const WITHHELD_REASONS = Object.freeze({
   CITATION_OUT_OF_RANGE: 'citation-out-of-range',
   OVERDOSE_SECTION: 'overdose-section',
   DOSE_UNCITED: 'dose-uncited',
-  DOSE_UNRECOGNISED: 'dose-unrecognised',
   DOSE_NOT_IN_SOURCE: 'dose-not-in-source',
 });
 
 /**
- * Section paths the lookup never quotes from: overdose and maximum-dose
- * material. A health worker looking up a drug must not be handed the "how much
- * is too much" numbers by a floor-tier model, cited or not. Tested over the
- * section path string as the pack's chunk metadata carries it (for example
- * "Paracetamol > If you take too much").
+ * Overdose and maximum-dose material the lookup never quotes from. Matched
+ * against a source's SECTION PATH (clause 2) and, since fix round 2 (N7),
+ * against each SENTENCE of a source's text: a span that appears only in an
+ * overdose sentence of an otherwise ordinary chunk verifies nothing.
  */
 export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
   /\boverdos/i,
@@ -79,7 +79,7 @@ export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
   /\btoxicity\b/i,
 ]);
 
-/** Does this section path name overdose or maximum-dose material? */
+/** Does this section path (or source sentence) name overdose or maximum-dose material? */
 export function isOverdoseSection(sectionPath) {
   const s = String(sectionPath ?? '');
   return OVERDOSE_SECTION_PATTERNS.some((re) => re.test(s));
@@ -87,14 +87,12 @@ export function isOverdoseSection(sectionPath) {
 
 // ── The unit table ──────────────────────────────────────────────────────────
 //
-// THE ONE TABLE of dose units the rule recognises. Each row is a DISTINCT
-// canonical unit: spellings collapse to their canon, and no unit is ever
-// converted into another (mg stays mg, g stays g, a teaspoon is not 5 ml).
-// `kind` says whether the unit is a STRENGTH (a quantity of drug) or a COUNT
-// (a number of things taken). Row order is application order: a longer or more
-// specific unit comes before one it contains (mcg before g, ml before l).
-// `examples` are spellings the test enumerates; fixtures/lookup-guard/units.json
-// mirrors this table and a test asserts they are equal.
+// THE ONE TABLE of dose units. Each row is a DISTINCT canonical unit:
+// spellings collapse to their canon and no unit is converted into another.
+// In v2 the table no longer decides WHETHER a sentence is checked (every number
+// is); it decides how a number and its unit are written as one span, so that
+// "500 milligrams" and "500mg" are the same span and "500mg" is not "5mg".
+// Row order is application order. fixtures/lookup-guard/units.json mirrors it.
 
 export const DOSE_UNITS = Object.freeze([
   { canon: 'mcg', kind: 'strength', spellings: 'micrograms?|microgrammes?|mcgs?|µg|μg|ug', examples: ['micrograms', 'microgramme', 'mcg', 'µg', 'μg', 'ug'] },
@@ -131,29 +129,63 @@ export const DOSE_UNITS = Object.freeze([
   { canon: 'spoonfuls', kind: 'count', spellings: 'spoon(?:ful)?s?', examples: ['spoon', 'spoonfuls'] },
 ].map((u) => Object.freeze({ ...u, examples: Object.freeze([...u.examples]) })));
 
+
 const ALL_SPELLINGS = DOSE_UNITS.map((u) => u.spellings).join('|');
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\%]/g, '\\$&');
 const CANON_ALT = (kind) => DOSE_UNITS.filter((u) => !kind || u.kind === kind).map((u) => esc(u.canon)).join('|');
 const STRENGTH_ALT = CANON_ALT('strength');
 const COUNT_ALT = CANON_ALT('count');
 const UNIT_ALT = CANON_ALT();
-const AFTER_UNIT = '(?![a-z0-9%])';
+// A unit ends where no letter, digit, % or / follows: "10mg/kg/day" can never
+// be read as the shorter "10mg/kg" (N3).
+const AFTER_UNIT = '(?![a-z0-9%/])';
 
 // ── Normalisation ───────────────────────────────────────────────────────────
 //
-// Applied identically to the reply and to the source. It changes SPELLING only,
-// never quantity. Steps, in order (fixtures/lookup-guard/normalise.json pins
-// the result of the whole chain):
-//   invisible characters out; vulgar fractions to "1/2" etc. (before NFKC, which
-//   would glue "1½" into "11⁄2"); NFKC; lower case; fraction slash and dashes to
-//   ASCII; thousands separators out; ".5" to "0.5"; number words (zero to the
-//   thousands) to digits; "half"/"quarter" to 1/2 and 1/4; once/twice/thrice;
-//   per-day and per-week; ranges "N to M"/"N - M"/"N or M" to "N-M"; hours;
-//   "a"/"an" before a unit to 1; unit spellings glued to their number as their
-//   canon; a count word after a strength to its canon; concentrations
-//   ("250 mg in 5 ml") to "250mg/5ml"; per-kilogram forms to "/kg".
+// Applied identically to the reply and to the source. Spelling only, never
+// quantity. The steps, in order (normalise.json pins the whole chain):
+//    1. invisible characters out; markdown emphasis (* _ `) and table pipes to
+//       spaces; parentheses to spaces (so "(500)mg" and "500 (mg)" read as
+//       "500 mg"); a space before a vulgar fraction that follows a digit;
+//    2. NFKC; every Unicode decimal digit to ASCII; lower case; fraction slash
+//       and dashes to ASCII; dotted or spaced units ("m.g.", "m g", "mc g",
+//       "m.l.") to their letters;
+//    3. thousands separators out; ".5" to "0.5";
+//    4. pronoun "one" ("no one", "the one", "this one"...) kept as a word;
+//       number words (zero to the thousands) to digits; "a dozen" to 12 and
+//       "N dozen" to "Nx12";
+//    5. "half"/"quarter" forms to fractions; "N/M of a" to "N/M";
+//       once (only before a period)/twice/thrice to "N times";
+//    6. ranges ("N to M", "N - M", "N or M") to "N-M";
+//    7. hours, minutes, days; "every hour"/"hourly" to "every 1 hours";
+//       "every other day" to "every 2 days";
+//    8. "a"/"an" before a unit to 1; unit spellings glued to their number as
+//       their canon, across a hyphen ("a 500-mg tablet");
+//    9. a count word after a strength to its canon; "a 500mg tablet" to
+//       "1 500mg tablets";
+//   10. multipliers: "2 x 500mg", "4 × 500mg", "tablets x 8" to one product
+//       span ("2x500mg", "tabletsx8");
+//   11. concentrations ("250mg in 5ml") to "250mg/5ml";
+//   12. per-kilogram forms ("per (every|each|1) kilogram (of body weight)",
+//       "every kg", "a kilo") to "/kg";
+//   13. LAST, per-period forms ("a/per/each/every day", "daily", weekly) to
+//       "/day", "/week", so "10 mg/kg per day" becomes "10mg/kg/day" (N3).
 
-const VULGAR = { '½': '1/2', '¼': '1/4', '¾': '3/4', '⅓': '1/3', '⅔': '2/3', '⅛': '1/8' };
+const INVISIBLE = /[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤⁪-⁯﻿]/g;
+const VULGAR_FRACTION = /[¼-¾⅐-⅟↉]/;
+
+// Unicode decimal digits -> ASCII. A \p{Nd} run is ten consecutive code points
+// 0..9, so a digit's value is how many Nd code points precede it in its run.
+const ND = /\p{Nd}/u;
+function asciiDigits(s) {
+  return s.replace(/\p{Nd}/gu, (ch) => {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x30 && cp <= 0x39) return ch;
+    let k = 0;
+    while (k < 10 && ND.test(String.fromCodePoint(cp - k - 1))) k++;
+    return String(k % 10);
+  });
+}
 
 const SMALL = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
@@ -200,9 +232,11 @@ function numberRunToDigits(run) {
   return out.join('').replace(/\s+$/, '');
 }
 
-const UNIT_GLUE = DOSE_UNITS.map((u) => [u.canon, new RegExp(`(\\d)[ \\t]*(?:${u.spellings})${AFTER_UNIT}`, 'g')]);
+// Gluing allows a "/" after the unit ("15 mg/kg" -> "15mg/kg"); only the span
+// scan forbids one, so a truncated span can never match.
+const UNIT_GLUE = DOSE_UNITS.map((u) => [u.canon, new RegExp(`(\\d)[ \\t]*-?[ \\t]*(?:${u.spellings})(?![a-z0-9%])`, 'g')]);
 const COUNT_AFTER_STRENGTH = DOSE_UNITS.filter((u) => u.kind === 'count')
-  .map((u) => [u.canon, new RegExp(`((?:${STRENGTH_ALT})(?:\\/[a-z0-9.]+)?)[ \\t]+(?:${u.spellings})${AFTER_UNIT}`, 'g')]);
+  .map((u) => [u.canon, new RegExp(`((?:${STRENGTH_ALT})(?:\\/[a-z0-9.]+)*)[ \\t]+(?:${u.spellings})(?![a-z0-9%])`, 'g')]);
 
 /**
  * The spelling normalisation both sides of the check go through.
@@ -210,104 +244,133 @@ const COUNT_AFTER_STRENGTH = DOSE_UNITS.filter((u) => u.kind === 'count')
  */
 export function normaliseDoseText(text) {
   let s = String(text ?? '');
-  s = s.replace(/[​-‍⁠﻿­]/g, '');
-  s = s.replace(/(\d?)[ \t]*([½¼¾⅓⅔⅛])/g, (m, d, f) => `${d ? `${d} ` : ' '}${VULGAR[f]}`);
-  s = s.normalize('NFKC').toLowerCase();
+  s = s.replace(INVISIBLE, '');
+  s = s.replace(/[*_`|()]/g, ' ');
+  s = s.replace(new RegExp(`(\\d)(?=${VULGAR_FRACTION.source})`, 'g'), '$1 ');
+  s = asciiDigits(s.normalize('NFKC')).toLowerCase();
   s = s.replace(/⁄/g, '/');
   s = s.replace(/[‐‑‒–—−]/g, '-');
+  s = s.replace(/\bm\.?[ \t]?c\.?[ \t]?g\b\.?/g, 'mcg').replace(/\bm\.[ \t]?g\b\.?|\bm[ \t]g\b/g, 'mg').replace(/\bm\.[ \t]?l\b\.?/g, 'ml');
   for (let prev = null; prev !== s;) { prev = s; s = s.replace(/(\d),(\d{3})(?!\d)/g, '$1$2'); }
   s = s.replace(/(^|[^\d])\.(\d)/g, '$10.$2');
+  s = s.replace(/\b(no|the|this|that|which|each|any|every|another|other)[ \t]+one\b/g, '$1 pronone');
   s = s.replace(NUMBER_RUN, numberRunToDigits);
-  // fractions in words
+  s = s.replace(/\b(\d+)[ \t]+dozen\b/g, '$1x12').replace(/\b(?:an?|1)[ \t]+dozen\b/g, '12').replace(/\bdozen\b/g, '12');
   s = s.replace(/\b(\d+)[ \t]+and[ \t]+(?:a[ \t]+|1[ \t]+)?half\b/g, '$1 1/2');
   s = s.replace(/\b(\d+)[ \t]+and[ \t]+(?:a[ \t]+|1[ \t]+)?quarter\b/g, '$1 1/4');
   s = s.replace(/\b(\d+)[ \t]+quarters\b/g, '$1/4');
   s = s.replace(/\b(?:an?[ \t]+|1[ \t]+)?half(?:[ \t]+of)?(?:[ \t]+an?\b)?/g, '1/2');
   s = s.replace(/\b(?:an?[ \t]+|1[ \t]+)?quarter(?:[ \t]+of)?(?:[ \t]+an?\b)?/g, '1/4');
   s = s.replace(/\b(\d+(?: \d+)?\/\d+)[ \t]+of[ \t]+(?:an?|the)\b/g, '$1');
-  // "once" is a frequency only when a period follows ("once a day", "once
-  // every 4 hours"); "once you feel better" is not a dose
   s = s.replace(/\bonce(?=[ \t]+(?:(?:a|per|each|every)[ \t]+(?:day|week)\b|daily\b|weekly\b|(?:in|every)[ \t]+\d))/g, '1 times');
   s = s.replace(/\btwice\b/g, '2 times').replace(/\bthrice\b/g, '3 times');
   s = s.replace(/\b(\d+) time\b/g, '$1 times');
-  // per-period forms
-  s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+day\b/g, '/day').replace(/[ \t]+daily\b/g, '/day');
-  s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+week\b/g, '/week').replace(/[ \t]+weekly\b/g, '/week');
-  // ranges: "4 to 6", "4 - 6", "1 or 2" -> "4-6"
   s = s.replace(/(\d)[ \t]*(?:-|\bto\b|\bor\b)[ \t]*(\d)/g, '$1-$2');
-  // hours
   s = s.replace(/(\d)[ \t]*(?:hours?|hrs?|h)(?![a-z0-9])/g, '$1 hours');
-  // "a gram", "an injection" -> "1g", "1injections"
-  s = s.replace(new RegExp(`\\ban?[ \\t]+(?=(?:${ALL_SPELLINGS})${AFTER_UNIT})`, 'g'), '1 ');
+  s = s.replace(/(\d)[ \t]*(?:minutes?|mins?)(?![a-z0-9])/g, '$1 minutes');
+  s = s.replace(/(\d)[ \t]*days?(?![a-z0-9])/g, '$1 days');
+  s = s.replace(/\bevery[ \t]+hour\b|\bhourly\b/g, 'every 1 hours');
+  s = s.replace(/\bevery[ \t]+other[ \t]+day\b/g, 'every 2 days');
+  s = s.replace(new RegExp(`\\ban?[ \\t]+(?=(?:${ALL_SPELLINGS})(?![a-z0-9%]))`, 'g'), '1 ');
   for (const [canon, re] of UNIT_GLUE) s = s.replace(re, `$1${canon}`);
   for (const [canon, re] of COUNT_AFTER_STRENGTH) s = s.replace(re, `$1 ${canon}`);
-  // concentrations: "250mg in 5ml", "250mg per 5ml" -> "250mg/5ml"
-  s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b|\\bin\\b(?:[ \\t]+(?:each|every))?)[ \\t]*(\\d+(?:\\.\\d+)?)(ml)${AFTER_UNIT}`, 'g'), '$1/$2$3');
-  // per kilogram: "10mg per kilogram of body weight" -> "10mg/kg"
-  s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b|\\ba\\b|\\bfor (?:each|every)\\b|\\beach\\b)[ \\t]*(?:kg|kilograms?|kilogrammes?|kilos?)\\b(?:[ \\t]+of[ \\t]+body[ \\t]*weight)?`, 'g'), '$1/kg');
-  s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*\\/[ \\t]*(kg|dose|day|week)\\b`, 'g'), '$1/$2');
+  // "a 500mg tablet" states a count of one: "1 500mg tablets"
+  s = s.replace(new RegExp(`\\ban?[ \\t]+(?=\\d+(?:\\.\\d+)?(?:${STRENGTH_ALT})(?:\\/[a-z0-9.]+)* (?:${COUNT_ALT})(?![a-z0-9%]))`, 'g'), '1 ');
+  s = s.replace(new RegExp(`(\\d|\\b(?:${ALL_SPELLINGS}))[ \\t]*[x×*][ \\t]*(?=\\d)`, 'g'), '$1x');
+  s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b|\\bin\\b(?:[ \\t]+(?:each|every))?)[ \\t]*(\\d+(?:\\.\\d+)?)(ml)(?![a-z0-9%])`, 'g'), '$1/$2$3');
+  s = s.replace(new RegExp(`(${STRENGTH_ALT})[ \\t]*(?:\\/|\\bper\\b(?:[ \\t]+(?:each|every|1))?|\\ba\\b|\\bfor[ \\t]+(?:each|every)\\b|\\beach\\b|\\bevery\\b)[ \\t]*(?:kg|kilograms?|kilogrammes?|kilos?)\\b(?:[ \\t]+of[ \\t]+body[ \\t]*weight)?`, 'g'), '$1/kg');
+  s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+day\b/g, '/day').replace(/[ \t]+daily\b/g, '/day');
+  s = s.replace(/[ \t]*\b(?:a|per|each|every)[ \t]+week\b/g, '/week').replace(/[ \t]+weekly\b/g, '/week');
+  s = s.replace(new RegExp(`(${STRENGTH_ALT}|kg)[ \\t]*\\/[ \\t]*(kg|dose|day|week)\\b`, 'g'), '$1/$2');
   return s.replace(/\s+/g, ' ').trim();
 }
 
-// ── Dose tokens ─────────────────────────────────────────────────────────────
+// ── Numeric spans ───────────────────────────────────────────────────────────
 
 const NUM = '(?:\\d+ \\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:\\.\\d+)?)';
 const NUMR = `${NUM}(?:-${NUM})?`;
-const SUFFIX = `(?:\\/(?:${NUM})?(?:kg|dose|day|week|hours|ml|mg|g|m2))?`;
+const SUFFIX = `(?:\\/(?:${NUM})?(?:kg|dose|day|week|hours|minutes|ml|mg|g|m2))*`;
+const CORE = `${NUMR}(?:(?:${UNIT_ALT})${SUFFIX})?`;
+const PERIOD_UNIT = '(?:hours|minutes|days|weeks)';
 
-/** The token forms, in the order `doseScan` reports them. Exported for the port. */
-export const DOSE_TOKEN_FORMS = Object.freeze([
+/**
+ * The span forms, tried in this order at each position (the first that matches
+ * there wins; spans never overlap). Exported for the port.
+ */
+export const NUMERIC_SPAN_FORMS = Object.freeze([
+  // a multiplier and its factors, one span: "2x500mg", "500mgx2", "tabletsx8", "2x12tablets"
+  Object.freeze({ name: 'product', src: `(?:${CORE}|\\b(?:${ALL_SPELLINGS}))(?:x${CORE})+${AFTER_UNIT}` }),
   // a count of a strength: "1-2 500mg tablets"
-  Object.freeze({ name: 'count-of-strength', re: new RegExp(`(?<![\\d./])${NUMR} ${NUM}(?:${STRENGTH_ALT})${SUFFIX} (?:${COUNT_ALT})${AFTER_UNIT}`, 'g') }),
-  // an amount with a unit: "500mg", "1/2tablets", "10mg/kg", "250mg/5ml", "1-2puffs"
-  Object.freeze({ name: 'amount', re: new RegExp(`(?<![\\d./])${NUMR}(?:${UNIT_ALT})${SUFFIX}${AFTER_UNIT}`, 'g') }),
-  // a frequency: "3 times/day", "4 times in 24 hours", "3 times"
-  Object.freeze({ name: 'frequency', re: new RegExp(`(?<![\\d./])${NUMR} times(?:\\/(?:day|week)| (?:in|per|every) ${NUMR} hours)?`, 'g') }),
-  // an interval: "every 4-6 hours"; a gap: "4 hours between doses", "at least 4 hours apart"
-  Object.freeze({ name: 'interval', re: new RegExp(`\\bevery ${NUMR} hours`, 'g') }),
-  Object.freeze({ name: 'gap', re: new RegExp(`(?<![\\d./])${NUMR} hours (?:between doses|apart)`, 'g') }),
-]);
+  Object.freeze({ name: 'count-of-strength', src: `${NUMR} ${NUM}(?:${STRENGTH_ALT})${SUFFIX} (?:${COUNT_ALT})(?![a-z0-9%])` }),
+  // a frequency: "3 times/day", "4 times in 24 hours", "1 times every 4 hours", "3 times"
+  Object.freeze({ name: 'frequency', src: `${NUMR} times(?:\\/(?:day|week)| (?:in|per) ${NUMR} ${PERIOD_UNIT}| every ${NUMR} ${PERIOD_UNIT})?` }),
+  // an interval: "every 4-6 hours", "every 30 minutes", "every 2 days"
+  Object.freeze({ name: 'interval', src: `\\bevery ${NUMR} ${PERIOD_UNIT}` }),
+  // a gap: "4 hours between doses", "4 hours apart"
+  Object.freeze({ name: 'gap', src: `${NUMR} ${PERIOD_UNIT} (?:between doses|apart)` }),
+  // a duration: "24 hours", "3 days"
+  Object.freeze({ name: 'duration', src: `${NUMR} ${PERIOD_UNIT}` }),
+  // an amount: "500mg", "1/2tablets", "10mg/kg/day", "250mg/5ml", "1-2puffs"
+  Object.freeze({ name: 'amount', src: `${NUMR}(?:${UNIT_ALT})${SUFFIX}${AFTER_UNIT}` }),
+  // frequency and multiplier words with no digit: "/day", "double", "nightly", roman numerals
+  Object.freeze({ name: 'word', src: `\\/(?:day|week)\\b|\\b(?:double|triple|quadruple|nightly|fortnightly)\\b|\\b(?:ii|iii|vi|vii|viii|xi|xii)\\b` }),
+  // any other number, with any letters glued to it: "16", "6-11", "2k", "1st"
+  Object.freeze({ name: 'number', src: `${NUMR}[a-z]*(?:\\/[a-z0-9.]+)*` }),
+].map((f) => Object.freeze({ ...f })));
 
-// The fail-closed backstop: a number directly before a word that LOOKS like a
-// dose unit but is not in `DOSE_UNITS` (ounces, grains, pumps, "mgm", a
-// misspelling). Such a quantity cannot be verified, so it withholds.
-const DOSE_LIKE_WORD = /^(?:pill|tab|cap|spoon|tsp|tbsp|drop|puff|spray|squirt|pump|patch|dose|dosage|gram|gramme|gm|milli|micro|nano|kilo|lit|unit|mol|mmol|sachet|lozenge|pastille|ampoule|ampule|amp|vial|inject|jab|shot|suppos|pessar|oz|ounce|dram|grain|minim|dab|mg|mcg|ug|ml|cc|iu|ng)/;
-const NUMBER_THEN_WORD = /(?<![\d./])(\d+(?:[./]\d+)?)[ \t]*([a-z]+)/g;
+const SPAN_RE = new RegExp(NUMERIC_SPAN_FORMS.map((f) => `(${f.src})`).join('|'), 'g');
+const CITATION_BRACKET = /\[([^\]\n]*)\]/g;
+const LIST_MARKER = /^\s*(?:[-•]\s*)?\d+[.)](?=\s)/;
 
 /**
- * Every dose token in already-normalised text, and every quantity the backstop
- * found that no token covers.
+ * The numeric spans of already-normalised text, left to right, and whether a
+ * digit is left over that no span explains. Citation brackets and a leading
+ * list marker ("1.") are not numbers of the sentence.
  *
- * @returns {{tokens: string[], unrecognised: string[]}}
+ * @returns {{spans: string[], unclassifiable: boolean}}
  */
-export function doseScan(normalised) {
+export function numericScan(normalised) {
+  const text = String(normalised ?? '').replace(CITATION_BRACKET, ' ').replace(LIST_MARKER, ' ');
   const spans = [];
-  for (const form of DOSE_TOKEN_FORMS) {
-    for (const m of normalised.matchAll(form.re)) spans.push({ token: m[0], start: m.index, end: m.index + m[0].length });
+  let rest = text;
+  for (const m of text.matchAll(SPAN_RE)) {
+    spans.push(m[0]);
+    rest = rest.slice(0, m.index) + ' '.repeat(m[0].length) + rest.slice(m.index + m[0].length);
   }
-  spans.sort((a, b) => a.start - b.start || b.end - a.end);
-  const unrecognised = [];
-  for (const m of normalised.matchAll(NUMBER_THEN_WORD)) {
-    if (!DOSE_LIKE_WORD.test(m[2])) continue;
-    const covered = spans.some((sp) => m.index >= sp.start && m.index < sp.end);
-    if (!covered) unrecognised.push(m[0]);
-  }
-  return { tokens: spans.map((sp) => sp.token), unrecognised };
+  return { spans, unclassifiable: /\d/.test(rest) };
 }
 
-/** Every dose token in already-normalised text, in order of appearance. */
-export function doseTokens(normalised) {
-  return doseScan(normalised).tokens;
-}
+// Sub-spans a source span also states: the strength inside a count of a
+// strength ("500mg" in "1-2 500mg tablets"), a factor of a product ("500mg" in
+// "2x500mg"), the interval inside a frequency ("every 4 hours" in "1 times
+// every 4 hours"), and a trailing period ("/day"). NEVER a range endpoint
+// ("2tablets" is not stated by "1-2tablets") and never a unit-stripped number
+// ("10mg" is not stated by "10mg/kg").
+const COMPONENT_RES = [
+  new RegExp(`(?<=^|[ x])(?:${NUMR}(?:${UNIT_ALT})${SUFFIX}${AFTER_UNIT}|every ${NUMR} ${PERIOD_UNIT})`, 'g'),
+  /\/(?:day|week)$/g,
+];
 
 /**
- * Is `token` one of normalised `source`'s own dose tokens? WHOLE-TOKEN
- * EQUALITY, never a substring: "50mg" is not in "500mg", "2tablets" is not in
- * "1/2tablets", "2tablets" is not in "1-2tablets" (a range endpoint is not
- * the range), and "10mg" is not in "10mg/kg".
+ * Every span a source's TEXT states: the spans of each of its sentences, and
+ * their components, skipping any sentence that names overdose material (N7).
+ * @returns {Set<string>}
  */
-export function sourceHasToken(source, token) {
-  return doseTokens(source).includes(token);
+export function sourceSpans(sourceText) {
+  const out = new Set();
+  for (const { text } of splitSentences(sourceText)) {
+    if (isOverdoseSection(text)) continue;
+    for (const span of numericScan(normaliseDoseText(text)).spans) {
+      out.add(span);
+      for (const re of COMPONENT_RES) for (const c of span.matchAll(re)) if (c[0] !== span) out.add(c[0]);
+    }
+  }
+  return out;
+}
+
+/** Does the source text state this span, as a whole? */
+export function sourceHasSpan(sourceText, span) {
+  return sourceSpans(sourceText).has(span);
 }
 
 // ── Sentences and citations ─────────────────────────────────────────────────
@@ -316,6 +379,8 @@ const ABBREVIATION_END = /(?:^|[\s(])(?:e\.g|i\.e|approx|vs)$/i;
 const TRAILING_CITATION = /^[ \t]*\[[^\]\n]*\]/;
 // a citation cluster alone on the NEXT line (exactly one newline away)
 const CITATION_LINE = /^[ \t]*\n[ \t]*(?:\[[^\]\n]*\][ \t]*)+(?=\n|$)/;
+// a list marker at the start of a line ("1." or "- 2)") is not a sentence end
+const MARKER_SO_FAR = /^\s*(?:[-•]\s*)?\d+$/;
 
 /**
  * Split a reply into sentences, each with the whitespace that followed it, so
@@ -323,7 +388,7 @@ const CITATION_LINE = /^[ \t]*\n[ \t]*(?:\[[^\]\n]*\][ \t]*)+(?=\n|$)/;
  * or `?` followed by whitespace or the end, or at a newline. A citation written
  * AFTER the full stop ("... doses. [1]"), or alone on the next line, belongs to
  * the sentence before it. A decimal point is not an end ("2.5 ml"), nor are
- * "e.g." and "i.e.".
+ * "e.g.", "i.e." or a list marker ("1. Take ...").
  *
  * @returns {{text: string, sep: string}[]}
  */
@@ -351,7 +416,8 @@ export function splitSentences(reply) {
       endAt(cite ? i + cite[0].replace(/[ \t]+$/, '').length : i);
       continue;
     }
-    if ('.!?'.includes(ch) && !(ch === '.' && ABBREVIATION_END.test(text.slice(start, i)))) {
+    const soFar = text.slice(start, i);
+    if ('.!?'.includes(ch) && !(ch === '.' && (ABBREVIATION_END.test(soFar) || MARKER_SO_FAR.test(soFar)))) {
       let k = i + 1;
       while (k < text.length && /[.!?"'”’)]/.test(text[k])) k++;
       for (let m = TRAILING_CITATION.exec(text.slice(k)); m; m = TRAILING_CITATION.exec(text.slice(k))) {
@@ -369,7 +435,6 @@ export function splitSentences(reply) {
   return out;
 }
 
-const CITATION_BRACKET = /\[([^\]\n]*)\]/g;
 const CITATION_LIST = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
 
 /**
@@ -391,7 +456,7 @@ export function citationsIn(sentence) {
 }
 
 // A sentence that is nothing but citations and punctuation says nothing of its
-// own, so it cannot make a reply "grounded" (clause 5).
+// own, so it cannot make a reply "grounded".
 const hasOwnContent = (sentence) => /[\p{L}\p{N}]/u.test(String(sentence).replace(CITATION_BRACKET, ''));
 
 /**
@@ -400,7 +465,7 @@ const hasOwnContent = (sentence) => /[\p{L}\p{N}]/u.test(String(sentence).replac
  *
  * @returns {{keep: true, cites: number[]}|{keep: false, reason: string}}
  */
-function judgeSentence(sentence, sources, sourceTokens) {
+function judgeSentence(sentence, sources, spansOf) {
   const { numbers, malformed } = citationsIn(sentence);
   if (malformed) return { keep: false, reason: WITHHELD_REASONS.CITATION_MALFORMED };
   if (numbers.some((n) => !Number.isInteger(n) || n < 1 || n > sources.length)) {
@@ -410,12 +475,15 @@ function judgeSentence(sentence, sources, sourceTokens) {
   if (cites.some((n) => isOverdoseSection(sources[n - 1] && sources[n - 1].sectionPath))) {
     return { keep: false, reason: WITHHELD_REASONS.OVERDOSE_SECTION };
   }
-  const { tokens, unrecognised } = doseScan(normaliseDoseText(sentence));
-  if (tokens.length || unrecognised.length) {
+  const { spans, unclassifiable } = numericScan(normaliseDoseText(sentence));
+  if (spans.length || unclassifiable) {
     if (!cites.length) return { keep: false, reason: WITHHELD_REASONS.DOSE_UNCITED };
-    if (unrecognised.length) return { keep: false, reason: WITHHELD_REASONS.DOSE_UNRECOGNISED };
-    const everyTokenSourced = tokens.every((tok) => cites.some((n) => sourceTokens[n - 1].has(tok)));
-    if (!everyTokenSourced) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
+    // Defensive: the catch-all `number` form leaves no digit unexplained, so
+    // this cannot fire today; if a future form change ever let one through,
+    // the digit is unverifiable and the sentence is withheld.
+    if (unclassifiable) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
+    const everySpanSourced = spans.every((span) => cites.some((n) => spansOf(n).has(span)));
+    if (!everySpanSourced) return { keep: false, reason: WITHHELD_REASONS.DOSE_NOT_IN_SOURCE };
   }
   return { keep: true, cites };
 }
@@ -425,13 +493,13 @@ function judgeSentence(sentence, sources, sourceTokens) {
  *
  * `sources` is `[{ n, docTitle, sectionPath, text, ... }]` in citation order.
  * A source whose text could not be recovered should carry `text: ''`: every
- * dose cited to it then fails, which is the safe direction.
+ * number cited to it then fails, which is the safe direction.
  *
- * The verdict is JSON and its shape is stable (it is persisted through
- * `attach_guard` and replayed by `replayMessage`):
+ * The verdict is JSON and its shape is stable (persisted through
+ * `attach_guard`, replayed by `replayMessage`):
  *
  *   kind          'lookup' — what tells a lookup verdict from a triage one
- *   rule          'dose-cite-v1'
+ *   rule          'dose-cite-v2'
  *   outcome       'grounded', or 'noEvidence' when nothing citable was left
  *   displayText   what is shown and what `attach_guard` writes as the row text
  *   rawReply      the reply as the model wrote it
@@ -443,14 +511,18 @@ function judgeSentence(sentence, sources, sourceTokens) {
 export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
   const raw = String(replyText ?? '');
   const list = Array.isArray(sources) ? sources : [];
-  const sourceTokens = list.map((s) => new Set(doseTokens(normaliseDoseText(s && s.text))));
+  const cache = new Map();
+  const spansOf = (n) => {
+    if (!cache.has(n)) cache.set(n, sourceSpans(list[n - 1] && list[n - 1].text));
+    return cache.get(n);
+  };
   const kept = [];
   const withheld = [];
   const cited = new Set();
   let display = '';
   let lastWasWithheld = false;
   for (const { text, sep } of splitSentences(raw)) {
-    const verdict = judgeSentence(text, list, sourceTokens);
+    const verdict = judgeSentence(text, list, spansOf);
     if (verdict.keep) {
       kept.push(text);
       if (hasOwnContent(text)) verdict.cites.forEach((n) => cited.add(n));

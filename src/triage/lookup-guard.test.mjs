@@ -1,6 +1,6 @@
 // src/triage/lookup-guard.test.mjs — node --test src/
 //
-// The dose-cite-v1 rule, driven ENTIRELY by the JSON fixtures in
+// The dose-cite-v2 rule, driven ENTIRELY by the JSON fixtures in
 // fixtures/lookup-guard/ — the files the triage repo's probes/dose-cite.mjs
 // vendors and asserts identity against. Nothing about the rule's behaviour is
 // pinned only here: every vector a second implementation must reproduce is in
@@ -10,8 +10,9 @@ import assert from 'node:assert';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import {
-  DOSE_UNITS, LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, OVERDOSE_SECTION_PATTERNS, WITHHELD_BANNER, WITHHELD_REASONS,
-  applyLookupGuard, citationsIn, doseScan, isOverdoseSection, normaliseDoseText, sourceHasToken, splitSentences,
+  DOSE_UNITS, LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, NUMERIC_SPAN_FORMS, OVERDOSE_SECTION_PATTERNS, WITHHELD_BANNER,
+  WITHHELD_REASONS, applyLookupGuard, citationsIn, isOverdoseSection, normaliseDoseText, numericScan, sourceHasSpan,
+  sourceSpans, splitSentences,
 } from './lookup-guard.js';
 import pin from './detectors.pin.js';
 
@@ -39,14 +40,14 @@ test('manifest.json pins every fixture file by sha256 and case count', () => {
   }
   assert.deepStrictEqual(Object.keys(manifest.files).sort(), [
     'boundaries.json', 'citations.json', 'normalise.json', 'overdose-sections.json', 'sentences.json',
-    'sources.json', 'tokens.json', 'units.json', 'verdicts.json',
+    'sources.json', 'spans.json', 'units.json', 'verdicts.json',
   ]);
 });
 
 test('the verdict fixtures have one named group per clause, and every reason is exercised', () => {
   assert.deepStrictEqual(Object.keys(GROUPS), [
-    'citation-range', 'dose-recognition', 'verbatim-presence', 'range-handling',
-    'overdose-section', 'withholding-and-banner', 'no-evidence-fallback',
+    'citation-range', 'number-bearing', 'verbatim-presence', 'range-handling', 'multipliers',
+    'per-kg-and-period', 'intervals', 'overdose-section', 'withholding-and-banner', 'no-evidence-fallback',
   ]);
   for (const [name, cases] of Object.entries(GROUPS)) assert.ok(cases.length >= 3, `${name} has too few cases`);
   const reasons = new Set(Object.values(GROUPS).flat().flatMap((c) => c.expected.withheld.map((w) => w.reason)));
@@ -57,8 +58,8 @@ test('the verdict fixtures have one named group per clause, and every reason is 
 
 for (const [group, cases] of Object.entries(GROUPS)) {
   for (const c of cases) {
-    test(`dose-cite-v1 [${group}]: ${c.name}`, () => {
-      const sources = SOURCES[c.sources];
+    test(`dose-cite-v2 [${group}]: ${c.name}`, () => {
+      const sources = Array.isArray(c.sources) ? c.sources : SOURCES[c.sources];
       assert.ok(sources, `unknown source set ${c.sources}`);
       const v = applyLookupGuard({ replyText: c.replyText, sources });
       assert.strictEqual(v.outcome, c.expected.outcome);
@@ -80,12 +81,10 @@ test('units.json is the DOSE_UNITS table, row for row', () => {
 });
 
 for (const u of DOSE_UNITS) {
-  test(`unit table: every listed spelling of ${u.canon} is a ${u.canon} dose`, () => {
+  test(`unit table: every listed spelling of ${u.canon} is one span, 3${u.canon}`, () => {
     for (const spelling of u.examples) {
-      for (const written of [`3 ${spelling}`, `3${spelling}`]) {
-        const { tokens, unrecognised } = doseScan(normaliseDoseText(`Take ${written} now.`));
-        assert.deepStrictEqual(tokens, [`3${u.canon}`], written);
-        assert.deepStrictEqual(unrecognised, [], written);
+      for (const written of [`3 ${spelling}`, `3${spelling}`, `3-${spelling}`]) {
+        assert.deepStrictEqual(numericScan(normaliseDoseText(`Take ${written} now.`)), { spans: [`3${u.canon}`], unclassifiable: false }, written);
       }
     }
   });
@@ -96,15 +95,36 @@ test('normalise.json: normaliseDoseText', () => {
   assert.notStrictEqual(normaliseDoseText('1 g'), normaliseDoseText('1000 mg'), 'no conversion across units');
 });
 
-test('tokens.json: doseScan over the normalised text', () => {
-  for (const c of fixture('tokens.json').cases) {
-    assert.deepStrictEqual(doseScan(normaliseDoseText(c.input)), { tokens: c.tokens, unrecognised: c.unrecognised }, c.input);
+test('spans.json: numericScan over the normalised text', () => {
+  for (const c of fixture('spans.json').cases) {
+    assert.deepStrictEqual(numericScan(normaliseDoseText(c.input)), { spans: c.spans, unclassifiable: c.unclassifiable }, c.input);
+  }
+  assert.deepStrictEqual(NUMERIC_SPAN_FORMS.map((f) => f.name), [
+    'product', 'count-of-strength', 'frequency', 'interval', 'gap', 'duration', 'amount', 'word', 'number',
+  ]);
+});
+
+test('boundaries.json: sourceHasSpan is whole-span equality against what the source states', () => {
+  for (const c of fixture('boundaries.json').cases) {
+    assert.strictEqual(sourceHasSpan(c.source, c.span), c.present, `${c.source} / ${c.span}`);
   }
 });
 
-test('boundaries.json: sourceHasToken is whole-token equality', () => {
-  for (const c of fixture('boundaries.json').cases) {
-    assert.strictEqual(sourceHasToken(normaliseDoseText(c.source), c.token), c.present, `${c.source} / ${c.token}`);
+// The v2 invariant, checked over every verdict fixture rather than case by
+// case: a kept sentence either carries no number at all, or cites, and every
+// one of its spans is stated by a source it cites.
+test('INVARIANT: no kept sentence shows a number its cited sources do not state', () => {
+  for (const c of Object.values(GROUPS).flat()) {
+    const sources = Array.isArray(c.sources) ? c.sources : SOURCES[c.sources];
+    for (const sentence of applyLookupGuard({ replyText: c.replyText, sources }).kept) {
+      const { spans } = numericScan(normaliseDoseText(sentence));
+      if (!spans.length) continue;
+      const cites = citationsIn(sentence).numbers;
+      assert.ok(cites.length, `${c.name}: uncited number kept: ${sentence}`);
+      for (const span of spans) {
+        assert.ok(cites.some((n) => sourceSpans(sources[n - 1].text).has(span)), `${c.name}: ${span} kept unsourced`);
+      }
+    }
   }
 });
 
@@ -132,7 +152,7 @@ test('the verdict shape is stable JSON with kind lookup', () => {
     'kind', 'rule', 'outcome', 'displayText', 'rawReply', 'kept', 'withheld', 'citations', 'detectorsSha',
   ]);
   assert.strictEqual(v.kind, 'lookup');
-  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v1');
+  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v2');
   assert.strictEqual(v.detectorsSha, pin.sha256);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(v)), v);
 });

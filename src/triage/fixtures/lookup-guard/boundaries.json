@@ -1,114 +1,174 @@
 {
-  "_comment": "sourceHasToken(normaliseDoseText(source), token): whole-token equality against the source's own tokens, never a substring. A range endpoint is not the range; a whole number is not a fraction's tail; a flat dose is not a per-kg dose.",
+  "_comment": "sourceHasSpan(source, span): the span must EQUAL one of the spans the source text states (its sentences spans plus their components: a strength inside a count of it, a factor of a product, the interval inside a frequency, a trailing period), skipping overdose sentences. Never a substring, a range endpoint, or a unit-stripped number.",
   "cases": [
     {
       "source": "take 500mg tablets",
-      "token": "500mg",
+      "span": "500mg",
       "present": true
     },
     {
       "source": "take 1500mg tablets",
-      "token": "500mg",
+      "span": "500mg",
       "present": false
     },
     {
       "source": "Give 500 mg.",
-      "token": "50mg",
+      "span": "50mg",
       "present": false
     },
     {
       "source": "give 500mg/kg",
-      "token": "500mg",
+      "span": "500mg",
       "present": false
     },
     {
       "source": "give 2.55ml",
-      "token": "2.5ml",
+      "span": "2.5ml",
       "present": false
     },
     {
       "source": "Children aged 6 to 11: 1/2 tablet.",
-      "token": "2tablets",
+      "span": "2tablets",
       "present": false
     },
     {
       "source": "Children aged 6 to 11: 1/2 tablet.",
-      "token": "1/2tablets",
+      "span": "1/2tablets",
       "present": true
     },
     {
       "source": "Give ½ tablet.",
-      "token": "2tablets",
+      "span": "2tablets",
       "present": false
     },
     {
       "source": "Give ½ tablet.",
-      "token": "1/2tablets",
+      "span": "1/2tablets",
       "present": true
     },
     {
       "source": "Children: 10 mg per kilogram of body weight.",
-      "token": "10mg",
+      "span": "10mg",
       "present": false
     },
     {
       "source": "Children: 10 mg per kilogram of body weight.",
-      "token": "10mg/kg",
+      "span": "10mg/kg",
       "present": true
     },
     {
       "source": "Take 1 to 2 tablets.",
-      "token": "2tablets",
+      "span": "2tablets",
       "present": false
     },
     {
       "source": "Take 1 to 2 tablets.",
-      "token": "1tablets",
+      "span": "1tablets",
       "present": false
     },
     {
       "source": "Take 1 to 2 tablets.",
-      "token": "1-2tablets",
+      "span": "1-2tablets",
       "present": true
     },
     {
       "source": "every 4 to 6 hours",
-      "token": "every 4 hours",
+      "span": "every 4 hours",
       "present": false
     },
     {
       "source": "every 4 to 6 hours",
-      "token": "every 4-6 hours",
+      "span": "every 4-6 hours",
       "present": true
     },
     {
       "source": "Take 1 1/2 tablets.",
-      "token": "1/2tablets",
+      "span": "1/2tablets",
       "present": false
     },
     {
       "source": "The liquid is 250 mg/5 ml.",
-      "token": "250mg",
+      "span": "250mg",
       "present": false
     },
     {
       "source": "The liquid is 250 mg/5 ml.",
-      "token": "250mg/5ml",
+      "span": "250mg/5ml",
       "present": true
     },
     {
       "source": "one or two 500mg tablets",
-      "token": "1-2 500mg tablets",
+      "span": "1-2 500mg tablets",
       "present": true
     },
     {
       "source": "one or two 500mg tablets",
-      "token": "2 500mg tablets",
+      "span": "2 500mg tablets",
       "present": false
     },
     {
       "source": "then every 4 hours.",
-      "token": "every 4 hours",
+      "span": "every 4 hours",
+      "present": true
+    },
+    {
+      "source": "Adults: take 2 x 500 mg.",
+      "span": "2x500mg",
+      "present": true
+    },
+    {
+      "source": "Adults: take 2 x 500 mg.",
+      "span": "500mg",
+      "present": true
+    },
+    {
+      "source": "Adults: take 2 x 500 mg.",
+      "span": "2",
+      "present": false
+    },
+    {
+      "source": "Give 10 mg/kg per day.",
+      "span": "10mg/kg",
+      "present": false
+    },
+    {
+      "source": "Give 10 mg/kg per day.",
+      "span": "10mg/kg/day",
+      "present": true
+    },
+    {
+      "source": "Take 2 tablets a day.",
+      "span": "/day",
+      "present": true
+    },
+    {
+      "source": "Take 2 tablets a day.",
+      "span": "2tablets",
+      "present": false
+    },
+    {
+      "source": "Take 2 tablets every 4 hours.",
+      "span": "every 1 hours",
+      "present": false
+    },
+    {
+      "source": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage.",
+      "span": "16tablets",
+      "present": false
+    },
+    {
+      "source": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage.",
+      "span": "2tablets",
+      "present": true
+    },
+    {
+      "source": "Take 1 500mg tablet.",
+      "span": "500mg",
+      "present": true
+    },
+    {
+      "source": "Aged 16 or over.",
+      "span": "16",
       "present": true
     }
   ]
