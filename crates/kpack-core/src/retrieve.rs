@@ -486,12 +486,11 @@ fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f
 ///    contract) that gives the model the document's identity as legitimate
 ///    context, so "what is the title / what is this about" is answerable
 ///    even though a title never appears in a chunk's searchable body text.
-///    The final `prompt` is `contract::system_contract()` (trailing
-///    whitespace trimmed) — the versioned contract the composed adapter-v2 is
-///    trained to obey — + a blank line + `doc_context` (when non-empty) + a
-///    blank line + the rendered sources
-///    block; when `doc_context` is empty (no resolved doc had a non-empty
-///    title), the layout falls back to the original two-part form — no
+///    The final `prompt` is [`contract::assemble_system`] over the tutor
+///    contract: `system_contract` (trailing whitespace trimmed) + a blank
+///    line + `doc_context` (when non-empty) + a blank line + the rendered
+///    sources block; when `doc_context` is empty (no resolved doc had a
+///    non-empty title), the layout falls back to the two-part form — no
 ///    dangling blank section. `citations` mirrors the rendered sources 1:1,
 ///    `n` matching each line's `[n]`.
 pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
@@ -614,50 +613,33 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
             text: &chunk.text,
         })
         .collect();
-    let sources_block = contract::render_sources(&render_chunks);
-
     // RAG-quality quick win: the book/document's TITLE lives in doc
     // metadata (`doc.title`, already shown in each citation), not the
     // searchable body text -- so retrieval alone can never surface it as a
     // "match", and a query like "what is the title?" / "what is this
-    // about?" would otherwise have nothing to ground on. Collect the
-    // DISTINCT titles of the docs actually cited (the same docs already
-    // resolved for `render_chunks`/citations above), preserving first-seen
-    // order, and state them as a short context line the model can answer
-    // identity questions from -- without touching the numbered-sources
-    // semantics `render_sources` owns.
-    let mut titles: Vec<&str> = Vec::new();
-    for (_, _, doc) in &resolved {
-        let title = doc.title.trim();
-        if !title.is_empty() && !titles.contains(&title) {
-            titles.push(title);
-        }
-    }
-    let doc_context = if titles.is_empty() {
-        String::new()
-    } else {
-        format!("These sources are excerpts from: {}.", titles.join("; "))
-    };
+    // about?" would otherwise have nothing to ground on. The DISTINCT
+    // titles of the docs actually cited (first-seen order) are stated as a
+    // short context line the model can answer identity questions from --
+    // without touching the numbered-sources semantics. The line's exact
+    // text lives in `contract::doc_context_line` so the golden fixtures pin
+    // it alongside the contract.
+    let doc_context = contract::doc_context_for(&render_chunks);
 
-    // Adapter v2: the grounded system prompt is now the VERSIONED CONTRACT
-    // (`contracts/prompt-contract.v1.toml` / `contract::system_contract()`) —
-    // the contract-trained adapter is composed onto the base and obeys exactly
-    // this (cite `[n]` strictly from the numbered sources; refuse-with-offer on
-    // NO_EVIDENCE), so the interim base-model prompt is retired. `doc_context`
-    // (the doc-identity line) is a runtime-only addition the contract file
-    // doesn't carry; it is kept AFTER the contract and BEFORE the sources
-    // block, and the v2 training data is generated in this EXACT assembled
-    // shape (system_contract [+ doc_context] + sources) so the adapter sees the
-    // same format the runtime sends — see the adapter-v2 dataset harness.
-    let prompt = if doc_context.is_empty() {
-        format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block)
-    } else {
-        format!(
-            "{}\n\n{}\n\n{}",
-            contract::system_contract().trim_end(),
-            doc_context,
-            sources_block
-        )
+    // Adapter v2: the grounded system prompt is the VERSIONED CONTRACT
+    // (`contracts/prompt-contract.v1.toml`) + the runtime-only doc-context
+    // line + the sources block, assembled by `contract::assemble_system` --
+    // the ONE function that defines the full system message, byte-pinned by
+    // the golden fixtures in `tests/fixtures/contract-golden/` (the adapter
+    // training data and the triage repo's ports reproduce these bytes).
+    let prompt = match contract::assemble_system(
+        contract::contract_for(contract::ContractId::Tutor),
+        doc_context.as_deref(),
+        &render_chunks,
+    ) {
+        Ok(prompt) => prompt,
+        // Unreachable (`resolved` is non-empty above), but never a
+        // citation-less grounded prompt: NO_EVIDENCE instead.
+        Err(contract::AssembleError::NoChunks) => return Ok(RetrievalResult::NoEvidence),
     };
 
     let citations: Vec<Citation> = resolved
@@ -1994,6 +1976,45 @@ mod tests {
         assert!(
             prompt.starts_with(&expected_prefix),
             "must fall back to the contract+blank-line+sources layout: {prompt}"
+        );
+    }
+
+    // 30. Phase 1h M3: `assemble`'s grounded prompt IS
+    // `contract::assemble_system` over the tutor contract (the function the
+    // golden fixtures pin) -- one assembler, no second copy of the rule.
+    #[test]
+    fn t30_assemble_prompt_equals_contract_assemble_system() {
+        let pack = empty_pack("t30-assemble-system");
+        let chunk_id =
+            insert_test_chunk_with_title(&pack, "The Great Cookbook", "Intro", "p.1", "hello world");
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.9)],
+        };
+        let RetrievalResult::Grounded { prompt, .. } = assemble(&[hit], Tier::Small).unwrap() else {
+            panic!("expected Grounded");
+        };
+        let chunk = RenderChunk {
+            source_title: "The Great Cookbook",
+            section_path: "Intro",
+            locator: "p.1",
+            text: "hello world",
+        };
+        let expected = contract::assemble_system(
+            contract::contract_for(contract::ContractId::Tutor),
+            Some("These sources are excerpts from: The Great Cookbook."),
+            &[chunk],
+        )
+        .unwrap();
+        assert_eq!(prompt, expected);
+        assert_eq!(
+            prompt,
+            format!(
+                "{}\n\nThese sources are excerpts from: The Great Cookbook.\n\n[1] (The Great Cookbook, Intro, p.1): hello world",
+                contract::system_contract().trim_end()
+            )
         );
     }
 }
