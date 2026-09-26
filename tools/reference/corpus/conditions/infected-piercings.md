@@ -1,0 +1,82 @@
+---
+title: "Infected piercings"
+url: "https://www.nhs.uk/conditions/infected-piercings/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "infected-piercings"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "18 April 2023", "retrieved": "2026-09-26", "title": "Infected piercings", "url": "https://www.nhs.uk/conditions/infected-piercings/"}]
+---
+# Infected piercings
+
+**An infected piercing can be serious if it's not treated quickly. Get immediate medical help if you think your piercing is infected.**
+
+## Symptoms of an infected piercing
+
+### What's normal for a new piercing
+
+For the first few weeks a new piercing might:
+
+- be tender, itchy, and the surrounding area may look slightly red on white skin, or a little darker than usual on dark skin
+- produce a pale fluid that forms a crust
+
+If you've had an ear or nose cartilage piercing, small lumps can sometimes form around the piercing.
+
+The lumps, called granulomas, are trapped fluid. You can treat them by soaking a pad in warm water then holding the pad against them once a day.
+
+### Signs of an infection
+
+Your piercing might be infected if:
+
+- the area around it is swollen, painful, hot, very red or dark (depending on your skin colour)
+- there's blood or pus coming out of it – pus can be white, green or yellow
+- you feel hot, cold or shivery, or generally unwell
+
+## Urgent advice: Ask for an urgent GP appointment or get help from NHS 111 if:
+
+- you think your piercing might be infected
+
+Leave your jewellery in, unless a doctor tells you to take it out.
+
+You can call 111 or get help from 111 online.
+
+## Treatment for infected piercings
+
+You may need antibiotics if your piercing is infected. This can be a cream, ointment, or tablets.
+
+## How to prevent infections in new piercings
+
+There are things you can do to reduce the risk of a piercing getting infected.
+
+### Do
+
+- choose a qualified, experienced and licensed piercer
+- clean your piercing twice a day
+- use warm, salty water to soften any crusting
+- gently turn the jewellery while cleaning the piercing
+- use a clean paper towel to dry the piercing
+- gargle with salty water or an alcohol-free mouthwash if you have a mouth piercing
+
+### Don’t
+
+- do not do your own piercings (you're much more likely to get an infection)
+- do not use cotton wool to clean the piercing (use a cotton bud or pad)
+- do not pick at any crusting
+- do not twist or turn jewellery when the piercing is dry
+- do not use a towel to dry the piercing
+- do not have sex until a genital piercing has healed
+- do not have oral sex until a mouth piercing has healed
+- do not go swimming for the first 24 hours after a piercing
+
+## Things to ask your piercer
+
+If you're thinking about getting a piercing, ask the piercer:
+
+- to explain what they're going to do
+- whether there are any risks
+- how to care for your piercing
+- how long it will take to heal

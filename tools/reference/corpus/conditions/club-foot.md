@@ -1,0 +1,100 @@
+---
+title: "Clubfoot"
+url: "https://www.nhs.uk/conditions/club-foot/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "club-foot"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "06 November 2025", "retrieved": "2026-09-26", "title": "Clubfoot", "url": "https://www.nhs.uk/conditions/club-foot/"}]
+---
+# Clubfoot
+
+Clubfoot (talipes) is an uncommon condition that causes a baby to be born with 1 or both feet curved into an unusual position. Treatment usually works well if it's started soon after birth.
+
+## Signs of clubfoot
+
+If your baby has clubfoot their foot might:
+
+- be bent and curved
+- point inwards, up or down
+- feel stiff and tight if you try to gently move it
+
+Sometimes a baby has signs of clubfoot, but their feet move into a normal position over time without any treatment. This is called positional talipes.
+
+## How clubfoot is diagnosed
+
+Clubfoot may be noticed during pregnancy, or it may be diagnosed after your baby is born.
+
+After the birth, if a healthcare professional thinks your baby has clubfoot, they'll refer them to a foot clinic or a doctor who specialises in children's muscles and bones (a paediatric orthopaedic specialist).
+
+Your appointment should happen within a few weeks of your baby's birth.
+
+### What happens at the appointment
+
+The specialist may ask:
+
+- to see and feel your baby's feet
+- to look at and feel other areas of your baby's body such as their legs, hips and spine
+- if anyone in your family has had clubfoot or other health conditions
+
+They may also arrange an ultrasound scan or X-ray of your baby's hips, legs or feet.
+
+## How clubfoot is treated
+
+Treatment usually involves the Ponseti method, which is done in 3 stages.
+
+It starts with plaster casts to keep the foot in position, followed by surgery and wearing boots with bars.
+
+### Plaster casts
+
+When your baby is a few weeks old, a plaster cast is put on their leg to hold the foot in a better position. The cast is replaced each week for around 6 weeks, improving the position each time.
+
+### Surgery
+
+After about 6 weeks of wearing plaster casts, most babies need surgery to help the position of their foot. They'll wear a plaster cast for around 3 weeks after the operation.
+
+### Boots and bars
+
+When the plaster cast is removed after surgery, your baby will need to wear boots and bars, sometimes called a brace.
+
+The boots are soft and attached to a bar that helps to keep their feet in a healthy position. They'll wear these most of the time for around 3 months, and then usually only for naps and at night.
+
+Your child may need to do this until they're 5 years old.
+
+Your child will have appointments with the clubfoot clinic during this time. It's important to follow the treatment plan they discuss with you.
+
+If your child does not wear their boots and bar for as long as they need to each day, their foot may not stay in the healthy position.
+
+The clubfoot care team can answer any questions you have and offer support if you need it.
+
+### Clubfoot
+
+This video explains how club foot is treated and parents describe their experience.
+
+Media last reviewed: 12 May 2026
+Media review due: 12 May 2029
+
+## Causes of clubfoot
+
+Usually it's not known why a baby has clubfoot.
+
+Sometimes it happens in families when an altered gene is passed on to a child from their parents (inherited).
+
+Sometimes clubfoot is linked to another health condition such as spina bifida or Edwards' syndrome (trisomy 18).
+
+## Help and support for clubfoot
+
+You may find it helpful to get support from other parents and carers with a child who has clubfoot.
+
+There is also a charity that offers information and support.
+
+### Steps Charity Worldwide
+
+The charity offers help and support for anyone affected by childhood lower limb conditions, including clubfoot.
+
+- Website: https://www.stepsworldwide.org
+- Helpline: 01925 750271
