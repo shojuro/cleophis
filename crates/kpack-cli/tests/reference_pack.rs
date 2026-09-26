@@ -11,12 +11,15 @@
 //!   `DidYouMean`, no fabrication-bank fake name is ever `Found` (23 of 25
 //!   are `NotFound`, two pinned did-you-means), and none occurs in a chunk.
 //!
+//! - round 2: every page's core name and bare title resolve (never
+//!   NotFound), and merged chunks respect the 150/256 merge limits.
+//!
 //! The build runs once (~90 s unoptimised) and is shared by these tests.
 
 mod common;
 
 use common::*;
-use kpack_cli::{build_reference, fake_names, Options};
+use kpack_cli::{build_reference, core_name, fake_names, strip_parentheticals, Options};
 use kpack_core::lookup::{normalise_title, retrieve_lexical, LexicalOutcome};
 use kpack_core::{LoadContext, Pack};
 use serde_json::Value;
@@ -26,7 +29,7 @@ use std::sync::OnceLock;
 /// sha256 of `reference-uk-v1.kpack` built from the committed corpus with
 /// SOURCE_DATE_EPOCH=1790380800. Update it (and the report) only together
 /// with a corpus, clusters or builder change.
-const PACK_SHA256: &str = "33e137631d7904d535c11276de85d75f85a051afc66c4c8a36823a0ff42d0b45";
+const PACK_SHA256: &str = "f42aedcd050771fb9e79ede58389319c1a3d5671ca39a3272bbab40fb28b2cd7";
 
 struct Built {
     pack: PathBuf,
@@ -144,6 +147,67 @@ fn every_page_title_resolves_found_to_its_own_page() {
     }
 }
 
+/// Round 2 (lookup recall): every page's bare core name ("paracetamol",
+/// "salbutamol") and its title without parentheticals ("irritable bowel
+/// syndrome") reach it — Found, or a did-you-mean when several pages share
+/// the name. None reads NotFound.
+#[test]
+fn every_pages_core_name_and_bare_title_resolve() {
+    let pack = mounted();
+    let (mut found, mut dym) = (0, 0);
+    let t: Value = serde_json::from_slice(&std::fs::read(committed().2.join("titles.json")).unwrap()).unwrap();
+    for e in t["titles"].as_array().unwrap() {
+        let (title, section) = (e["title"].as_str().unwrap(), e["section"].as_str().unwrap());
+        for q in [core_name(title, section).unwrap(), strip_parentheticals(title)] {
+            match retrieve_lexical(&pack, &q, 3).unwrap() {
+                LexicalOutcome::Found { .. } => found += 1,
+                LexicalOutcome::DidYouMean { candidates } => {
+                    assert!(!candidates.is_empty());
+                    dym += 1;
+                }
+                other => panic!("{q:?} ({title}) -> {other:?}"),
+            }
+        }
+    }
+    assert_eq!(found + dym, 2 * 941);
+    for (q, want) in [
+        ("paracetamol", vec!["Paracetamol for adults", "Paracetamol for children (Calpol)"]),
+        ("ibuprofen", vec!["Ibuprofen for adults (Nurofen)", "Ibuprofen for children"]),
+        ("breast cancer", vec!["Breast cancer in men", "Breast cancer in women"]),
+    ] {
+        let want: Vec<String> = want.into_iter().map(String::from).collect();
+        assert_eq!(retrieve_lexical(&pack, q, 3).unwrap(), LexicalOutcome::DidYouMean { candidates: want }, "{q}");
+    }
+    for (q, want) in [
+        ("irritable bowel syndrome", "Irritable bowel syndrome (IBS)"),
+        ("salbutamol", "Salbutamol inhalers"),
+        ("chronic obstructive pulmonary disease", "Chronic obstructive pulmonary disease (COPD)"),
+    ] {
+        let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, q, 3).unwrap() else {
+            panic!("{q} should be found");
+        };
+        assert_eq!(title, want, "{q}");
+    }
+}
+
+/// Round 2 (chunk merge): the manifest records the merge sizes, no merged
+/// chunk exceeds 256 tokens, and no chunk crosses a section.
+#[test]
+fn merged_chunks_respect_the_limits() {
+    let b = built();
+    let pack = Pack::open(&b.pack).unwrap();
+    assert_eq!(pack.manifest_get("merge_target_tokens").unwrap().as_deref(), Some("150"));
+    assert_eq!(pack.manifest_get("merge_max_tokens").unwrap().as_deref(), Some("256"));
+    let rows = std::fs::read_to_string(committed().2.join("chunks.jsonl")).unwrap();
+    for l in rows.lines() {
+        let v: Value = serde_json::from_str(l).unwrap();
+        let text = v["text"].as_str().unwrap();
+        if text.contains("\n\n") {
+            assert!(v["token_count"].as_i64().unwrap() <= 256, "{l}");
+        }
+    }
+}
+
 #[test]
 fn near_misses_resolve_did_you_mean() {
     let pack = mounted();
@@ -191,7 +255,7 @@ fn every_fabrication_bank_fake_name_is_not_found_and_in_no_chunk() {
             format!(" {} ", normalise_title(&format!("{} {}", v["title"].as_str().unwrap(), v["text"].as_str().unwrap())))
         })
         .collect();
-    assert_eq!(texts.len(), 63_957);
+    assert_eq!(texts.len(), 23_225);
     for fake in &fakes {
         let k = format!(" {} ", normalise_title(fake));
         assert!(!texts.iter().any(|t| t.contains(&k)), "{fake} occurs in a chunk");

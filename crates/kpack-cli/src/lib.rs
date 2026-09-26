@@ -43,7 +43,7 @@
 use kpack_core::lexical_build::{MANIFEST_CONTENT_SHA256, MANIFEST_SOURCE_DATE_EPOCH};
 use kpack_core::{
     build_lexical_pack, chunk_content_sha256, pack_content_sha256, ChunkConfig, LexicalBuildMeta, LexicalSource,
-    Pack, PackTier, WordPieceTokenizer, SOURCE_TYPE_NHS_WEB,
+    MergeConfig, Pack, PackTier, WordPieceTokenizer, SOURCE_TYPE_NHS_WEB,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -61,6 +61,11 @@ pub const DEFAULT_PACK_VERSION: &str = "2026.09.1";
 pub const CHUNKS_FILE: &str = "chunks.jsonl";
 pub const TITLES_FILE: &str = "titles.json";
 pub const TITLES_SCHEMA: &str = "cleophis/reference-titles/v1";
+/// The curated merge post-pass (round 2): ~150-token chunks, 256 at most.
+pub const MERGE: MergeConfig = MergeConfig {
+    target_tokens: 150,
+    max_tokens: 256,
+};
 /// How `content_sha` is computed (recorded in the titles header).
 pub const CHUNK_CONTENT_SHA_RULE: &str = "sha256 of the UTF-8 compact JSON array [text, section_path, locator, title] \
      (Python: json.dumps([...], ensure_ascii=False, separators=(\",\", \":\")))";
@@ -161,6 +166,8 @@ struct TitlesHeader {
     tokenizer_vocab_sha256: String,
     chunk_target_tokens: usize,
     chunk_overlap_pct: u32,
+    merge_target_tokens: usize,
+    merge_max_tokens: usize,
     normalisation: String,
     licence: String,
     attribution: String,
@@ -345,6 +352,120 @@ fn entry_names(p: &CorpusPage) -> Vec<String> {
     out
 }
 
+/// The title with every `( ... )` removed (`clusters.py`'s `_PAREN.sub(" ",
+/// title)`), whitespace collapsed: "Irritable bowel syndrome (IBS)" ->
+/// "Irritable bowel syndrome".
+pub fn strip_parentheticals(title: &str) -> String {
+    let mut out = String::new();
+    let mut rest = title;
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        match after.find(')') {
+            Some(close) => {
+                out.push_str(&rest[..open]);
+                out.push(' ');
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `clusters.py::norm`: NFKD with combining marks dropped, lowercase,
+/// apostrophes removed, every run of other non-`[a-z0-9]` characters one
+/// space. The NFKD fold is a fixed Latin-1 table; any other non-ASCII
+/// letter or digit is an error rather than a silent divergence from Python.
+fn py_norm(s: &str) -> Result<String, CliError> {
+    let mut out = String::new();
+    for c in s.to_lowercase().chars() {
+        let folded = match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ý' | 'ÿ' => 'y',
+            '\'' | '\u{2019}' | '\u{2018}' => continue,
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() => c,
+            c if !c.is_ascii() && c.is_alphanumeric() => {
+                return err(format!("{s:?}: no NFKD fold for {c:?} (extend py_norm and its Python cross-check)"))
+            }
+            _ => ' ',
+        };
+        out.push(folded);
+    }
+    Ok(out.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// `clusters.py::core(title, section)`: the title's name with its
+/// parentheticals, a medicine's "for ..." tail and dosage-form suffixes,
+/// and an "in/during <group>" tail removed — "Paracetamol for children
+/// (Calpol)" -> "paracetamol", "Salbutamol inhalers" -> "salbutamol".
+pub fn core_name(title: &str, section: &str) -> Result<String, CliError> {
+    const FORMS: [&str; 34] = [
+        "tablet", "tablets", "capsule", "capsules", "cream", "creams", "gel", "gels", "ointment", "ointments",
+        "eye drops", "ear drops", "drops", "inhaler", "inhalers", "injection", "injections", "nasal spray",
+        "nasal sprays", "spray", "sprays", "skin treatment", "skin treatments", "skin cream", "skin creams",
+        "liquid", "patches", "suppositories", "mouthwash", "shampoo", "lozenges", "granules", "medicine", "medicines",
+    ];
+    const GROUPS: [&str; 10] = [
+        "children", "adults", "babies", "pregnancy", "older people", "men", "women", "teenagers", "young people",
+        "",
+    ];
+    let mut n = py_norm(&strip_parentheticals(title))?;
+    if section == "medicines" {
+        // _FOR: r"\s+for\s+.*$" — from the first " for " on.
+        if let Some(at) = n.find(" for ") {
+            n.truncate(at);
+        }
+        // _FORM, repeated to a fixed point: a trailing " <form>". The regex
+        // takes the leftmost match, i.e. the longest matching suffix
+        // ("skin cream" before "cream"), so try longer forms first.
+        let mut forms = FORMS.to_vec();
+        forms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+        loop {
+            let before = n.len();
+            for f in &forms {
+                if let Some(stem) = n.strip_suffix(&format!(" {f}")) {
+                    n = stem.to_string();
+                    break;
+                }
+            }
+            if n.len() == before {
+                break;
+            }
+        }
+    }
+    // _IN_GROUP: a trailing " in|during <group>".
+    for g in GROUPS.iter().filter(|g| !g.is_empty()) {
+        for prep in ["in", "during"] {
+            if let Some(stem) = n.strip_suffix(&format!(" {prep} {g}")) {
+                return Ok(stem.trim().to_string());
+            }
+        }
+    }
+    Ok(n.trim().to_string())
+}
+
+/// A page's title-index variants: its names from the clusters file (less
+/// the title), then — round 2, for lookup recall — the title without its
+/// parentheticals and its `core_name`. Duplicates by normalised form are
+/// dropped later (`title_entry_for`); a core name several pages share makes
+/// that query an honest did-you-mean listing them.
+fn page_variants(p: &CorpusPage, cluster_names: &[String]) -> Result<Vec<String>, CliError> {
+    let mut v = cluster_names.to_vec();
+    for extra in [strip_parentheticals(&p.title), core_name(&p.title, &p.section)?] {
+        if !extra.is_empty() && !v.contains(&extra) {
+            v.push(extra);
+        }
+    }
+    Ok(v)
+}
+
 struct Clusters {
     sha256: String,
     /// page key -> its title-index variants (entry names less the title).
@@ -464,18 +585,18 @@ pub fn build_reference(
 
     let sources: Vec<LexicalSource> = pages
         .iter()
-        .map(|p| LexicalSource {
+        .map(|p| -> Result<LexicalSource, CliError> { Ok(LexicalSource {
             title: p.title.clone(),
             slug: p.slug.clone(),
-            variants: clusters.variants[&p.key].clone(),
+            variants: page_variants(p, &clusters.variants[&p.key])?,
             body: p.body.clone(),
             source_type: SOURCE_TYPE_NHS_WEB.to_string(),
             source_path: Some(p.url.clone()),
             source_mtime: Some(p.retrieved.clone()),
             sha256: p.raw_sha256.clone(),
             source_size: p.raw_len as i64,
-        })
-        .collect();
+        }) })
+        .collect::<Result<_, _>>()?;
     let pack_file = format!("{}.kpack", opts.pack_id);
     let meta = LexicalBuildMeta {
         pack_id: opts.pack_id.clone(),
@@ -491,7 +612,7 @@ pub fn build_reference(
             ("corpus_index_sha256".to_string(), index_sha.clone()),
             ("clusters_sha256".to_string(), clusters.sha256.clone()),
         ],
-        merge: None,
+        merge: Some(MERGE),
     };
     let cfg = ChunkConfig::default();
     std::fs::create_dir_all(out_dir).map_err(|e| CliError(format!("cannot create {}: {e}", out_dir.display())))?;
@@ -576,6 +697,8 @@ pub fn build_reference(
             tokenizer_vocab_sha256: kpack_core::wordpiece::BGE_VOCAB_SHA256.to_string(),
             chunk_target_tokens: cfg.target_tokens,
             chunk_overlap_pct: cfg.overlap_pct,
+            merge_target_tokens: MERGE.target_tokens,
+            merge_max_tokens: MERGE.max_tokens,
             normalisation: "kpack_core::lookup::normalise_title (Phase 1h M5)".to_string(),
             licence: licence.to_string(),
             attribution: attribution.to_string(),
@@ -701,6 +824,21 @@ mod tests {
         assert_eq!(body, "# Gout\n");
         assert!(split_front_matter("# no front matter").is_err());
         assert!(split_front_matter("---\ntitle Gout\n---\n").is_err());
+    }
+
+    #[test]
+    fn derived_variants_follow_clusters_py() {
+        assert_eq!(strip_parentheticals("Irritable bowel syndrome (IBS)"), "Irritable bowel syndrome");
+        assert_eq!(strip_parentheticals("Non-cancerous (benign) brain tumours"), "Non-cancerous brain tumours");
+        assert_eq!(core_name("Paracetamol for children (Calpol)", "medicines").unwrap(), "paracetamol");
+        assert_eq!(core_name("Salbutamol inhalers", "medicines").unwrap(), "salbutamol");
+        assert_eq!(core_name("Hydrocortisone skin cream", "medicines").unwrap(), "hydrocortisone");
+        assert_eq!(core_name("Beclometasone skin cream", "medicines").unwrap(), "beclometasone");
+        assert_eq!(core_name("Dexamethasone tablets and liquid", "medicines").unwrap(), "dexamethasone tablets and");
+        assert_eq!(core_name("Breast cancer in women", "conditions").unwrap(), "breast cancer");
+        assert_eq!(core_name("Henoch-Schönlein purpura (HSP)", "conditions").unwrap(), "henoch schonlein purpura");
+        assert_eq!(core_name("Crohn's disease", "conditions").unwrap(), "crohns disease");
+        assert!(py_norm("Æsop").is_err());
     }
 
     #[test]

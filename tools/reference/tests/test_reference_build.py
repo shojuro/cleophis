@@ -98,6 +98,24 @@ class ReferenceBuild(unittest.TestCase):
             self.assertLessEqual(r["token_count"], 512)
         self.assertEqual(set(by_doc), {r["doc_id"] for r in self.rows}, "every page has a chunk")
 
+    def test_merged_chunks_respect_the_limits(self):
+        """Round 2: the curated merge post-pass (~150 tokens, 256 at most;
+        a chunk over 256 is a single unmerged block)."""
+        self.assertEqual((self.header["merge_target_tokens"], self.header["merge_max_tokens"]), (150, 256))
+        for r in self.rows:
+            if "\n\n" in r["text"]:
+                self.assertLessEqual(r["token_count"], 256, r["chunk_id"])
+
+    def test_title_variants_include_the_core_name_and_the_bare_title(self):
+        """Round 2: clusters.py's own core() and parenthetical-free title are
+        variants (or already the title / another variant, by clusters.norm)."""
+        for e in self.titles["titles"]:
+            have = {cl.norm(x) for x in [e["title"], *e["variants"]]}
+            core = cl.core(e["title"], e["section"])
+            bare = " ".join(cl._PAREN.sub(" ", e["title"]).split())
+            for want in (core, bare):
+                self.assertTrue(want in e["variants"] or cl.norm(want) in have, (e["title"], want))
+
     def test_no_chunk_carries_video_blocks_or_media_dates(self):
         media = re.compile(r"Media (last reviewed|review due)", re.I)
         for r in self.rows:

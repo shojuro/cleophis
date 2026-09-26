@@ -265,11 +265,11 @@ prints these values:
 
 | Output | Value |
 |---|---|
-| Pack | `tools/reference/build/reference-uk-v1.kpack`, 22,810,624 bytes |
-| Pack sha256 | `33e137631d7904d535c11276de85d75f85a051afc66c4c8a36823a0ff42d0b45` |
-| Content sha256 | `fbc79a634e8c8c220bfe452f9dad6303397e72531dfbcfd744d548ba78f50610` |
+| Pack | `tools/reference/build/reference-uk-v1.kpack`, 16,674,816 bytes |
+| Pack sha256 | `f42aedcd050771fb9e79ede58389319c1a3d5671ca39a3272bbab40fb28b2cd7` |
+| Content sha256 | `3fbf5aa48352639edb0610bc6b19185ee91b95f18e123895404e21d0543ba2ba` |
 | Pages (docs, title entries) | 941 |
-| Chunks | 63,957 |
+| Chunks | 23,225 |
 
 - **`SOURCE_DATE_EPOCH`.** It is required, and every timestamp in the pack
   derives from it. 1790380800 is 2026-09-26T00:00:00Z, the corpus fetch
@@ -287,10 +287,24 @@ prints these values:
   `docs.source_mtime`, with `source_type = nhs-web`, so citations carry
   both. The pack id is `reference-uk-v1`, the tier is `Curated`, and the
   schema is v2 with the title index.
-- **Chunking.** The pack is chunked exactly as the desktop chunks, with 400
-  target tokens and 18% overlap, counted by the BGE WordPiece tokenizer.
-  `kpack_core::wordpiece` ports llama.cpp's tokenizer, and a parity test
-  (below) matches llama.cpp on the whole corpus. Nothing is embedded.
+- **Chunking.** The pack is first chunked exactly as the desktop chunks,
+  with 400 target tokens and 18% overlap, counted by the BGE WordPiece
+  tokenizer. `kpack_core::wordpiece` ports llama.cpp's tokenizer, and a
+  parity test (below) matches llama.cpp on the whole corpus. Nothing is
+  embedded.
+- **Merging (curated only).** The desktop chunker leaves one chunk per
+  block, so many chunks are a single line. A merge post-pass then joins
+  consecutive chunks of the same section, to about 150 tokens and 256 at
+  most. It never crosses a section and never merges a table, and a list
+  stays with the paragraph that introduces it. Two windows of one long
+  paragraph are never joined, and a single block over 256 tokens is kept
+  as it is. The desktop's personal packs do not use this pass. The median
+  chunk is 76 tokens, against 27 before.
+- **Title variants.** Each page is also findable by two derived names. One
+  is the title without its parentheticals, so "irritable bowel syndrome"
+  finds "Irritable bowel syndrome (IBS)". The other is `clusters.py`'s core
+  name, so "salbutamol" finds "Salbutamol inhalers". A core name several
+  pages share, such as "paracetamol", gives a did-you-mean listing them.
 - **Lexical only.** The manifest names no real embedder, so the desktop's
   dense `Pack::mount` refuses the pack and only `Pack::mount_lexical` opens
   it. The dense gate floor is 1.0, which fails closed, and
@@ -323,8 +337,8 @@ It writes three files into `tools/reference/build/`:
   sha256:
 
 ```
-chunks.jsonl  f66aa1be075d4f74ca66ca779a5ea08e7f391bd302ce6675048d372ad288446a
-titles.json   e6c2775dfefed0634d466fbd1e21cd1291a19857acd509a1a4b7afb6c2e90e8e
+chunks.jsonl  2c184d836527cde1aebc7b41143844d7004bbdc1c82c39f23edd615b7c6a34e8
+titles.json   235fbb40919dce79060cf0b9f6f28cdb28e8212f636c104dd0097e5b21fc65d2
 ```
 
 After a corpus or clusters change, rebuild and commit both files. Then

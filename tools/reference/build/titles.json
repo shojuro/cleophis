@@ -4,10 +4,10 @@
     "pack_id": "reference-uk-v1",
     "pack_version": "2026.09.1",
     "pack_file": "reference-uk-v1.kpack",
-    "content_sha256": "fbc79a634e8c8c220bfe452f9dad6303397e72531dfbcfd744d548ba78f50610",
+    "content_sha256": "3fbf5aa48352639edb0610bc6b19185ee91b95f18e123895404e21d0543ba2ba",
     "chunk_content_sha": "sha256 of the UTF-8 compact JSON array [text, section_path, locator, title] (Python: json.dumps([...], ensure_ascii=False, separators=(\",\", \":\")))",
     "pack_content_sha": "sha256 over every chunk's content_sha in pack order, each as 64 lowercase hex characters followed by \\n",
-    "chunks": 63957,
+    "chunks": 23225,
     "titles": 941,
     "source_date_epoch": 1790380800,
     "corpus_index_sha256": "2709c1e0500a547f756544a7bb446fa4f51dd56eb8deed9f9ac620a83b3c01fa",
@@ -16,6 +16,8 @@
     "tokenizer_vocab_sha256": "30e577ebcdd5bfd324eaa21b13fffa867ff56f1bcb390a1048184129d377f81a",
     "chunk_target_tokens": 400,
     "chunk_overlap_pct": 18,
+    "merge_target_tokens": 150,
+    "merge_max_tokens": 256,
     "normalisation": "kpack_core::lookup::normalise_title (Phase 1h M5)",
     "licence": "OGL v3",
     "attribution": "Information from the NHS website, licensed under the Open Government Licence v3.0"
@@ -261,7 +263,8 @@
       "title": "ADHD in adults",
       "normalised_title": "adhd in adults",
       "variants": [
-        "adhd adults"
+        "adhd adults",
+        "adhd"
       ],
       "url": "https://www.nhs.uk/conditions/adhd-adults/",
       "retrieved_at": "2026-09-26"
@@ -286,7 +289,8 @@
       "normalised_title": "age related macular degeneration amd",
       "variants": [
         "AMD",
-        "Macular degeneration (age-related)"
+        "Macular degeneration (age-related)",
+        "Age-related macular degeneration"
       ],
       "url": "https://www.nhs.uk/conditions/age-related-macular-degeneration-amd/",
       "retrieved_at": "2026-09-26"
@@ -328,7 +332,8 @@
       "title": "Alcohol-related liver disease (ARLD)",
       "normalised_title": "alcohol related liver disease arld",
       "variants": [
-        "ARLD"
+        "ARLD",
+        "Alcohol-related liver disease"
       ],
       "url": "https://www.nhs.uk/conditions/alcohol-related-liver-disease-arld/",
       "retrieved_at": "2026-09-26"
@@ -426,7 +431,9 @@
       "section": "medicines",
       "title": "Amitriptyline for depression",
       "normalised_title": "amitriptyline for depression",
-      "variants": [],
+      "variants": [
+        "amitriptyline"
+      ],
       "url": "https://www.nhs.uk/medicines/amitriptyline-for-depression/",
       "retrieved_at": "2026-09-26"
     },
@@ -437,7 +444,8 @@
       "title": "Amitriptyline for pain and migraine",
       "normalised_title": "amitriptyline for pain and migraine",
       "variants": [
-        "amitriptyline for pain"
+        "amitriptyline for pain",
+        "amitriptyline"
       ],
       "url": "https://www.nhs.uk/medicines/amitriptyline-for-pain/",
       "retrieved_at": "2026-09-26"
@@ -640,7 +648,8 @@
       "title": "Anticoagulant medicines",
       "normalised_title": "anticoagulant medicines",
       "variants": [
-        "anticoagulants"
+        "anticoagulants",
+        "anticoagulant"
       ],
       "url": "https://www.nhs.uk/medicines/anticoagulants/",
       "retrieved_at": "2026-09-26"
@@ -661,7 +670,9 @@
       "section": "medicines",
       "title": "Antifungal medicines",
       "normalised_title": "antifungal medicines",
-      "variants": [],
+      "variants": [
+        "antifungal"
+      ],
       "url": "https://www.nhs.uk/medicines/antifungal-medicines/",
       "retrieved_at": "2026-09-26"
     },
@@ -695,7 +706,9 @@
       "section": "conditions",
       "title": "Anxiety disorders in children",
       "normalised_title": "anxiety disorders in children",
-      "variants": [],
+      "variants": [
+        "anxiety disorders"
+      ],
       "url": "https://www.nhs.uk/mental-health/children-and-young-adults/advice-for-parents/anxiety-disorders-in-children/",
       "retrieved_at": "2026-09-26"
     },
@@ -706,7 +719,8 @@
       "title": "Anxiety in pregnancy",
       "normalised_title": "anxiety in pregnancy",
       "variants": [
-        "Perinatal anxiety"
+        "Perinatal anxiety",
+        "anxiety"
       ],
       "url": "https://www.nhs.uk/pregnancy/mental-health-in-pregnancy-and-after-the-birth/anxiety-in-pregnancy/",
       "retrieved_at": "2026-09-26"
@@ -760,7 +774,8 @@
       "title": "Heart rhythm problems (arrhythmia)",
       "normalised_title": "heart rhythm problems arrhythmia",
       "variants": [
-        "arrhythmia"
+        "arrhythmia",
+        "Heart rhythm problems"
       ],
       "url": "https://www.nhs.uk/conditions/arrhythmia/",
       "retrieved_at": "2026-09-26"
@@ -1047,7 +1062,9 @@
       "section": "medicines",
       "title": "Beclometasone inhalers",
       "normalised_title": "beclometasone inhalers",
-      "variants": [],
+      "variants": [
+        "beclometasone"
+      ],
       "url": "https://www.nhs.uk/medicines/beclometasone-inhalers/",
       "retrieved_at": "2026-09-26"
     },
@@ -1060,7 +1077,8 @@
       "variants": [
         "Beconase",
         "Nasobec",
-        "Pollenase"
+        "Pollenase",
+        "beclometasone"
       ],
       "url": "https://www.nhs.uk/medicines/beclometasone-nasal-spray/",
       "retrieved_at": "2026-09-26"
@@ -1072,7 +1090,8 @@
       "title": "Beclometasone skin cream",
       "normalised_title": "beclometasone skin cream",
       "variants": [
-        "beclometasone skin creams"
+        "beclometasone skin creams",
+        "beclometasone"
       ],
       "url": "https://www.nhs.uk/medicines/beclometasone-skin-creams/",
       "retrieved_at": "2026-09-26"
@@ -1176,7 +1195,8 @@
       "variants": [
         "Betnesol",
         "Vistamethasone",
-        "betamethasone eyes ears and nose"
+        "betamethasone eyes ears and nose",
+        "betamethasone"
       ],
       "url": "https://www.nhs.uk/medicines/betamethasone-eyes-ears-and-nose/",
       "retrieved_at": "2026-09-26"
@@ -1190,7 +1210,8 @@
       "variants": [
         "Betnovate",
         "Betacap",
-        "betamethasone skin"
+        "betamethasone skin",
+        "betamethasone"
       ],
       "url": "https://www.nhs.uk/medicines/betamethasone-skin/",
       "retrieved_at": "2026-09-26"
@@ -1359,7 +1380,8 @@
       "normalised_title": "body dysmorphic disorder bdd",
       "variants": [
         "BDD",
-        "body dysmorphia"
+        "body dysmorphia",
+        "Body dysmorphic disorder"
       ],
       "url": "https://www.nhs.uk/mental-health/conditions/body-dysmorphia/",
       "retrieved_at": "2026-09-26"
@@ -1509,7 +1531,9 @@
       "section": "conditions",
       "title": "Breast cancer in men",
       "normalised_title": "breast cancer in men",
-      "variants": [],
+      "variants": [
+        "breast cancer"
+      ],
       "url": "https://www.nhs.uk/conditions/breast-cancer-in-men/",
       "retrieved_at": "2026-09-26"
     },
@@ -1519,7 +1543,9 @@
       "section": "conditions",
       "title": "Breast cancer in women",
       "normalised_title": "breast cancer in women",
-      "variants": [],
+      "variants": [
+        "breast cancer"
+      ],
       "url": "https://www.nhs.uk/conditions/breast-cancer-in-women/",
       "retrieved_at": "2026-09-26"
     },
@@ -1687,7 +1713,8 @@
       "normalised_title": "budesonide inhalers",
       "variants": [
         "Pulmicort",
-        "Budelin"
+        "Budelin",
+        "budesonide"
       ],
       "url": "https://www.nhs.uk/medicines/budesonide-inhalers/",
       "retrieved_at": "2026-09-26"
@@ -1743,7 +1770,8 @@
         "Buvidal",
         "Espranor",
         "Suboxone",
-        "Subutex"
+        "Subutex",
+        "buprenorphine"
       ],
       "url": "https://www.nhs.uk/medicines/buprenorphine-for-pain/",
       "retrieved_at": "2026-09-26"
@@ -1775,7 +1803,8 @@
       "title": "Buscopan (hyoscine butylbromide)",
       "normalised_title": "buscopan hyoscine butylbromide",
       "variants": [
-        "hyoscine butylbromide"
+        "hyoscine butylbromide",
+        "Buscopan"
       ],
       "url": "https://www.nhs.uk/medicines/buscopan-hyoscine-butylbromide/",
       "retrieved_at": "2026-09-26"
@@ -1788,7 +1817,8 @@
       "normalised_title": "clostridioides difficile c diff infection",
       "variants": [
         "C. diff",
-        "c difficile"
+        "c difficile",
+        "Clostridioides difficile infection"
       ],
       "url": "https://www.nhs.uk/conditions/c-difficile/",
       "retrieved_at": "2026-09-26"
@@ -2156,7 +2186,8 @@
         "Piriton",
         "Allerief",
         "Pollenase",
-        "chlorphenamine including piriton"
+        "chlorphenamine including piriton",
+        "Chlorphenamine"
       ],
       "url": "https://www.nhs.uk/medicines/chlorphenamine-including-piriton/",
       "retrieved_at": "2026-09-26"
@@ -2190,7 +2221,8 @@
       "variants": [
         "ME/CFS",
         "Chronic fatigue syndrome (ME/CFS)",
-        "chronic fatigue syndrome cfs"
+        "chronic fatigue syndrome cfs",
+        "Myalgic encephalomyelitis or chronic fatigue syndrome"
       ],
       "url": "https://www.nhs.uk/conditions/chronic-fatigue-syndrome-cfs/",
       "retrieved_at": "2026-09-26"
@@ -2224,7 +2256,8 @@
       "title": "Chronic obstructive pulmonary disease (COPD)",
       "normalised_title": "chronic obstructive pulmonary disease copd",
       "variants": [
-        "COPD"
+        "COPD",
+        "Chronic obstructive pulmonary disease"
       ],
       "url": "https://www.nhs.uk/conditions/chronic-obstructive-pulmonary-disease-copd/",
       "retrieved_at": "2026-09-26"
@@ -2454,7 +2487,9 @@
       "section": "medicines",
       "title": "Co-codamol for adults",
       "normalised_title": "co codamol for adults",
-      "variants": [],
+      "variants": [
+        "co codamol"
+      ],
       "url": "https://www.nhs.uk/medicines/co-codamol-for-adults/",
       "retrieved_at": "2026-09-26"
     },
@@ -2464,7 +2499,9 @@
       "section": "medicines",
       "title": "Co-codamol for children",
       "normalised_title": "co codamol for children",
-      "variants": [],
+      "variants": [
+        "co codamol"
+      ],
       "url": "https://www.nhs.uk/medicines/co-codamol-for-children/",
       "retrieved_at": "2026-09-26"
     },
@@ -2646,7 +2683,9 @@
         "Kliovance",
         "Kliofem",
         "Femoston Conti",
-        "FemSeven Conti"
+        "FemSeven Conti",
+        "Continuous combined hormone replacement therapy tablets, capsules and patches",
+        "continuous combined hormone replacement therapy tablets capsules and"
       ],
       "url": "https://www.nhs.uk/medicines/hormone-replacement-therapy-hrt/continuous-combined-hormone-replacement-therapy-hrt-tablets-capsules-and-patches/",
       "retrieved_at": "2026-09-26"
@@ -2661,7 +2700,9 @@
         "medroxyprogesterone",
         "Medroxyprogesterone injections",
         "Depo-Provera",
-        "Sayana Press"
+        "Sayana Press",
+        "Contraceptive injections",
+        "contraceptive"
       ],
       "url": "https://www.nhs.uk/medicines/contraceptive-injections-medroxyprogesterone/",
       "retrieved_at": "2026-09-26"
@@ -2866,7 +2907,8 @@
       "title": "Cytomegalovirus (CMV)",
       "normalised_title": "cytomegalovirus cmv",
       "variants": [
-        "CMV"
+        "CMV",
+        "Cytomegalovirus"
       ],
       "url": "https://www.nhs.uk/conditions/cytomegalovirus-cmv/",
       "retrieved_at": "2026-09-26"
@@ -2911,7 +2953,8 @@
       "normalised_title": "dvt deep vein thrombosis",
       "variants": [
         "deep vein thrombosis",
-        "deep vein thrombosis dvt"
+        "deep vein thrombosis dvt",
+        "DVT"
       ],
       "url": "https://www.nhs.uk/conditions/deep-vein-thrombosis-dvt/",
       "retrieved_at": "2026-09-26"
@@ -2982,7 +3025,9 @@
       "section": "conditions",
       "title": "Depression in adults",
       "normalised_title": "depression in adults",
-      "variants": [],
+      "variants": [
+        "depression"
+      ],
       "url": "https://www.nhs.uk/mental-health/conditions/depression-in-adults/",
       "retrieved_at": "2026-09-26"
     },
@@ -2993,7 +3038,8 @@
       "title": "Detached retina (retinal detachment)",
       "normalised_title": "detached retina retinal detachment",
       "variants": [
-        "retinal detachment"
+        "retinal detachment",
+        "Detached retina"
       ],
       "url": "https://www.nhs.uk/conditions/detached-retina-retinal-detachment/",
       "retrieved_at": "2026-09-26"
@@ -3007,7 +3053,9 @@
       "variants": [
         "dyspraxia",
         "Dyspraxia in children",
-        "developmental coordination disorder dyspraxia"
+        "developmental coordination disorder dyspraxia",
+        "Developmental co-ordination disorder in children",
+        "developmental co ordination disorder"
       ],
       "url": "https://www.nhs.uk/conditions/developmental-coordination-disorder-dyspraxia/",
       "retrieved_at": "2026-09-26"
@@ -3020,7 +3068,8 @@
       "normalised_title": "dyspraxia in adults",
       "variants": [
         "Developmental co-ordination disorder (dyspraxia) in adults",
-        "developmental coordination disorder dyspraxia in adults"
+        "developmental coordination disorder dyspraxia in adults",
+        "dyspraxia"
       ],
       "url": "https://www.nhs.uk/conditions/developmental-coordination-disorder-dyspraxia-in-adults/",
       "retrieved_at": "2026-09-26"
@@ -3048,7 +3097,8 @@
         "Dexafree",
         "Dropodex",
         "Eythalm",
-        "Maxidex"
+        "Maxidex",
+        "dexamethasone"
       ],
       "url": "https://www.nhs.uk/medicines/dexamethasone-eye-drops/",
       "retrieved_at": "2026-09-26"
@@ -3062,7 +3112,8 @@
       "variants": [
         "Neofordex",
         "Glensoludex",
-        "Martapan"
+        "Martapan",
+        "dexamethasone tablets and"
       ],
       "url": "https://www.nhs.uk/medicines/dexamethasone-tablets-and-liquid/",
       "retrieved_at": "2026-09-26"
@@ -3406,7 +3457,9 @@
       "section": "conditions",
       "title": "Dyslexia in adults",
       "normalised_title": "dyslexia in adults",
-      "variants": [],
+      "variants": [
+        "dyslexia"
+      ],
       "url": "https://www.nhs.uk/conditions/dyslexia-in-adults/",
       "retrieved_at": "2026-09-26"
     },
@@ -3416,7 +3469,9 @@
       "section": "conditions",
       "title": "Dyslexia in children",
       "normalised_title": "dyslexia in children",
-      "variants": [],
+      "variants": [
+        "dyslexia"
+      ],
       "url": "https://www.nhs.uk/conditions/dyslexia-in-children/",
       "retrieved_at": "2026-09-26"
     },
@@ -3690,7 +3745,8 @@
       "normalised_title": "erectile dysfunction impotence",
       "variants": [
         "impotence",
-        "erection problems erectile dysfunction"
+        "erection problems erectile dysfunction",
+        "Erectile dysfunction"
       ],
       "url": "https://www.nhs.uk/conditions/erection-problems-erectile-dysfunction/",
       "retrieved_at": "2026-09-26"
@@ -3780,7 +3836,8 @@
       "normalised_title": "excessive daytime sleepiness hypersomnia",
       "variants": [
         "hypersomnia",
-        "Sleepiness"
+        "Sleepiness",
+        "Excessive daytime sleepiness"
       ],
       "url": "https://www.nhs.uk/conditions/excessive-daytime-sleepiness-hypersomnia/",
       "retrieved_at": "2026-09-26"
@@ -3793,7 +3850,8 @@
       "normalised_title": "excessive sweating hyperhidrosis",
       "variants": [
         "hyperhidrosis",
-        "Sweating (excessive)"
+        "Sweating (excessive)",
+        "Excessive sweating"
       ],
       "url": "https://www.nhs.uk/conditions/excessive-sweating-hyperhidrosis/",
       "retrieved_at": "2026-09-26"
@@ -3847,7 +3905,8 @@
       "title": "Prosopagnosia (face blindness)",
       "normalised_title": "prosopagnosia face blindness",
       "variants": [
-        "face blindness"
+        "face blindness",
+        "Prosopagnosia"
       ],
       "url": "https://www.nhs.uk/conditions/face-blindness/",
       "retrieved_at": "2026-09-26"
@@ -3896,7 +3955,8 @@
       "title": "Female genital mutilation (FGM)",
       "normalised_title": "female genital mutilation fgm",
       "variants": [
-        "FGM"
+        "FGM",
+        "Female genital mutilation"
       ],
       "url": "https://www.nhs.uk/conditions/female-genital-mutilation-fgm/",
       "retrieved_at": "2026-09-26"
@@ -4069,7 +4129,8 @@
       "title": "Fluticasone inhalers",
       "normalised_title": "fluticasone inhalers",
       "variants": [
-        "Flixotide"
+        "Flixotide",
+        "fluticasone"
       ],
       "url": "https://www.nhs.uk/medicines/fluticasone-inhalers/",
       "retrieved_at": "2026-09-26"
@@ -4083,7 +4144,8 @@
       "variants": [
         "Flixonase",
         "Avamys",
-        "Nasofan"
+        "Nasofan",
+        "fluticasone nasal spray and"
       ],
       "url": "https://www.nhs.uk/medicines/fluticasone-nasal-spray-and-drops/",
       "retrieved_at": "2026-09-26"
@@ -4215,7 +4277,8 @@
       "normalised_title": "fybogel ispaghula husk",
       "variants": [
         "ispaghula husk",
-        "Ispagel"
+        "Ispagel",
+        "Fybogel"
       ],
       "url": "https://www.nhs.uk/medicines/fybogel-ispaghula-husk/",
       "retrieved_at": "2026-09-26"
@@ -4317,7 +4380,8 @@
       "title": "Generalised anxiety disorder (GAD)",
       "normalised_title": "generalised anxiety disorder gad",
       "variants": [
-        "GAD"
+        "GAD",
+        "Generalised anxiety disorder"
       ],
       "url": "https://www.nhs.uk/mental-health/conditions/generalised-anxiety-disorder-gad/",
       "retrieved_at": "2026-09-26"
@@ -4440,7 +4504,8 @@
         "GTN",
         "Rectogesic",
         "Minitran",
-        "Glytrin"
+        "Glytrin",
+        "Glyceryl trinitrate"
       ],
       "url": "https://www.nhs.uk/medicines/glyceryl-trinitrate-gtn/",
       "retrieved_at": "2026-09-26"
@@ -4737,7 +4802,8 @@
       "normalised_title": "heat rash prickly heat",
       "variants": [
         "prickly heat",
-        "Sweat rash"
+        "Sweat rash",
+        "Heat rash"
       ],
       "url": "https://www.nhs.uk/conditions/heat-rash-prickly-heat/",
       "retrieved_at": "2026-09-26"
@@ -4761,7 +4827,8 @@
       "title": "Henoch-Schönlein purpura (HSP)",
       "normalised_title": "henoch schonlein purpura hsp",
       "variants": [
-        "HSP"
+        "HSP",
+        "Henoch-Schönlein purpura"
       ],
       "url": "https://www.nhs.uk/conditions/henoch-schonlein-purpura-hsp/",
       "retrieved_at": "2026-09-26"
@@ -4814,7 +4881,8 @@
       "normalised_title": "hereditary haemorrhagic telangiectasia hht",
       "variants": [
         "HHT",
-        "hereditary haemorrahagic telangiectasia"
+        "hereditary haemorrahagic telangiectasia",
+        "Hereditary haemorrhagic telangiectasia"
       ],
       "url": "https://www.nhs.uk/conditions/hereditary-haemorrahagic-telangiectasia/",
       "retrieved_at": "2026-09-26"
@@ -4883,7 +4951,8 @@
       "title": "Haemophilus influenzae type b (Hib)",
       "normalised_title": "haemophilus influenzae type b hib",
       "variants": [
-        "Hib"
+        "Hib",
+        "Haemophilus influenzae type b"
       ],
       "url": "https://www.nhs.uk/conditions/hib/",
       "retrieved_at": "2026-09-26"
@@ -4921,7 +4990,8 @@
       "title": "High blood sugar (hyperglycaemia)",
       "normalised_title": "high blood sugar hyperglycaemia",
       "variants": [
-        "hyperglycaemia"
+        "hyperglycaemia",
+        "High blood sugar"
       ],
       "url": "https://www.nhs.uk/conditions/high-blood-sugar-hyperglycaemia/",
       "retrieved_at": "2026-09-26"
@@ -4999,7 +5069,8 @@
       "title": "Hormone replacement therapy (HRT)",
       "normalised_title": "hormone replacement therapy hrt",
       "variants": [
-        "HRT"
+        "HRT",
+        "Hormone replacement therapy"
       ],
       "url": "https://www.nhs.uk/medicines/hormone-replacement-therapy-hrt/",
       "retrieved_at": "2026-09-26"
@@ -5012,7 +5083,8 @@
       "normalised_title": "human papillomavirus hpv",
       "variants": [
         "HPV",
-        "human papilloma virus hpv"
+        "human papilloma virus hpv",
+        "Human papillomavirus"
       ],
       "url": "https://www.nhs.uk/conditions/human-papilloma-virus-hpv/",
       "retrieved_at": "2026-09-26"
@@ -5056,7 +5128,8 @@
       "title": "Hydrocortisone buccal tablets",
       "normalised_title": "hydrocortisone buccal tablets",
       "variants": [
-        "Corlan"
+        "Corlan",
+        "hydrocortisone buccal"
       ],
       "url": "https://www.nhs.uk/medicines/hydrocortisone-buccal-tablets/",
       "retrieved_at": "2026-09-26"
@@ -5072,7 +5145,8 @@
         "Anusol HC",
         "Proctosedyl",
         "Uniroid",
-        "Xyloproct"
+        "Xyloproct",
+        "hydrocortisone"
       ],
       "url": "https://www.nhs.uk/medicines/hydrocortisone-for-piles-and-itchy-bottom/",
       "retrieved_at": "2026-09-26"
@@ -5085,7 +5159,8 @@
       "normalised_title": "hydrocortisone for skin",
       "variants": [
         "Derma Care",
-        "HC45"
+        "HC45",
+        "hydrocortisone"
       ],
       "url": "https://www.nhs.uk/medicines/hydrocortisone-for-skin/",
       "retrieved_at": "2026-09-26"
@@ -5096,7 +5171,9 @@
       "section": "medicines",
       "title": "Hydrocortisone injections",
       "normalised_title": "hydrocortisone injections",
-      "variants": [],
+      "variants": [
+        "hydrocortisone"
+      ],
       "url": "https://www.nhs.uk/medicines/hydrocortisone-injections/",
       "retrieved_at": "2026-09-26"
     },
@@ -5118,7 +5195,8 @@
       "normalised_title": "hydrocortisone tablets",
       "variants": [
         "Plenadren",
-        "Efmody"
+        "Efmody",
+        "hydrocortisone"
       ],
       "url": "https://www.nhs.uk/medicines/hydrocortisone-tablets/",
       "retrieved_at": "2026-09-26"
@@ -5176,7 +5254,8 @@
       "title": "Noise sensitivity (hyperacusis)",
       "normalised_title": "noise sensitivity hyperacusis",
       "variants": [
-        "hyperacusis"
+        "hyperacusis",
+        "Noise sensitivity"
       ],
       "url": "https://www.nhs.uk/conditions/hyperacusis/",
       "retrieved_at": "2026-09-26"
@@ -5237,7 +5316,8 @@
         "Fenbid",
         "Ibugel",
         "Ibuleve",
-        "ibuprofen for adults"
+        "ibuprofen for adults",
+        "ibuprofen"
       ],
       "url": "https://www.nhs.uk/medicines/ibuprofen-for-adults/",
       "retrieved_at": "2026-09-26"
@@ -5249,7 +5329,8 @@
       "title": "Ibuprofen for children",
       "normalised_title": "ibuprofen for children",
       "variants": [
-        "Nurofen for children"
+        "Nurofen for children",
+        "ibuprofen"
       ],
       "url": "https://www.nhs.uk/medicines/ibuprofen-for-children/",
       "retrieved_at": "2026-09-26"
@@ -5432,7 +5513,8 @@
       "title": "Irritable bowel syndrome (IBS)",
       "normalised_title": "irritable bowel syndrome ibs",
       "variants": [
-        "IBS"
+        "IBS",
+        "Irritable bowel syndrome"
       ],
       "url": "https://www.nhs.uk/conditions/irritable-bowel-syndrome-ibs/",
       "retrieved_at": "2026-09-26"
@@ -5461,7 +5543,8 @@
       "title": "Isotretinoin (Roaccutane)",
       "normalised_title": "isotretinoin roaccutane",
       "variants": [
-        "Roaccutane"
+        "Roaccutane",
+        "Isotretinoin"
       ],
       "url": "https://www.nhs.uk/medicines/isotretinoin-roaccutane/",
       "retrieved_at": "2026-09-26"
@@ -5493,7 +5576,8 @@
       "title": "Jaundice in babies",
       "normalised_title": "jaundice in babies",
       "variants": [
-        "Newborn jaundice"
+        "Newborn jaundice",
+        "jaundice"
       ],
       "url": "https://www.nhs.uk/conditions/jaundice-in-babies/",
       "retrieved_at": "2026-09-26"
@@ -6112,7 +6196,8 @@
       "normalised_title": "low blood pressure hypotension",
       "variants": [
         "hypotension",
-        "Blood pressure (low)"
+        "Blood pressure (low)",
+        "Low blood pressure"
       ],
       "url": "https://www.nhs.uk/conditions/low-blood-pressure-hypotension/",
       "retrieved_at": "2026-09-26"
@@ -6124,7 +6209,8 @@
       "title": "Low blood sugar (hypoglycaemia)",
       "normalised_title": "low blood sugar hypoglycaemia",
       "variants": [
-        "hypoglycaemia"
+        "hypoglycaemia",
+        "Low blood sugar"
       ],
       "url": "https://www.nhs.uk/conditions/low-blood-sugar-hypoglycaemia/",
       "retrieved_at": "2026-09-26"
@@ -6406,7 +6492,8 @@
       "normalised_title": "medroxyprogesterone tablets",
       "variants": [
         "Climanor",
-        "Provera"
+        "Provera",
+        "medroxyprogesterone"
       ],
       "url": "https://www.nhs.uk/medicines/medroxyprogesterone-tablets/",
       "retrieved_at": "2026-09-26"
@@ -6582,7 +6669,8 @@
         "Delmosart",
         "Equasym",
         "Medikinet",
-        "methylphenidate adults"
+        "methylphenidate adults",
+        "methylphenidate"
       ],
       "url": "https://www.nhs.uk/medicines/methylphenidate-adults/",
       "retrieved_at": "2026-09-26"
@@ -6599,7 +6687,8 @@
         "Medikinet",
         "Delmosart",
         "Equasym",
-        "methylphenidate children"
+        "methylphenidate children",
+        "methylphenidate"
       ],
       "url": "https://www.nhs.uk/medicines/methylphenidate-children/",
       "retrieved_at": "2026-09-26"
@@ -6647,7 +6736,8 @@
       "title": "Middle East respiratory syndrome (MERS)",
       "normalised_title": "middle east respiratory syndrome mers",
       "variants": [
-        "MERS"
+        "MERS",
+        "Middle East respiratory syndrome"
       ],
       "url": "https://www.nhs.uk/conditions/middle-east-respiratory-syndrome-mers/",
       "retrieved_at": "2026-09-26"
@@ -6731,7 +6821,8 @@
       "title": "Mometasone for skin",
       "normalised_title": "mometasone for skin",
       "variants": [
-        "Elocon"
+        "Elocon",
+        "mometasone"
       ],
       "url": "https://www.nhs.uk/medicines/mometasone-for-skin/",
       "retrieved_at": "2026-09-26"
@@ -6744,7 +6835,8 @@
       "normalised_title": "mometasone nasal spray",
       "variants": [
         "Clarinaze",
-        "Nasonex"
+        "Nasonex",
+        "mometasone"
       ],
       "url": "https://www.nhs.uk/medicines/mometasone-nasal-spray/",
       "retrieved_at": "2026-09-26"
@@ -6933,7 +7025,8 @@
       "title": "Myelodysplastic syndrome (MDS)",
       "normalised_title": "myelodysplastic syndrome mds",
       "variants": [
-        "MDS"
+        "MDS",
+        "Myelodysplastic syndrome"
       ],
       "url": "https://www.nhs.uk/conditions/myelodysplastic-syndrome-mds/",
       "retrieved_at": "2026-09-26"
@@ -7197,7 +7290,8 @@
         "benign",
         "Benign brain tumours",
         "Brain tumours (benign)",
-        "Low-grade brain tumours"
+        "Low-grade brain tumours",
+        "Non-cancerous brain tumours"
       ],
       "url": "https://www.nhs.uk/conditions/non-cancerous-benign-brain-tumours/",
       "retrieved_at": "2026-09-26"
@@ -7298,7 +7392,8 @@
       "title": "Obsessive compulsive disorder (OCD)",
       "normalised_title": "obsessive compulsive disorder ocd",
       "variants": [
-        "OCD"
+        "OCD",
+        "Obsessive compulsive disorder"
       ],
       "url": "https://www.nhs.uk/mental-health/conditions/obsessive-compulsive-disorder-ocd/",
       "retrieved_at": "2026-09-26"
@@ -7311,7 +7406,8 @@
       "normalised_title": "swollen ankles feet and legs oedema",
       "variants": [
         "oedema",
-        "Ankles (swollen)"
+        "Ankles (swollen)",
+        "Swollen ankles, feet and legs"
       ],
       "url": "https://www.nhs.uk/conditions/oedema/",
       "retrieved_at": "2026-09-26"
@@ -7350,7 +7446,8 @@
         "Sandrena",
         "Lenzetto",
         "Estradot",
-        "Progynova"
+        "Progynova",
+        "oestrogen tablets patches gel and"
       ],
       "url": "https://www.nhs.uk/medicines/hormone-replacement-therapy-hrt/oestrogen-tablets-patches-gel-and-spray/",
       "retrieved_at": "2026-09-26"
@@ -7388,7 +7485,8 @@
       "title": "Oral thrush (mouth thrush)",
       "normalised_title": "oral thrush mouth thrush",
       "variants": [
-        "mouth thrush"
+        "mouth thrush",
+        "Oral thrush"
       ],
       "url": "https://www.nhs.uk/conditions/oral-thrush-mouth-thrush/",
       "retrieved_at": "2026-09-26"
@@ -7498,7 +7596,8 @@
       "normalised_title": "overactive thyroid hyperthyroidism",
       "variants": [
         "hyperthyroidism",
-        "Thyroid (overactive)"
+        "Thyroid (overactive)",
+        "Overactive thyroid"
       ],
       "url": "https://www.nhs.uk/conditions/overactive-thyroid-hyperthyroidism/",
       "retrieved_at": "2026-09-26"
@@ -7552,7 +7651,8 @@
       "title": "Paget's disease of bone",
       "normalised_title": "paget disease of bone",
       "variants": [
-        "pagets disease bone"
+        "pagets disease bone",
+        "pagets disease of bone"
       ],
       "url": "https://www.nhs.uk/conditions/pagets-disease-bone/",
       "retrieved_at": "2026-09-26"
@@ -7564,7 +7664,8 @@
       "title": "Paget's disease of the nipple",
       "normalised_title": "paget disease of the nipple",
       "variants": [
-        "pagets disease nipple"
+        "pagets disease nipple",
+        "pagets disease of the nipple"
       ],
       "url": "https://www.nhs.uk/conditions/pagets-disease-nipple/",
       "retrieved_at": "2026-09-26"
@@ -7608,7 +7709,8 @@
       "title": "Paracetamol for adults",
       "normalised_title": "paracetamol for adults",
       "variants": [
-        "Panadol"
+        "Panadol",
+        "paracetamol"
       ],
       "url": "https://www.nhs.uk/medicines/paracetamol-for-adults/",
       "retrieved_at": "2026-09-26"
@@ -7622,7 +7724,8 @@
       "variants": [
         "Calpol",
         "Panadol",
-        "paracetamol for children"
+        "paracetamol for children",
+        "paracetamol"
       ],
       "url": "https://www.nhs.uk/medicines/paracetamol-for-children/",
       "retrieved_at": "2026-09-26"
@@ -7782,7 +7885,8 @@
       "title": "Peripheral arterial disease (PAD)",
       "normalised_title": "peripheral arterial disease pad",
       "variants": [
-        "PAD"
+        "PAD",
+        "Peripheral arterial disease"
       ],
       "url": "https://www.nhs.uk/conditions/peripheral-arterial-disease-pad/",
       "retrieved_at": "2026-09-26"
@@ -7859,7 +7963,8 @@
       "normalised_title": "tight foreskin phimosis",
       "variants": [
         "phimosis",
-        "Foreskin problems"
+        "Foreskin problems",
+        "Tight foreskin"
       ],
       "url": "https://www.nhs.uk/conditions/phimosis/",
       "retrieved_at": "2026-09-26"
@@ -7894,7 +7999,8 @@
       "title": "Piles (haemorrhoids)",
       "normalised_title": "piles haemorrhoids",
       "variants": [
-        "haemorrhoids"
+        "haemorrhoids",
+        "Piles"
       ],
       "url": "https://www.nhs.uk/conditions/piles-haemorrhoids/",
       "retrieved_at": "2026-09-26"
@@ -7956,7 +8062,8 @@
       "title": "PMDD (premenstrual dysphoric disorder)",
       "normalised_title": "pmdd premenstrual dysphoric disorder",
       "variants": [
-        "premenstrual dysphoric disorder"
+        "premenstrual dysphoric disorder",
+        "PMDD"
       ],
       "url": "https://www.nhs.uk/conditions/pmdd-premenstrual-dysphoric-disorder/",
       "retrieved_at": "2026-09-26"
@@ -8000,7 +8107,8 @@
       "variants": [
         "PMOS",
         "PCOS",
-        "Polycystic ovary syndrome (PCOS)"
+        "Polycystic ovary syndrome (PCOS)",
+        "Polyendocrine metabolic ovarian syndrome"
       ],
       "url": "https://www.nhs.uk/conditions/polyendocrine-metabolic-ovarian-syndrome-pmos/",
       "retrieved_at": "2026-09-26"
@@ -8134,7 +8242,8 @@
       "title": "Pre-Exposure Prophylaxis (PrEP)",
       "normalised_title": "pre exposure prophylaxis prep",
       "variants": [
-        "PrEP"
+        "PrEP",
+        "Pre-Exposure Prophylaxis"
       ],
       "url": "https://www.nhs.uk/medicines/pre-exposure-prophylaxis-prep/",
       "retrieved_at": "2026-09-26"
@@ -8147,7 +8256,8 @@
       "normalised_title": "pms premenstrual syndrome",
       "variants": [
         "premenstrual syndrome",
-        "pre menstrual syndrome"
+        "pre menstrual syndrome",
+        "PMS"
       ],
       "url": "https://www.nhs.uk/conditions/pre-menstrual-syndrome/",
       "retrieved_at": "2026-09-26"
@@ -8159,7 +8269,8 @@
       "title": "Prednisolone tablets and liquid",
       "normalised_title": "prednisolone tablets and liquid",
       "variants": [
-        "prednisolone"
+        "prednisolone",
+        "prednisolone tablets and"
       ],
       "url": "https://www.nhs.uk/medicines/prednisolone/",
       "retrieved_at": "2026-09-26"
@@ -8196,7 +8307,8 @@
       "title": "Pressure ulcers (pressure sores)",
       "normalised_title": "pressure ulcers pressure sores",
       "variants": [
-        "pressure sores"
+        "pressure sores",
+        "Pressure ulcers"
       ],
       "url": "https://www.nhs.uk/conditions/pressure-sores/",
       "retrieved_at": "2026-09-26"
@@ -8209,7 +8321,8 @@
       "normalised_title": "primary biliary cholangitis primary biliary cirrhosis",
       "variants": [
         "primary biliary cirrhosis",
-        "primary biliary cholangitis pbc"
+        "primary biliary cholangitis pbc",
+        "Primary biliary cholangitis"
       ],
       "url": "https://www.nhs.uk/conditions/primary-biliary-cholangitis-pbc/",
       "retrieved_at": "2026-09-26"
@@ -8360,7 +8473,8 @@
       "title": "PTSD (post-traumatic stress disorder)",
       "normalised_title": "ptsd post traumatic stress disorder",
       "variants": [
-        "post-traumatic stress disorder"
+        "post-traumatic stress disorder",
+        "PTSD"
       ],
       "url": "https://www.nhs.uk/mental-health/conditions/ptsd-post-traumatic-stress-disorder/",
       "retrieved_at": "2026-09-26"
@@ -8498,7 +8612,8 @@
       "title": "Reflux in babies",
       "normalised_title": "reflux in babies",
       "variants": [
-        "Acid reflux in babies"
+        "Acid reflux in babies",
+        "reflux"
       ],
       "url": "https://www.nhs.uk/conditions/reflux-in-babies/",
       "retrieved_at": "2026-09-26"
@@ -8510,7 +8625,8 @@
       "title": "Repetitive strain injury (RSI)",
       "normalised_title": "repetitive strain injury rsi",
       "variants": [
-        "RSI"
+        "RSI",
+        "Repetitive strain injury"
       ],
       "url": "https://www.nhs.uk/conditions/repetitive-strain-injury-rsi/",
       "retrieved_at": "2026-09-26"
@@ -8522,7 +8638,8 @@
       "title": "Respiratory syncytial virus (RSV)",
       "normalised_title": "respiratory syncytial virus rsv",
       "variants": [
-        "RSV"
+        "RSV",
+        "Respiratory syncytial virus"
       ],
       "url": "https://www.nhs.uk/conditions/respiratory-syncytial-virus-rsv/",
       "retrieved_at": "2026-09-26"
@@ -8535,7 +8652,8 @@
       "normalised_title": "respiratory tract infections rtis",
       "variants": [
         "RTIs",
-        "respiratory tract infection"
+        "respiratory tract infection",
+        "Respiratory tract infections"
       ],
       "url": "https://www.nhs.uk/conditions/respiratory-tract-infection/",
       "retrieved_at": "2026-09-26"
@@ -8571,7 +8689,8 @@
       "normalised_title": "retinal ocular migraine",
       "variants": [
         "ocular",
-        "Ocular migraine"
+        "Ocular migraine",
+        "Retinal migraine"
       ],
       "url": "https://www.nhs.uk/conditions/retinal-ocular-migraine/",
       "retrieved_at": "2026-09-26"
@@ -8619,7 +8738,8 @@
       "variants": [
         "HDFN",
         "Rhesus disease",
-        "rhesus disease hdfn"
+        "rhesus disease hdfn",
+        "Haemolytic disease of the fetus and newborn"
       ],
       "url": "https://www.nhs.uk/conditions/rhesus-disease-hdfn/",
       "retrieved_at": "2026-09-26"
@@ -8762,7 +8882,8 @@
         "Salamol",
         "Easi-Breathe",
         "Salbulin",
-        "salbutamol inhaler"
+        "salbutamol inhaler",
+        "salbutamol"
       ],
       "url": "https://www.nhs.uk/medicines/salbutamol-inhaler/",
       "retrieved_at": "2026-09-26"
@@ -8887,7 +9008,8 @@
       "title": "Seasonal affective disorder (SAD)",
       "normalised_title": "seasonal affective disorder sad",
       "variants": [
-        "SAD"
+        "SAD",
+        "Seasonal affective disorder"
       ],
       "url": "https://www.nhs.uk/mental-health/conditions/seasonal-affective-disorder-sad/",
       "retrieved_at": "2026-09-26"
@@ -8971,7 +9093,9 @@
         "Evorel Sequi",
         "Elleste Duet",
         "Femoston",
-        "Novofem"
+        "Novofem",
+        "Sequential combined hormone replacement therapy tablets and patches",
+        "sequential combined hormone replacement therapy tablets and"
       ],
       "url": "https://www.nhs.uk/medicines/hormone-replacement-therapy-hrt/sequential-combined-hormone-replacement-therapy-hrt-tablets-and-patches/",
       "retrieved_at": "2026-09-26"
@@ -8995,7 +9119,8 @@
       "title": "Sexually transmitted infections (STIs)",
       "normalised_title": "sexually transmitted infections stis",
       "variants": [
-        "STIs"
+        "STIs",
+        "Sexually transmitted infections"
       ],
       "url": "https://www.nhs.uk/conditions/sexually-transmitted-infections-stis/",
       "retrieved_at": "2026-09-26"
@@ -9072,7 +9197,8 @@
       "title": "Sildenafil (Viagra)",
       "normalised_title": "sildenafil viagra",
       "variants": [
-        "Viagra"
+        "Viagra",
+        "Sildenafil"
       ],
       "url": "https://www.nhs.uk/medicines/sildenafil-viagra/",
       "retrieved_at": "2026-09-26"
@@ -9106,7 +9232,8 @@
       "title": "Sinusitis (sinus infection)",
       "normalised_title": "sinusitis sinus infection",
       "variants": [
-        "sinus infection"
+        "sinus infection",
+        "Sinusitis"
       ],
       "url": "https://www.nhs.uk/conditions/sinusitis-sinus-infection/",
       "retrieved_at": "2026-09-26"
@@ -9312,7 +9439,8 @@
       "title": "Spinal muscular atrophy (SMA)",
       "normalised_title": "spinal muscular atrophy sma",
       "variants": [
-        "SMA"
+        "SMA",
+        "Spinal muscular atrophy"
       ],
       "url": "https://www.nhs.uk/conditions/spinal-muscular-atrophy-sma/",
       "retrieved_at": "2026-09-26"
@@ -9546,7 +9674,8 @@
       "title": "Supraventricular tachycardia (SVT)",
       "normalised_title": "supraventricular tachycardia svt",
       "variants": [
-        "SVT"
+        "SVT",
+        "Supraventricular tachycardia"
       ],
       "url": "https://www.nhs.uk/conditions/supraventricular-tachycardia-svt/",
       "retrieved_at": "2026-09-26"
@@ -9558,7 +9687,8 @@
       "title": "Swollen arms and hands (oedema)",
       "normalised_title": "swollen arms and hands oedema",
       "variants": [
-        "oedema"
+        "oedema",
+        "Swollen arms and hands"
       ],
       "url": "https://www.nhs.uk/conditions/swollen-arms-and-hands-oedema/",
       "retrieved_at": "2026-09-26"
@@ -9595,7 +9725,8 @@
       "normalised_title": "tailbone coccyx pain",
       "variants": [
         "coccyx",
-        "Coccyx pain"
+        "Coccyx pain",
+        "Tailbone pain"
       ],
       "url": "https://www.nhs.uk/conditions/tailbone-coccyx-pain/",
       "retrieved_at": "2026-09-26"
@@ -9636,7 +9767,8 @@
       "normalised_title": "temporomandibular disorder tmd",
       "variants": [
         "TMD",
-        "Jaw pain"
+        "Jaw pain",
+        "Temporomandibular disorder"
       ],
       "url": "https://www.nhs.uk/conditions/temporomandibular-disorder-tmd/",
       "retrieved_at": "2026-09-26"
@@ -9728,7 +9860,8 @@
         "Tyvera",
         "Athiam",
         "ThiaDose",
-        "ThiamEss"
+        "ThiamEss",
+        "Thiamine"
       ],
       "url": "https://www.nhs.uk/medicines/thiamine-vitamin-b1/",
       "retrieved_at": "2026-09-26"
@@ -9825,7 +9958,8 @@
       "title": "Timolol eye drops",
       "normalised_title": "timolol eye drops",
       "variants": [
-        "Tiopex"
+        "Tiopex",
+        "timolol"
       ],
       "url": "https://www.nhs.uk/medicines/timolol-eye-drops/",
       "retrieved_at": "2026-09-26"
@@ -9849,7 +9983,8 @@
       "variants": [
         "Braltus",
         "Spiriva",
-        "Spiriva Respimat"
+        "Spiriva Respimat",
+        "tiotropium"
       ],
       "url": "https://www.nhs.uk/medicines/tiotropium-inhalers/",
       "retrieved_at": "2026-09-26"
@@ -10004,7 +10139,8 @@
       "title": "Transient ischaemic attack (TIA)",
       "normalised_title": "transient ischaemic attack tia",
       "variants": [
-        "TIA"
+        "TIA",
+        "Transient ischaemic attack"
       ],
       "url": "https://www.nhs.uk/conditions/transient-ischaemic-attack-tia/",
       "retrieved_at": "2026-09-26"
@@ -10079,7 +10215,8 @@
       "title": "Tuberculosis (TB)",
       "normalised_title": "tuberculosis tb",
       "variants": [
-        "TB"
+        "TB",
+        "Tuberculosis"
       ],
       "url": "https://www.nhs.uk/conditions/tuberculosis-tb/",
       "retrieved_at": "2026-09-26"
@@ -10168,7 +10305,8 @@
       "normalised_title": "underactive thyroid hypothyroidism",
       "variants": [
         "hypothyroidism",
-        "Thyroid (underactive)"
+        "Thyroid (underactive)",
+        "Underactive thyroid"
       ],
       "url": "https://www.nhs.uk/conditions/underactive-thyroid-hypothyroidism/",
       "retrieved_at": "2026-09-26"
@@ -10213,7 +10351,8 @@
       "normalised_title": "urinary tract infections utis",
       "variants": [
         "UTIs",
-        "Cystitis"
+        "Cystitis",
+        "Urinary tract infections"
       ],
       "url": "https://www.nhs.uk/conditions/urinary-tract-infections-utis/",
       "retrieved_at": "2026-09-26"
@@ -10226,7 +10365,8 @@
       "normalised_title": "utrogestan micronised progesterone",
       "variants": [
         "micronised progesterone",
-        "Progesterone"
+        "Progesterone",
+        "Utrogestan"
       ],
       "url": "https://www.nhs.uk/medicines/hormone-replacement-therapy-hrt/utrogestan-micronised-progesterone/",
       "retrieved_at": "2026-09-26"

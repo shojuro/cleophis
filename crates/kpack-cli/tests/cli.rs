@@ -136,6 +136,10 @@ fn titles_json_has_one_entry_per_page_with_merged_variants_and_sources() {
     let para = &entries[2];
     let v = para["variants"].as_array().unwrap();
     assert!(v.contains(&Value::from("Calpol")) && v.contains(&Value::from("Panadol")), "brands are variants");
+    assert!(v.contains(&Value::from("paracetamol")), "the core name is a variant");
+    assert!(copd["variants"].as_array().unwrap().contains(&Value::from("Chronic obstructive pulmonary disease")));
+    assert_eq!(h["merge_target_tokens"], 150);
+    assert_eq!(h["merge_max_tokens"], 256);
     assert_eq!(para["section"], "medicines");
 }
 
@@ -206,6 +210,15 @@ fn the_built_pack_mounts_lexically_and_answers_found_did_you_mean_not_found() {
     assert_eq!(source.retrieved_at.as_deref(), Some("2026-09-25"));
     assert!(!chunks.is_empty());
     assert!(matches!(retrieve_lexical(&pack, "Calpol", 3).unwrap(), LexicalOutcome::Found { .. }));
+    // Round 2: the bare core name and the parenthetical-free title.
+    let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, "paracetamol", 3).unwrap() else {
+        panic!("the core name should resolve");
+    };
+    assert_eq!(title, "Paracetamol for adults");
+    assert!(matches!(
+        retrieve_lexical(&pack, "chronic obstructive pulmonary disease", 3).unwrap(),
+        LexicalOutcome::Found { .. }
+    ));
     let o = retrieve_lexical(&pack, "paracetamol for adult", 3).unwrap();
     assert_eq!(o, LexicalOutcome::DidYouMean { candidates: vec!["Paracetamol for adults".to_string()] });
     assert_eq!(retrieve_lexical(&pack, "Zeltrofen", 3).unwrap(), LexicalOutcome::NotFound);
