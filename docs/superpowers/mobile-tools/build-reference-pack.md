@@ -5,16 +5,16 @@ Medicines A-Z and Health A-Z content. The phone looks entities up in it
 lexically (no embedder on Android). Training rows (A33) and the reference
 probe bank are cut from disjoint entity clusters of the same corpus.
 
-This runbook covers the whole path. Steps 1, 2, 4 and 5 exist today (Phase
-1h Task M4a). Step 3, the pack build, is Task M4b. Step 6, the embed, is
+This runbook covers the whole path. Steps 1, 2, 4 and 5 are Phase 1h
+Task M4a. Step 3, the pack build, is Task M4b. Step 6, the embed, is
 Task M5.
 
 | Step | Who | Tool | Output |
 |---|---|---|---|
 | 1. Fetch the corpus | agent or founder | `tools/reference/fetch_nhs.py` | `tools/reference/corpus/` (committed) |
 | 2. Build the clusters | agent or founder | `tools/reference/clusters.py` | `tools/reference/reference-clusters.json` (committed) |
-| 3. Build the pack | agent or founder | `crates/kpack-cli` (M4b) | `reference.kpack`, `chunks.jsonl`, `titles.json` |
-| 4. Sign the pack | **founder only** | `tools/pipeline/sign_pack.py` | `reference.kpack.sig` |
+| 3. Build the pack | agent or founder | `crates/kpack-cli` (M4b) | `reference-uk-v1.kpack`, `chunks.jsonl`, `titles.json` |
+| 4. Sign the pack | **founder only** | `tools/pipeline/sign_pack.py` | `reference-uk-v1.kpack.sig` |
 | 5. Verify the signature | anyone | `tools/pipeline/sign_pack.py --verify-with` | exit 0 |
 | 6. Embed the pack | agent or founder | M5's resource embed | the triage build variant |
 
@@ -243,11 +243,92 @@ first word.
 
 ## 3. Build the pack (Task M4b)
 
-`crates/kpack-cli` builds a `PackTier::Curated` pack from the committed
-corpus with `SOURCE_DATE_EPOCH`. It also writes `chunks.jsonl` and
-`titles.json`, the title index. M4b fills in this step. The pack must
-rebuild byte-identically from the committed corpus, because the signature
-is over its bytes.
+`crates/kpack-cli` builds the pack from the committed corpus and clusters
+file. It needs Rust only: no network, no key, no embedder and no LLM. Run
+these from the repo root before step 4:
+
+```bash
+cargo build -p kpack-cli --release
+SOURCE_DATE_EPOCH=1790380800 target/release/kpack-cli build-reference \
+  --corpus tools/reference/corpus \
+  --clusters tools/reference/reference-clusters.json \
+  --out tools/reference/build
+target/release/kpack-cli verify \
+  --corpus tools/reference/corpus \
+  --clusters tools/reference/reference-clusters.json \
+  --dir tools/reference/build
+```
+
+`verify` rebuilds from scratch in a temporary directory and must print
+`OK: a fresh build is byte-identical`. For the committed corpus the build
+prints these values:
+
+| Output | Value |
+|---|---|
+| Pack | `tools/reference/build/reference-uk-v1.kpack`, 22,810,624 bytes |
+| Pack sha256 | `33e137631d7904d535c11276de85d75f85a051afc66c4c8a36823a0ff42d0b45` |
+| Content sha256 | `fbc79a634e8c8c220bfe452f9dad6303397e72531dfbcfd744d548ba78f50610` |
+| Pages (docs, title entries) | 941 |
+| Chunks | 63,957 |
+
+- **`SOURCE_DATE_EPOCH`.** It is required, and every timestamp in the pack
+  derives from it. 1790380800 is 2026-09-26T00:00:00Z, the corpus fetch
+  date. After a corpus refresh, use the new fetch date:
+  `date -u -d 2026-09-26 +%s`. The value is recorded in the pack manifest
+  and in the `titles.json` header, and `verify` reads it from there.
+- **What it checks first.** Each page's front matter must agree with
+  `corpus/index.json`, and each body's sha256 with the index. Every entry
+  must be in exactly one cluster. Each page's names (title, the title's
+  parentheticals, aliases, brands, slug words) must all appear in its
+  cluster, and every cluster name must belong to one of its pages. Any
+  disagreement stops the build before anything is written.
+- **The pack.** It holds one document per page, in (slug, section) order.
+  The page URL is in `docs.source_path` and the retrieval date in
+  `docs.source_mtime`, with `source_type = nhs-web`, so citations carry
+  both. The pack id is `reference-uk-v1`, the tier is `Curated`, and the
+  schema is v2 with the title index.
+- **Chunking.** The pack is chunked exactly as the desktop chunks, with 400
+  target tokens and 18% overlap, counted by the BGE WordPiece tokenizer.
+  `kpack_core::wordpiece` ports llama.cpp's tokenizer, and a parity test
+  (below) matches llama.cpp on the whole corpus. Nothing is embedded.
+- **Lexical only.** The manifest names no real embedder, so the desktop's
+  dense `Pack::mount` refuses the pack and only `Pack::mount_lexical` opens
+  it. The dense gate floor is 1.0, which fails closed, and
+  `gate_calibrated` is false. The lexical gate is the title match itself
+  and reads no manifest field.
+- **Reproducible.** The same corpus, clusters file and epoch give the same
+  pack bytes, on any machine and in debug or release. The signature from
+  step 4 therefore stays valid for any rebuild of the same inputs.
+
+It writes three files into `tools/reference/build/`:
+
+| File | Committed | What it is |
+|---|---|---|
+| `reference-uk-v1.kpack` | no (gitignored) | the pack; the founder signs it in step 4 |
+| `chunks.jsonl` | yes | every chunk, read back from the pack, in pack order |
+| `titles.json` | yes | the title index: a header, then one entry per page |
+
+- **`chunks.jsonl`.** Each line has `chunk_id, doc_id, slug, title,
+  section_path, locator, url, retrieved_at, text, token_count,
+  content_sha`. `content_sha` is the sha256 of the compact JSON array
+  `[text, section_path, locator, title]`, which in Python is
+  `json.dumps([...], ensure_ascii=False, separators=(",", ":"))`.
+- **`titles.json`.** The header carries the pack id, version and file
+  name, the content sha256, the counts, `source_date_epoch`, the corpus
+  index and clusters shas, the tokenizer and the two hashing rules. The
+  pack's content sha256 is the sha256 over every `content_sha` in pack
+  order, each followed by a newline. Each entry holds a page's title,
+  normalised title, slug, section, variants, URL and retrieval date.
+- **The triage copy.** The triage repo copies both files and pins their
+  sha256:
+
+```
+chunks.jsonl  f66aa1be075d4f74ca66ca779a5ea08e7f391bd302ce6675048d372ad288446a
+titles.json   e6c2775dfefed0634d466fbd1e21cd1291a19857acd509a1a4b7afb6c2e90e8e
+```
+
+After a corpus or clusters change, rebuild and commit both files. Then
+update the pack sha pinned in `crates/kpack-cli/tests/reference_pack.rs`.
 
 ## 4. Sign the pack (founder)
 
@@ -255,12 +336,12 @@ The curator private key never leaves the founder's machine. No agent
 session ever runs this step.
 
 ```bash
-python3 tools/pipeline/sign_pack.py --pack path/to/reference.kpack
+python3 tools/pipeline/sign_pack.py --pack tools/reference/build/reference-uk-v1.kpack
 ```
 
 This reads `CURATOR_KEY_FILE` from `tools/pipeline/.env`, the same
 contract as `sign_catalog.py`. The key file must be outside the repo and
-mode `600`. It writes `path/to/reference.kpack.sig`, a raw 64-byte ed25519
+mode `600`. It writes `tools/reference/build/reference-uk-v1.kpack.sig`, a raw 64-byte ed25519
 signature over the pack's exact bytes. That is the form
 `kpack_core::sign::verify_detached` checks with `verify_strict`.
 
@@ -276,7 +357,7 @@ Verification needs only the public key. The production key is
 `kpack_core::sign::CURATOR_PUBLIC_KEY`.
 
 ```bash
-python3 tools/pipeline/sign_pack.py --pack path/to/reference.kpack \
+python3 tools/pipeline/sign_pack.py --pack tools/reference/build/reference-uk-v1.kpack \
   --verify-with 158cb99e9756e2e4d01d88b7ecfeb99a76547821ffe9f9f1985316c5451cd0c0
 python3 tools/pipeline/sign_pack.py --self-test   # no key, no .env
 ```
@@ -286,7 +367,7 @@ RFC 8032 §7.1 TEST 1 vector byte for byte.
 
 ## 6. Embed (Task M5)
 
-M5 embeds `reference.kpack` and `reference.kpack.sig` in the triage build
+M5 embeds `reference-uk-v1.kpack` and `reference-uk-v1.kpack.sig` in the triage build
 variant as a read-only bundled pack. It records `referencePack: {id,
 sha256, contentSha256, version}` in `src-tauri/resources/catalog.triage.json`.
 `Pack::mount` verifies the curator signature at load, as it does for every
@@ -296,9 +377,22 @@ embed with the signed pair. That step is documented here once M5 lands.
 ## Tests
 
 ```bash
-python3 -m pytest -q tools/                 # fetcher, clusters, sign_pack and the pipeline tests
+python3 -m pytest -q tools/                 # fetcher, clusters, sign_pack, the contract files, the pipeline tests
 python3 tools/pipeline/sign_pack.py --self-test
+cargo test -p kpack-cli                     # the CLI, and the real pack: rebuild, contract files, lookup gate (~3 min)
+cargo test -p kpack-core --features test-util
+# llama.cpp parity of the WordPiece port (needs libclang + cmake and the BGE GGUF):
+KPACK_BGE_GGUF=src-tauri/resources/embedders/bge-base-en-v1.5-q8_0.gguf \
+  cargo test -p kpack-embed --features real --release --test wordpiece_parity -- --ignored --nocapture
 ```
+
+The kpack-cli tests build the real pack twice from the committed corpus.
+They check that both builds equal the pinned pack sha and reproduce the
+committed `chunks.jsonl` and `titles.json`. They also check that every page
+title resolves to its own page, that near-misses get a did-you-mean, and
+that no fabrication-bank fake name is ever found. The Python contract test
+re-derives every `content_sha` and the pack content sha, and checks that no
+chunk carries a media date or a fake name.
 
 The fetcher tests run on synthetic HTML with no network. The clusters
 tests use a synthetic mini-corpus. They also check the committed
