@@ -33,3 +33,7 @@ tools/pipeline/work/
 
 # generated datasets (synthetic) — never committed
 tools/dataset/work/
+
+# NHS reference corpus fetch cache (tools/reference/fetch_nhs.py): raw HTML, never committed —
+# the extracted corpus under tools/reference/corpus/ is what is committed.
+tools/reference/.cache/
