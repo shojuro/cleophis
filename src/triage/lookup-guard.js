@@ -50,7 +50,9 @@
 //  5b. a sentence that is not dose-bearing is ROUTE-BEARING when the vendored
 //      r3 detectors read a care direction in it (`isRouteBearing`: a route
 //      from `detectRoute`, or any direction its scan found, negated,
-//      conditional or offered included). A route-bearing sentence that equals
+//      conditional or offered included; read on the sentence as written AND
+//      on its normalised form with diacritics folded, so no invisible or
+//      fullwidth character hides a route word). A route-bearing sentence that equals
 //      no eligible sentence of a source it cites (or cites none) is withheld
 //      (`route-uncited`).
 //   Over the reply, when any sentence passed 5 or 5b as a quote (a dose or a
@@ -167,7 +169,8 @@ export const OVERDOSE_SENTENCE_PATTERNS = Object.freeze([
   /\blethal(?:ly)?\b/i,
   // a kill word, unless the sentence names what a medicine kills on purpose
   // ("It works by killing the bacteria"): mechanism text, not a narrative
-  /^(?!.*\b(?:bacteria|bacterium|fung(?:us|i|al)|germs|yeast|virus(?:es)?|parasites?|lice|nits|mites|worms|scabies|insects|cells)\b).*\bkill(?:s|ed|ing)?\b/i,
+  // and not "killing yourself" (a crisis signpost, not a narrative)
+  /^(?!.*\bkill(?:s|ed|ing)?\s+(?:yourself|themselves|himself|herself|myself)\b)(?!.*\b(?:bacteria|bacterium|fung(?:us|i|al)|germs|yeast|virus(?:es)?|parasites?|lice|nits|mites|worms|scabies|insects|cells)\b).*\bkill(?:s|ed|ing)?\b/i,
   /\bpoison/i,
   /\btoxic(?:ity)?\b/i,
   /\bliver (?:damage|failure)\b/i,
@@ -188,8 +191,17 @@ export const OVERDOSE_SENTENCE_PATTERNS = Object.freeze([
  * the sentence list too.
  */
 export function isOverdoseSentence(sentence) {
-  const s = String(sentence ?? '');
+  const s = foldMarks(sentence);
   return OVERDOSE_SENTENCE_PATTERNS.some((re) => re.test(s));
+}
+
+/**
+ * Fix round 2: for LIST MATCHING only (never for quote equality), Latin
+ * diacritics are folded away, so "fátal" and "emérgency" read as the words
+ * they spell.
+ */
+function foldMarks(text) {
+  return String(text ?? '').normalize('NFD').replace(/\p{M}/gu, '');
 }
 
 // ── The unit table ──────────────────────────────────────────────────────────
@@ -410,9 +422,19 @@ const hasLowerRoman = (s) => [...s.matchAll(LOWER_ROMAN)].some((m) => STRICT_ROM
  * need to go to A&E." and "There is no need to call an ambulance." are
  * dispositions that `detectRoute` reports as UNCLEAR. A route-bearing
  * sentence must be a quote exactly as a dose-bearing one must.
+ *
+ * Fix round 2: the sentence is read twice, as written and after the guard's
+ * own normaliser (invisible characters out, NFKC, lower case) with Latin
+ * diacritics folded, so fullwidth letters, zero-width spaces, joiners, soft
+ * hyphens and accents cannot hide a route word. Either read is enough.
  */
 export function isRouteBearing(sentence) {
-  const r = detectRoute(String(sentence ?? ''));
+  const raw = String(sentence ?? '');
+  return routeRead(raw) || routeRead(foldMarks(normaliseDoseText(stripListMarker(raw))));
+}
+
+function routeRead(text) {
+  const r = detectRoute(text);
   return r.route !== UNCLEAR || Object.values(r.evidence).some((hits) => hits.length > 0);
 }
 

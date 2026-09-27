@@ -1,5 +1,5 @@
 {
-  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives and their inflections and near-synonyms, fix round 1; a kill word in a sentence naming a microbe or cells is mechanism text and does not match; the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
+  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives and their inflections and near-synonyms, fix round 1; a kill word in a sentence naming a microbe or cells is mechanism text and does not match, nor does \"killing yourself\" (a crisis signpost); Latin diacritics are folded before matching (fix round 2); the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
   "cases": [
     {
       "sentence": "Do not take more than 8 tablets in 24 hours.",
@@ -176,6 +176,22 @@
     {
       "sentence": "It helps stop your heart failure getting worse.",
       "overdose": false
+    },
+    {
+      "sentence": "Call 999 or go to A&E if you have thoughts of harming or killing yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "You have thoughts of harming or killing yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "It can be fátal.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 30 tablets could kill you.",
+      "overdose": true
     }
   ]
 }

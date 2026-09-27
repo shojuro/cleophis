@@ -19,8 +19,8 @@
       "count": 24
     },
     "overdose-sentences.json": {
-      "sha256": "cb5bcf26533c584f255345f5949a61c7914b16f56dde329adc13e6b88c625c95",
-      "count": 44
+      "sha256": "7acb4850963c50686f03ec513a202117baca683895ad3887afd8dc1a8c71e714",
+      "count": 48
     },
     "sentences.json": {
       "sha256": "b4bdc3d36a33e8fba24fb708193126056f8e252929291af37157cd0cafc63852",
@@ -35,8 +35,8 @@
       "count": 32
     },
     "verdicts.json": {
-      "sha256": "49dfe482ef199f78a454ae6aba0f3e44e47820f2438acaf7aaa20dbd8f759cd3",
-      "count": 607
+      "sha256": "6da9555d1eb933582f9fcb0b28a78d94c02838e6ee6c696d49c4ca9de3901a40",
+      "count": 618
     }
   }
 }

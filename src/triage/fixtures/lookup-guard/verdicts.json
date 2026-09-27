@@ -963,6 +963,53 @@
           ],
           "citations": []
         }
+      },
+      {
+        "name": "the narrative list folds Latin diacritics (fix round 2, N2)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "It can be fatal."
+          }
+        ],
+        "replyText": "It can be fátal [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It can be fátal [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a self-harm crisis signpost with \"killing yourself\" is not a narrative (fix round 2, N1; real #21943)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Call 999 or go to A&E if you have thoughts of harming or killing yourself."
+          }
+        ],
+        "replyText": "Call 999 or go to A&E if you have thoughts of harming or killing yourself [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Call 999 or go to A&E if you have thoughts of harming or killing yourself [1].",
+          "kept": [
+            "Call 999 or go to A&E if you have thoughts of harming or killing yourself [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
       }
     ],
     "maximum-and-route-quotable": [
@@ -3159,6 +3206,207 @@
               "reason": "order"
             }
           ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K1 (MA2 re-review): route words read after NFKC, so fullwidth letters do not hide them",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. Ｔｈｉｓ ｉｓ ｎｏｔ ａｎ ｅｍｅｒｇｅｎｃｙ, ｎｏ ｎｅｅｄ ｔｏ ｇｏ ｔｏ Ａ＆Ｅ.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Ｔｈｉｓ ｉｓ ｎｏｔ ａｎ ｅｍｅｒｇｅｎｃｙ, ｎｏ ｎｅｅｄ ｔｏ ｇｏ ｔｏ Ａ＆Ｅ.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K8 (MA2 re-review): a fullwidth emergency direction",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. Ｇｏ ｔｏ Ａ＆Ｅ ｎｏｗ.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Ｇｏ ｔｏ Ａ＆Ｅ ｎｏｗ.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K2 (MA2 re-review): route words read with invisibles out (zero-width space)",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. This is not an emer​gency, no need to go to A​&E.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "This is not an emer​gency, no need to go to A​&E.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K9 (MA2 re-review): a zero-width joiner inside A&E",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. Do not go to A‍&E.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Do not go to A‍&E.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K10 (MA2 re-review): a soft hyphen inside emergency",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. This is not an emer­gency.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "This is not an emer­gency.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K13 (MA2 re-review N2): a combining accent inside emergency is folded for the route read",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. This is not an emérgency.",
+        "note": "Kept by v6 and by v7 up to fix round 1.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "This is not an emérgency.",
+              "reason": "route-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe K12 (MA2 re-review): a Cyrillic letter inside a route word is unreadable",
+        "sources": "noDose",
+        "replyText": "Paracetamol is a common painkiller [1]. This is not an еmergency.",
+        "note": "The script check applies to route sentences as to every sentence.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "This is not an еmergency.",
+              "reason": "unreadable"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "quote: a plain verbatim route quote is kept (fix round 2)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not go to A&E, call 111 instead."
+          }
+        ],
+        "replyText": "Do not go to A&E, call 111 instead [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Do not go to A&E, call 111 instead [1].",
+          "kept": [
+            "Do not go to A&E, call 111 instead [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "quote: a route quote with no number, verbatim after normalisation, is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Go to A&E straight away if you feel very unwell."
+          }
+        ],
+        "replyText": "Go to A​&E straight away if you feel very unwell [1].",
+        "note": "Equality is on normalised text, as for a dose quote.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Go to A​&E straight away if you feel very unwell [1].",
+          "kept": [
+            "Go to A​&E straight away if you feel very unwell [1]."
+          ],
+          "withheld": [],
           "citations": [
             1
           ]

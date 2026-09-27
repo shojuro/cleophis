@@ -182,6 +182,10 @@ test('v7: isRouteBearing reads routes, negated and de-escalating directions, and
     assert.strictEqual(isRouteBearing(s), true, s);
   }
   for (const s of ['Paracetamol is a painkiller [1].', 'Take it with food.', 'Check the label.']) assert.strictEqual(isRouteBearing(s), false, s);
+  // fix round 2: fullwidth, zero-width, joiner, soft hyphen and accents do not hide a route word
+  for (const s of ['Ｇｏ ｔｏ Ａ＆Ｅ ｎｏｗ.', 'This is not an emer\u200bgency.', 'Do not go to A\u200d&E.', 'This is not an emer\u00adgency.', 'This is not an eme\u0301rgency.']) {
+    assert.strictEqual(isRouteBearing(s), true, JSON.stringify(s));
+  }
 });
 
 test('overdose-sections.json: the registered list is frozen and matches what it names', () => {
