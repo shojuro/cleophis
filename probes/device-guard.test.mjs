@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { CRISIS_BLOCK_DEFAULT, crisisReplaceBlock } from '../src/triage/guard.js';
+import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from '../src/triage/guard.js';
 import {
   crisisOptions, guardRecord, guardAll, headerRecord, parseJsonl, run, summarise,
 } from './device-guard.mjs';
@@ -254,7 +254,9 @@ test('the crisis line that reaches the screen is the one passed in, not the guar
 });
 
 test('the default crisis line is the catalog\'s, and they are the same words', () => {
-  assert.strictEqual(crisisLine, CRISIS_BLOCK_DEFAULT,
+  // Phase 1i MA1: the catalog registers `replace`, so its line is the guard's
+  // replace-mode default (no "advice above"), byte for byte.
+  assert.strictEqual(crisisLine, CRISIS_LINE_REPLACE,
     'the guard ships a default and the catalog ships one; a drift between them would '
     + 'put different words on the screen depending on which path appended the block');
 });

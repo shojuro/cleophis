@@ -22,10 +22,13 @@
 //   4. crisis — if the USER's words disclose self-harm and the reply does not
 //      signpost, the product's own crisis block is appended (R15: additional to
 //      the route, never instead of it);
-//      Under `crisisRule: 'replace'` (Phase 1h M2, not yet the default) the
+//      Under `crisisRule: 'replace'` (Phase 1h M2; the catalog's registered
+//      rule from Phase 1i MA1 — `applyGuard`'s own default stays append) the
 //      disclosure instead puts the product's acknowledgement + signpost block
 //      FIRST and shows the model's reply under it only when that reply carries
-//      a route in `replaceKeepRoutes` — see `applyGuard`;
+//      a route in `replaceKeepRoutes` — see `applyGuard`; a kept reply then
+//      loses every sentence that signposts crisis help (`dedupeSignposts`), so
+//      the product's block is the only crisis line on screen;
 //   5. the screen check — LAST, on the finished text, crisis block and all. The
 //      block is product text and nothing above rewrites it, so a check that ran
 //      before the append would be the one rule that looks for a time frame,
@@ -65,6 +68,23 @@ export const CRISIS_BLOCK_DEFAULT =
   + 'and you can also call the Samaritans free on 116 123 at any hour. If there is immediate danger, call 999. '
   + 'This is in addition to the advice above, not instead of it.';
 
+// ── Phase 1i MA1: the replace-mode crisis line ──────────────────────────────
+//
+// Founder decision 4 (2026-09-28): under `replace` the block LEADS the display,
+// and on a hidden reply there is no advice at all — so "the advice above" is
+// wrong on both counts. The replace-mode line is CRISIS_BLOCK_DEFAULT with its
+// final sentence removed and NOTHING ELSE changed: the registered numbers and
+// the signposting are byte-identical. The append line stays as it was, because
+// under append the block IS below the advice, and the append path's bytes are
+// pinned (guard.transcripts.test.mjs's digest).
+//
+// catalog.triage.json's `med-triage` `crisisLine` equals this byte for byte
+// (guard.test.mjs), and the frozen detectors read `crisisReplaceBlock()` as
+// CRISIS_SUPPORT — acknowledged and signposted — and as no route.
+export const CRISIS_LINE_REPLACE =
+  'If you are having thoughts of harming yourself, please tell the health worker with you now, '
+  + 'and you can also call the Samaritans free on 116 123 at any hour. If there is immediate danger, call 999.';
+
 // ── Phase 1h M2: the replace rule's block ───────────────────────────────────
 //
 // Founder decision 2026-09-27: on a plain disclosure the crisis line is the
@@ -86,7 +106,7 @@ export const CRISIS_ACKNOWLEDGEMENT =
   "Thank you for telling me. I'm really sorry you are feeling this way, and you are not alone.";
 
 /** The replace rule's fixed block: the acknowledgement, then the entry's crisis line. */
-export function crisisReplaceBlock(crisisLine = CRISIS_BLOCK_DEFAULT) {
+export function crisisReplaceBlock(crisisLine = CRISIS_LINE_REPLACE) {
   return `${CRISIS_ACKNOWLEDGEMENT} ${crisisLine}`;
 }
 
@@ -281,6 +301,48 @@ export function signpostsCrisisSupport(text) {
 }
 
 /**
+ * Does this text signpost crisis help AT ALL — any of the detector's labels,
+ * the ambiguous 'named crisis service' included?
+ *
+ * The DE-DUPLICATION question, and deliberately wider than
+ * `signpostsCrisisSupport`. That function decides whether to WITHHOLD the
+ * product's block, where a false positive costs a missing crisis line, so the
+ * ambiguous label is excluded. De-duplication runs only when the block is
+ * ALREADY on screen, and a false positive there costs one ordinary sentence
+ * ("give your neighbour a shout") — while a false negative shows a
+ * model-written number beside the product's, and "the Samaritans on 116 124"
+ * carries only the 'named crisis service' label. Every sentence
+ * `signpostsCrisisSupport` matches is matched here too.
+ */
+function signpostsAnyCrisisHelp(text) {
+  return detectCrisisResponse(String(text ?? '')).signposted.length > 0;
+}
+
+/**
+ * Remove every sentence of a KEPT reply that signposts crisis help, so that
+ * when the product's crisis block is on screen it is the only crisis line and
+ * no model-written number — right or wrong — reaches the reader (Phase 1i MA1).
+ *
+ * Sentence-level, like `filterProhibited`. Text with nothing to remove is
+ * returned UNTOUCHED (paragraph breaks and all), so a reply with no signpost
+ * is byte-identical with the rule on or off. If what is left still signposts
+ * as a whole — a signpost no single sentence carries — the whole reply part
+ * goes: fail toward showing less, and the block is still there.
+ *
+ * @returns {{text: string, removed: number}} `removed` is a COUNT; the removed
+ *   sentences survive only in the verdict's `rawReply`, never as display text.
+ */
+export function dedupeSignposts(text) {
+  const src = String(text ?? '');
+  if (!signpostsAnyCrisisHelp(src)) return { text: src, removed: 0 };
+  const sentences = (src.match(SENTENCES) ?? []).map((x) => x.trim()).filter(Boolean);
+  const kept = sentences.filter((x) => !signpostsAnyCrisisHelp(x));
+  const out = tidy(kept.join(' '));
+  if (signpostsAnyCrisisHelp(out)) return { text: '', removed: sentences.length };
+  return { text: out, removed: sentences.length - kept.length };
+}
+
+/**
  * Does the text about to be shown STILL state a time frame it should not?
  *
  * Asked in the scorer's terms, of the SCREEN's text. Not "did the strip remove
@@ -337,7 +399,7 @@ export function unlocatedTimeFrame(route, displayText) {
  *                       fall back to showing PROHIBITED_NOTE alone
  *   detectorsSha        the pin all of the above was decided by
  *
- * UNDER `crisisRule: 'replace'` ONLY, five more keys — so the default verdict
+ * UNDER `crisisRule: 'replace'` ONLY, seven more keys — so the default verdict
  * keeps its twelve-key shape, byte for byte (guard.transcripts.test.mjs pins a
  * digest of it from before the option existed):
  *
@@ -347,6 +409,14 @@ export function unlocatedTimeFrame(route, displayText) {
  *   replyShown          the model's (filtered) reply is on screen under it;
  *                       true whenever the rule did not fire
  *   routeDetected       detectRoute of the RAW reply — what decided replyShown
+ *   dedupeSignposts     whether de-duplication ran (Phase 1i MA1; default true)
+ *   signpostsRemoved    how many sentences of the KEPT reply were cut because
+ *                       they signposted crisis help beside the product's block.
+ *                       A count only: the sentences stay in `rawReply` and are
+ *                       never display text. 0 when the reply is hidden
+ *
+ * Under `append`, `dedupeSignposts: true` must be asked for explicitly; the
+ * verdict then carries those two keys as well (and only then).
  *
  * and when the block replaced the reply outright (`crisisReplaced &&
  * !replyShown`) `banner` is null: no route banner is drawn over text the
@@ -356,18 +426,31 @@ export function unlocatedTimeFrame(route, displayText) {
  * @param {object} opts
  * @param {'append'|'replace'} [opts.crisisRule='append']
  * @param {string[]} [opts.replaceKeepRoutes=['EMERGENCY']] read only by 'replace'
+ * @param {string} [opts.crisisLine] the entry's crisis line; absent means
+ *   CRISIS_BLOCK_DEFAULT under append and CRISIS_LINE_REPLACE under replace
+ * @param {boolean} [opts.dedupeSignposts] default: true under replace, false under append
  */
 export function applyGuard({
-  userText = '', replyText = '', crisisLine = CRISIS_BLOCK_DEFAULT,
+  userText = '', replyText = '', crisisLine,
   crisisRule = 'append', replaceKeepRoutes = REPLACE_KEEP_ROUTES_DEFAULT,
+  dedupeSignposts: dedupe,
 } = {}) {
   // Refused loudly rather than defaulted: a probe run that asked for a rule and
   // silently measured the other would be a registered number about nothing.
   if (!CRISIS_RULES.includes(crisisRule)) {
     throw new TypeError(`applyGuard: unknown crisisRule ${JSON.stringify(crisisRule)}`);
   }
+  if (dedupe !== undefined && typeof dedupe !== 'boolean') {
+    throw new TypeError(`applyGuard: dedupeSignposts must be a boolean, got ${JSON.stringify(dedupe)}`);
+  }
   const replace = crisisRule === 'replace';
   const keepRoutes = replace ? validKeepRoutes(replaceKeepRoutes) : null;
+  // Each rule's own default line (MA1): the append line says "in addition to
+  // the advice above" because under append it IS below the advice; the replace
+  // block leads, so its default line does not.
+  const line = crisisLine ?? (replace ? CRISIS_LINE_REPLACE : CRISIS_BLOCK_DEFAULT);
+  // On by default under replace, off under append (MA1). An explicit value wins.
+  const dedupeOn = dedupe ?? replace;
 
   const raw = String(replyText ?? '');
   const routing = detectRoute(raw);
@@ -407,12 +490,23 @@ export function applyGuard({
   const crisisOnInput = detectCrisisStatement(userText).found;
   if (replace) {
     return replaceVerdict({
-      raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes,
+      raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine: line, keepRoutes, dedupeOn,
     });
   }
+  // Append with de-duplication asked for explicitly (off by default, so the
+  // default verdict keeps its twelve keys and its pinned bytes): on a
+  // disclosure the model's signposting sentences are cut FIRST, which makes the
+  // product's line due below — the product's line replaces the model's.
+  let signpostsRemoved = 0;
+  if (dedupeOn && crisisOnInput) {
+    const d = dedupeSignposts(display);
+    display = d.text;
+    signpostsRemoved = d.removed;
+  }
+  const withLine = (text) => (text ? `${text}\n\n${line}` : line);
   const crisisDue = () => crisisOnInput && !signpostsCrisisSupport(display);
   let crisisLineAppended = crisisDue();
-  if (crisisLineAppended) display = `${display}\n\n${crisisLine}`;
+  if (crisisLineAppended) display = withLine(display);
 
   // THE SCREEN CHECK, LAST, on the finished text — see `unlocatedTimeFrame` for
   // why it asks about the screen rather than about what the strip removed. True
@@ -437,12 +531,12 @@ export function applyGuard({
   if (timeframeUnlocated) {
     display = tidy(TIME_FRAME_NOTE);
     if (crisisDue()) {
-      display = `${display}\n\n${crisisLine}`;
+      display = withLine(display);
       crisisLineAppended = true;
     }
   }
 
-  return {
+  const verdict = {
     route: routing.route,
     why: routing.why,
     banner,
@@ -456,6 +550,8 @@ export function applyGuard({
     prohibitedRemoved: prohibited.removed,
     detectorsSha: pin.sha256,
   };
+  if (dedupeOn) Object.assign(verdict, { dedupeSignposts: true, signpostsRemoved });
+  return verdict;
 }
 
 function validKeepRoutes(routes) {
@@ -482,15 +578,26 @@ function validKeepRoutes(routes) {
  * later rule removes.
  */
 function replaceVerdict({
-  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes,
+  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn,
 }) {
   const crisisReplaced = crisisOnInput;
   const replyShown = !crisisReplaced || keepRoutes.includes(routing.route);
   const block = crisisReplaceBlock(crisisLine);
   const compose = (replyPart) => {
     if (!crisisReplaced) return replyPart;
-    return replyShown ? `${block}\n\n${replyPart}` : block;
+    return replyShown && replyPart ? `${block}\n\n${replyPart}` : block;
   };
+
+  // De-duplication (MA1): the block is on screen whenever the rule fired; the
+  // only model text beside it is a KEPT reply, so that is what is cleaned. A
+  // hidden reply lends nothing to the screen and counts nothing. If every
+  // sentence goes, the block stands alone and the route banner stays.
+  let signpostsRemoved = 0;
+  if (dedupeOn && crisisReplaced && replyShown) {
+    const d = dedupeSignposts(display);
+    display = d.text;
+    signpostsRemoved = d.removed;
+  }
 
   let screen = compose(display);
   const timeframeUnlocated = unlocatedTimeFrame(routing.route, screen);
@@ -514,5 +621,7 @@ function replaceVerdict({
     crisisReplaced,
     replyShown,
     routeDetected: routing.route,
+    dedupeSignposts: dedupeOn,
+    signpostsRemoved,
   };
 }

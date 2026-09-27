@@ -21,7 +21,7 @@
 //      with the Rust-assembled prompt and the query as its single user turn,
 //      then the LOOKUP guard (`applyLookupGuard`) — never `applyGuard`.
 import { detectCrisisStatement } from './triage/detectors.mjs';
-import { CRISIS_BLOCK_DEFAULT, crisisReplaceBlock } from './triage/guard.js';
+import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from './triage/guard.js';
 import {
   LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, applyLookupGuard,
 } from './triage/lookup-guard.js';
@@ -230,7 +230,9 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
   const query = String(text ?? '').trim();
 
   if (detectCrisisStatement(query).found) {
-    const line = (entry && entry.crisisLine) || CRISIS_BLOCK_DEFAULT;
+    // The block REPLACES the reply here, so the fallback is the replace-mode
+    // line (Phase 1i MA1) — there is no "advice above" on this screen.
+    const line = (entry && entry.crisisLine) || CRISIS_LINE_REPLACE;
     return scripted('crisis', crisisReplaceBlock(line), { crisisOnInput: true });
   }
 

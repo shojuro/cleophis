@@ -175,8 +175,11 @@ export function samplingFor({ entry = null, maxTokens = 0, temperature = 0 } = {
  * ABSENT MEANS APPEND, and it means it by passing NOTHING: the returned `{}`
  * spreads into `applyGuard` as no options at all, so an entry without
  * `crisisRule` produces the same twelve-key verdict, byte for byte, as before
- * the option existed. Phase 1i registers the rule in the catalog; until then no
- * shipped entry sets it.
+ * the option existed. Phase 1i MA1 registered the rule in the catalog: the
+ * shipped `med-triage` entry sets `crisisRule: "replace"` with
+ * `crisisKeepRoutes: ["EMERGENCY","CLINICIAN"]` (the wire name; returned here as
+ * `applyGuard`'s `replaceKeepRoutes`). `applyGuard` then de-duplicates crisis
+ * signposts by default under replace, so nothing more is passed for that.
  *
  * SANITISED, NOT REFUSED. `applyGuard` throws on an unknown rule or route,
  * because a probe run measuring the wrong rule must fail. The app is the other

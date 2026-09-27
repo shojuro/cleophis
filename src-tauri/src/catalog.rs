@@ -83,19 +83,21 @@ pub struct CatalogEntry {
     /// greedy; the app's default is temperature 0.7.
     #[serde(default)]
     pub sampling: Option<SamplingOverride>,
-    /// The crisis line the guard appends, region-specific.
+    /// The crisis line the guard shows, region-specific. Under the registered
+    /// `replace` rule (Phase 1i MA1) it follows the product's acknowledgement
+    /// and makes no reference to "the advice above".
     #[serde(default)]
     pub crisis_line: Option<String>,
     /// The guard's crisis rule for this entry (Phase 1h M2): `"append"` or
     /// `"replace"`. Absent means append — the FE passes no option and
-    /// `applyGuard` runs its default. Phase 1i registers the rule; no shipped
-    /// entry sets it this round. `crisisRule` on the wire.
+    /// `applyGuard` runs its default. Phase 1i MA1 registered the rule: the
+    /// shipped `med-triage` entry sets `"replace"`. `crisisRule` on the wire.
     #[serde(default)]
     pub crisis_rule: Option<String>,
     /// Under `"replace"`, the routes whose model reply is still shown under the
     /// product's crisis block (e.g. `["EMERGENCY"]` or
-    /// `["EMERGENCY","CLINICIAN"]`). Absent means `["EMERGENCY"]`, decided in
-    /// the FE. `crisisKeepRoutes` on the wire.
+    /// `["EMERGENCY","CLINICIAN"]`, the shipped `med-triage` value). Absent
+    /// means `["EMERGENCY"]`, decided in the FE. `crisisKeepRoutes` on the wire.
     #[serde(default)]
     pub crisis_keep_routes: Option<Vec<String>>,
     /// The lowest device tier this entry runs acceptably on (Phase 3 P3.3).
@@ -624,10 +626,11 @@ mod tests {
         assert_eq!(v[0].crisis_keep_routes, None);
     }
 
-    /// Phase 1h M2: the crisis rule fields round-trip as camelCase, and the
-    /// shipped triage catalog does NOT set them yet (Phase 1i registers it).
+    /// Phase 1h M2: the crisis rule fields round-trip as camelCase. Phase 1i
+    /// MA1: the shipped triage catalog registers `replace` with
+    /// `["EMERGENCY","CLINICIAN"]`, and its crisis line has no "advice above".
     #[test]
-    fn the_crisis_rule_fields_round_trip_as_camel_case_and_are_unset_in_the_shipped_catalog() {
+    fn the_crisis_rule_fields_round_trip_as_camel_case_and_the_shipped_catalog_registers_replace() {
         let one: Vec<CatalogEntry> = parse_catalog(
             r#"[{"id":"s","name":"S","category":"medical","subject":"Triage","cover":"c.webp",
                  "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/s.gguf",
@@ -646,10 +649,17 @@ mod tests {
 
         let h = triage_hero();
         assert_eq!(
-            h.crisis_rule, None,
-            "Phase 1i registers the rule, not this round"
+            h.crisis_rule.as_deref(),
+            Some("replace"),
+            "Phase 1i MA1 registers the replace rule"
         );
-        assert_eq!(h.crisis_keep_routes, None);
+        assert_eq!(
+            h.crisis_keep_routes,
+            Some(vec!["EMERGENCY".to_string(), "CLINICIAN".to_string()])
+        );
+        let line = h.crisis_line.as_deref().expect("a crisis line");
+        assert!(line.contains("116 123") && line.ends_with("call 999."));
+        assert!(!line.contains("advice above"));
     }
 
     #[test]

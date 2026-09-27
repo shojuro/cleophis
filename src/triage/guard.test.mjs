@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
+  BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_LINE_REPLACE, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
   ROUTE_TO_BANNER, TIME_FRAME_NOTE, applyGuard, crisisReplaceBlock, filterProhibited, routeOfPrefix,
   signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
 } from './guard.js';
@@ -665,13 +665,17 @@ test('the filter never hands back a display its own detectors still object to', 
 // not in this worktree, so its line is pinned below. The loop reads any catalog
 // present as well: when the branches meet, the real file is read and the pin is
 // asserted byte-identical to it, so a reworded catalog cannot drift past this.
+// Phase 1i MA1: the catalog ships the REPLACE-mode line — the append line with
+// its final sentence ("This is in addition to the advice above, not instead of
+// it.") removed, and nothing else changed. Pinned here as literal bytes so a
+// reword of CRISIS_LINE_REPLACE is a red test, not a silent catalog drift.
 const SHIPPED_CRISIS_LINE = 'If you are having thoughts of harming yourself, please tell the health worker with you now, '
-  + 'and you can also call the Samaritans free on 116 123 at any hour. If there is immediate danger, call 999. '
-  + 'This is in addition to the advice above, not instead of it.';
+  + 'and you can also call the Samaritans free on 116 123 at any hour. If there is immediate danger, call 999.';
 
 test('every crisis line this product ships states no time frame, so appending one can never re-insert one', () => {
   const lines = new Map([
     ['CRISIS_BLOCK_DEFAULT', CRISIS_BLOCK_DEFAULT],
+    ['CRISIS_LINE_REPLACE', CRISIS_LINE_REPLACE],
     ['catalog.triage.json med-triage crisisLine (pinned)', SHIPPED_CRISIS_LINE],
   ]);
 
@@ -982,7 +986,9 @@ const NO_ROUTE_REPLY = 'I hear you.';
 
 test('the replace block is read by the FROZEN reply scorer as acknowledged AND signposted, and never as a route', () => {
   const blocks = new Map([
-    ['default', crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)],
+    ['append line', crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)],
+    ['default (replace-mode line)', crisisReplaceBlock()],
+    ['CRISIS_LINE_REPLACE', crisisReplaceBlock(CRISIS_LINE_REPLACE)],
     ['catalog med-triage', crisisReplaceBlock(SHIPPED_CRISIS_LINE)],
   ]);
   for (const [where, block] of blocks) {
@@ -1009,7 +1015,7 @@ test('the replace block is read by the FROZEN reply scorer as acknowledged AND s
 test('replace: a plain disclosure with no red-flag route shows the block ONLY, and no route banner', () => {
   for (const replyText of [CLINICIAN_REPLY, SELF_CARE_REPLY, NO_ROUTE_REPLY]) {
     const v = applyGuard({ userText: DISCLOSURE, replyText, crisisRule: 'replace' });
-    assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_BLOCK_DEFAULT), replyText);
+    assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE), replyText);
     assert.strictEqual(v.banner, null, `${replyText}: the route banner is suppressed`);
     assert.strictEqual(v.crisisOnInput, true);
     assert.strictEqual(v.crisisReplaced, true);
@@ -1025,7 +1031,7 @@ test('replace: a plain disclosure with no red-flag route shows the block ONLY, a
 
 test('replace: a disclosure + EMERGENCY reply shows the block, then the reply, with the emergency banner', () => {
   const v = applyGuard({ userText: DISCLOSURE, replyText: EMERGENCY_REPLY, crisisRule: 'replace' });
-  assert.strictEqual(v.displayText, `${crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)}\n\n${EMERGENCY_REPLY}`);
+  assert.strictEqual(v.displayText, `${crisisReplaceBlock(CRISIS_LINE_REPLACE)}\n\n${EMERGENCY_REPLY}`);
   assert.strictEqual(v.banner, 'emergency');
   assert.strictEqual(v.replyShown, true);
   assert.strictEqual(v.crisisReplaced, true, 'the block still LEADS the display');
@@ -1035,7 +1041,7 @@ test('replace: a disclosure + EMERGENCY reply shows the block, then the reply, w
 
 test('replace: a disclosure + CLINICIAN reply is block-only under {E}, block + reply under {E,C}', () => {
   const e = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'replace' });
-  assert.strictEqual(e.displayText, crisisReplaceBlock(CRISIS_BLOCK_DEFAULT));
+  assert.strictEqual(e.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
   assert.strictEqual(e.replyShown, false);
   assert.strictEqual(e.banner, null);
 
@@ -1043,7 +1049,7 @@ test('replace: a disclosure + CLINICIAN reply is block-only under {E}, block + r
     userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'replace',
     replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
   });
-  assert.strictEqual(ec.displayText, `${crisisReplaceBlock(CRISIS_BLOCK_DEFAULT)}\n\n${CLINICIAN_REPLY}`);
+  assert.strictEqual(ec.displayText, `${crisisReplaceBlock(CRISIS_LINE_REPLACE)}\n\n${CLINICIAN_REPLY}`);
   assert.strictEqual(ec.replyShown, true);
   assert.strictEqual(ec.banner, 'clinician');
   assert.deepStrictEqual(ec.keepRoutes, ['EMERGENCY', 'CLINICIAN']);
@@ -1055,7 +1061,7 @@ test('replace: a kept reply still goes through the prohibited filter and the tim
     replyText: 'Please see your GP within 48 hours. Take 400 mg ibuprofen every six hours.',
     crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
   });
-  const block = crisisReplaceBlock(CRISIS_BLOCK_DEFAULT);
+  const block = crisisReplaceBlock(CRISIS_LINE_REPLACE);
   assert.ok(v.displayText.startsWith(`${block}\n\n`), v.displayText);
   const reply = v.displayText.slice(block.length + 2);
   assert.strictEqual(/ibuprofen|400 mg|48 hours/i.test(reply), false, reply);
@@ -1112,7 +1118,9 @@ test('append (the default) keeps the twelve-key verdict and ignores replaceKeepR
 });
 
 test('replace: the verdict always carries the rule fields, disclosure or not', () => {
-  const extra = ['crisisReplaced', 'crisisRule', 'keepRoutes', 'replyShown', 'routeDetected'];
+  const extra = [
+    'crisisReplaced', 'crisisRule', 'dedupeSignposts', 'keepRoutes', 'replyShown', 'routeDetected', 'signpostsRemoved',
+  ];
   for (const userText of [DISCLOSURE, 'sore throat']) {
     const v = applyGuard({ userText, replyText: CLINICIAN_REPLY, crisisRule: 'replace' });
     for (const k of extra) assert.ok(k in v, `${userText}: ${k}`);
@@ -1130,4 +1138,148 @@ test('replace: the keep set passed in is copied, so a caller mutating it later c
   const v = applyGuard({ userText: DISCLOSURE, replyText: EMERGENCY_REPLY, crisisRule: 'replace', replaceKeepRoutes: keep });
   keep.push('CLINICIAN');
   assert.deepStrictEqual(v.keepRoutes, ['EMERGENCY']);
+});
+
+// ── Phase 1i MA1: the replace-mode crisis line and signpost de-duplication ──
+//
+// Founder decisions 2026-09-28: (2) `replace` with {EMERGENCY, CLINICIAN} is the
+// registered rule; (4) its crisis line makes no reference to "the advice
+// above" — under replace the block LEADS, and on a hidden reply there is no
+// advice at all. And when the block is on screen it is the ONLY crisis line:
+// every sentence of a kept reply that signposts crisis support is removed, so
+// no model-written number (right or wrong) can reach the reader.
+
+test('CRISIS_LINE_REPLACE is the append line minus its final sentence, and nothing else changed', () => {
+  const tail = ' This is in addition to the advice above, not instead of it.';
+  assert.ok(CRISIS_BLOCK_DEFAULT.endsWith(tail), 'the append line is unchanged');
+  assert.strictEqual(CRISIS_LINE_REPLACE, CRISIS_BLOCK_DEFAULT.slice(0, -tail.length));
+  assert.strictEqual(CRISIS_LINE_REPLACE, SHIPPED_CRISIS_LINE);
+  assert.strictEqual(/advice above|instead of/i.test(CRISIS_LINE_REPLACE), false);
+  assert.ok(CRISIS_LINE_REPLACE.includes('116 123') && CRISIS_LINE_REPLACE.includes('call 999'));
+});
+
+test('the catalog med-triage crisisLine equals CRISIS_LINE_REPLACE byte for byte', () => {
+  const cat = JSON.parse(readFileSync(new URL('../../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8'));
+  const e = cat.find((x) => x.id === 'med-triage');
+  assert.strictEqual(Buffer.compare(Buffer.from(e.crisisLine, 'utf8'), Buffer.from(CRISIS_LINE_REPLACE, 'utf8')), 0);
+});
+
+test('the frozen detectors read the replace-mode block as acknowledged AND signposted, never a route or a disclosure', () => {
+  for (const block of [crisisReplaceBlock(), crisisReplaceBlock(CRISIS_LINE_REPLACE)]) {
+    const r = detectCrisisResponse(block);
+    assert.strictEqual(r.handling, CRISIS_HANDLING.CRISIS_SUPPORT, r.handling);
+    assert.ok(r.acknowledged.length > 0);
+    assert.ok(r.signposted.includes('crisis line number'), JSON.stringify(r.signposted));
+    assert.ok(r.signposted.includes('named crisis service'), JSON.stringify(r.signposted));
+    assert.strictEqual(signpostsCrisisSupport(block), true);
+    assert.strictEqual(detectCrisisStatement(block).found, false);
+    assert.strictEqual(detectRoute(block).route, 'UNCLEAR');
+    assert.strictEqual(detectRoute(block).statedUrgency, false);
+  }
+  // The crisis line alone (what append would add) signposts too.
+  assert.strictEqual(signpostsCrisisSupport(CRISIS_LINE_REPLACE), true);
+});
+
+test('with no crisisLine given, replace leads with the replace-mode line and append keeps the append line', () => {
+  const r = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'replace' });
+  assert.strictEqual(r.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  assert.strictEqual(r.displayText.includes('advice above'), false);
+  const a = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY });
+  assert.strictEqual(a.displayText, `${CLINICIAN_REPLY}\n\n${CRISIS_BLOCK_DEFAULT}`);
+});
+
+const WRONG_NUMBER_EMERGENCY = 'Call 999 now for an ambulance. You can also ring the Samaritans on 116 124.';
+
+test('dedupe: a kept EMERGENCY reply with a wrong Samaritans number shows the route and not the number', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY, crisisRule: 'replace' });
+  const block = crisisReplaceBlock(CRISIS_LINE_REPLACE);
+  assert.strictEqual(v.displayText, `${block}\n\nCall 999 now for an ambulance.`);
+  assert.strictEqual(v.displayText.includes('116 124'), false);
+  assert.strictEqual(v.banner, 'emergency');
+  assert.strictEqual(v.replyShown, true);
+  assert.strictEqual(v.dedupeSignposts, true, 'on by default under replace');
+  assert.strictEqual(v.signpostsRemoved, 1);
+  assert.strictEqual(v.rawReply, WRONG_NUMBER_EMERGENCY, 'the raw reply is the log, never the display');
+});
+
+test('dedupe: append leaves the model number on screen (off by default), and the append verdict keeps twelve keys', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY });
+  assert.ok(v.displayText.includes('116 124'), v.displayText);
+  assert.strictEqual(Object.keys(v).length, 12);
+  assert.strictEqual('signpostsRemoved' in v, false);
+});
+
+test('dedupe: off under replace shows the model number under the block, and records zero', () => {
+  const v = applyGuard({
+    userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY, crisisRule: 'replace', dedupeSignposts: false,
+  });
+  assert.ok(v.displayText.endsWith(WRONG_NUMBER_EMERGENCY), v.displayText);
+  assert.strictEqual(v.dedupeSignposts, false);
+  assert.strictEqual(v.signpostsRemoved, 0);
+});
+
+test('dedupe: a kept reply repeating the RIGHT number is cut too, so the block is the only crisis line', () => {
+  const reply = 'Please see your GP so they can examine you. The Samaritans are free on 116 123. '
+    + 'You could also contact a crisis line. Text SHOUT to 85258.';
+  const v = applyGuard({
+    userText: DISCLOSURE, replyText: reply, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  const block = crisisReplaceBlock(CRISIS_LINE_REPLACE);
+  assert.strictEqual(v.displayText, `${block}\n\n${CLINICIAN_REPLY}`);
+  assert.strictEqual(v.displayText.split('116 123').length - 1, 1, 'one crisis number on screen');
+  assert.strictEqual(v.signpostsRemoved, 3);
+  assert.strictEqual(signpostsCrisisSupport(v.displayText.slice(block.length)), false);
+});
+
+test('dedupe: 999 is a route, not a crisis signpost, and survives', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: EMERGENCY_REPLY, crisisRule: 'replace' });
+  assert.strictEqual(v.displayText, `${crisisReplaceBlock(CRISIS_LINE_REPLACE)}\n\n${EMERGENCY_REPLY}`);
+  assert.strictEqual(v.signpostsRemoved, 0);
+});
+
+test('dedupe: a kept reply that is ALL signpost leaves the block alone on screen, route banner kept', () => {
+  const reply = 'Call 999 now. Please ring the Samaritans on 116 123.';
+  const v = applyGuard({ userText: DISCLOSURE, replyText: 'Please ring the Samaritans on 116 123 now.', crisisRule: 'replace' });
+  // A reply with no EMERGENCY route is hidden anyway: nothing kept, nothing counted.
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.signpostsRemoved, 0);
+  assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  const k = applyGuard({ userText: DISCLOSURE, replyText: reply, crisisRule: 'replace' });
+  assert.strictEqual(k.displayText, `${crisisReplaceBlock(CRISIS_LINE_REPLACE)}\n\nCall 999 now.`);
+  const onlyReply = 'Please see your GP or ring the Samaritans on 116 123.';
+  const only = applyGuard({
+    userText: DISCLOSURE, replyText: onlyReply, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  assert.strictEqual(only.routeDetected, 'CLINICIAN');
+  assert.strictEqual(only.replyShown, true);
+  assert.strictEqual(only.banner, 'clinician', 'the route banner stays');
+  assert.strictEqual(only.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  assert.strictEqual(only.signpostsRemoved, 1);
+  assert.strictEqual(only.displayText.endsWith('\n'), false);
+});
+
+test('dedupe: no disclosure means no block, so a signposting reply is left exactly as append shows it', () => {
+  const reply = 'Rest and drink fluids. The Samaritans are free on 116 123.';
+  const r = applyGuard({ userText: 'sore throat', replyText: reply, crisisRule: 'replace' });
+  assert.strictEqual(r.displayText, applyGuard({ userText: 'sore throat', replyText: reply }).displayText);
+  assert.strictEqual(r.signpostsRemoved, 0);
+});
+
+test('dedupe: a kept reply with no signpost is byte-identical with dedupe on and off', () => {
+  const reply = 'Call 999 now.\n\nDo not drive yourself. Stay with them.';
+  const on = applyGuard({ userText: DISCLOSURE, replyText: reply, crisisRule: 'replace' });
+  const off = applyGuard({ userText: DISCLOSURE, replyText: reply, crisisRule: 'replace', dedupeSignposts: false });
+  assert.strictEqual(on.displayText, off.displayText);
+});
+
+test('dedupe under append, when asked for: the model signpost is cut and the product line is appended in its place', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY, dedupeSignposts: true });
+  assert.strictEqual(v.displayText, `Call 999 now for an ambulance.\n\n${CRISIS_BLOCK_DEFAULT}`);
+  assert.strictEqual(v.crisisLineAppended, true);
+  assert.strictEqual(v.signpostsRemoved, 1);
+  assert.strictEqual(v.dedupeSignposts, true);
+});
+
+test('dedupe: a non-boolean flag is refused loudly', () => {
+  assert.throws(() => applyGuard({ userText: DISCLOSURE, replyText: 'x', crisisRule: 'replace', dedupeSignposts: 'on' }), /dedupeSignposts/);
 });

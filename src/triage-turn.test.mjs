@@ -12,7 +12,8 @@
 // before this task, with exactly the same arguments.
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { BANNERS } from './triage/guard.js';
+import { BANNERS, CRISIS_LINE_REPLACE } from './triage/guard.js';
+import { readFileSync } from 'node:fs';
 import { assembleMessages } from './prompt-assembly.js';
 import { windowMessages } from './context-window.js';
 import { createTransport } from './transport.js';
@@ -665,7 +666,7 @@ test('a supervised turn never re-sends an earlier reply\'s verdict to the model'
 
 /* ---------------- Phase 1h M2: the catalog selects the crisis rule ---------------- */
 
-test('crisisRuleFor: an entry with no crisisRule selects nothing, so applyGuard runs its append default', () => {
+test('crisisRuleFor: an entry with no crisisRule selects nothing, so applyGuard runs its append default (a synthetic entry; the shipped one registers replace)', () => {
   const entry = { id: 'med-triage', supervised: true, crisisLine: 'L' };
   assert.deepStrictEqual(crisisRuleFor(entry), {});
   assert.deepStrictEqual(crisisRuleFor(null), {});
@@ -706,6 +707,42 @@ test('crisisRuleFor: a malformed catalog value never throws into the render path
     { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY'] },
   );
   assert.deepStrictEqual(crisisRuleFor({ supervised: false, crisisRule: 'replace' }), {}, 'the tutor never');
+});
+
+/* ---------------- Phase 1i MA1: the registered rule is the catalog's default ---------------- */
+
+const SHIPPED_TRIAGE = JSON.parse(readFileSync(
+  new URL('../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8',
+)).find((e) => e.id === 'med-triage');
+
+test('crisisRuleFor: the shipped med-triage entry selects the registered rule, replace with {EMERGENCY, CLINICIAN}', () => {
+  assert.strictEqual(SHIPPED_TRIAGE.crisisRule, 'replace');
+  assert.deepStrictEqual(SHIPPED_TRIAGE.crisisKeepRoutes, ['EMERGENCY', 'CLINICIAN']);
+  assert.deepStrictEqual(
+    crisisRuleFor(SHIPPED_TRIAGE),
+    { crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'] },
+  );
+  assert.strictEqual(SHIPPED_TRIAGE.crisisLine, CRISIS_LINE_REPLACE);
+});
+
+test('the app path under the shipped entry: a kept reply loses its model-written number, and the persisted row carries the count', () => {
+  // Exactly the call app.js makes in finishStream.
+  const reply = 'Please see your GP so they can examine you. You can also ring the Samaritans on 116 124.';
+  const v = applyGuard({
+    userText: "i don't want to be here anymore", replyText: reply,
+    crisisLine: SHIPPED_TRIAGE.crisisLine || undefined, ...crisisRuleFor(SHIPPED_TRIAGE),
+  });
+  assert.strictEqual(v.crisisReplaced, true);
+  assert.strictEqual(v.replyShown, true, 'CLINICIAN is kept under the registered rule');
+  assert.strictEqual(v.banner, 'clinician');
+  assert.strictEqual(v.displayText.includes('116 124'), false);
+  assert.strictEqual(v.displayText.includes('advice above'), false);
+  assert.strictEqual(v.displayText.split('116 123').length - 1, 1, 'the product line is the only crisis line');
+  assert.strictEqual(v.signpostsRemoved, 1);
+  const row = guardForPersistence(v, SHIPPED_TRIAGE);
+  assert.strictEqual(row.signpostsRemoved, 1);
+  assert.strictEqual(row.displayText, v.displayText);
+  assert.strictEqual(row.rawReply, reply, 'the removed sentence survives only in the raw reply');
 });
 
 test('a replaced verdict replays with NO banner, not the out-of-scope one', () => {

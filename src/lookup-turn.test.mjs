@@ -14,7 +14,7 @@ import {
   runLookupTurn, sourcesFromPrompt,
 } from './lookup-turn.js';
 import { LOOKUP_NO_EVIDENCE_TEXT, WITHHELD_BANNER } from './triage/lookup-guard.js';
-import { BANNERS, CRISIS_BLOCK_DEFAULT, crisisReplaceBlock } from './triage/guard.js';
+import { BANNERS, CRISIS_LINE_REPLACE, crisisReplaceBlock } from './triage/guard.js';
 
 const ENTRY = Object.freeze({
   id: 'med-triage',
@@ -82,7 +82,8 @@ test('crisis FIRST: an entry with no crisis line falls back to the product defau
     text: 'I have been thinking about ending my life', entry: { ...ENTRY, crisisLine: undefined },
     invoke: mockInvoke(GROUNDED), generate: mockModel(),
   });
-  assert.strictEqual(r.displayText, crisisReplaceBlock(CRISIS_BLOCK_DEFAULT));
+  assert.strictEqual(r.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  assert.strictEqual(r.displayText.includes('advice above'), false);
 });
 
 /* ---------------- scripted outcomes: no model ---------------- */
