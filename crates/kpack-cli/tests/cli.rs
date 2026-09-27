@@ -212,15 +212,16 @@ fn the_built_pack_mounts_lexically_and_answers_found_did_you_mean_not_found() {
     assert!(matches!(retrieve_lexical(&pack, "Calpol", 3).unwrap(), LexicalOutcome::Found { .. }));
     // The parenthetical-free title resolves. The fixture's only paracetamol
     // page is population-specific ("for adults"), so its bare core name is
-    // NOT a variant (fix round 1, I2). It is still Found — through the
-    // contained-title tier (Phase 1h M5b), because that page's title is the
-    // only one containing "paracetamol".
+    // NOT a variant (fix round 1, I2): never Found to that page. The
+    // contained-title tier (Phase 1h M5b) offers it as a one-title
+    // did-you-mean, because every key containing "paracetamol" is scoped
+    // to adults.
     let row = pack.titles().unwrap().into_iter().find(|t| t.title == "Paracetamol for adults").unwrap();
     assert!(!row.variants.iter().any(|v| normalise_title(v) == "paracetamol"), "{:?}", row.variants);
-    let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, "paracetamol", 3).unwrap() else {
-        panic!("paracetamol: the one containing title")
-    };
-    assert_eq!(title, "Paracetamol for adults");
+    assert_eq!(
+        retrieve_lexical(&pack, "paracetamol", 3).unwrap(),
+        LexicalOutcome::DidYouMean { candidates: vec!["Paracetamol for adults".to_string()] }
+    );
     assert!(matches!(
         retrieve_lexical(&pack, "chronic obstructive pulmonary disease", 3).unwrap(),
         LexicalOutcome::Found { .. }

@@ -16,11 +16,15 @@
 //!    query has at least [`CONTAINED_MIN_CHARS`] chars and a word outside
 //!    [`CONTAINED_STOP_WORDS`], every document with a normalised title, slug
 //!    (hyphens as spaces) or variant containing the query as a whole-word
-//!    sequence is a hit. One document → `Found` (same chunk selection);
-//!    several → `DidYouMean` with up to [`DID_YOU_MEAN_MAX`] display titles
-//!    ordered by title length (chars) ascending, then normalised title, then
-//!    doc id — the shortest containing title is the likeliest intent
-//!    ("anxiety" → "Health anxiety", "Social anxiety", …).
+//!    sequence is a hit. One document → `Found` (same chunk selection) —
+//!    unless every key of it that contains the query is scoped to a
+//!    population the query does not name ([`population_tail`]: "… in
+//!    children", "… for adults"), which gives a one-title `DidYouMean`
+//!    instead (fix round 1: a general query is never silently answered by
+//!    a population-specific page). Several → `DidYouMean` with up to
+//!    [`DID_YOU_MEAN_MAX`] display titles ordered by the kind of key that
+//!    matched (title, then slug, then variant), then title length (chars)
+//!    ascending, then normalised title, then doc id.
 //! 4. Otherwise (no contained hit) **did-you-mean**: restricted Damerau-Levenshtein (optimal
 //!    string alignment) distance between the normalised query and every
 //!    normalised title/slug/variant; documents within [`max_edits`] of the
@@ -100,6 +104,61 @@ pub fn uses_contained_tier(normalised_query: &str) -> bool {
 /// so words are separated by exactly one space.
 fn contains_words(normalised_key: &str, normalised_query: &str) -> bool {
     format!(" {normalised_key} ").contains(&format!(" {normalised_query} "))
+}
+
+/// The population words of a population-scoped title — the same list
+/// `kpack-cli`'s `core_name_detail` (the port of `clusters.py`'s
+/// `_IN_GROUP`) strips, which reads it from here so the two agree.
+pub const POPULATION_GROUPS: [&str; 9] =
+    ["children", "adults", "babies", "pregnancy", "older people", "men", "women", "teenagers", "young people"];
+
+/// The population a title (or slug, or variant) is scoped to, if any: its
+/// parentheticals removed and normalised, it ends "in|during <group>"
+/// ("Anxiety disorders in children"), or its tail from the first " for " is
+/// "<group>" or starts "<group> " ("Paracetamol for adults"). Mirrors
+/// `kpack-cli`'s `core_name_detail`, except that the "for" form is checked
+/// for every section: `TitleEntry` carries none, and a false positive only
+/// turns a `Found` into a one-title did-you-mean.
+pub fn population_tail(s: &str) -> Option<&'static str> {
+    let n = normalise_title(&strip_parentheticals(s));
+    for g in POPULATION_GROUPS {
+        for prep in ["in", "during"] {
+            if n.ends_with(&format!(" {prep} {g}")) {
+                return Some(g);
+            }
+        }
+    }
+    let tail = &n[n.find(" for ")? + 5..];
+    POPULATION_GROUPS
+        .into_iter()
+        .find(|g| tail == *g || tail.starts_with(&format!("{g} ")))
+}
+
+/// Whether a key is scoped to a population the NORMALISED query does not
+/// itself name ("anxiety disorders" vs "... in children": scoped;
+/// "anxiety disorders in children" or "children anxiety": not).
+fn population_scoped(raw_key: &str, normalised_query: &str) -> bool {
+    population_tail(raw_key).is_some_and(|g| !contains_words(normalised_query, g))
+}
+
+/// `s` with every `( ... )` removed and whitespace collapsed (the same rule
+/// as `kpack-cli`'s `strip_parentheticals`).
+fn strip_parentheticals(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        match after.find(')') {
+            Some(close) => {
+                out.push_str(&rest[..open]);
+                out.push(' ');
+                rest = &after[close + 1..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The query/title normalisation rule, shared by build (the stored
@@ -226,30 +285,57 @@ pub fn retrieve_lexical(pack: &Pack, query: &str, k: usize) -> Result<LexicalOut
     // coincidental edit-distance hit (a brand name) never outranks a page
     // whose title names the query.
     if uses_contained_tier(&q) {
-        let mut hits: Vec<&TitleEntry> = keyed
-            .iter()
-            .filter(|(_, keys)| keys.iter().flatten().any(|key| contains_words(key, &q)))
-            .map(|(e, _)| *e)
-            .collect();
+        // Per document: the lowest tier whose key contains the query (0
+        // title, 1 slug, 2 variant) and whether EVERY containing key is
+        // scoped to a population the query does not name.
+        let mut hits: Vec<(&TitleEntry, usize, bool)> = Vec::new();
+        for (e, keys) in &keyed {
+            let raw: [Vec<&str>; 3] = [
+                vec![e.title.as_str()],
+                vec![e.slug.as_str()],
+                e.variants.iter().map(String::as_str).collect(),
+            ];
+            let mut best_tier = None;
+            let mut unscoped = false;
+            for tier in 0..3 {
+                for (key, raw_key) in keys[tier].iter().zip(&raw[tier]) {
+                    if contains_words(key, &q) {
+                        best_tier.get_or_insert(tier);
+                        unscoped |= !population_scoped(raw_key, &q);
+                    }
+                }
+            }
+            if let Some(tier) = best_tier {
+                hits.push((*e, tier, !unscoped));
+            }
+        }
         // One entry per document (the titles table's key), but stay honest
         // about a hand-inserted duplicate.
-        hits.sort_by_key(|e| e.doc_id);
-        hits.dedup_by_key(|e| e.doc_id);
+        hits.sort_by_key(|(e, tier, _)| (e.doc_id, *tier));
+        hits.dedup_by_key(|(e, _, _)| e.doc_id);
         match hits.len() {
             0 => {}
-            1 => return found(pack, hits[0], &q, k),
+            // A lone page reached only through population-scoped keys
+            // ("anxiety disorders" -> "Anxiety disorders in children") is
+            // offered, never silently answered (the M4b I2 rule).
+            1 if hits[0].2 => {
+                return Ok(LexicalOutcome::DidYouMean {
+                    candidates: vec![hits[0].0.title.clone()],
+                })
+            }
+            1 => return found(pack, hits[0].0, &q, k),
             _ => {
-                // The shortest containing title is the likeliest intent.
-                hits.sort_by(|a, b| {
-                    a.title
-                        .chars()
-                        .count()
-                        .cmp(&b.title.chars().count())
+                // A page naming the query in its title before one naming it
+                // in its slug, before one naming it only in a variant (a
+                // brand name); then the shortest title, the likeliest intent.
+                hits.sort_by(|(a, ta, _), (b, tb, _)| {
+                    ta.cmp(tb)
+                        .then_with(|| a.title.chars().count().cmp(&b.title.chars().count()))
                         .then_with(|| normalise_title(&a.title).cmp(&normalise_title(&b.title)))
                         .then_with(|| a.doc_id.cmp(&b.doc_id))
                 });
                 let mut candidates: Vec<String> = Vec::new();
-                for e in hits {
+                for (e, _, _) in hits {
                     if candidates.len() >= DID_YOU_MEAN_MAX {
                         break;
                     }
@@ -957,6 +1043,17 @@ mod tests {
             md("Vitamin B12 and D3", "# Vitamin B12 and D3\n\nTwo vitamins.\n"),
             md("Travel and the heat", "# Travel and the heat\n\nKeep cool.\n"),
             md("Paracetamol for adults", "# Paracetamol for adults\n\nA painkiller.\n"),
+            // Fix round 1: population-scoped pages whose slug / variant is not.
+            md("Eczema in babies", "---\nslug: baby-eczema\n---\n# Eczema in babies\n\nDry skin.\n"),
+            md(
+                "Head lice in children",
+                "---\nvariants: [nits and head lice]\n---\n# Head lice in children\n\nItchy scalp.\n",
+            ),
+            // Match-kind ordering: a variant-only hit with a short title, and
+            // a title hit with a longer title than a slug hit.
+            md("Omeprazole", "---\nvariants: [Acid Reflux Relief]\n---\n# Omeprazole\n\nReduces acid.\n"),
+            md("Haemorrhoids after childbirth", "# Haemorrhoids after childbirth\n\nCommon.\n"),
+            md("Warts", "---\nslug: verrucas-and-warts\n---\n# Warts\n\nSmall growths.\n"),
         ]
     }
 
@@ -1018,17 +1115,72 @@ mod tests {
     #[test]
     fn contained_query_in_one_title_is_found_with_the_usual_chunks() {
         let pack = contained_pack("contained-one");
-        let o = retrieve_lexical(&pack, "ADHD", 3).unwrap();
+        let o = retrieve_lexical(&pack, "Heartburn", 3).unwrap();
         let LexicalOutcome::Found { doc_id, title, chunks, .. } = &o else {
             panic!("expected Found, got {o:?}")
         };
-        assert_eq!(title, "Attention deficit hyperactivity disorder (ADHD) in adults");
-        assert_eq!(*chunks, select_page_chunks(&pack, *doc_id, "adhd", 3).unwrap());
+        assert_eq!(title, "Heartburn and acid reflux");
+        assert_eq!(*chunks, select_page_chunks(&pack, *doc_id, "heartburn", 3).unwrap());
         assert!(!chunks.is_empty());
+    }
+
+    // Fix round 1 (C1): a lone page reached only through keys scoped to a
+    // population the query does not name is a one-title did-you-mean,
+    // never Found — the M4b I2 rule, now also on the contained tier.
+    #[test]
+    fn a_lone_population_scoped_page_is_offered_not_found() {
+        let pack = contained_pack("contained-population");
+        for (q, title) in [
+            ("adhd", "Attention deficit hyperactivity disorder (ADHD) in adults"),
+            ("hyperactivity", "Attention deficit hyperactivity disorder (ADHD) in adults"),
+            ("generalised anxiety", "Generalised anxiety disorder in adults"),
+            ("anxiety disorder", "Generalised anxiety disorder in adults"),
+            // Title and derived slug both say "for adults".
+            ("paracetamol", "Paracetamol for adults"),
+        ] {
+            let want = LexicalOutcome::DidYouMean { candidates: vec![title.to_string()] };
+            assert_eq!(retrieve_lexical(&pack, q, 3).unwrap(), want, "{q:?}");
+        }
+        // A query that names the population is answered.
+        for (q, title) in [
+            ("anxiety disorder in adults", "Generalised anxiety disorder in adults"),
+            ("adhd in adults", "Attention deficit hyperactivity disorder (ADHD) in adults"),
+            ("paracetamol for adults", "Paracetamol for adults"),
+        ] {
+            assert_eq!(found_title(&retrieve_lexical(&pack, q, 3).unwrap()), title, "{q:?}");
+        }
+        // A hit through an un-tailed slug or variant stays Found.
+        assert_eq!(found_title(&retrieve_lexical(&pack, "eczema", 3).unwrap()), "Eczema in babies");
+        assert_eq!(found_title(&retrieve_lexical(&pack, "head lice", 3).unwrap()), "Head lice in children");
+        // Several hits were already a did-you-mean.
         assert_eq!(
-            found_title(&retrieve_lexical(&pack, "generalised anxiety", 3).unwrap()),
-            "Generalised anxiety disorder in adults"
+            retrieve_lexical(&pack, "anxiety in", 3).unwrap(),
+            dym(&["Anxiety in children", "Anxiety in pregnancy"])
         );
+    }
+
+    #[test]
+    fn population_tail_mirrors_the_core_name_rule() {
+        for (s, want) in [
+            ("Anxiety disorders in children", Some("children")),
+            ("Anxiety during pregnancy", Some("pregnancy")),
+            ("Developmental co-ordination disorder (dyspraxia) in children", Some("children")),
+            ("Something in children (XYZ)", Some("children")),
+            ("Paracetamol for adults", Some("adults")),
+            ("Ibuprofen for adults (Nurofen)", Some("adults")),
+            ("paracetamol-for-adults", Some("adults")),
+            ("Methylphenidate for children", Some("children")),
+            ("Hearing loss in older people", Some("older people")),
+            ("Breast cancer in men", Some("men")),
+            ("Buprenorphine for pain", None),
+            ("Anxiety", None),
+            ("Children's health", None),
+            ("ADHD in children and young people", None),
+            ("baby-eczema", None),
+            ("Women's health for mentors", None),
+        ] {
+            assert_eq!(population_tail(s), want, "{s:?}");
+        }
     }
 
     // Rule 1: the slug (hyphens as spaces) and the variants count too, and
@@ -1036,11 +1188,11 @@ mod tests {
     #[test]
     fn contained_query_matches_slug_and_variants_once_per_document() {
         let pack = contained_pack("contained-keys");
-        assert_eq!(found_title(&retrieve_lexical(&pack, "haemorrhoids", 3).unwrap()), "Piles");
         assert_eq!(found_title(&retrieve_lexical(&pack, "labialis", 3).unwrap()), "Cold sores");
-        // "reflux" is in the title and (derived) slug of the same page: one hit.
+        assert_eq!(found_title(&retrieve_lexical(&pack, "verrucas", 3).unwrap()), "Warts");
+        // "heartburn" is in the title and (derived) slug of the same page: one hit.
         assert_eq!(
-            found_title(&retrieve_lexical(&pack, "reflux", 3).unwrap()),
+            found_title(&retrieve_lexical(&pack, "heartburn", 3).unwrap()),
             "Heartburn and acid reflux"
         );
     }
@@ -1080,6 +1232,25 @@ mod tests {
         assert_eq!(found_title(&retrieve_lexical(&pack, "and the heat", 3).unwrap()), "Travel and the heat");
     }
 
+    // Fix round 1 (M1): several hits are ordered by the kind of key that
+    // matched — title, then slug, then variant — before title length.
+    #[test]
+    fn contained_did_you_mean_prefers_title_then_slug_then_variant() {
+        let pack = contained_pack("contained-kind");
+        // "Omeprazole" (10 chars) matches only through a brand variant, so
+        // the longer title hit leads.
+        assert_eq!(
+            retrieve_lexical(&pack, "reflux", 3).unwrap(),
+            dym(&["Heartburn and acid reflux", "Omeprazole"])
+        );
+        // "Piles" (5 chars) matches only through its slug, so the title hit
+        // "Haemorrhoids after childbirth" (29 chars) leads.
+        assert_eq!(
+            retrieve_lexical(&pack, "haemorrhoids", 3).unwrap(),
+            dym(&["Haemorrhoids after childbirth", "Piles"])
+        );
+    }
+
     #[test]
     fn stop_list_is_small_lowercase_normalised_and_sorted() {
         assert!(CONTAINED_STOP_WORDS.len() <= 60);
@@ -1108,8 +1279,12 @@ mod tests {
     fn contained_hit_outranks_an_edit_distance_brand_hit() {
         let pack = contained_pack("contained-vs-edit");
         assert_eq!(damerau_levenshtein("reflux", "keflex"), 2);
-        let o = retrieve_lexical(&pack, "reflux", 3).unwrap();
-        assert_eq!(found_title(&o), "Heartburn and acid reflux");
+        // Two pages contain "reflux" (a title, and Omeprazole's brand
+        // variant); Cefalexin is not among them.
+        assert_eq!(
+            retrieve_lexical(&pack, "reflux", 3).unwrap(),
+            dym(&["Heartburn and acid reflux", "Omeprazole"])
+        );
         // With no contained hit the edit tier is unchanged: "keflux" is in no
         // title and is 1 edit from the variant "keflex" -> Cefalexin.
         assert_eq!(retrieve_lexical(&pack, "keflux", 3).unwrap(), dym(&["Cefalexin"]));

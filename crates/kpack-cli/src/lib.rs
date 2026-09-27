@@ -409,9 +409,10 @@ pub fn core_name(title: &str, section: &str) -> Result<String, CliError> {
     Ok(core_name_detail(title, section)?.0)
 }
 
-/// The population words `clusters.py`'s `_IN_GROUP` strips.
-const GROUPS: [&str; 9] =
-    ["children", "adults", "babies", "pregnancy", "older people", "men", "women", "teenagers", "young people"];
+/// The population words `clusters.py`'s `_IN_GROUP` strips — kpack-core's
+/// list, so the lookup's population rule (`population_tail`) agrees with
+/// the variant derivation here.
+const GROUPS: [&str; 9] = kpack_core::lookup::POPULATION_GROUPS;
 
 /// [`core_name`], and whether the derivation removed a POPULATION tail:
 /// "in/during <group>", or a medicine's "for <group> ..." ("for adults",

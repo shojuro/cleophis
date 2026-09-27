@@ -24,7 +24,8 @@ mod common;
 use common::*;
 use kpack_cli::{build_reference, core_name_detail, fake_names, keep_core, strip_parentheticals, Options};
 use kpack_core::lookup::{
-    normalise_title, retrieve_lexical, LexicalOutcome, CONTAINED_MIN_CHARS, CONTAINED_STOP_WORDS,
+    normalise_title, population_tail, retrieve_lexical, LexicalOutcome, CONTAINED_MIN_CHARS,
+    CONTAINED_STOP_WORDS,
 };
 use kpack_core::{LoadContext, Pack};
 use serde_json::Value;
@@ -157,9 +158,9 @@ fn every_page_title_resolves_found_to_its_own_page() {
 /// reach it — Found, or a did-you-mean when several pages share the name.
 /// A core name that removed a population tail and belongs to one page only
 /// (fix round 1, I2) is not a variant: that bare name never resolves Found
-/// through a derived variant to that population-specific page. (It may
-/// reach it through the page's own slug, or — M5b — through the
-/// contained-title tier when that page is the only one naming it.)
+/// through a derived variant to that population-specific page (nor, M5b fix
+/// round 1, through the contained-title tier: a lone population-scoped
+/// hit is a one-title did-you-mean). Only the page's own slug may find it.
 #[test]
 fn every_pages_core_name_and_bare_title_resolve() {
     let pack = mounted();
@@ -181,13 +182,9 @@ fn every_pages_core_name_and_bare_title_resolve() {
         } else {
             dropped += 1;
             // Dropped: only the page's own slug (the NHS's URL for it, M5's
-            // slug tier) may still find it by that bare name, or the
-            // contained-title tier (M5b) when the page's title names it and
-            // no other page does.
-            let core_n = normalise_title(&core);
+            // slug tier) may still find it by that bare name.
             if let LexicalOutcome::Found { title: got, .. } = retrieve_lexical(&pack, &core, 3).unwrap() {
-                let contained = format!(" {} ", normalise_title(title)).contains(&format!(" {core_n} "));
-                assert!(got != title || normalise_title(slug) == core_n || contained, "{core:?} -> {got}");
+                assert!(got != title || normalise_title(slug) == normalise_title(&core), "{core:?} -> {got}");
             }
         }
         for q in queries {
@@ -216,22 +213,21 @@ fn every_pages_core_name_and_bare_title_resolve() {
         ("adhd", vec!["ADHD in adults", "ADHD in children and young people"]),
         (
             "developmental co ordination disorder",
-            vec!["Dyspraxia in adults", "Developmental co-ordination disorder (dyspraxia) in children"],
+            vec!["Developmental co-ordination disorder (dyspraxia) in children", "Dyspraxia in adults"],
         ),
-        // Esomeprazole through its brand variant "Guardium Acid Reflux
-        // Control". The M4b re-review's edit-tier ["Cefalexin"] (via the
-        // brand "Keflex") can no longer win: the edit tier runs only when
-        // nothing contains the query.
-        ("reflux", vec!["Esomeprazole", "Reflux in babies", "Heartburn and acid reflux"]),
+        // Title hits before Esomeprazole, which matches only through its
+        // brand variant "Guardium Acid Reflux Control" (fix round 1, M1).
+        // The M4b re-review's edit-tier ["Cefalexin"] (via the brand
+        // "Keflex") can no longer win: the edit tier runs only when nothing
+        // contains the query.
+        ("reflux", vec!["Reflux in babies", "Heartburn and acid reflux", "Esomeprazole"]),
+        // Only one title contains "anxiety disorders", and it is scoped to
+        // children: offered, never Found (fix round 1, C1; the M4b I2 rule).
+        ("anxiety disorders", vec!["Anxiety disorders in children"]),
     ] {
         let want: Vec<String> = want.into_iter().map(String::from).collect();
         assert_eq!(retrieve_lexical(&pack, q, 3).unwrap(), LexicalOutcome::DidYouMean { candidates: want }, "{q}");
     }
-    // Only one title contains "anxiety disorders": that page is the hit.
-    let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, "anxiety disorders", 3).unwrap() else {
-        panic!("anxiety disorders")
-    };
-    assert_eq!(title, "Anxiety disorders in children");
     // Found through the page's OWN slug (its NHS URL), not a derived
     // variant — unchanged since round 1, pinned so any change is visible.
     for (q, want) in [("cataracts", "Cataracts in adults"), ("nephrotic syndrome", "Nephrotic syndrome in children")] {
@@ -280,6 +276,24 @@ fn merged_chunks_respect_the_limits() {
             assert!(n(a) < n(b), "{loc}");
         }
     }
+}
+
+/// M5b fix round 1: kpack-core's `population_tail` (the lookup's
+/// population rule) agrees with `core_name_detail`'s population flag (the
+/// variant derivation's) on every committed title. No pack build needed.
+#[test]
+fn the_lookup_population_rule_agrees_with_the_variant_derivation() {
+    let t: Value = serde_json::from_slice(&std::fs::read(committed().2.join("titles.json")).unwrap()).unwrap();
+    let entries = t["titles"].as_array().unwrap();
+    assert_eq!(entries.len(), 941);
+    let mut scoped = 0;
+    for e in entries {
+        let (title, section) = (e["title"].as_str().unwrap(), e["section"].as_str().unwrap());
+        let (_, population) = core_name_detail(title, section).unwrap();
+        assert_eq!(population_tail(title).is_some(), population, "{title} ({section})");
+        scoped += usize::from(population);
+    }
+    assert!(scoped > 20, "{scoped}");
 }
 
 /// M5b recall gate: every content word of every page title — 3+ chars, not
