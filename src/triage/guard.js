@@ -31,10 +31,17 @@
 //      (`dedupeSignposts`), so the product's block is the only crisis line on
 //      screen;
 //   (MA6, Phase 1i) between 3 and 4, on a KEPT reply only: every sentence
-//      carrying a dose token is removed (`stripDoses`, PROHIBITED_NOTE once),
-//      and on a reply whose direction is EMERGENCY or CLINICIAN every scope
-//      disclaimer sentence is removed (`stripScopeDisclaimers`). Neither
-//      touches the route: it was decided in step 1, from the raw reply;
+//      carrying a medicine dose token is removed — or, when the sentence is
+//      route-bearing, has the dose redacted in place — with PROHIBITED_NOTE
+//      once (`stripDoses`); and when the reply, with its scope-disclaimer
+//      sentences set aside, routes EMERGENCY or CLINICIAN, every disclaimer
+//      sentence that is not itself route-bearing is removed
+//      (`stripScopeDisclaimers`). The VERDICT'S route and banner are untouched:
+//      they were decided in step 1, from the raw reply. The frozen router's
+//      re-reading of the DISPLAYED text can move on a disclaimer cut (the raw
+//      route of every reply that step touches is OUT_OF_SCOPE or UNCLEAR, and
+//      the remainder reads EMERGENCY or CLINICIAN); that is by design, pinned
+//      by id in guard.transcripts.test.mjs, and not the product's route;
 //   5. the screen check — LAST, on the finished text, crisis block and all. The
 //      block is product text and nothing above rewrites it, so a check that ran
 //      before the append would be the one rule that looks for a time frame,
@@ -46,7 +53,7 @@ import {
 // The lookup guard's OWN tokeniser (MA6): its splitter, list-marker rule,
 // normaliser and DOSE_UNITS dose tokens. Never a second tokeniser.
 import {
-  doseTokensIn, normaliseDoseText, splitSentences, stripListMarker,
+  doseTokensIn, isRouteBearing, normaliseDoseText, splitSentences, stripListMarker,
 } from './lookup-guard.js';
 // The pin as a GENERATED ES module, not as JSON. `src/index.html` loads
 // `app.js` with no bundler and `app.js` imports this file at module scope, so
@@ -400,6 +407,9 @@ function sentenceSpans(src) {
   const spans = [];
   let at = 0;
   for (const s of splitSentences(src)) {
+    // Every sentence `splitSentences` returns is a trimmed slice of the
+    // trimmed source, in order, so this always finds it. Defensive only: a
+    // sentence it could not locate is left in the text, never half-cut.
     const start = src.indexOf(s.text, at);
     if (start < 0) continue;
     const end = start + s.text.length;
@@ -408,6 +418,25 @@ function sentenceSpans(src) {
     at = end;
   }
   return spans;
+}
+
+const HEADING = /^#{1,6}\s/;
+
+/**
+ * A markdown heading whose whole section was cut goes with it (fix round 1,
+ * M2): "### 4." over a removed item would otherwise stand alone. A section is
+ * the spans after the heading up to the next heading or the end.
+ */
+function orphanHeadings(spans, cut) {
+  const cutSet = new Set(cut);
+  const extra = [];
+  spans.forEach((sp, i) => {
+    if (!HEADING.test(sp.text) || cutSet.has(sp)) return;
+    const body = [];
+    for (let j = i + 1; j < spans.length && !HEADING.test(spans[j].text); j += 1) body.push(spans[j]);
+    if (body.length && body.every((b) => cutSet.has(b))) extra.push(sp);
+  });
+  return [...cut, ...extra].sort((x, y) => x.start - y.start);
 }
 
 function spliceOut(src, cut) {
@@ -433,64 +462,149 @@ function spliceOut(src, cut) {
     .trim();
 }
 
-/** Does this sentence carry a dose token, read with the lookup guard's normaliser and DOSE_UNITS? */
+// ── Fix round 1, F4: what a dose token is IN A TRIAGE REPLY ─────────────────
+//
+// The ONE tokeniser (the lookup guard's normaliser + DOSE_UNITS, via
+// `doseTokensIn`), with these canons filtered out in triage mode only. In a
+// triage reply they are vital-sign or fluid measures, not medicine doses:
+// "oxygen below 92%", "blood sugar below 4 mmol/L", "drink 2 litres of water".
+// Cutting them removed red-flag thresholds and first-aid steps. Only `%`,
+// `mmol` and `litres` are DOSE_UNITS canons today; the others are listed so a
+// future row cannot quietly make them doses here. `units`/`iu` stay doses
+// (insulin). The accepted cost: "hydrocortisone 1% cream" is no longer cut by
+// this step (a strength written as a percentage).
+export const TRIAGE_VITALS_EXCLUSIONS = Object.freeze([
+  '%', 'mmol', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg',
+]);
+
+const TOKEN_NUMBER = /^\d+(?:[./]\d+)?/;
+
+/** The medicine dose tokens in normalised text: the lookup guard's tokens minus the vitals exclusions. */
+function triageDoseTokens(normalised) {
+  return doseTokensIn(normalised)
+    .filter((t) => !TRIAGE_VITALS_EXCLUSIONS.includes(t.replace(TOKEN_NUMBER, '')));
+}
+
+/** Does this sentence carry a medicine dose token, read with the lookup guard's normaliser and DOSE_UNITS? */
 export function carriesDose(sentence) {
-  return doseTokensIn(normaliseDoseText(stripListMarker(sentence))).length > 0;
+  return triageDoseTokens(normaliseDoseText(stripListMarker(sentence))).length > 0;
+}
+
+export const DOSE_REDACTED = '[dose removed]';
+
+/**
+ * Redact every dose in a sentence IN PLACE, word by word, with DOSE_REDACTED.
+ * No second tokeniser: each candidate window of words is asked the same
+ * question (`carriesDose`), and the smallest window that still carries a dose
+ * is replaced — "Give 2 puffs of the blue inhaler and call 999" becomes
+ * "Give [dose removed] of the blue inhaler and call 999". Punctuation on the
+ * window's edges stays. Returns null if a dose could not be located, which the
+ * caller treats as "cut the sentence" (fail toward showing less).
+ */
+function redactDoses(sentence) {
+  const parts = sentence.split(/(\s+)/); // words at even indexes
+  const words = () => parts.filter((_, i) => i % 2 === 0);
+  const joinWords = (ws, a, b) => ws.slice(a, b + 1).join(' ');
+  for (let guard = 0; guard < 20 && carriesDose(parts.join('')); guard += 1) {
+    const ws = words();
+    let end = -1;
+    for (let j = 0; j < ws.length; j += 1) if (carriesDose(joinWords(ws, 0, j))) { end = j; break; }
+    if (end < 0) return null;
+    let start = 0;
+    for (let i = end; i >= 0; i -= 1) if (carriesDose(joinWords(ws, i, end))) { start = i; break; }
+    const lead = /^[("'“‘[]*/.exec(ws[start])[0];
+    const trail = /[.,;:!?)"'”’\]]*$/.exec(ws[end])[0];
+    // replace words start..end (parts indexes 2*start .. 2*end) by one word
+    parts.splice(2 * start, 2 * (end - start) + 1, `${lead}${DOSE_REDACTED}${trail}`);
+  }
+  const out = parts.join('');
+  return carriesDose(out) ? null : out;
 }
 
 /**
- * Remove every sentence carrying a dose token ("500mg", "8 tablets", "half a
- * tablet"; not "call 999", not "take a tablet"). If anything was removed,
- * PROHIBITED_NOTE is appended once — at the end, as `filterProhibited` places
- * it — unless the text already carries it.
+ * Remove every sentence carrying a medicine dose token ("500mg", "8 tablets",
+ * "half a tablet"; not "call 999", not "take a tablet", not the vitals in
+ * TRIAGE_VITALS_EXCLUSIONS). A ROUTE-BEARING sentence (the lookup guard's
+ * `isRouteBearing`) is never dropped for a dose: its doses are redacted in
+ * place instead, so the direction stays on screen. If anything was removed or
+ * redacted, PROHIBITED_NOTE is appended once — at the end, as
+ * `filterProhibited` places it — unless the text already carries it.
  *
- * @returns {{text: string, removed: number}} a COUNT: the removed sentences
- *   survive only in the verdict's `rawReply`, never as display text.
+ * @returns {{text: string, removed: number}} a COUNT of sentences cut or
+ *   redacted: the doses survive only in the verdict's `rawReply`.
  */
 export function stripDoses(text) {
   const src = String(text ?? '');
-  const cut = sentenceSpans(src).filter((sp) => carriesDose(sp.text));
-  if (!cut.length) return { text: src, removed: 0 };
-  const out = spliceOut(src, cut);
+  const spans = sentenceSpans(src).filter((sp) => carriesDose(sp.text));
+  if (!spans.length) return { text: src, removed: 0 };
+  const cut = [];
+  const redacted = new Map();
+  for (const sp of spans) {
+    const r = isRouteBearing(sp.text) ? redactDoses(sp.text) : null;
+    if (r === null) cut.push(sp); else redacted.set(sp, r);
+  }
+  // Redactions first (they keep their span), then the cuts, on the new text.
+  let working = src;
+  for (const sp of [...redacted.keys()].sort((x, y) => y.start - x.start)) {
+    working = working.slice(0, sp.start) + redacted.get(sp) + working.slice(sp.sepStart);
+  }
+  let out = working;
+  if (cut.length) {
+    const again = sentenceSpans(working);
+    const cutTexts = cut.map((c) => c.text);
+    const toCut = again.filter((sp) => cutTexts.includes(sp.text) && carriesDose(sp.text));
+    out = spliceOut(working, orphanHeadings(again, toCut));
+  } else {
+    out = out.trim();
+  }
+  const removed = spans.length;
   const note = PROHIBITED_NOTE.trim();
-  if (out.includes(note)) return { text: out, removed: cut.length };
-  return { text: out ? `${out}${PROHIBITED_NOTE}` : note, removed: cut.length };
+  if (out.includes(note)) return { text: out, removed };
+  return { text: out ? `${out}${PROHIBITED_NOTE}` : note, removed };
 }
 
 /**
- * Remove every sentence the vendored `detectScopeDisclaimer` matches. Not
- * route-aware by itself; `applyGuard` decides when it applies.
+ * Remove every sentence the vendored `detectScopeDisclaimer` matches — EXCEPT
+ * a sentence that is itself route-bearing (the lookup guard's
+ * `isRouteBearing`, fix round 1 F2): "I cannot judge this, so go to A&E now."
+ * carries the direction and stays whole. Not route-aware beyond that;
+ * `applyGuard` decides when it applies.
  *
- * @returns {{text: string, removed: number}}
+ * @returns {{text: string, removed: string[]}} the removed sentences, verbatim,
+ *   in the order written — the receipt lists them (a disclaimer in the receipt
+ *   is harmless, and it is the reason the banner says CANNOT JUDGE).
  */
 export function stripScopeDisclaimers(text) {
   const src = String(text ?? '');
-  const cut = sentenceSpans(src).filter((sp) => detectScopeDisclaimer(sp.text).found);
-  if (!cut.length) return { text: src, removed: 0 };
-  return { text: spliceOut(src, cut), removed: cut.length };
+  const spans = sentenceSpans(src);
+  const cut = spans.filter((sp) => detectScopeDisclaimer(sp.text).found && !isRouteBearing(sp.text));
+  if (!cut.length) return { text: src, removed: [] };
+  return { text: spliceOut(src, orphanHeadings(spans, cut)), removed: cut.map((sp) => sp.text) };
 }
 
 const RED_FLAG_ROUTES = Object.freeze([ROUTE.EMERGENCY, ROUTE.CLINICIAN]);
 
 /**
- * The disclaimer step's gate: strip only when what is LEFT still directs to
- * emergency care or a clinician.
+ * The disclaimer step's gate: strip only when the reply, WITH ITS DISCLAIMER
+ * SENTENCES SET ASIDE, routes EMERGENCY or CLINICIAN (ratified in MA6 review).
  *
  * NOT the raw route, because under the r3 router a raw reply carrying a scope
  * disclaimer is never EMERGENCY or CLINICIAN: a disclaimer beside an emergency
  * direction routes UNCLEAR ("contradictory-out-of-scope-and-emergency"), beside
- * a referral OUT_OF_SCOPE. A raw-route gate would never fire. So the question is
- * asked of the reply with its disclaimer sentences set aside — and that also
- * guarantees the cut never takes the red-flag direction with it: a reply whose
- * only direction shares a sentence with the disclaimer ("I cannot judge this;
- * go to A&E now.") is left whole, because cutting it would leave the reader no
- * direction at all. SELF_CARE and UNCLEAR remainders are untouched: the floor
- * is disclaimers on red flags. The verdict's route and banner stay the raw
- * reply's either way.
+ * a referral OUT_OF_SCOPE. So the raw route of every reply this step touches is
+ * OUT_OF_SCOPE or UNCLEAR, and the verdict keeps it — route and banner are
+ * untouched. The frozen router's re-reading of the displayed text does move.
+ *
+ * Only sentences that are NOT route-bearing are cut (F2), so every direction
+ * the reply gave stays on screen: a cut sentence carries no direction at all.
+ * SELF_CARE and UNCLEAR remainders are untouched: the floor is disclaimers on
+ * red flags.
  */
 function stripRedFlagDisclaimers(text) {
   const d = stripScopeDisclaimers(text);
-  if (!d.removed || !RED_FLAG_ROUTES.includes(detectRoute(d.text).route)) return { text: String(text ?? ''), removed: 0 };
+  if (!d.removed.length || !RED_FLAG_ROUTES.includes(detectRoute(d.text).route)) {
+    return { text: String(text ?? ''), removed: [] };
+  }
   return d;
 }
 
@@ -585,22 +699,30 @@ export function unlocatedTimeFrame(route, displayText) {
  * @param {string} [opts.crisisLine] the entry's crisis line; absent means
  *   CRISIS_BLOCK_DEFAULT under append and CRISIS_LINE_REPLACE under replace
  * @param {boolean} [opts.dedupeSignposts] default: true under replace, false under append
- * @param {boolean} [opts.stripDoses=true] MA6: remove every dose sentence of a kept reply
- * @param {boolean} [opts.stripScopeDisclaimers=true] MA6: remove the scope-disclaimer
- *   sentences of a kept reply whose remaining direction is EMERGENCY or CLINICIAN
+ * @param {boolean} [opts.stripDoses=true] MA6: remove every medicine-dose sentence of a
+ *   kept reply (redact the dose in place in a route-bearing sentence)
+ * @param {boolean} [opts.stripScopeDisclaimers=true] MA6: remove the non-route-bearing
+ *   scope-disclaimer sentences of a kept reply that, with those sentences set
+ *   aside, routes EMERGENCY or CLINICIAN
  *
  * PHASE 1i MA6 KEYS, present for each switch that is on (so both off is the
  * historical verdict byte for byte), and always present under replace:
  *
  *   stripDoses            whether the dose strip ran
- *   dosesRemoved          how many sentences of the KEPT reply were cut for a
- *                         dose token; PROHIBITED_NOTE is on screen when > 0
+ *   dosesRemoved          how many sentences of the KEPT reply were cut, or had
+ *                         a dose redacted, for a medicine dose token;
+ *                         PROHIBITED_NOTE is on screen when > 0. A COUNT, like
+ *                         `signpostsRemoved`: a dose repeated in the receipt is
+ *                         a dose on screen, so the doses stay in `rawReply` only
  *   stripScopeDisclaimers whether the disclaimer strip ran
- *   disclaimersRemoved    how many scope-disclaimer sentences were cut
+ *   disclaimersRemoved    the scope-disclaimer sentences cut, VERBATIM, in the
+ *                         order written (fix round 1, F3): the receipt lists
+ *                         them, as it lists `prohibitedRemoved`
  *
- * Counts only, like `signpostsRemoved`: the cut sentences stay in `rawReply`
- * and are never display text. 0 when the replace rule hides the reply. The
- * route and banner are decided from the raw reply before either strip.
+ * 0 and [] when the replace rule hides the reply. The verdict's route and
+ * banner are decided from the raw reply before either strip and are never
+ * changed by them; the frozen router's re-reading of `displayText` is not the
+ * product's route and can differ after a disclaimer cut.
  */
 export function applyGuard({
   userText = '', replyText = '', crisisLine,
@@ -651,14 +773,15 @@ export function applyGuard({
 
   // MA6: the two product-owned floors, on a KEPT reply only (a reply the
   // replace rule hides lends nothing to the screen and counts nothing). After
-  // routing — `routing` is never recomputed — and before the banner and the
+  // routing — `routing` is never recomputed, so the verdict's route and banner
+  // are untouched — and before the banner and the
   // crisis rule, so the de-duplication and the screen check read the cleaned
   // reply. `crisisOnInput` reads only the user's words, so asking it here is
   // the same question asked below.
   const crisisOnInput = detectCrisisStatement(userText).found;
   const keptReply = !replace || !crisisOnInput || keepRoutes.includes(routing.route);
   let dosesRemoved = 0;
-  let disclaimersRemoved = 0;
+  let disclaimersRemoved = [];
   if (keptReply && dosesOn) {
     const r = stripDoses(display);
     display = r.text;

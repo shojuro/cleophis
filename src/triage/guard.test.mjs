@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  DOSE_REDACTED, TRIAGE_VITALS_EXCLUSIONS, carriesDose,
   BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_LINE_REPLACE, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
   ROUTE_TO_BANNER, TIME_FRAME_NOTE, applyGuard, crisisReplaceBlock, filterProhibited, routeOfPrefix,
   dedupeSignposts, signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
@@ -1487,10 +1488,10 @@ test('MA6 doses: a hidden reply under replace lends nothing and counts nothing',
   });
   assert.strictEqual(v.replyShown, false);
   assert.strictEqual(v.dosesRemoved, 0);
-  assert.strictEqual(v.disclaimersRemoved, 0);
+  assert.deepStrictEqual(v.disclaimersRemoved, []);
 });
 
-test('MA6 disclaimers: the EMERGENCY direction loses its disclaimer sentence; the raw route and banner are untouched', () => {
+test('MA6 disclaimers: the EMERGENCY direction loses its disclaimer sentence; the verdict\'s route and banner are untouched', () => {
   const replyText = 'I cannot judge what you have decided. Go to A&E now.';
   const off = applyGuard({ userText: 'crushing chest pain', replyText, stripScopeDisclaimers: false });
   const v = applyGuard({ userText: 'crushing chest pain', replyText });
@@ -1498,7 +1499,7 @@ test('MA6 disclaimers: the EMERGENCY direction loses its disclaimer sentence; th
   assert.strictEqual(v.banner, off.banner);
   assert.strictEqual(v.route, detectRoute(replyText).route);
   assert.strictEqual(detectRoute('Go to A&E now.').route, 'EMERGENCY');
-  assert.strictEqual(v.disclaimersRemoved, 1);
+  assert.deepStrictEqual(v.disclaimersRemoved, ['I cannot judge what you have decided.']);
   assert.strictEqual(detectScopeDisclaimer(v.displayText).found, false, v.displayText);
   assert.match(v.displayText, /^Go to A&E now\./);
   assert.strictEqual(v.stripScopeDisclaimers, true);
@@ -1515,7 +1516,7 @@ test('MA6 disclaimers: the one-sentence fixture is LEFT WHOLE — cutting it wou
   assert.strictEqual(v.route, 'UNCLEAR');
   assert.strictEqual(v.route, off.route);
   assert.strictEqual(v.banner, off.banner);
-  assert.strictEqual(v.disclaimersRemoved, 0);
+  assert.deepStrictEqual(v.disclaimersRemoved, []);
   assert.strictEqual(v.displayText, off.displayText);
   assert.match(v.displayText, /go to A&E now/);
 });
@@ -1523,7 +1524,7 @@ test('MA6 disclaimers: the one-sentence fixture is LEFT WHOLE — cutting it wou
 test('MA6 disclaimers: a CLINICIAN referral loses "I cannot assess you properly"', () => {
   const replyText = 'I cannot assess you properly. Please see your GP.';
   const v = applyGuard({ userText: 'lump in my neck', replyText });
-  assert.strictEqual(v.disclaimersRemoved, 1);
+  assert.deepStrictEqual(v.disclaimersRemoved, ['I cannot assess you properly.']);
   assert.strictEqual(v.displayText, 'Please see your GP.');
   assert.strictEqual(v.route, detectRoute(replyText).route);
 });
@@ -1534,7 +1535,7 @@ test('MA6 disclaimers: a SELF_CARE reply carrying a disclaimer is untouched — 
   const v = applyGuard({ userText: 'sore throat', replyText });
   const off = applyGuard({ userText: 'sore throat', replyText, stripScopeDisclaimers: false });
   assert.strictEqual(v.route, 'SELF_CARE');
-  assert.strictEqual(v.disclaimersRemoved, 0);
+  assert.deepStrictEqual(v.disclaimersRemoved, []);
   assert.strictEqual(v.displayText, off.displayText);
 });
 
@@ -1556,6 +1557,90 @@ test('MA6: a non-boolean switch is refused loudly', () => {
 test('MA6: stripDoses and stripScopeDisclaimers direct — untouched text comes back identical', () => {
   const t = 'Call 999 now.\n\nStay with them.';
   assert.deepStrictEqual(stripDoses(t), { text: t, removed: 0 });
-  assert.deepStrictEqual(stripScopeDisclaimers(t), { text: t, removed: 0 });
+  assert.deepStrictEqual(stripScopeDisclaimers(t), { text: t, removed: [] });
   assert.deepStrictEqual(stripDoses('Take 2 tablets.'), { text: PROHIBITED_NOTE.trim(), removed: 1 });
+});
+
+// ── MA6 fix round 1 ─────────────────────────────────────────────────────────
+
+test('MA6 F2: a disclaimer sentence that is itself route-bearing is never cut (P6b)', () => {
+  const replyText = 'I cannot judge this, so go to A&E now. Do not drive yourself.';
+  const v = applyGuard({ userText: 'crushing chest pain', replyText });
+  assert.deepStrictEqual(v.disclaimersRemoved, []);
+  assert.match(v.displayText, /go to A&E now/);
+  assert.strictEqual(stripScopeDisclaimers(replyText).removed.length, 0);
+  for (const kept of ["I can't assess this, so see your GP.", 'I cannot judge this; go to A&E now.']) {
+    assert.deepStrictEqual(stripScopeDisclaimers(kept).removed, [], kept);
+  }
+});
+
+test('MA6 F4: the vitals exclusions are the ruled list, frozen', () => {
+  assert.deepStrictEqual([...TRIAGE_VITALS_EXCLUSIONS], ['%', 'mmol', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg']);
+  assert.ok(Object.isFrozen(TRIAGE_VITALS_EXCLUSIONS));
+  assert.ok(!TRIAGE_VITALS_EXCLUSIONS.includes('units') && !TRIAGE_VITALS_EXCLUSIONS.includes('iu'), 'insulin is a dose');
+});
+
+test('MA6 F4: carriesDose — medicine doses yes, vitals, fluids, numbers and bare units no (M1)', () => {
+  for (const yes of ['Take 500mg paracetamol.', 'Give 2 puffs.', 'Take half a tablet.', '2.5 ml', '20 units of insulin', '400 IU', 'Keep under 14 units a week.', '4 g in a day']) {
+    assert.strictEqual(carriesDose(yes), true, yes);
+  }
+  for (const no of ['oxygen below 92%', 'blood sugar below 4 mmol/L', 'Drink 2 litres of water.', 'I am 100% sure', 'call 999', 'within 3 days', 'take a tablet', 'a temperature above 38.5 degrees', 'hydrocortisone 1% cream']) {
+    assert.strictEqual(carriesDose(no), false, no);
+  }
+});
+
+// The reviewer's table (MA6 review F4), each with its ruled outcome.
+const F4_KEPT = [
+  ['EMERGENCY', 'Call 999 now. If their oxygen level falls below 92%, tell the ambulance crew.'],
+  ['UNCLEAR', 'If blood sugar is below 4 mmol/L give sugar. Call 999 now if they become unresponsive.'],
+  ['EMERGENCY', 'Call 999 now, I am 100% sure this is an emergency.'],
+  ['EMERGENCY', 'Drink at least 2 litres of water. Go to A&E now.'],
+];
+test('MA6 F4: vital-sign, fluid and certainty figures are KEPT whole', () => {
+  for (const [route, replyText] of F4_KEPT) {
+    const v = applyGuard({ userText: 'x', replyText });
+    assert.strictEqual(v.route, route, replyText);
+    assert.strictEqual(v.dosesRemoved, 0, replyText);
+    assert.ok(v.displayText.startsWith(replyText), v.displayText);
+    assert.ok(!v.displayText.includes(PROHIBITED_NOTE.trim()), v.displayText);
+  }
+  const water = applyGuard({ userText: 'x', replyText: 'Drink 2 litres of water a day and see your GP this week.' });
+  assert.strictEqual(water.dosesRemoved, 0);
+  assert.match(water.displayText, /^Drink 2 litres of water a day and see your GP\./);
+});
+
+test('MA6 F4: medicine doses are still stripped — paracetamol, alcohol units, a denied tablet count', () => {
+  assert.deepStrictEqual(stripDoses('Take 500mg paracetamol.'), { text: PROHIBITED_NOTE.trim(), removed: 1 });
+  const p = applyGuard({ userText: 'x', replyText: 'Take 500mg paracetamol. Please see your GP.' });
+  assert.ok(noDoseOnScreen(p.displayText), p.displayText);
+  const u = applyGuard({ userText: 'x', replyText: 'Keep under 14 units a week. Please see your GP.' });
+  assert.strictEqual(u.dosesRemoved, 1);
+  assert.strictEqual(u.displayText, `Please see your GP.${PROHIBITED_NOTE}`);
+});
+
+test('MA6 F4: a route-bearing sentence is never dropped for a dose — the dose is redacted in place', () => {
+  const replyText = 'Give 2 puffs of the blue inhaler and call 999 if no better in 5 minutes.';
+  const v = applyGuard({ userText: 'asthma attack', replyText });
+  assert.strictEqual(v.dosesRemoved, 1);
+  assert.ok(v.displayText.startsWith(`Give ${DOSE_REDACTED} of the blue inhaler and call 999 if no better in 5 minutes.${PROHIBITED_NOTE}`), v.displayText);
+  assert.ok(noDoseOnScreen(v.displayText));
+  assert.strictEqual(v.route, detectRoute(replyText).route);
+  assert.strictEqual(stripDoses('Go to A&E now and take no more than 2 tablets.').text,
+    `Go to A&E now and take no more than ${DOSE_REDACTED}.${PROHIBITED_NOTE}`, 'edge punctuation stays');
+  assert.strictEqual(stripDoses('Call 999, and give (half a tablet) now.').text,
+    `Call 999, and give (${DOSE_REDACTED}) now.${PROHIBITED_NOTE}`, 'the smallest window, brackets kept');
+  const two = stripDoses('Call 999 now and give 2 puffs, then 4 puffs.');
+  assert.strictEqual(two.text, `Call 999 now and give ${DOSE_REDACTED}, then ${DOSE_REDACTED}.${PROHIBITED_NOTE}`);
+  assert.strictEqual(two.removed, 1, 'one sentence');
+});
+
+test('MA6 F4: the known cost — "hydrocortisone 1% cream" is no longer cut by the dose step', () => {
+  assert.strictEqual(carriesDose('A hydrocortisone cream (1% strength) can help.'), false);
+});
+
+test('MA6 M2: a heading whose whole section was cut goes with it', () => {
+  const r = stripDoses('### 3. Rest.\n\n### 4.\n- Take 2 tablets.\n\n### 5. See a GP.');
+  assert.strictEqual(r.text, `### 3. Rest.\n\n### 5. See a GP.${PROHIBITED_NOTE}`);
+  const keep = stripDoses('### Care\n- Take 2 tablets.\n- Rest.');
+  assert.strictEqual(keep.text, `### Care\n- Rest.${PROHIBITED_NOTE}`, 'a section with a kept line keeps its heading');
 });
