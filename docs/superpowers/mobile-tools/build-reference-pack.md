@@ -390,8 +390,24 @@ M5 embeds `reference-uk-v1.kpack` and `reference-uk-v1.kpack.sig` in the triage 
 variant as a read-only bundled pack. It records `referencePack: {id,
 sha256, contentSha256, version}` in `src-tauri/resources/catalog.triage.json`.
 `Pack::mount` verifies the curator signature at load, as it does for every
-curated pack. After signing, the founder's second step is to run M5's
-embed with the signed pair. That step is documented here once M5 lands.
+curated pack. After signing, the founder's second step is to embed the
+signed pair:
+
+1. Copy `reference-uk-v1.kpack` and `reference-uk-v1.kpack.sig` into
+   `src-tauri/resources/packs/` (gitignored).
+2. Build with `docs/superpowers/mobile-tools/build-android-apk.sh --variant=triage`,
+   which exports `CLEOPHIS_VARIANT=triage`.
+3. Confirm the build passed `build.rs`'s triage check. The build FAILS
+   (a `triage build refused` panic) when `catalog.triage.json` names a
+   `referencePack` that is not in `resources/packs/` with its `.sig`, or
+   whose `sha256` pin is not the embedded file's sha256. A rebuilt pack
+   therefore needs the catalog's `referencePack` pins updated in the same
+   change.
+
+At run time the lookup reads only this bundled pack (never a pack from an
+account's directory), requires it to be curator-signed, and answers nothing
+when the pack's manifest `content_sha256` or `pack_version` differs from the
+catalog's `contentSha256` / `version` pins.
 
 ## Tests
 
