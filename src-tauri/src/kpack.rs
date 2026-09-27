@@ -78,13 +78,18 @@
 //! ## Reference lookup + the bundled root (Phase 1h M5)
 //! [`rag_lookup`] is the LEXICAL-ONLY reference lookup (no embedder — the
 //! phone ships none): `kpack_core::lookup::retrieve_lexical` over one pack
-//! named by `pack_id`, never by a front-end path. The pack resolves from the
-//! read-only BUNDLED root `<resources_root>/packs/` first (the triage build's
-//! signed reference pack, materialised by `resources_embed`) — no sign-in
-//! needed — and otherwise from the signed-in account's `packs_dir`. A bundled
-//! pack must be `Curated` (so `Pack::mount_lexical`'s signature check always
-//! runs on it) and its manifest `pack_id` must equal the requested id. The
-//! bundled root is a different directory from every account's `packs_dir`,
+//! named by `pack_id`, never by a front-end path. The pack resolves ONLY
+//! from the read-only BUNDLED root `<resources_root>/packs/<pack_id>.kpack`
+//! (the triage build's signed reference pack, materialised by
+//! `resources_embed`) — no sign-in needed, and never from an account's
+//! `packs_dir` (Phase 1h whole-branch review I1: a personal pack can carry
+//! any `pack_id`, so an account fallback let an unsigned pack answer under
+//! the reference's name). A missing bundled pack is `"unavailable"`. Every
+//! served pack must be `Curated` (so `Pack::mount_lexical`'s signature check
+//! over its exact bytes always runs) and its manifest `pack_id` must equal
+//! the requested id. The result carries the manifest's `content_sha256` and
+//! `pack_version` so the front end can hold them to the catalog pins (I2).
+//! The bundled root is a different directory from every account's `packs_dir`,
 //! so `list_packs` never lists a bundled pack and `delete_pack`'s
 //! `resolve_pack_in_dir(packs_dir, ..)` refuses one (tests pin both).
 
@@ -1284,51 +1289,19 @@ fn lexical_ctx() -> LoadContext<'static> {
     }
 }
 
-/// Resolve `pack_id` to a mountable path: the bundled root first
+/// Resolve `pack_id` to the bundled pack's canonical path
 /// (`<bundled_dir>/<pack_id>.kpack`, through `resolve_pack_in_dir`'s
-/// traversal guards), else the account `packs_dir` (only when signed in —
-/// `account_dir` is `None` otherwise), where the pack whose manifest
-/// `pack_id` matches is chosen (first by path, deterministic). Returns the
-/// canonical path and whether it is bundled.
-fn find_lookup_pack(
-    pack_id: &str,
-    bundled_dir: &Path,
-    account_dir: Option<&Path>,
-) -> Result<(PathBuf, bool), String> {
+/// traversal guards), or `None` when no such file is bundled. The bundled
+/// root is the ONLY place a lookup pack comes from (module doc, I1).
+fn find_lookup_pack(pack_id: &str, bundled_dir: &Path) -> Result<Option<PathBuf>, String> {
     if !valid_pack_id(pack_id) {
         return Err("invalid pack id".to_string());
     }
     let bundled = bundled_dir.join(format!("{pack_id}.kpack"));
-    if bundled.is_file() {
-        let canonical = resolve_pack_in_dir(bundled_dir, &bundled.to_string_lossy())?;
-        return Ok((canonical, true));
+    if !bundled.is_file() {
+        return Ok(None);
     }
-    let Some(dir) = account_dir else {
-        return Err("no such pack".to_string());
-    };
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| format!("packs dir unavailable: {e}"))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("kpack"))
-                .unwrap_or(false)
-        })
-        .collect();
-    paths.sort();
-    for path in paths {
-        let Ok(canonical) = resolve_pack_in_dir(dir, &path.to_string_lossy()) else {
-            continue;
-        };
-        if let Ok((_pack, manifest)) = Pack::mount_lexical(&canonical, &lexical_ctx()) {
-            if manifest.pack_id == pack_id {
-                return Ok((canonical, false));
-            }
-        }
-    }
-    Err("no such pack".to_string())
+    resolve_pack_in_dir(bundled_dir, &bundled.to_string_lossy()).map(Some)
 }
 
 /// The `rag_lookup` command's camelCase result. `status` is one of:
@@ -1341,7 +1314,13 @@ fn find_lookup_pack(
 /// - `"noEvidence"` — no page, nothing close; `prompt` is the triage
 ///   contract's `no_evidence_marker` (`lookup_contract()`; scripted, no
 ///   model).
-/// - `"unavailable"` — the pack has no title index (a schema-v1 pack).
+/// - `"unavailable"` — no such pack is bundled, or the pack has no title
+///   index (a schema-v1 pack).
+///
+/// `contentSha256` / `packVersion` are the served pack's manifest
+/// `content_sha256` and `pack_version` (`None` when no pack was mounted, or
+/// a manifest carries no content sha). The front end compares them to the
+/// catalog's `referencePack` pins and refuses to answer on a mismatch (I2).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagLookupResult {
@@ -1349,6 +1328,20 @@ pub struct RagLookupResult {
     pub prompt: Option<String>,
     pub citations: Vec<CitationInfo>,
     pub candidates: Vec<String>,
+    pub content_sha256: Option<String>,
+    pub pack_version: Option<String>,
+}
+
+/// The result for "no bundled pack by that id": `unavailable`, nothing else.
+fn lookup_unavailable() -> RagLookupResult {
+    RagLookupResult {
+        status: "unavailable".to_string(),
+        prompt: None,
+        citations: Vec::new(),
+        candidates: Vec::new(),
+        content_sha256: None,
+        pack_version: None,
+    }
 }
 
 /// `LexicalOutcome` -> the IPC-facing `RagLookupResult`. Pure.
@@ -1358,6 +1351,8 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
         prompt,
         citations: Vec::new(),
         candidates: Vec::new(),
+        content_sha256: None,
+        pack_version: None,
     };
     match outcome {
         LexicalOutcome::Found { title, source, chunks, .. } => {
@@ -1367,6 +1362,8 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
                     prompt: Some(prompt),
                     citations: citations.into_iter().map(CitationInfo::from).collect(),
                     candidates: Vec::new(),
+                    content_sha256: None,
+                    pack_version: None,
                 },
                 RetrievalResult::NoEvidence => empty(
                     "noEvidence",
@@ -1379,6 +1376,8 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
             prompt: None,
             citations: Vec::new(),
             candidates,
+            content_sha256: None,
+            pack_version: None,
         },
         LexicalOutcome::NotFound => empty(
             "noEvidence",
@@ -1388,30 +1387,50 @@ fn map_lookup_outcome(outcome: LexicalOutcome, pack_id: &str) -> RagLookupResult
     }
 }
 
-/// Pure inner logic behind `rag_lookup` (no `AppHandle`): resolve, mount
-/// lexically (curated signature verified), enforce the bundled-pack rules,
-/// look up, map.
-fn rag_lookup_inner(
-    query: &str,
-    pack_id: &str,
-    bundled_dir: &Path,
-    account_dir: Option<&Path>,
-) -> Result<RagLookupResult, String> {
-    let (path, bundled) = find_lookup_pack(pack_id, bundled_dir, account_dir)?;
-    let (pack, manifest) = Pack::mount_lexical(&path, &lexical_ctx()).map_err(|e| e.to_string())?;
-    if bundled && manifest.pack_tier != PackTier::Curated {
-        return Err("a bundled pack must be a signed curated pack".to_string());
+/// Refuse a mounted pack the lookup must not serve: anything but a signed
+/// `Curated` pack (`mount_lexical` verifies the curator signature over the
+/// exact bytes only for curated packs), or a manifest `pack_id` other than
+/// the one requested. Pure.
+fn check_served_pack(manifest: &Manifest, pack_id: &str) -> Result<(), String> {
+    if manifest.pack_tier != PackTier::Curated {
+        return Err("a lookup pack must be a signed curated pack".to_string());
     }
     if manifest.pack_id != pack_id {
         return Err("pack id does not match the pack's manifest".to_string());
     }
-    let outcome = retrieve_lexical(&pack, query, LEXICAL_MAX_K).map_err(|e| e.to_string())?;
-    Ok(map_lookup_outcome(outcome, &manifest.pack_id))
+    Ok(())
+}
+
+/// Look `query` up in an already-mounted, already-checked pack and stamp the
+/// pack's own manifest identity (`content_sha256`, `pack_version`) on the
+/// result, whatever the status.
+fn lookup_in_pack(pack: &Pack, manifest: &Manifest, query: &str) -> Result<RagLookupResult, String> {
+    let content_sha256 = pack
+        .manifest_get(kpack_core::lexical_build::MANIFEST_CONTENT_SHA256)
+        .map_err(|e| e.to_string())?;
+    let outcome = retrieve_lexical(pack, query, LEXICAL_MAX_K).map_err(|e| e.to_string())?;
+    let mut result = map_lookup_outcome(outcome, &manifest.pack_id);
+    result.content_sha256 = content_sha256;
+    result.pack_version = Some(manifest.pack_version.clone());
+    Ok(result)
+}
+
+/// Pure inner logic behind `rag_lookup` (no `AppHandle`): resolve in the
+/// bundled root only (missing -> `unavailable`), mount lexically (curated
+/// signature verified), require a curated pack with the requested id, look
+/// up, map, stamp the manifest identity.
+fn rag_lookup_inner(query: &str, pack_id: &str, bundled_dir: &Path) -> Result<RagLookupResult, String> {
+    let Some(path) = find_lookup_pack(pack_id, bundled_dir)? else {
+        return Ok(lookup_unavailable());
+    };
+    let (pack, manifest) = Pack::mount_lexical(&path, &lexical_ctx()).map_err(|e| e.to_string())?;
+    check_served_pack(&manifest, pack_id)?;
+    lookup_in_pack(&pack, &manifest, query)
 }
 
 /// Lexical reference lookup (Phase 1h M5) — see the module doc comment.
-/// Signed-out is fine for a bundled pack: the account dir is consulted only
-/// when a session exists.
+/// Signed-out is fine: the bundled root needs no session, and no account
+/// directory is ever consulted.
 #[tauri::command]
 pub async fn rag_lookup(
     query: String,
@@ -1419,12 +1438,9 @@ pub async fn rag_lookup(
     app: AppHandle,
 ) -> Result<RagLookupResult, String> {
     let bundled_dir = bundled_packs_dir(&app);
-    let account_dir = packs_dir(&app).ok();
-    tauri::async_runtime::spawn_blocking(move || {
-        rag_lookup_inner(&query, &pack_id, &bundled_dir, account_dir.as_deref())
-    })
-    .await
-    .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
+    tauri::async_runtime::spawn_blocking(move || rag_lookup_inner(&query, &pack_id, &bundled_dir))
+        .await
+        .map_err(|_| JOIN_ERROR_MESSAGE.to_string())?
 }
 
 #[cfg(test)]
@@ -2388,22 +2404,122 @@ mod tests {
     }
 
     #[test]
-    fn find_lookup_pack_prefers_bundled_and_needs_no_account() {
+    fn find_lookup_pack_reads_only_the_bundled_root() {
         let root = unique_dir("m5-find");
         let bundled = root.join("bundled");
         std::fs::create_dir_all(&bundled).unwrap();
         std::fs::write(bundled.join("reference-uk-v1.kpack"), b"x").unwrap();
 
-        let (path, is_bundled) = find_lookup_pack("reference-uk-v1", &bundled, None).unwrap();
-        assert!(is_bundled);
+        let path = find_lookup_pack("reference-uk-v1", &bundled).unwrap().unwrap();
         assert_eq!(path, bundled.join("reference-uk-v1.kpack").canonicalize().unwrap());
 
-        // Not bundled and signed out -> no pack; traversal ids -> refused.
-        assert!(find_lookup_pack("other", &bundled, None).is_err());
+        // Not bundled -> None (the command maps it to `unavailable`);
+        // traversal ids -> refused.
+        assert_eq!(find_lookup_pack("other", &bundled).unwrap(), None);
         assert_eq!(
-            find_lookup_pack("../bundled/reference-uk-v1", &bundled, None).unwrap_err(),
+            find_lookup_pack("../bundled/reference-uk-v1", &bundled).unwrap_err(),
             "invalid pack id"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Whole-branch review I1/I2 fixture: a small PERSONAL lexical pack
+    /// (unsigned — the production curator key cannot sign in a test) with
+    /// the reference's id, built with kpack-core's own lexical builder.
+    struct LookupWords;
+    impl kpack_core::chunk::TokenCounter for LookupWords {
+        fn token_count(&self, text: &str) -> usize {
+            text.split_whitespace().count()
+        }
+        fn max_input_tokens(&self) -> usize {
+            512
+        }
+    }
+
+    fn personal_lexical_pack(path: &Path) -> kpack_core::LexicalBuildReport {
+        let body = "# Asthma\n\nA lung condition.\n\n## Symptoms\n\nWheezing.\n";
+        let source = kpack_core::LexicalSource {
+            title: "Asthma".to_string(),
+            slug: "asthma".to_string(),
+            variants: Vec::new(),
+            body: body.to_string(),
+            source_type: kpack_core::format::SOURCE_TYPE_NHS_WEB.to_string(),
+            source_path: Some("https://www.nhs.uk/conditions/asthma/".to_string()),
+            source_mtime: Some("2026-09-26".to_string()),
+            sha256: "0".repeat(64),
+            source_size: body.len() as i64,
+        };
+        let meta = kpack_core::LexicalBuildMeta {
+            pack_id: "reference-uk-v1".to_string(),
+            pack_version: "2026.09.1".to_string(),
+            pack_tier: PackTier::Personal,
+            built_by: "cleophis-i1-test".to_string(),
+            license_ref: Some("OGL v3".to_string()),
+            source_date_epoch: 1_790_380_800,
+            extra_manifest: Vec::new(),
+            merge: None,
+        };
+        kpack_core::build_lexical_pack(&[source], &LookupWords, &ChunkConfig::default(), &meta, path).unwrap()
+    }
+
+    #[test]
+    fn rag_lookup_is_unavailable_when_no_pack_is_bundled_even_with_one_in_the_account_dir() {
+        let root = unique_dir("i1-missing");
+        let bundled = root.join("bundled");
+        let account = user_packs_dir(&root, "user-i1").unwrap();
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        // A personal pack a signed-in user built under the reference's id.
+        personal_lexical_pack(&account.join("mine.kpack"));
+
+        let r = rag_lookup_inner("asthma", "reference-uk-v1", &bundled).unwrap();
+        assert_eq!(r.status, "unavailable");
+        assert!(r.prompt.is_none() && r.citations.is_empty());
+        assert_eq!((r.content_sha256, r.pack_version), (None, None));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rag_lookup_refuses_a_personal_pack_even_in_the_bundled_root() {
+        let root = unique_dir("i1-personal");
+        let bundled = root.join("bundled");
+        std::fs::create_dir_all(&bundled).unwrap();
+        personal_lexical_pack(&bundled.join("reference-uk-v1.kpack"));
+
+        let err = rag_lookup_inner("asthma", "reference-uk-v1", &bundled).unwrap_err();
+        assert_eq!(err, "a lookup pack must be a signed curated pack");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn check_served_pack_requires_curated_and_the_requested_id() {
+        let root = unique_dir("i1-check");
+        let path = root.join("p.kpack");
+        personal_lexical_pack(&path);
+        let (_pack, mut manifest) = Pack::mount_lexical(&path, &lexical_ctx()).unwrap();
+        assert_eq!(manifest.pack_tier, PackTier::Personal);
+        assert!(check_served_pack(&manifest, "reference-uk-v1").is_err());
+        manifest.pack_tier = PackTier::Curated;
+        assert_eq!(check_served_pack(&manifest, "reference-uk-v1"), Ok(()));
+        assert_eq!(
+            check_served_pack(&manifest, "reference-uk-v2").unwrap_err(),
+            "pack id does not match the pack's manifest"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lookup_in_pack_stamps_the_manifest_content_sha_and_version_on_every_status() {
+        let root = unique_dir("i2-stamp");
+        let path = root.join("p.kpack");
+        let report = personal_lexical_pack(&path);
+        let (pack, manifest) = Pack::mount_lexical(&path, &lexical_ctx()).unwrap();
+        for query in ["asthma", "zzzzzzzzzz"] {
+            let r = lookup_in_pack(&pack, &manifest, query).unwrap();
+            assert_eq!(r.content_sha256.as_deref(), Some(report.content_sha256.as_str()), "{query}");
+            assert_eq!(r.pack_version.as_deref(), Some("2026.09.1"), "{query}");
+        }
+        assert_eq!(lookup_in_pack(&pack, &manifest, "asthma").unwrap().status, "grounded");
         let _ = std::fs::remove_dir_all(&root);
     }
 

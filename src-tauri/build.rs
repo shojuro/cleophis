@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+#[path = "build_checks.rs"]
+mod build_checks;
+
 fn main() {
     reference_pack_cfg();
     tauri_build::build()
@@ -17,6 +20,11 @@ const REFERENCE_PACK_SIG: &str = "reference-uk-v1.kpack.sig";
 /// `build-android-apk.sh --variant=triage`). The tutor build, and any tree
 /// without the pack, compile exactly as before. Also exports the pack's
 /// sha256 as `CLEOPHIS_REFERENCE_PACK_SHA256` for the materializer's stamp.
+///
+/// Whole-branch review I1/I2: a triage build FAILS when
+/// `resources/catalog.triage.json` names a `referencePack` that is not
+/// embedded, or whose `sha256` pin is not the embedded pack's
+/// (`build_checks::check_triage_reference_packs`).
 fn reference_pack_cfg() {
     println!("cargo:rustc-check-cfg=cfg(cleophis_reference_pack)");
     println!("cargo:rerun-if-env-changed=CLEOPHIS_VARIANT");
@@ -27,22 +35,36 @@ fn reference_pack_cfg() {
     // cargo treats one as always-stale and would rerun this every build.
     let watched: &Path = if dir.is_dir() { &dir } else { &resources };
     println!("cargo:rerun-if-changed={}", watched.display());
+    let triage_catalog = resources.join("catalog.triage.json");
+    println!("cargo:rerun-if-changed={}", triage_catalog.display());
 
     let pack = dir.join(REFERENCE_PACK);
     let sig = dir.join(REFERENCE_PACK_SIG);
     let triage = std::env::var("CLEOPHIS_VARIANT").as_deref() == Ok("triage");
-    match (triage, pack.is_file(), sig.is_file()) {
-        (true, true, true) => {
-            use sha2::{Digest, Sha256};
-            let bytes = std::fs::read(&pack).expect("read the reference pack");
-            let digest = format!("{:x}", Sha256::digest(&bytes));
+    if !triage {
+        return;
+    }
+    let digest = if pack.is_file() && sig.is_file() {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(&pack).expect("read the reference pack");
+        Some(format!("{:x}", Sha256::digest(&bytes)))
+    } else {
+        None
+    };
+    let catalog = std::fs::read_to_string(&triage_catalog)
+        .unwrap_or_else(|e| panic!("triage build: cannot read {}: {e}", triage_catalog.display()));
+    let embedded_id = REFERENCE_PACK.strip_suffix(".kpack").expect("REFERENCE_PACK ends in .kpack");
+    if let Err(e) = build_checks::check_triage_reference_packs(&catalog, embedded_id, digest.as_deref()) {
+        panic!("triage build refused: {e}");
+    }
+    match digest {
+        Some(digest) => {
             println!("cargo:rustc-cfg=cleophis_reference_pack");
             println!("cargo:rustc-env=CLEOPHIS_REFERENCE_PACK_SHA256={digest}");
         }
-        (true, _, _) => println!(
+        None => println!(
             "cargo:warning=triage build without resources/packs/{REFERENCE_PACK} and its .sig: \
-             the reference lookup will find no bundled pack"
+             the catalog names no reference pack, so the lookup stays hidden"
         ),
-        _ => {}
     }
 }

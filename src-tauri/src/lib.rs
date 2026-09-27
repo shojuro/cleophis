@@ -10,6 +10,11 @@
 /// rather than `mobile`, which would also mean iOS.
 #[cfg(target_os = "android")]
 mod android_bridge;
+// Whole-branch review I1/I2: build.rs's triage-catalog check, compiled here
+// only so `cargo test` runs its tests.
+#[cfg(test)]
+#[path = "../build_checks.rs"]
+mod build_checks;
 mod calc;
 mod catalog;
 mod catalog_dist;
