@@ -12,13 +12,22 @@
 //!    against the query breaking ties WITHIN a section. More than one
 //!    document at the same tier (an ambiguous alias) →
 //!    [`LexicalOutcome::DidYouMean`] listing them — never a silent pick.
-//! 3. Otherwise **did-you-mean**: restricted Damerau-Levenshtein (optimal
+//! 3. Otherwise **contained title** (Phase 1h M5b): when the normalised
+//!    query has at least [`CONTAINED_MIN_CHARS`] chars and a word outside
+//!    [`CONTAINED_STOP_WORDS`], every document with a normalised title, slug
+//!    (hyphens as spaces) or variant containing the query as a whole-word
+//!    sequence is a hit. One document → `Found` (same chunk selection);
+//!    several → `DidYouMean` with up to [`DID_YOU_MEAN_MAX`] display titles
+//!    ordered by title length (chars) ascending, then normalised title, then
+//!    doc id — the shortest containing title is the likeliest intent
+//!    ("anxiety" → "Health anxiety", "Social anxiety", …).
+//! 4. Otherwise (no contained hit) **did-you-mean**: restricted Damerau-Levenshtein (optimal
 //!    string alignment) distance between the normalised query and every
 //!    normalised title/slug/variant; documents within [`max_edits`] of the
 //!    query, ordered by (distance, normalised title, doc id), up to
 //!    [`DID_YOU_MEAN_MAX`] → [`LexicalOutcome::DidYouMean`].
-//! 4. Otherwise [`LexicalOutcome::NotFound`].
-//! 5. A pack without the `titles` table (a v1 personal pack) →
+//! 5. Otherwise [`LexicalOutcome::NotFound`].
+//! 6. A pack without the `titles` table (a v1 personal pack) →
 //!    [`LexicalOutcome::Unavailable`], never an error.
 //!
 //! No embedder, no cosine, no gate floors: the lexical gate IS the title
@@ -58,6 +67,39 @@ pub enum LexicalOutcome {
     NotFound,
     /// The pack has no title index (schema v1) — lookup cannot run on it.
     Unavailable,
+}
+
+/// The shortest normalised query (in chars) the contained-title tier runs
+/// for: a one- or two-letter query ("a", "d3") would be inside half the
+/// index.
+pub const CONTAINED_MIN_CHARS: usize = 3;
+
+/// Words that on their own never make a contained-title query (Phase 1h
+/// M5b): a query made only of these ("and", "in the", "for") skips the
+/// tier, because it sits inside hundreds of titles and says nothing about
+/// the page wanted. Normalised form, sorted. Population words ("children",
+/// "adults") are NOT stop words: they are real, if broad, queries.
+pub const CONTAINED_STOP_WORDS: &[&str] = &[
+    "a", "about", "after", "an", "and", "are", "as", "at", "be", "before", "by", "can", "do", "during",
+    "for", "from", "how", "i", "if", "in", "is", "it", "its", "me", "my", "not", "of", "on", "or",
+    "that", "the", "this", "to", "we", "what", "when", "who", "why", "with", "you", "your",
+];
+
+/// Whether the contained-title tier runs for a NORMALISED query: at least
+/// [`CONTAINED_MIN_CHARS`] chars and at least one word outside
+/// [`CONTAINED_STOP_WORDS`].
+pub fn uses_contained_tier(normalised_query: &str) -> bool {
+    normalised_query.chars().count() >= CONTAINED_MIN_CHARS
+        && normalised_query
+            .split(' ')
+            .any(|w| !CONTAINED_STOP_WORDS.contains(&w))
+}
+
+/// Whether `normalised_query` occurs in `normalised_key` as a whole-word
+/// sequence (a word boundary on both sides). Both are already normalised,
+/// so words are separated by exactly one space.
+fn contains_words(normalised_key: &str, normalised_query: &str) -> bool {
+    format!(" {normalised_key} ").contains(&format!(" {normalised_query} "))
 }
 
 /// The query/title normalisation rule, shared by build (the stored
@@ -170,28 +212,52 @@ pub fn retrieve_lexical(pack: &Pack, query: &str, k: usize) -> Result<LexicalOut
             .collect();
         match hits.len() {
             0 => continue,
-            1 => {
-                let e = hits[0];
-                let chunks = select_page_chunks(pack, e.doc_id, &q, k)?;
-                if chunks.is_empty() {
-                    // A title with no body is no evidence.
-                    return Ok(LexicalOutcome::NotFound);
-                }
-                let source = pack
-                    .get_doc(e.doc_id)?
-                    .map(|doc| CitationSource::from_doc(&doc))
-                    .unwrap_or_default();
-                return Ok(LexicalOutcome::Found {
-                    doc_id: e.doc_id,
-                    title: e.title.clone(),
-                    source,
-                    chunks,
-                });
-            }
+            1 => return found(pack, hits[0], &q, k),
             _ => {
                 let mut ranked: Vec<(usize, &TitleEntry)> =
                     hits.into_iter().map(|e| (0, e)).collect();
                 return Ok(did_you_mean(&mut ranked));
+            }
+        }
+    }
+
+    // Contained title (Phase 1h M5b): the query as a whole-word sequence
+    // inside any of an entry's keys. It runs before the edit tier, so a
+    // coincidental edit-distance hit (a brand name) never outranks a page
+    // whose title names the query.
+    if uses_contained_tier(&q) {
+        let mut hits: Vec<&TitleEntry> = keyed
+            .iter()
+            .filter(|(_, keys)| keys.iter().flatten().any(|key| contains_words(key, &q)))
+            .map(|(e, _)| *e)
+            .collect();
+        // One entry per document (the titles table's key), but stay honest
+        // about a hand-inserted duplicate.
+        hits.sort_by_key(|e| e.doc_id);
+        hits.dedup_by_key(|e| e.doc_id);
+        match hits.len() {
+            0 => {}
+            1 => return found(pack, hits[0], &q, k),
+            _ => {
+                // The shortest containing title is the likeliest intent.
+                hits.sort_by(|a, b| {
+                    a.title
+                        .chars()
+                        .count()
+                        .cmp(&b.title.chars().count())
+                        .then_with(|| normalise_title(&a.title).cmp(&normalise_title(&b.title)))
+                        .then_with(|| a.doc_id.cmp(&b.doc_id))
+                });
+                let mut candidates: Vec<String> = Vec::new();
+                for e in hits {
+                    if candidates.len() >= DID_YOU_MEAN_MAX {
+                        break;
+                    }
+                    if !candidates.contains(&e.title) {
+                        candidates.push(e.title.clone());
+                    }
+                }
+                return Ok(LexicalOutcome::DidYouMean { candidates });
             }
         }
     }
@@ -218,6 +284,26 @@ pub fn retrieve_lexical(pack: &Pack, query: &str, k: usize) -> Result<LexicalOut
         return Ok(LexicalOutcome::NotFound);
     }
     Ok(did_you_mean(&mut ranked))
+}
+
+/// `Found` for one matched entry: its first `k` chunks in section order
+/// ([`select_page_chunks`]) and its source. A title with no body is no
+/// evidence (`NotFound`).
+fn found(pack: &Pack, e: &TitleEntry, normalised_query: &str, k: usize) -> Result<LexicalOutcome, Error> {
+    let chunks = select_page_chunks(pack, e.doc_id, normalised_query, k)?;
+    if chunks.is_empty() {
+        return Ok(LexicalOutcome::NotFound);
+    }
+    let source = pack
+        .get_doc(e.doc_id)?
+        .map(|doc| CitationSource::from_doc(&doc))
+        .unwrap_or_default();
+    Ok(LexicalOutcome::Found {
+        doc_id: e.doc_id,
+        title: e.title.clone(),
+        source,
+        chunks,
+    })
 }
 
 /// Sort `(distance, entry)` pairs by (distance, normalised title, doc id),
@@ -842,6 +928,194 @@ mod tests {
         assert_eq!(citations[0].pack_id, "reference-test");
         assert_eq!(citations[0].doc_title, "Ibuprofen");
         assert_eq!(assemble_lexical("p", "t", &CitationSource::default(), &[]), RetrievalResult::NoEvidence);
+    }
+
+    // --- the contained-title tier (Phase 1h M5b) --------------------------
+
+    /// Pages whose titles CONTAIN common one-word queries, but none of
+    /// comparable length: the case M5's exact and edit tiers both miss.
+    fn contained_corpus() -> Vec<SourceInput> {
+        vec![
+            md("Anxiety in children", "# Anxiety in children\n\nWorry in children.\n"),
+            md("Generalised anxiety disorder in adults", "# GAD\n\nLong-term worry.\n"),
+            md("Social anxiety", "# Social anxiety\n\nFear of social situations.\n"),
+            md("Anxiety in pregnancy", "# Anxiety in pregnancy\n\nWorry while pregnant.\n"),
+            md("Health anxiety", "# Health anxiety\n\nWorry about illness.\n"),
+            md("Anxiety and panic", "# Anxiety and panic\n\nPanic attacks.\n"),
+            md(
+                "Attention deficit hyperactivity disorder (ADHD) in adults",
+                "# ADHD in adults\n\nA condition affecting behaviour.\n",
+            ),
+            md("Heartburn and acid reflux", "# Heartburn and acid reflux\n\nA burning feeling.\n"),
+            // A brand-name variant 2 edits from "reflux" (the M4b re-review's case).
+            md("Cefalexin", "---\nvariants: [Keflex]\n---\n# Cefalexin\n\nAn antibiotic.\n"),
+            md("Piles", "---\nslug: haemorrhoids-piles\n---\n# Piles\n\nSwollen blood vessels.\n"),
+            md(
+                "Cold sores",
+                "---\nvariants: [herpes simplex labialis]\n---\n# Cold sores\n\nSmall blisters.\n",
+            ),
+            md("Vitamin B12 and D3", "# Vitamin B12 and D3\n\nTwo vitamins.\n"),
+            md("Travel and the heat", "# Travel and the heat\n\nKeep cool.\n"),
+            md("Paracetamol for adults", "# Paracetamol for adults\n\nA painkiller.\n"),
+        ]
+    }
+
+    fn contained_pack(name: &str) -> Pack {
+        let dir = unique_dir(name);
+        let path = dir.join("contained.kpack");
+        build_pack(
+            &contained_corpus(),
+            &MockEmbedder::new(8),
+            &meta(),
+            &path,
+            &ChunkConfig::default(),
+        )
+        .unwrap();
+        let ctx = LoadContext {
+            available_embedder_sha256: &[],
+            curator_key: None,
+        };
+        Pack::mount_lexical(&path, &ctx).unwrap().0
+    }
+
+    fn dym(titles: &[&str]) -> LexicalOutcome {
+        LexicalOutcome::DidYouMean {
+            candidates: titles.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    // Rule 2: several containing pages -> did-you-mean, up to 5, by title
+    // length ascending then alphabetically (normalised). "Health anxiety"
+    // and "Social anxiety" tie on length (14); "Anxiety and panic" and
+    // "Anxiety in children" come next; the longest two are cut by the cap.
+    #[test]
+    fn contained_query_in_several_titles_is_did_you_mean_shortest_first() {
+        let pack = contained_pack("contained-many");
+        assert_eq!(
+            retrieve_lexical(&pack, "anxiety", 3).unwrap(),
+            dym(&[
+                "Health anxiety",
+                "Social anxiety",
+                "Anxiety and panic",
+                "Anxiety in children",
+                "Anxiety in pregnancy",
+            ])
+        );
+        // Normalised like the exact tier: case and punctuation do not matter.
+        assert_eq!(
+            retrieve_lexical(&pack, "  ANXIETY! ", 3).unwrap(),
+            retrieve_lexical(&pack, "anxiety", 3).unwrap()
+        );
+        // A multi-word query is matched as a whole-word sequence.
+        assert_eq!(
+            retrieve_lexical(&pack, "anxiety in", 3).unwrap(),
+            dym(&["Anxiety in children", "Anxiety in pregnancy"])
+        );
+    }
+
+    // Rule 2: exactly one containing page -> Found, same chunk selection as
+    // the exact tier.
+    #[test]
+    fn contained_query_in_one_title_is_found_with_the_usual_chunks() {
+        let pack = contained_pack("contained-one");
+        let o = retrieve_lexical(&pack, "ADHD", 3).unwrap();
+        let LexicalOutcome::Found { doc_id, title, chunks, .. } = &o else {
+            panic!("expected Found, got {o:?}")
+        };
+        assert_eq!(title, "Attention deficit hyperactivity disorder (ADHD) in adults");
+        assert_eq!(*chunks, select_page_chunks(&pack, *doc_id, "adhd", 3).unwrap());
+        assert!(!chunks.is_empty());
+        assert_eq!(
+            found_title(&retrieve_lexical(&pack, "generalised anxiety", 3).unwrap()),
+            "Generalised anxiety disorder in adults"
+        );
+    }
+
+    // Rule 1: the slug (hyphens as spaces) and the variants count too, and
+    // hits are deduplicated by document.
+    #[test]
+    fn contained_query_matches_slug_and_variants_once_per_document() {
+        let pack = contained_pack("contained-keys");
+        assert_eq!(found_title(&retrieve_lexical(&pack, "haemorrhoids", 3).unwrap()), "Piles");
+        assert_eq!(found_title(&retrieve_lexical(&pack, "labialis", 3).unwrap()), "Cold sores");
+        // "reflux" is in the title and (derived) slug of the same page: one hit.
+        assert_eq!(
+            found_title(&retrieve_lexical(&pack, "reflux", 3).unwrap()),
+            "Heartburn and acid reflux"
+        );
+    }
+
+    // Rule 1: whole words only — a partial word never matches.
+    #[test]
+    fn contained_query_needs_word_boundaries() {
+        let pack = contained_pack("contained-words");
+        for q in ["anxiet", "nxiety", "anxiety disorders", "paracetamol for adult"] {
+            let o = retrieve_lexical(&pack, q, 3).unwrap();
+            assert!(!matches!(o, LexicalOutcome::Found { .. }), "{q:?} -> {o:?}");
+        }
+        // "anxiet" is 1 edit from nothing of its length: NotFound, not a
+        // contained hit on the six anxiety pages.
+        assert_eq!(retrieve_lexical(&pack, "anxiet", 3).unwrap(), LexicalOutcome::NotFound);
+        // "paracetamol for adult" stays the edit tier's did-you-mean.
+        assert_eq!(
+            retrieve_lexical(&pack, "paracetamol for adult", 3).unwrap(),
+            dym(&["Paracetamol for adults"])
+        );
+    }
+
+    // Rule 3: a query under 3 characters, or of stop words only, never uses
+    // the tier.
+    #[test]
+    fn short_or_stop_word_queries_never_use_the_contained_tier() {
+        let pack = contained_pack("contained-stop");
+        // "d3" and "b12"-like tokens: "d3" is 2 chars (contained in
+        // "vitamin b12 and d3") -> NotFound.
+        assert_eq!(retrieve_lexical(&pack, "d3", 3).unwrap(), LexicalOutcome::NotFound);
+        // 3 chars is enough.
+        assert_eq!(found_title(&retrieve_lexical(&pack, "b12", 3).unwrap()), "Vitamin B12 and D3");
+        for q in ["and", "for", "and the", "in", "the", "And The!"] {
+            assert_eq!(retrieve_lexical(&pack, q, 3).unwrap(), LexicalOutcome::NotFound, "{q:?}");
+        }
+        // One content word is enough to use the tier.
+        assert_eq!(found_title(&retrieve_lexical(&pack, "and the heat", 3).unwrap()), "Travel and the heat");
+    }
+
+    #[test]
+    fn stop_list_is_small_lowercase_normalised_and_sorted() {
+        assert!(CONTAINED_STOP_WORDS.len() <= 60);
+        for w in CONTAINED_STOP_WORDS {
+            assert_eq!(normalise_title(w), *w, "a stop word must be in normalised form");
+            assert!(!w.contains(' '));
+        }
+        assert!(CONTAINED_STOP_WORDS.windows(2).all(|p| p[0] < p[1]), "sorted, no duplicates");
+        for w in ["a", "and", "the", "of", "in", "for", "is", "with"] {
+            assert!(CONTAINED_STOP_WORDS.contains(&w), "{w}");
+        }
+        // Medical words and population words are content words.
+        for w in ["anxiety", "children", "adults", "pain"] {
+            assert!(!CONTAINED_STOP_WORDS.contains(&w), "{w}");
+        }
+        assert!(uses_contained_tier("anxiety"));
+        assert!(uses_contained_tier("the heat"));
+        assert!(!uses_contained_tier("ab"));
+        assert!(!uses_contained_tier("and the"));
+    }
+
+    // Rule 4: the edit tier runs only when the contained tier has no hits.
+    // Without the contained tier "reflux" is 2 edits from the brand variant
+    // "keflex" and would suggest Cefalexin.
+    #[test]
+    fn contained_hit_outranks_an_edit_distance_brand_hit() {
+        let pack = contained_pack("contained-vs-edit");
+        assert_eq!(damerau_levenshtein("reflux", "keflex"), 2);
+        let o = retrieve_lexical(&pack, "reflux", 3).unwrap();
+        assert_eq!(found_title(&o), "Heartburn and acid reflux");
+        // With no contained hit the edit tier is unchanged: "keflux" is in no
+        // title and is 1 edit from the variant "keflex" -> Cefalexin.
+        assert_eq!(retrieve_lexical(&pack, "keflux", 3).unwrap(), dym(&["Cefalexin"]));
+        // And the exact tier still decides first: a whole title is Found
+        // even though other titles contain it.
+        assert_eq!(found_title(&retrieve_lexical(&pack, "social anxiety", 3).unwrap()), "Social anxiety");
     }
 
     // Phase 1h M4b ruling 2: a `Found` page from an `nhs-web` doc carries

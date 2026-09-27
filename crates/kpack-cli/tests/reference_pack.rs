@@ -13,6 +13,9 @@
 //!
 //! - round 2: every page's core name and bare title resolve (never
 //!   NotFound), and merged chunks respect the 150/256 merge limits.
+//! - M5b: the contained-title tier — one-word queries ("anxiety", "adhd")
+//!   reach the pages whose titles contain them, and every content word of
+//!   every title (3+ chars, not a stop word) resolves (never NotFound).
 //!
 //! The build runs once (~90 s unoptimised) and is shared by these tests.
 
@@ -20,7 +23,9 @@ mod common;
 
 use common::*;
 use kpack_cli::{build_reference, core_name_detail, fake_names, keep_core, strip_parentheticals, Options};
-use kpack_core::lookup::{normalise_title, retrieve_lexical, LexicalOutcome};
+use kpack_core::lookup::{
+    normalise_title, retrieve_lexical, LexicalOutcome, CONTAINED_MIN_CHARS, CONTAINED_STOP_WORDS,
+};
 use kpack_core::{LoadContext, Pack};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -152,7 +157,9 @@ fn every_page_title_resolves_found_to_its_own_page() {
 /// reach it — Found, or a did-you-mean when several pages share the name.
 /// A core name that removed a population tail and belongs to one page only
 /// (fix round 1, I2) is not a variant: that bare name never resolves Found
-/// through a derived variant to that population-specific page.
+/// through a derived variant to that population-specific page. (It may
+/// reach it through the page's own slug, or — M5b — through the
+/// contained-title tier when that page is the only one naming it.)
 #[test]
 fn every_pages_core_name_and_bare_title_resolve() {
     let pack = mounted();
@@ -174,9 +181,13 @@ fn every_pages_core_name_and_bare_title_resolve() {
         } else {
             dropped += 1;
             // Dropped: only the page's own slug (the NHS's URL for it, M5's
-            // slug tier) may still find it by that bare name.
+            // slug tier) may still find it by that bare name, or the
+            // contained-title tier (M5b) when the page's title names it and
+            // no other page does.
+            let core_n = normalise_title(&core);
             if let LexicalOutcome::Found { title: got, .. } = retrieve_lexical(&pack, &core, 3).unwrap() {
-                assert!(got != title || normalise_title(slug) == normalise_title(&core), "{core:?} -> {got}");
+                let contained = format!(" {} ", normalise_title(title)).contains(&format!(" {core_n} "));
+                assert!(got != title || normalise_title(slug) == core_n || contained, "{core:?} -> {got}");
             }
         }
         for q in queries {
@@ -188,12 +199,39 @@ fn every_pages_core_name_and_bare_title_resolve() {
         }
     }
     assert!(dropped > 0);
-    // The reviewer's cases: never Found to a population-specific page
-    // through a derived variant.
-    for q in ["anxiety", "reflux", "adhd", "anxiety disorders"] {
-        let o = retrieve_lexical(&pack, q, 3).unwrap();
-        assert!(!matches!(o, LexicalOutcome::Found { .. }), "{q} -> {o:?}");
+    // The reviewer's cases (M4b fix round 1, I2): no derived variant makes
+    // them Found; the contained-title tier (M5b) lists the pages whose
+    // titles (or variants) contain them, shortest title first.
+    for (q, want) in [
+        (
+            "anxiety",
+            vec![
+                "Health anxiety",
+                "Anxiety in pregnancy",
+                "Anxiety disorders in children",
+                "Social anxiety (social phobia)",
+                "Generalised anxiety disorder (GAD)",
+            ],
+        ),
+        ("adhd", vec!["ADHD in adults", "ADHD in children and young people"]),
+        (
+            "developmental co ordination disorder",
+            vec!["Dyspraxia in adults", "Developmental co-ordination disorder (dyspraxia) in children"],
+        ),
+        // Esomeprazole through its brand variant "Guardium Acid Reflux
+        // Control". The M4b re-review's edit-tier ["Cefalexin"] (via the
+        // brand "Keflex") can no longer win: the edit tier runs only when
+        // nothing contains the query.
+        ("reflux", vec!["Esomeprazole", "Reflux in babies", "Heartburn and acid reflux"]),
+    ] {
+        let want: Vec<String> = want.into_iter().map(String::from).collect();
+        assert_eq!(retrieve_lexical(&pack, q, 3).unwrap(), LexicalOutcome::DidYouMean { candidates: want }, "{q}");
     }
+    // Only one title contains "anxiety disorders": that page is the hit.
+    let LexicalOutcome::Found { title, .. } = retrieve_lexical(&pack, "anxiety disorders", 3).unwrap() else {
+        panic!("anxiety disorders")
+    };
+    assert_eq!(title, "Anxiety disorders in children");
     // Found through the page's OWN slug (its NHS URL), not a derived
     // variant — unchanged since round 1, pinned so any change is visible.
     for (q, want) in [("cataracts", "Cataracts in adults"), ("nephrotic syndrome", "Nephrotic syndrome in children")] {
@@ -240,6 +278,31 @@ fn merged_chunks_respect_the_limits() {
             let (a, b) = loc.split_once('-').expect("a merged chunk spans lines");
             let n = |s: &str| s.strip_prefix('L').unwrap().parse::<u64>().unwrap();
             assert!(n(a) < n(b), "{loc}");
+        }
+    }
+}
+
+/// M5b recall gate: every content word of every page title — 3+ chars, not
+/// a contained-tier stop word — reaches at least its own page (Found, or a
+/// did-you-mean when several titles contain it), never NotFound.
+#[test]
+fn every_title_content_word_resolves() {
+    let pack = mounted();
+    let titles = pack.titles().unwrap();
+    let mut words = std::collections::BTreeSet::new();
+    for t in &titles {
+        for w in normalise_title(&t.title).split(' ') {
+            if w.chars().count() >= CONTAINED_MIN_CHARS && !CONTAINED_STOP_WORDS.contains(&w) {
+                words.insert(w.to_string());
+            }
+        }
+    }
+    assert!(words.len() > 1200, "{}", words.len());
+    for w in &words {
+        match retrieve_lexical(&pack, w, 3).unwrap() {
+            LexicalOutcome::Found { .. } => {}
+            LexicalOutcome::DidYouMean { candidates } => assert!(!candidates.is_empty() && candidates.len() <= 5),
+            other => panic!("{w:?} -> {other:?}"),
         }
     }
 }
