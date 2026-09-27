@@ -1299,6 +1299,7 @@ test('F1: first-aid "shout" sentences are KEPT; a crisis-service sentence with a
     'Gently tap his shoulders and shout, "Are you okay?"',
     'Give your neighbour a shout if it gets worse.',
     'The word papyrus is unrelated.',
+    'Shout for help and check breathing for 10 - 15 seconds.',
     ...SEIZURE_SHOUT_REPLIES,
   ];
   for (const t of keptCases) {
@@ -1310,6 +1311,7 @@ test('F1: first-aid "shout" sentences are KEPT; a crisis-service sentence with a
     'You can also ring the Samaritans on 116 124.',
     'Text SHOUT to 85258.',
     'The Samaritans are free on 116 123.',
+    'You can message SHOUT on 85258 any time.',
   ]) {
     assert.deepStrictEqual(dedupeSignposts(t), { text: '', removed: 1 }, t);
   }

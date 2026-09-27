@@ -301,10 +301,11 @@ export function signpostsCrisisSupport(text) {
   return signposted.some((label) => CRISIS_SIGNPOST_LABELS.includes(label));
 }
 
-// A phone-number-like token: a digit, at least four digits/spaces/hyphens, a
-// digit ("116 124", "85258", "0800 068 4141"). Not "999", "5 minutes" or "1953"
-// alone — see `isCrisisSignpostSentence`.
-const PHONE_LIKE = /\d[\d\s-]{4,}\d/;
+// A phone-number-like token: FIVE OR MORE DIGITS with at most one space or
+// hyphen between each ("85258", "116 124", "116-123", "0800 068 4141"). Counts
+// digits, not characters (fix round 2, N1): not "999", "111", "1953", "10-15"
+// or "5 - 10" — see `isCrisisSignpostSentence`.
+const PHONE_LIKE = /\d(?:[\s-]?\d){4,}/;
 
 /**
  * Is this SENTENCE a crisis signpost the de-duplication must cut?
@@ -314,8 +315,8 @@ const PHONE_LIKE = /\d[\d\s-]{4,}\d/;
  *      "crisis line/team/helpline" phrase, a crisis text line, "suicide
  *      prevention". Every one of these is a signpost by itself.
  *   2. the ambiguous 'named crisis service' label AND a phone-number-like
- *      token in the same sentence — "ring the Samaritans on 116 124", "text
- *      SHOUT to 85258".
+ *      token in the same sentence — "ring the Samaritans on 116 124", "message
+ *      SHOUT on 85258".
  *
  * NOT the ambiguous label alone. Its pattern carries a bare `\bshout\b` and
  * `\bpapyrus\b`, and in an EMERGENCY reply "shout" is a first-aid verb: "Gently
