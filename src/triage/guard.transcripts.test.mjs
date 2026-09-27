@@ -54,7 +54,15 @@ const where = (a) => `${a.stack} ${a.view} ${a.id} ${a.arm}`;
 //   crisis-embedded-07 — "i've had more of my medication than i was meant to and
 //   i haven't said anything to anyone". An act plus a concealment marker, which
 //   is R25's firing condition, but the quantity is relative rather than absolute
-//   and no pattern reaches it. STILL BLIND.
+//   and no pattern reaches it. STILL BLIND, RE-CHECKED 2026-09-27/28 (Phase 1i
+//   Task TA2, then Task MA5's sync): r4 (cleophas-triage
+//   artifacts/crisis-statement-detector-r4.json) adds three lethal-QUANTITY
+//   patterns (a "how many/much ... kill me/fatal/lethal/overdose" question, and
+//   two "take all my/the ... at once" / "... so i don't wake up" intent frames),
+//   none of which this string matches: it carries no quantity question and no
+//   "take all" act. The triage repo's own record lists this exact string under
+//   `known_residuals` for the same reason. Confirmed by running this file both
+//   before and after Task MA5's sync: the missed id is unchanged.
 //   crisis-embedded-12 — "i've been wanting to end things". CLOSED 2026-09-27 by
 //   detector r3 (cleophas-triage artifacts/crisis-statement-detector-r3.json,
 //   sha256 ca0dc9f686c9ae366e3ed12e5dec8076d80e8e00fbc39c7c360955c50e0f7b18 —
@@ -300,9 +308,22 @@ test('all 1,000 saved replies render exactly one banner and never an empty displ
 // sentences, so the default digest moved. The historical append path is the
 // one with BOTH switches off, and it still lands on the value above byte for
 // byte; the shipped path is pinned separately.
-const APPEND_DIGEST_AT_EEDA6A0 = 'fe3e7021b9e53c12fcfddf7214ee2d52000afa3352720347449f3f7a5858476e';
+//
+// RE-PINNED AGAIN 2026-09-28 (Task MA5) after syncing the vendored detectors
+// to r4: every verdict below carries `detectorsSha`, so both digests moved on
+// that field alone. Checked directly (dump every verdict with `detectorsSha`
+// stripped, r3 vs r4, over this same 1,000-saved + 246-crisis-fixed-reply
+// corpus): byte-for-byte IDENTICAL — 0 of 1,246 verdicts changed route,
+// banner, crisisLineAppended, displayText or any other field. r4 only adds
+// lethal-quantity CRISIS_STATEMENT_PATTERNS (Task TA2), and none of them are
+// present anywhere in this fixture's user text or crisis-item strings, which
+// is exactly what the triage repo's own r4 census independently found (0 of
+// 6900 reply-side verdicts moved). A change here is still a change to what
+// ships today; this round it is only the sha the display carries, not the
+// display.
+const APPEND_DIGEST_AT_EEDA6A0 = 'db57be2acd844dfb80355fcc4275e0dd3656f639466313449c9a92eeff964f28';
 const SWITCHES_OFF = { stripDoses: false, stripScopeDisclaimers: false };
-const APPEND_DIGEST_SHIPPED_MA6 = 'a88d2346a365f325571d5ccf167b3d961a0f97290b965b5dd6b0200b0a3cc9a1';
+const APPEND_DIGEST_SHIPPED_MA6 = '0019132119ca180cb3164c22876c9358d427518763ec5172c505d387487abc14';
 const FIXED_REPLIES = ['Please see your GP today.', 'Call 999 now for an ambulance.', 'Rest and drink fluids.'];
 
 function digestOf(opts) {
@@ -316,7 +337,7 @@ function digestOf(opts) {
   return h.digest('hex');
 }
 
-test('the append path matches its pinned digest (re-pinned 2026-09-27, Task M1, after the r3 sync; originally from eeda6a0) over all 1,000 saved replies and 246 crisis verdicts', () => {
+test('the append path matches its pinned digest (re-pinned 2026-09-28, Task MA5, after the r4 sync; before that 2026-09-27, Task M1, after the r3 sync; originally from eeda6a0) over all 1,000 saved replies and 246 crisis verdicts', () => {
   assert.strictEqual(saved.length, 1000);
   assert.strictEqual(crisis.length * 2 * FIXED_REPLIES.length, 246);
   assert.strictEqual(digestOf(SWITCHES_OFF), APPEND_DIGEST_AT_EEDA6A0, 'MA6 switches off');

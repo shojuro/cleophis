@@ -1318,6 +1318,9 @@ const CRISIS_STATEMENT_PATTERNS = [
   [/\bcan(?:no|['’])?t\s+(?:go on|carry on|keep going)\b/, "can't go on"],
   [/\bend(?:ing)?\s+things\b(?!\s+(?:with|between|off\b|on\b|up\b|early|there|here|for\s+(?:the|to)))/, 'end things'],
   [/\b(?:want|wanted|wanting|wish(?:ing)?)\s+to\s+end\s+it\s*(?:[.!?,;]|$)/, 'want to end it'],
+  [/\bhow\s+(?:many|much)\s+(?:of\s+(?:my|these|those|the|them)\s+)?(?:[^\s.?!,;]+\s+){0,3}?(?:(?:would|will|could|might|can)\s+(?:it\s+take\s+to\s+)?(?:kill\s+me|be\s+(?:a\s+)?(?:fatal|lethal)(?:\s+dose)?)|(?:is|are)\s+(?:a\s+)?(?:fatal|lethal)(?:\s+dose)?|(?:does|would|will)\s+it\s+take\s+to\s+(?:kill\s+(?:me|myself)|die|overdose)|to\s+(?:kill\s+me|die|overdose))\b(?!(?:\s+dose)?\s+(?:(?:for|in|to)\s+)?(?:a|an|my|your|his|her|their|the)\s+(?:dog|cat|pet|child|baby|kid|toddler|son|daughter|animal)\b)/, 'how many would kill me'],
+  [/\b(?:take|taking|took|swallow(?:ing|ed)?)\s+all\s+(?:of\s+)?(?:my|the)\b[^.?!,;]{0,40}?\b(?:so\s+(?:that\s+)?i\s+(?:don'?t|do not|won'?t|will not|never|would(?:n'?t| not))|and\s+(?:not|never))\s+(?:ever\s+)?wake\s+up(?:\s+again)?\s*(?:[.!?,;]|$)/, "take all so i don't wake up"],
+  [/\b(?:thinking\s+(?:of|about)|going\s+to|gonna|want(?:ing)?\s+to|plan(?:ning)?\s+(?:to|on)|tempted\s+to|might\s+just|decided\s+to|about\s+to)\s+(?:take|taking|swallow(?:ing)?)\s+all\s+(?:of\s+)?(?:my|the)\s+(?:[^\s.?!,;]+\s+)?(?:tablets?|pills?|capsules?|meds|medications?|painkillers?)\s+at\s+once\b(?!\s+(?:with|in\s+the\s+(?:morning|evening)|at\s+(?:night|breakfast|lunch|dinner|bedtime)|every|each|daily|before|after|instead|rather|or\b|to\s+(?:save|make|keep|simplify)|so\s+i\s+(?:don'?t|do not)\s+forget|because\s+i\s+(?:keep\s+)?forget|from\s+now|if\s+(?:that'?s|it'?s|thats|its)\s+(?:ok|okay|alright|all\s+right|safe|fine)))/, 'take all my tablets at once'],
 ];
 
 /**

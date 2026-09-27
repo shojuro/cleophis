@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { ROUTE, detectRoute, detectCrisisStatement, detectMedication, URGENCY } from './detectors.mjs';
 import pinModule from './detectors.pin.js';
@@ -64,10 +65,25 @@ test('no file under src/ imports JSON with an import attribute', () => {
 // happens here, but a re-pin in the research repo (D3/D4 land there next) must
 // not leave `npm test` green while the product scores replies with older code.
 // Skipped by name, not silently, when the research repo is not on this box.
-const TRIAGE_PIN = '/home/penguinzyue/cleophas-triage/artifacts/detectors-pin.json';
-test('the product pin matches the triage repo\'s own pin', { skip: existsSync(TRIAGE_PIN) ? false : `no ${TRIAGE_PIN} on this machine` }, () => {
-  const upstream = JSON.parse(readFileSync(TRIAGE_PIN, 'utf8'));
-  assert.strictEqual(pin.sha256, upstream.sha256, `the triage repo re-pinned ${upstream.sha256}; run tools/sync-triage-detectors.sh`);
+//
+// UPDATED 2026-09-28 (Task MA5): Phase 1i detector revisions land on a
+// per-task worktree branch (`sdd/p1i-TA2` etc.) well before that branch
+// merges to the triage repo's `main`, so reading `main`'s checked-out working
+// tree (the original form of this test) compares the vendored pin against
+// whichever branch happens to be checked out there for unrelated reasons, not
+// against the commit this file's OWN pin claims to be sourced from. Read the
+// triage repo's pin file at `pin.source_commit` instead, via `git show`: every
+// worktree of a repo shares one object database, so the exact commit
+// `tools/sync-triage-detectors.sh` ran against stays resolvable there
+// regardless of what `main` itself points to. Still skipped, not failed, only
+// when the research repo is entirely absent from this machine.
+const TRIAGE_REPO = '/home/penguinzyue/cleophas-triage';
+test('the product pin matches the triage repo\'s own pin, at the commit this file was synced from', {
+  skip: existsSync(TRIAGE_REPO) ? false : `no ${TRIAGE_REPO} on this machine`,
+}, () => {
+  const raw = execFileSync('git', ['-C', TRIAGE_REPO, 'show', `${pin.source_commit}:artifacts/detectors-pin.json`], { encoding: 'utf8' });
+  const upstream = JSON.parse(raw);
+  assert.strictEqual(pin.sha256, upstream.sha256, `${TRIAGE_REPO} at ${pin.source_commit} pins ${upstream.sha256}; run tools/sync-triage-detectors.sh`);
 });
 
 test('the vendored module has no node: imports (it runs in the webview)', () => {
