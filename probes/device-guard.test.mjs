@@ -21,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from '../src/triage/guard.js';
+import { LOOKUP_RULE } from '../src/triage/lookup-guard.js';
 import {
   crisisOptions, guardRecord, guardAll, headerRecord, parseJsonl, run, stripOptions, summarise,
 } from './device-guard.mjs';
@@ -590,4 +591,35 @@ test('the CLI takes --strip-doses and --strip-disclaimers and writes them into t
   }
   assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
     '--strip-doses', 'maybe'], { stdio: 'pipe' }), /strip-doses/);
+});
+
+// ── Phase 1i MA4: the lookup guard's rule id, and the header's whole shape ──
+//
+// This probe never runs the lookup guard — a triage reply carries no
+// citations for it to check — but the triage census reads ONE header for the
+// mobile commit's whole product contract, lookup guard included, so the
+// header names `LOOKUP_RULE` beside the detector pin. The second test pins
+// every key the header carries, in order: a field silently dropped from
+// `headerRecord` (as opposed to one deliberately renamed, which would still
+// fail every test above that names it) is caught here even if nothing above
+// happens to read it.
+
+test('the header names the lookup guard\'s rule id beside the detectors pin', () => {
+  const h = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
+  assert.strictEqual(h.lookup_rule, LOOKUP_RULE);
+  assert.strictEqual(h.lookup_rule, 'dose-cite-v7', 'pinned literal, so a silent rule bump is loud here too');
+  const keys = Object.keys(h);
+  assert.strictEqual(keys.indexOf('lookup_rule'), keys.indexOf('detectors_sha') - 1, 'immediately before detectors_sha');
+});
+
+test('the header\'s whole key shape is pinned', () => {
+  const h = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1,
+    crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'], crisisRuleSource: 'catalog',
+  });
+  assert.deepStrictEqual(Object.keys(h), [
+    'header', 'source', 'catalog_id', 'records', 'skipped', 'lookup_rule', 'detectors_sha',
+    'crisis_rule', 'keep_routes', 'dedupe_signposts', 'strip_doses', 'strip_disclaimers',
+    'crisis_rule_source', 'detectors_pin_file_sha', 'crisis_line_sha256',
+  ]);
 });

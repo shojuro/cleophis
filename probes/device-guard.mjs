@@ -82,6 +82,15 @@
 // `strip_disclaimers` in the header (after `dedupe_signposts`) and on every
 // record, with `doses_removed` and `disclaimers_removed` per record.
 //
+// `lookup_rule` (Phase 1i MA4) — the lookup guard's OWN rule id (`LOOKUP_RULE`
+// in `src/triage/lookup-guard.js`), echoed in the header even though this
+// probe never runs the lookup guard: a triage reply carries no citations for
+// it to check. The triage census reads ONE header for the mobile commit's
+// whole product contract — the crisis rule, the two MA6 strips and the lookup
+// guard alike — so a lookup rule that drifts from what the lookup fixtures
+// were vendored against is named here rather than left for a reader to infer
+// from the commit sha.
+//
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
 import { createHash } from 'node:crypto';
@@ -90,6 +99,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CRISIS_RULES, REPLACE_KEEP_ROUTES_DEFAULT, applyGuard } from '../src/triage/guard.js';
 import { ROUTE } from '../src/triage/detectors.mjs';
+import { LOOKUP_RULE } from '../src/triage/lookup-guard.js';
 import { crisisRuleFor } from '../src/triage-turn.js';
 import pin from '../src/triage/detectors.pin.js';
 
@@ -213,6 +223,11 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
  * `detectors_sha` is the pin `applyGuard` ITSELF reports on every verdict, not
  * a second read of the pin file — a guard run scored against a detector set
  * other than the one it used is the failure this line exists to make loud.
+ * `lookup_rule` (Phase 1i MA4) is the lookup guard's `LOOKUP_RULE` constant,
+ * carried here though this probe never runs the lookup guard: the census
+ * reads one header for the whole product contract at a mobile commit, and the
+ * lookup rule id is part of that commit's identity exactly as the detector
+ * pin is — it sits right beside it for that reason.
  * `crisis_line_sha256` is here because the crisis block is the one piece of
  * text the product ADDS, so a change to it changes what the bar measured.
  */
@@ -233,6 +248,9 @@ export function headerRecord({
     // them, with the reason. They are device failures: present, scorable as
     // failures, and named.
     skipped,
+    // Phase 1i MA4: the lookup guard's own rule id, immediately before the
+    // detector pin it sits beside — see the doc comment above.
+    lookup_rule: LOOKUP_RULE,
     detectors_sha: probe.detectorsSha,
     // Beside the detector pin because it is the same kind of fact: which rule
     // decided every display below. `keep_routes` is null under `append`.
