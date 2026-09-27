@@ -378,13 +378,27 @@ mod tests {
 
     // ---- P2.9: the triage catalog variant ----------------------------------
 
-    /// Phase 1h M5: `referencePack` is optional, unset this round (M4b fills
-    /// it), and parses when present.
+    /// Phase 1h M5: `referencePack` is optional, and parses when present.
+    /// Phase 1h M7 fills the triage hero's pins with the built pack's shas
+    /// (`docs/superpowers/mobile-tools/build-reference-pack.md`); the pack
+    /// bytes themselves are embedded only once the founder signs and the
+    /// M5 embed step runs, so every other catalog entry still carries none.
     #[test]
     fn reference_pack_is_optional_and_parses_when_present() {
         let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
-        assert_eq!(hero(&entries).unwrap().reference_pack, None);
-        assert!(entries.iter().all(|e| e.reference_pack.is_none()));
+        assert_eq!(
+            hero(&entries).unwrap().reference_pack,
+            Some(ReferencePack {
+                id: "reference-uk-v1".into(),
+                sha256: "5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853".into(),
+                content_sha256: "df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5".into(),
+                version: "2026.09.1".into(),
+            })
+        );
+        assert!(entries
+            .iter()
+            .filter(|e| e.id != "med-triage")
+            .all(|e| e.reference_pack.is_none()));
 
         let raw = r#"[{"id":"x","name":"X","category":"medical","subject":"S","cover":"covers/x.webp",
             "sizeParams":"1B","quant":"Q4","fileBytes":1,"blurb":"b",
