@@ -45,7 +45,7 @@
 //                                --out work/device-probes/m7.R58N.guard.json
 //   [--catalog src-tauri/resources/catalog.triage.json] [--catalog-id med-triage]
 //   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
-//   [--dedupe-signposts on|off]
+//   [--dedupe-signposts on|off] [--strip-doses on|off] [--strip-disclaimers on|off]
 //
 // THE RULE DEFAULTS TO THE CATALOG ENTRY'S (Phase 1i MA1 fix round 1), read
 // through `crisisRuleFor` — the same sanitised reader the app uses — so a run
@@ -67,6 +67,15 @@
 // The default follows the rule: on under `replace`, off under `append`. The
 // value is echoed as `dedupe_signposts` in the header (the triage census reads
 // it there) and on every record, with `signposts_removed` per record.
+//
+// `--strip-doses` and `--strip-disclaimers` (Phase 1i MA6) — the product's two
+// owned floors on a kept reply: every sentence carrying a dose token (the
+// lookup guard's normaliser and DOSE_UNITS) is removed and the fixed
+// "A clinician can advise on treatment." note shown once; on a reply whose
+// direction is EMERGENCY or CLINICIAN every scope-disclaimer sentence is
+// removed. Both default ON under every rule. Echoed as `strip_doses` and
+// `strip_disclaimers` in the header (after `dedupe_signposts`) and on every
+// record, with `doses_removed` and `disclaimers_removed` per record.
 //
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
@@ -163,6 +172,30 @@ function parseDedupe(value, rule) {
   throw new Error(`--dedupe-signposts must be on|off, got ${JSON.stringify(value)}`);
 }
 
+/** `on|off` (or a boolean) to a boolean; absent is ON. Refused otherwise. */
+function parseOnOff(value, flag) {
+  if (value == null) return true;
+  if (value === true || value === 'on') return true;
+  if (value === false || value === 'off') return false;
+  throw new Error(`--${flag} must be on|off, got ${JSON.stringify(value)}`);
+}
+
+/**
+ * The MA6 switches, parsed and validated BEFORE any record is guarded (for the
+ * same reason as `crisisOptions`). Both default on, under every rule.
+ *
+ * @returns {{stripDoses: boolean, stripDisclaimers: boolean}}
+ */
+export function stripOptions({ stripDoses = null, stripDisclaimers = null } = {}) {
+  return {
+    stripDoses: parseOnOff(stripDoses, 'strip-doses'),
+    stripDisclaimers: parseOnOff(stripDisclaimers, 'strip-disclaimers'),
+  };
+}
+
+/** The effective switch for a guard call: explicit boolean, else on. */
+const onUnlessOff = (v) => v !== false;
+
 /** The effective de-duplication for a guard call: explicit, else the rule's default. */
 const dedupeFor = (dedupeSignposts, crisisRule) => (typeof dedupeSignposts === 'boolean'
   ? dedupeSignposts : crisisRule === 'replace');
@@ -180,7 +213,7 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
  */
 export function headerRecord({
   source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
-  dedupeSignposts = null, crisisRuleSource = null,
+  dedupeSignposts = null, crisisRuleSource = null, stripDoses = null, stripDisclaimers = null,
 }) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
@@ -203,6 +236,10 @@ export function headerRecord({
     // Phase 1i MA1: whether a kept reply's crisis signposts were cut beside the
     // product's block. The triage census reads this line.
     dedupe_signposts: dedupeFor(dedupeSignposts, crisisRule),
+    // Phase 1i MA6: the product's dose and red-flag disclaimer strips. The
+    // triage census reads these lines beside the rule and the dedupe flag.
+    strip_doses: onUnlessOff(stripDoses),
+    strip_disclaimers: onUnlessOff(stripDisclaimers),
     // Where the rule came from: 'catalog' (the entry's registered rule, no
     // flag), 'flag' (an explicit --crisis-rule), or null for a unit caller.
     crisis_rule_source: crisisRuleSource,
@@ -221,6 +258,7 @@ export function headerRecord({
  */
 export function guardRecord(record, {
   crisisLine, crisisRule = 'append', keepRoutes = null, dedupeSignposts = null,
+  stripDoses = null, stripDisclaimers = null,
 }) {
   const { id, user, text, state } = record ?? {};
   // The PATIENT'S WORDS, refused the same way the reply is. `String(user ?? '')`
@@ -267,6 +305,8 @@ export function guardRecord(record, {
     crisisRule,
     ...(replace && keepRoutes ? { replaceKeepRoutes: keepRoutes } : {}),
     dedupeSignposts: dedupe,
+    stripDoses: onUnlessOff(stripDoses),
+    stripScopeDisclaimers: onUnlessOff(stripDisclaimers),
   });
   return {
     id,
@@ -298,6 +338,11 @@ export function guardRecord(record, {
     // are never display text; they remain only in the harness file's `text`.
     dedupe_signposts: dedupe,
     signposts_removed: v.signpostsRemoved ?? 0,
+    // Phase 1i MA6: counts only; the removed sentences stay in `text`.
+    strip_doses: onUnlessOff(stripDoses),
+    doses_removed: v.dosesRemoved ?? 0,
+    strip_disclaimers: onUnlessOff(stripDisclaimers),
+    disclaimers_removed: v.disclaimersRemoved ?? 0,
   };
 }
 
@@ -316,7 +361,9 @@ export function guardRecord(record, {
  * file inventing a reply. An empty display fails the item, which is what a
  * device failure should do.
  */
-function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null, dedupeSignposts = null } = {}) {
+function refusedEntry(record, reason, {
+  crisisRule = 'append', keepRoutes = null, dedupeSignposts = null, stripDoses = null, stripDisclaimers = null,
+} = {}) {
   return {
     id: record?.id ?? null,
     display: '',
@@ -341,6 +388,10 @@ function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null
     route_detected: null,
     dedupe_signposts: dedupeFor(dedupeSignposts, crisisRule),
     signposts_removed: 0,
+    strip_doses: onUnlessOff(stripDoses),
+    doses_removed: 0,
+    strip_disclaimers: onUnlessOff(stripDisclaimers),
+    disclaimers_removed: 0,
   };
 }
 
@@ -378,6 +429,8 @@ export function summarise(guarded) {
   let replaced = 0;
   let hidden = 0;
   let signpostsRemoved = 0;
+  let dosesRemoved = 0;
+  let disclaimersRemoved = 0;
   for (const g of guarded) {
     if (g.refused) { refused += 1; continue; }
     banners[g.route_banner] = (banners[g.route_banner] ?? 0) + 1;
@@ -388,6 +441,8 @@ export function summarise(guarded) {
     if (g.crisis_replaced) replaced += 1;
     if (g.crisis_replaced && !g.reply_shown) hidden += 1;
     signpostsRemoved += g.signposts_removed ?? 0;
+    dosesRemoved += g.doses_removed ?? 0;
+    disclaimersRemoved += g.disclaimers_removed ?? 0;
   }
   return {
     records: guarded.length,
@@ -400,14 +455,18 @@ export function summarise(guarded) {
     crisis_replaced: replaced,
     reply_hidden: hidden,
     signposts_removed: signpostsRemoved,
+    doses_removed: dosesRemoved,
+    disclaimers_removed: disclaimersRemoved,
   };
 }
 
 export function run({
   inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null, dedupeSignposts = null,
+  stripDoses = null, stripDisclaimers = null,
 }) {
   const entry = catalogEntry(catalogPath ?? DEFAULT_CATALOG, catalogId ?? null);
-  const { crisisRuleSource, ...rule } = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts, entry });
+  const { crisisRuleSource, ...crisis } = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts, entry });
+  const rule = { ...crisis, ...stripOptions({ stripDoses, stripDisclaimers }) };
   const records = parseJsonl(readFileSync(inPath, 'utf8'));
   if (!records.length) throw new Error(`${inPath} holds no records`);
   const { guarded, skipped } = guardAll(records, { crisisLine: entry.crisisLine, ...rule });
@@ -428,7 +487,7 @@ export function run({
 function main(argv) {
   const args = {
     in: null, out: null, catalog: null, 'catalog-id': null, 'crisis-rule': null, 'keep-routes': null,
-    'dedupe-signposts': null,
+    'dedupe-signposts': null, 'strip-doses': null, 'strip-disclaimers': null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const f = argv[i].replace(/^--/, '');
@@ -439,7 +498,8 @@ function main(argv) {
   }
   if (!args.in || !args.out) {
     throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID] '
-      + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]] [--dedupe-signposts on|off]');
+      + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]] [--dedupe-signposts on|off] '
+      + '[--strip-doses on|off] [--strip-disclaimers on|off]');
   }
   const { header, skipped, summary } = run({
     inPath: args.in,
@@ -449,11 +509,14 @@ function main(argv) {
     crisisRule: args['crisis-rule'],
     keepRoutes: args['keep-routes'],
     dedupeSignposts: args['dedupe-signposts'],
+    stripDoses: args['strip-doses'],
+    stripDisclaimers: args['strip-disclaimers'],
   });
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
   process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule} (${header.crisis_rule_source})`
     + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}`
-    + ` dedupe-signposts ${header.dedupe_signposts ? 'on' : 'off'}\n`);
+    + ` dedupe-signposts ${header.dedupe_signposts ? 'on' : 'off'}`
+    + ` strip-doses ${header.strip_doses ? 'on' : 'off'} strip-disclaimers ${header.strip_disclaimers ? 'on' : 'off'}\n`);
   process.stderr.write(`[device-guard] ${JSON.stringify(summary)}\n`);
   for (const s of skipped) {
     process.stderr.write(`[device-guard] REFUSED ${s.id} (state=${s.state}): ${s.reason}\n`);

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from '../src/triage/guard.js';
 import {
-  crisisOptions, guardRecord, guardAll, headerRecord, parseJsonl, run, summarise,
+  crisisOptions, guardRecord, guardAll, headerRecord, parseJsonl, run, stripOptions, summarise,
 } from './device-guard.mjs';
 
 const pin = JSON.parse(readFileSync(new URL('../src/triage/detectors.pin.json', import.meta.url), 'utf8'));
@@ -510,4 +510,84 @@ test('F2 in the record: a kept reply emptied by de-duplication records reply_sho
   assert.strictEqual(g.route_banner, 'emergency');
   assert.strictEqual(g.signposts_removed, 1);
   assert.strictEqual(g.display, crisisReplaceBlock(crisisLine));
+});
+
+// ── Phase 1i MA6: --strip-doses and --strip-disclaimers ─────────────────────
+//
+// The census reads `no_dose` and `scope_disclaimer_routing` on the displayed
+// text, so which of the product's two strips ran must be on the header and on
+// every record, the same way `dedupe_signposts` is. Both default on.
+
+const DOSE_REPLY = 'Call 999 now. Do not take more than 8 tablets.';
+
+test('stripOptions: on by default, on|off explicitly, anything else refused', () => {
+  assert.deepStrictEqual(stripOptions({}), { stripDoses: true, stripDisclaimers: true });
+  assert.deepStrictEqual(stripOptions({ stripDoses: 'off', stripDisclaimers: 'on' }), { stripDoses: false, stripDisclaimers: true });
+  assert.deepStrictEqual(stripOptions({ stripDoses: true, stripDisclaimers: false }), { stripDoses: true, stripDisclaimers: false });
+  assert.throws(() => stripOptions({ stripDoses: 'yes' }), /strip-doses/);
+  assert.throws(() => stripOptions({ stripDisclaimers: 0 }), /strip-disclaimers/);
+});
+
+test('the header records strip_doses and strip_disclaimers beside dedupe_signposts', () => {
+  const h = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
+  assert.strictEqual(h.strip_doses, true);
+  assert.strictEqual(h.strip_disclaimers, true);
+  const off = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1, stripDoses: false, stripDisclaimers: false,
+  });
+  assert.strictEqual(off.strip_doses, false);
+  assert.strictEqual(off.strip_disclaimers, false);
+  const keys = Object.keys(h);
+  assert.strictEqual(keys.indexOf('strip_doses'), keys.indexOf('dedupe_signposts') + 1);
+  assert.strictEqual(keys.indexOf('strip_disclaimers'), keys.indexOf('strip_doses') + 1);
+});
+
+test('every record carries the switches and the counts; a refused entry carries them with zeros', () => {
+  const r = rec('a', 'he collapsed', DOSE_REPLY);
+  const on = guardRecord(r, { crisisLine });
+  assert.strictEqual(on.strip_doses, true);
+  assert.strictEqual(on.doses_removed, 1);
+  assert.strictEqual(on.strip_disclaimers, true);
+  assert.strictEqual(on.disclaimers_removed, 0);
+  assert.strictEqual(on.display.includes('8 tablets'), false);
+  const off = guardRecord(r, { crisisLine, stripDoses: false, stripDisclaimers: false });
+  assert.strictEqual(off.strip_doses, false);
+  assert.strictEqual(off.doses_removed, 0);
+  assert.ok(off.display.includes('8 tablets'));
+  const dis = guardRecord(rec('b', 'lump in my neck', 'I cannot assess you properly. Please see your GP.'), { crisisLine });
+  assert.strictEqual(dis.disclaimers_removed, 1);
+  assert.strictEqual(dis.display, 'Please see your GP.');
+  const { guarded } = guardAll([{ id: 'x', user: 'u', state: 'error' }], { crisisLine, stripDoses: false, stripDisclaimers: true });
+  assert.strictEqual(guarded[0].strip_doses, false);
+  assert.strictEqual(guarded[0].strip_disclaimers, true);
+  assert.strictEqual(guarded[0].doses_removed, 0);
+  assert.strictEqual(guarded[0].disclaimers_removed, 0);
+  const s = summarise([on, off, dis]);
+  assert.strictEqual(s.doses_removed, 1);
+  assert.strictEqual(s.disclaimers_removed, 1);
+});
+
+test('the CLI takes --strip-doses and --strip-disclaimers and writes them into the header and every record', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-ma6-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'he collapsed', DOSE_REPLY))}\n`);
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  for (const [flags, doses, disclaimers] of [
+    [[], true, true],
+    [['--strip-doses', 'off'], false, true],
+    [['--strip-disclaimers', 'off'], true, false],
+    [['--strip-doses', 'on', '--strip-disclaimers', 'off'], true, false],
+  ]) {
+    const outPath = join(dir, `out-${flags.join('_') || 'none'}.json`);
+    execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, ...flags], { stdio: 'pipe' });
+    const [h, r] = parseJsonl(readFileSync(outPath, 'utf8'));
+    assert.strictEqual(h.strip_doses, doses, flags.join(' '));
+    assert.strictEqual(h.strip_disclaimers, disclaimers, flags.join(' '));
+    assert.strictEqual(r.strip_doses, doses, flags.join(' '));
+    assert.strictEqual(r.strip_disclaimers, disclaimers, flags.join(' '));
+    assert.strictEqual(r.doses_removed, doses ? 1 : 0, flags.join(' '));
+    assert.strictEqual(r.display.includes('8 tablets'), !doses, flags.join(' '));
+  }
+  assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
+    '--strip-doses', 'maybe'], { stdio: 'pipe' }), /strip-doses/);
 });
