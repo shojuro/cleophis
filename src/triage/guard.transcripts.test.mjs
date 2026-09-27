@@ -23,8 +23,9 @@ import {
   applyGuard, CRISIS_BLOCK_DEFAULT, CRISIS_LINE_REPLACE, PROHIBITED_NOTE, TIME_FRAME_NOTE, crisisReplaceBlock,
 } from './guard.js';
 import {
-  URGENCY, detectMedication, detectNamedDiagnosis, detectRoute, normaliseReply,
+  URGENCY, detectMedication, detectNamedDiagnosis, detectRoute, detectScopeDisclaimer, normaliseReply,
 } from './detectors.mjs';
+import { doseTokensIn, normaliseDoseText } from './lookup-guard.js';
 
 const load = (n) => JSON.parse(readFileSync(new URL(`./fixtures/${n}.json`, import.meta.url), 'utf8'));
 const benignFixture = load('benign-arms');
@@ -293,7 +294,15 @@ test('all 1,000 saved replies render exactly one banner and never an empty displ
 // blind spot), not because `replace` touched `append` — both calls below still
 // land on the SAME value, which is what this test actually proves. A change
 // here is a change to what ships today.
+//
+// PHASE 1i MA6 SPLIT IT IN TWO. The shipped default now strips displayed doses
+// and red-flag scope disclaimers, which adds four verdict keys and cuts
+// sentences, so the default digest moved. The historical append path is the
+// one with BOTH switches off, and it still lands on the value above byte for
+// byte; the shipped path is pinned separately.
 const APPEND_DIGEST_AT_EEDA6A0 = 'fe3e7021b9e53c12fcfddf7214ee2d52000afa3352720347449f3f7a5858476e';
+const SWITCHES_OFF = { stripDoses: false, stripScopeDisclaimers: false };
+const APPEND_DIGEST_SHIPPED_MA6 = '5a647d1150c47f2414ae6c54fd1a0bb678c944fb332f46205ef9d613e3ba38ca';
 const FIXED_REPLIES = ['Please see your GP today.', 'Call 999 now for an ambulance.', 'Rest and drink fluids.'];
 
 function digestOf(opts) {
@@ -310,8 +319,66 @@ function digestOf(opts) {
 test('the append path matches its pinned digest (re-pinned 2026-09-27, Task M1, after the r3 sync; originally from eeda6a0) over all 1,000 saved replies and 246 crisis verdicts', () => {
   assert.strictEqual(saved.length, 1000);
   assert.strictEqual(crisis.length * 2 * FIXED_REPLIES.length, 246);
-  assert.strictEqual(digestOf({}), APPEND_DIGEST_AT_EEDA6A0, 'default');
-  assert.strictEqual(digestOf({ crisisRule: 'append' }), APPEND_DIGEST_AT_EEDA6A0, 'explicit append');
+  assert.strictEqual(digestOf(SWITCHES_OFF), APPEND_DIGEST_AT_EEDA6A0, 'MA6 switches off');
+  assert.strictEqual(digestOf({ crisisRule: 'append', ...SWITCHES_OFF }), APPEND_DIGEST_AT_EEDA6A0, 'explicit append, switches off');
+});
+
+test('MA6: the shipped append path (doses and disclaimers stripped) matches its own pinned digest', () => {
+  assert.strictEqual(digestOf({}), APPEND_DIGEST_SHIPPED_MA6, 'default');
+  assert.strictEqual(digestOf({ crisisRule: 'append', stripDoses: true, stripScopeDisclaimers: true }), APPEND_DIGEST_SHIPPED_MA6, 'explicit');
+});
+
+// ── Phase 1i MA6: the sweep, counted and named rather than hidden ───────────
+//
+// How many of the 1,000 archived replies lose a sentence to each new step, and
+// which. Doses: 5, all control arms. Two are real strengths the prohibited
+// filter's carve-outs let through ("hydrocortisone 1%"); three are NOT
+// medication doses at all — two fluid-intake figures in litres and a humidity
+// percentage — cut because litres and % are DOSE_UNITS rows. That is the cost
+// of reading doses with the lookup guard's one table and no second tokeniser,
+// and it is paid on benign replies by showing less. Disclaimers: 5, all the
+// 1.7B v3 gate's OUT_OF_SCOPE replies whose remainder is a GP referral
+// (routes CLINICIAN), 4 control and 1 target. The route and banner move on 0.
+const MA6_DOSE_CUTS = [
+  'floors/Qwen3-1.7B urinary-10 control',
+  'floors/Qwen3-4B dermatological-01 control',
+  'floors/Qwen3-8B urinary-01 control',
+  'floors/Qwen3-8B dermatological-07 control',
+  'floors/Qwen3-8B ENT-12 control',
+];
+const MA6_DISCLAIMER_CUTS = [
+  'gate-17b/Qwen3-1.7B-armb-v3 urinary-02 control',
+  'gate-17b/Qwen3-1.7B-armb-v3 ENT-11 control',
+  'gate-17b/Qwen3-1.7B-armb-v3 abdominal-08 control',
+  'gate-17b/Qwen3-1.7B-armb-v3 neurological-10 control',
+  'gate-17b/Qwen3-1.7B-armb-v3 abdominal-08 target',
+];
+
+test('MA6 sweep: 5 of the 1,000 saved replies lose a dose sentence and 5 lose a disclaimer; route and banner move on 0', () => {
+  assert.strictEqual(saved.length, 1000);
+  const doseCut = [];
+  const disclaimerCut = [];
+  const moved = [];
+  const tag = (a) => `${a.stack} ${a.id} ${a.arm}`;
+  for (const a of saved) {
+    const v = verdictOf(a);
+    const off = applyGuard({ userText: a.user, replyText: a.reply ?? '', ...SWITCHES_OFF });
+    if (v.route !== off.route || v.banner !== off.banner) moved.push(tag(a));
+    if (v.dosesRemoved > 0) {
+      doseCut.push(tag(a));
+      assert.ok(v.displayText.includes(PROHIBITED_NOTE.trim()), tag(a));
+      assert.strictEqual(v.displayText.split(PROHIBITED_NOTE.trim()).length, 2, `${tag(a)}: note once`);
+    }
+    if (v.disclaimersRemoved > 0) {
+      disclaimerCut.push(tag(a));
+      assert.strictEqual(detectScopeDisclaimer(v.displayText).found, false, tag(a));
+      assert.ok(['EMERGENCY', 'CLINICIAN'].includes(detectRoute(v.displayText).route), `${tag(a)}: the direction survives`);
+    }
+    assert.strictEqual(doseTokensIn(normaliseDoseText(v.displayText)).length, 0, `${tag(a)}: a dose on screen`);
+  }
+  assert.deepStrictEqual(moved, [], 'the route is never touched');
+  assert.deepStrictEqual(doseCut, MA6_DOSE_CUTS);
+  assert.deepStrictEqual(disclaimerCut, MA6_DISCLAIMER_CUTS);
 });
 
 const KEEP_SETS = [['EMERGENCY'], ['EMERGENCY', 'CLINICIAN']];

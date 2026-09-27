@@ -268,16 +268,20 @@ test('the PERSISTED verdict carries the three provenance keys, copied from the e
 test('applyGuard\'s twelve-key verdict shape is NOT changed by the stamp', () => {
   // Task 3 pins the verdict's shape. Provenance is a fact about the turn, not
   // about the text, so it is added on a COPY at the moment the row is written.
-  const verdict = applyGuard({ userText: 'chest pain', replyText: 'Call 999 now.' });
-  const before = Object.keys(verdict).sort();
-  const stamped = guardForPersistence(verdict, TRIAGE_ENTRY);
-  assert.strictEqual(before.length, 12);
-  assert.deepStrictEqual(Object.keys(verdict).sort(), before, 'applyGuard\'s verdict was mutated');
-  assert.notStrictEqual(stamped, verdict);
-  assert.deepStrictEqual(
-    Object.keys(stamped).sort(),
-    [...before, 'adapterSha', 'modelSha', 'promptFingerprint'].sort(),
-  );
+  // MA6's switches off give the historical twelve keys; the shipped default
+  // adds four counts/flags (never text) and the stamp leaves those alone too.
+  for (const opts of [{ stripDoses: false, stripScopeDisclaimers: false }, {}]) {
+    const verdict = applyGuard({ userText: 'chest pain', replyText: 'Call 999 now.', ...opts });
+    const before = Object.keys(verdict).sort();
+    const stamped = guardForPersistence(verdict, TRIAGE_ENTRY);
+    assert.strictEqual(before.length, opts.stripDoses === false ? 12 : 16);
+    assert.deepStrictEqual(Object.keys(verdict).sort(), before, 'applyGuard\'s verdict was mutated');
+    assert.notStrictEqual(stamped, verdict);
+    assert.deepStrictEqual(
+      Object.keys(stamped).sort(),
+      [...before, 'adapterSha', 'modelSha', 'promptFingerprint'].sort(),
+    );
+  }
 });
 
 test('an entry that pins no shas stamps empty strings, never null and never a missing key', () => {
