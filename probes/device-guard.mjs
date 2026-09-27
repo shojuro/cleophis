@@ -69,11 +69,16 @@
 // it there) and on every record, with `signposts_removed` per record.
 //
 // `--strip-doses` and `--strip-disclaimers` (Phase 1i MA6) — the product's two
-// owned floors on a kept reply: every sentence carrying a dose token (the
-// lookup guard's normaliser and DOSE_UNITS) is removed and the fixed
-// "A clinician can advise on treatment." note shown once; on a reply whose
-// direction is EMERGENCY or CLINICIAN every scope-disclaimer sentence is
-// removed. Both default ON under every rule. Echoed as `strip_doses` and
+// owned floors on a kept reply: every sentence carrying a medicine dose token
+// (the lookup guard's normaliser and DOSE_UNITS, minus the triage vitals
+// exclusions) is removed — or, in a route-bearing sentence, has the dose
+// redacted in place — and the fixed "A clinician can advise on treatment."
+// note shown once; when the reply, with its scope-disclaimer sentences set
+// aside, routes EMERGENCY or CLINICIAN, every disclaimer sentence that is not
+// itself route-bearing is removed. The raw route of every reply the disclaimer
+// step touches is OUT_OF_SCOPE or UNCLEAR, and `route` on the record stays that
+// raw route: read route bars from `route`, never from a re-read of `display`.
+// Both default ON under every rule. Echoed as `strip_doses` and
 // `strip_disclaimers` in the header (after `dedupe_signposts`) and on every
 // record, with `doses_removed` and `disclaimers_removed` per record.
 //
@@ -342,7 +347,9 @@ export function guardRecord(record, {
     strip_doses: onUnlessOff(stripDoses),
     doses_removed: v.dosesRemoved ?? 0,
     strip_disclaimers: onUnlessOff(stripDisclaimers),
-    disclaimers_removed: v.disclaimersRemoved ?? 0,
+    // The verdict lists the disclaimer sentences (for the receipt); the
+    // record carries the count, beside the other counts.
+    disclaimers_removed: (v.disclaimersRemoved ?? []).length,
   };
 }
 
