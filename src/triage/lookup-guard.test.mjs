@@ -1,6 +1,6 @@
 // src/triage/lookup-guard.test.mjs — node --test src/
 //
-// The dose-cite-v4 rule, driven ENTIRELY by the JSON fixtures in
+// The dose-cite-v5 rule, driven ENTIRELY by the JSON fixtures in
 // fixtures/lookup-guard/ — the files the triage repo's probes/dose-cite.mjs
 // vendors and asserts identity against. Nothing about the rule's behaviour is
 // pinned only here: every vector a second implementation must reproduce is in
@@ -12,7 +12,8 @@ import { readFileSync } from 'node:fs';
 import {
   DOSE_UNITS, LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, OVERDOSE_SECTION_PATTERNS, OVERDOSE_SENTENCE_PATTERNS,
   WITHHELD_BANNER, WITHHELD_REASONS, applyLookupGuard, citationsIn, eligibleSourceSentences, isDoseBearing,
-  isOverdoseSection, isOverdoseSentence, isUnreadable, normaliseDoseText, sentencesOf, splitSentences,
+  isOverdoseSection, isOverdoseSentence, isUnreadable, normaliseDoseText, sentencesOf, sourceSentences, splitSentences,
+  stripListMarker,
 } from './lookup-guard.js';
 import pin from './detectors.pin.js';
 
@@ -24,6 +25,7 @@ const SOURCES = fixture('sources.json');
 const { groups: GROUPS } = fixture('verdicts.json');
 const sourcesOf = (c) => (Array.isArray(c.sources) ? c.sources : SOURCES[c.sources]);
 const placeholders = (s) => s.replaceAll('WITHHELD', WITHHELD_BANNER).replace(/^NO_EVIDENCE$/, LOOKUP_NO_EVIDENCE_TEXT);
+const PROBE_GROUPS = ['probes-round-1', 'probes-round-2', 'probes-round-3', 'probes-round-4'];
 
 /* ---------------- the fixture set itself ---------------- */
 
@@ -47,9 +49,9 @@ test('manifest.json pins every fixture file by sha256 and case count', () => {
 
 test('the verdict fixtures have one named group per clause plus the probe sets, and every reason is exercised', () => {
   assert.deepStrictEqual(Object.keys(GROUPS), [
-    'citation-range', 'overdose-section', 'overdose-sentence', 'dose-bearing', 'unreadable', 'dose-uncited',
-    'extractive-equality', 'eligible-source-sentences', 'withholding-and-banner', 'no-evidence-fallback',
-    'probes-round-1', 'probes-round-2', 'probes-round-3', 'cost',
+    'citation-range', 'overdose-section', 'overdose-sentence', 'script-check', 'dose-bearing', 'dose-uncited',
+    'extractive-equality', 'extractive-context', 'ordered', 'source-splitting', 'neighbours', 'list-markers-and-brackets',
+    'withholding-and-banner', 'no-evidence-fallback', ...PROBE_GROUPS, 'cost',
   ]);
   for (const [name, cases] of Object.entries(GROUPS)) assert.ok(cases.length >= 3, `${name} has too few cases`);
   const reasons = new Set(Object.values(GROUPS).flat().flatMap((c) => c.expected.withheld.map((w) => w.reason)));
@@ -62,7 +64,7 @@ test('the verdict fixtures have one named group per clause plus the probe sets, 
 
 for (const [group, cases] of Object.entries(GROUPS)) {
   for (const c of cases) {
-    test(`dose-cite-v4 [${group}]: ${c.name}`, () => {
+    test(`dose-cite-v5 [${group}]: ${c.name}`, () => {
       const sources = sourcesOf(c);
       assert.ok(sources, `unknown source set ${c.sources}`);
       const v = applyLookupGuard({ replyText: c.replyText, sources });
@@ -75,14 +77,17 @@ for (const [group, cases] of Object.entries(GROUPS)) {
   }
 }
 
-// The three re-reviews' adversarial pairs: every one is withheld, except the
-// three the report names (a source that itself says "Take 16 tablets." as a
-// whole sentence, quoted verbatim), which carry a note saying so.
-test('every prior adversarial pair is withheld unless its fixture notes why v4 keeps it', () => {
-  for (const group of ['probes-round-1', 'probes-round-2', 'probes-round-3']) {
+// The four re-reviews' adversarial pairs: every "probe" case is withheld,
+// except the ones the report names, which carry a note saying KEPT and why.
+// The "quote" cases of round 4 are the verbatim quotes v4 wrongly withheld:
+// every one is kept.
+test('every prior adversarial pair is withheld unless its fixture notes why v5 keeps it; every round-4 quote is kept', () => {
+  for (const group of PROBE_GROUPS) {
     for (const c of GROUPS[group]) {
-      if (c.expected.withheld.length) continue;
-      assert.ok(c.note && /kept/i.test(c.note), `${group}: ${c.name} is kept without a note`);
+      if (/^quote /.test(c.name)) assert.deepStrictEqual(c.expected.withheld, [], `${group}: ${c.name} is not kept`);
+      else if (/^probe /.test(c.name) && !c.expected.withheld.length) {
+        assert.ok(c.note && /KEPT/.test(c.note), `${group}: ${c.name} is kept without a note`);
+      }
     }
   }
 });
@@ -105,6 +110,7 @@ for (const u of DOSE_UNITS) {
       const bare = normaliseDoseText(`Take some ${spelling} now.`);
       assert.strictEqual(bare, `take some ${u.canon} now`, spelling);
       assert.ok(isDoseBearing(bare), `${spelling} alone is dose-bearing`);
+      if (!/\s/.test(spelling)) assert.strictEqual(stripListMarker(`8. ${spelling} at once`), `8. ${spelling} at once`, `a marker before ${spelling} stays`);
     }
   });
 }
@@ -117,9 +123,15 @@ test('normalise.json: normaliseDoseText', () => {
   assert.notStrictEqual(normaliseDoseText('1 to 2'), normaliseDoseText('1-2'), 'to stays a word');
 });
 
+test('sentences.json: splitSentences', () => {
+  for (const c of fixture('sentences.json').cases) assert.deepStrictEqual(splitSentences(c.input), c.sentences, c.input);
+});
+
 test('eligible.json: eligibleSourceSentences', () => {
   for (const c of fixture('eligible.json').cases) assert.deepStrictEqual(eligibleSourceSentences(c.source), c.eligible, c.source);
   assert.deepStrictEqual(eligibleSourceSentences(undefined), []);
+  assert.deepStrictEqual(eligibleSourceSentences('Take 2 tablets.', 'If you take too much'), [], 'an overdose section path makes nothing eligible');
+  assert.deepStrictEqual(sourceSentences('Take 2 tablets. Do not take more than 8.').map((s) => s.eligible), [false, false]);
 });
 
 test('overdose-sentences.json: the registered sentence list is frozen and matches what it names', () => {
@@ -133,33 +145,42 @@ test('overdose-sections.json: the registered list is frozen and matches what it 
   assert.strictEqual(isOverdoseSection(undefined), false);
 });
 
-test('sentences.json: splitSentences', () => {
-  for (const c of fixture('sentences.json').cases) assert.deepStrictEqual(splitSentences(c.input), c.sentences, c.input);
-});
-
 test('citations.json: citationsIn', () => {
   for (const c of fixture('citations.json').cases) {
     assert.deepStrictEqual(citationsIn(c.input), { numbers: c.numbers, malformed: c.malformed }, c.input);
   }
 });
 
-// The v4 invariant, checked over every verdict fixture rather than case by
-// case: a kept sentence carries no overdose wording, and either carries no
-// number and no unit, or is readable, cites, and IS one eligible sentence of a
-// source it cites.
-test('INVARIANT: every kept dose-bearing sentence is a whole eligible sentence of a cited source', () => {
+// The v5 invariant, checked over every verdict fixture rather than case by
+// case: a kept sentence carries no overdose wording and is readable. When a
+// reply shows a dose, every kept sentence with content is a whole eligible
+// sentence of a source it cites, the kept quotes follow (source, index) order,
+// and every content sentence before a kept dose sentence was itself kept.
+const CONTENT = /[\p{L}\p{N}]/u;
+test('INVARIANT: kept text is readable, quoted whole, in order, and preceded only by kept text when a dose is shown', () => {
   for (const c of Object.values(GROUPS).flat()) {
     const sources = sourcesOf(c);
     const kept = new Set(applyLookupGuard({ replyText: c.replyText, sources }).kept);
-    for (const { text, normalised } of sentencesOf(c.replyText)) {
-      if (!kept.has(text)) continue;
-      assert.ok(!isOverdoseSentence(normalised), `${c.name}: overdose wording kept`);
-      if (!isDoseBearing(normalised)) continue;
-      assert.ok(!isUnreadable(normalised), `${c.name}: unreadable kept: ${text}`);
-      const cites = citationsIn(text).numbers;
-      assert.ok(cites.length, `${c.name}: uncited dose sentence kept: ${text}`);
-      assert.ok(cites.some((n) => eligibleSourceSentences(sources[n - 1].text).includes(normalised)),
-        `${c.name}: not a whole cited source sentence: ${text}`);
+    const sentences = sentencesOf(c.replyText).map((s) => ({ ...s, content: CONTENT.test(s.text.replace(/\[[^\]\n]*\]/g, '')), kept: kept.has(s.text) }));
+    for (const s of sentences.filter((x) => x.kept)) {
+      assert.ok(!isOverdoseSentence(s.normalised), `${c.name}: overdose wording kept: ${s.text}`);
+      assert.ok(!isUnreadable(s.normalised), `${c.name}: unreadable kept: ${s.text}`);
+    }
+    const doseShown = sentences.some((s) => s.kept && isDoseBearing(s.normalised));
+    if (!doseShown) continue;
+    let last = [0, -1];
+    let allBeforeKept = true;
+    for (const s of sentences) {
+      if (!s.content) continue;
+      if (s.kept) {
+        const cites = citationsIn(s.text).numbers;
+        const positions = cites.flatMap((n) => sourceSentences(sources[n - 1].text, sources[n - 1].sectionPath)
+          .map((src, i) => (src.eligible && src.normalised === s.normalised ? [n, i] : null)).filter(Boolean))
+          .filter((p) => p[0] > last[0] || (p[0] === last[0] && p[1] >= last[1]));
+        assert.ok(positions.length, `${c.name}: kept content is not an in-order whole quote: ${s.text}`);
+        if (isDoseBearing(s.normalised)) assert.ok(allBeforeKept, `${c.name}: a dose quote follows withheld content: ${s.text}`);
+        last = positions.sort((a, b) => a[0] - b[0] || a[1] - b[1])[0];
+      } else allBeforeKept = false;
     }
   }
 });
@@ -172,7 +193,7 @@ test('the verdict shape is stable JSON with kind lookup', () => {
     'kind', 'rule', 'outcome', 'displayText', 'rawReply', 'kept', 'withheld', 'citations', 'detectorsSha',
   ]);
   assert.strictEqual(v.kind, 'lookup');
-  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v4');
+  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v5');
   assert.strictEqual(v.detectorsSha, pin.sha256);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(v)), v);
 });

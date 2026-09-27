@@ -1,5 +1,5 @@
 {
-  "_comment": "normaliseDoseText(input) -> the normalised text (dose-cite-v4). Faithful, never semantic: citation brackets out, invisibles out, NFKC, every Unicode digit to ASCII, lower case, typography to ASCII, thousands separators out, leading-point decimals, number words to digits, half/quarter to one fraction form, unit spellings to their canon and glued to a preceding number, whitespace collapsed, edge punctuation stripped. \"a\", \"an\", \"each\", \"per\", \"to\", \"or\", \"an hour\" stay words. No unit converts to another.",
+  "_comment": "normaliseDoseText(input) -> the normalised text (dose-cite-v5). Faithful, never semantic: citation brackets and footnote marks out, paired markdown emphasis out, invisibles out, uppercase roman numerals to digits, NFKC, every Unicode digit to ASCII, lower case, typography to ASCII, thousands separators out, leading-point decimals, number words to digits, half/quarter to one fraction form, unit spellings to their canon and glued to a preceding number, whitespace collapsed, edge punctuation stripped. \"a\", \"an\", \"each\", \"per\", \"to\", \"or\", \"an hour\" stay words. No unit converts to another. The list-marker rule is NOT part of it (see sentencesOf).",
   "cases": [
     {
       "input": "Take 1[1]6 tablets [1].",
@@ -22,6 +22,50 @@
       "normalised": "take 500mg [see above]"
     },
     {
+      "input": "Take 2 tablets [a].",
+      "normalised": "take 2tablets"
+    },
+    {
+      "input": "Take 2 tablets [*].",
+      "normalised": "take 2tablets"
+    },
+    {
+      "input": "Take 2 tablets [not].",
+      "normalised": "take 2tablets [not]"
+    },
+    {
+      "input": "Take 2 tablets [ab].",
+      "normalised": "take 2tablets [ab]"
+    },
+    {
+      "input": "Take **2 tablets** now.",
+      "normalised": "take 2tablets now"
+    },
+    {
+      "input": "Take *two* _tablets_ `now`.",
+      "normalised": "take 2tablets now"
+    },
+    {
+      "input": "co_codamol is 2*3",
+      "normalised": "co_codamol is 2*3"
+    },
+    {
+      "input": "__bold__ and **bold**",
+      "normalised": "bold and bold"
+    },
+    {
+      "input": "* not emphasis",
+      "normalised": "not emphasis"
+    },
+    {
+      "input": "Take **500** mg.",
+      "normalised": "take 500mg"
+    },
+    {
+      "input": "Take 500 _mg_.",
+      "normalised": "take 500mg"
+    },
+    {
       "input": "Take 500​mg.",
       "normalised": "take 500mg"
     },
@@ -40,6 +84,62 @@
     {
       "input": "Take 500﻿mg.",
       "normalised": "take 500mg"
+    },
+    {
+      "input": "Take XVI at once.",
+      "normalised": "take 16 at once"
+    },
+    {
+      "input": "Take IV tablets.",
+      "normalised": "take 4tablets"
+    },
+    {
+      "input": "Given IV in hospital.",
+      "normalised": "given 4 in hospital"
+    },
+    {
+      "input": "Take ii tablets.",
+      "normalised": "take ii tablets"
+    },
+    {
+      "input": "Take xvi at once.",
+      "normalised": "take xvi at once"
+    },
+    {
+      "input": "I take it daily.",
+      "normalised": "i take it daily"
+    },
+    {
+      "input": "Use your MDI.",
+      "normalised": "use your 1501"
+    },
+    {
+      "input": "250 ML",
+      "normalised": "250ml"
+    },
+    {
+      "input": "5 CM long",
+      "normalised": "5 cm long"
+    },
+    {
+      "input": "5 MM",
+      "normalised": "5 mm"
+    },
+    {
+      "input": "MIX WELL",
+      "normalised": "1009 well"
+    },
+    {
+      "input": "Vitamin C",
+      "normalised": "vitamin c"
+    },
+    {
+      "input": "Take IX tablets.",
+      "normalised": "take 9tablets"
+    },
+    {
+      "input": "CD",
+      "normalised": "400"
     },
     {
       "input": "Take ５００ｍｇ.",
@@ -78,6 +178,14 @@
       "normalised": "do not take more than 8"
     },
     {
+      "input": "Calpol™",
+      "normalised": "calpoltm"
+    },
+    {
+      "input": "a b",
+      "normalised": "a b"
+    },
+    {
       "input": "every 4–6 hours",
       "normalised": "every 4-6 hours"
     },
@@ -110,6 +218,10 @@
       "normalised": "1/2tablets"
     },
     {
+      "input": "wait… then",
+      "normalised": "wait... then"
+    },
+    {
       "input": "1,000 mg",
       "normalised": "1000mg"
     },
@@ -132,6 +244,10 @@
     {
       "input": "Take 2.5 ml.",
       "normalised": "take 2.5ml"
+    },
+    {
+      "input": "£9.90 per item",
+      "normalised": "£9.90 per item"
     },
     {
       "input": "five hundred and twenty-five",
@@ -458,6 +574,10 @@
       "normalised": "take 2tablets"
     },
     {
+      "input": "# Dosage",
+      "normalised": "dosage"
+    },
+    {
       "input": "Adults: take 2 tablets; children: 1.",
       "normalised": "adults: take 2tablets; children: 1"
     },
@@ -470,12 +590,28 @@
       "normalised": "take 500 mg every time"
     },
     {
+      "input": "Take 2 tablets up to\n4 times in 24 hours.",
+      "normalised": "take 2tablets up to 4 times in 24 hours"
+    },
+    {
       "input": "Take it at 8am.",
       "normalised": "take it at 8am"
     },
     {
       "input": "Take it at 8 am.",
       "normalised": "take it at 8 am"
+    },
+    {
+      "input": "Take -2 tablets",
+      "normalised": "take -2tablets"
+    },
+    {
+      "input": "(Do not) take 2 tablets",
+      "normalised": "do not) take 2tablets"
+    },
+    {
+      "input": "\"Not\" 2 tablets",
+      "normalised": "not\" 2tablets"
     },
     {
       "input": "",
@@ -496,6 +632,26 @@
     {
       "input": "Take 8️⃣ tablets.",
       "normalised": "take 8⃣ tablets"
+    },
+    {
+      "input": "Ménière",
+      "normalised": "ménière"
+    },
+    {
+      "input": "Nurofen®",
+      "normalised": "nurofen®"
+    },
+    {
+      "input": "aged ≥12",
+      "normalised": "aged ≥12"
+    },
+    {
+      "input": "stand-alone µ sign",
+      "normalised": "stand-alone μ sign"
+    },
+    {
+      "input": "a → b",
+      "normalised": "a → b"
     },
     {
       "input": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours.",
@@ -528,6 +684,18 @@
     {
       "input": "Children aged 6 to 11: 1/2 tablet.",
       "normalised": "children aged 6 to 11: 1/2tablets"
+    },
+    {
+      "input": "Never give a child\n16 tablets.",
+      "normalised": "never give a child 16tablets"
+    },
+    {
+      "input": "8. tablets at once",
+      "normalised": "8. tablets at once"
+    },
+    {
+      "input": "8. Take them all",
+      "normalised": "8. take them all"
     }
   ]
 }

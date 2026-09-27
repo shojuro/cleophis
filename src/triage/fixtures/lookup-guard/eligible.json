@@ -1,5 +1,5 @@
 {
-  "_comment": "eligibleSourceSentences(sourceText) -> the normalised sentences of a source a reply may quote whole: the splitter, the list-marker rule, normaliseDoseText, minus empty sentences, sentences matching OVERDOSE_SENTENCE_PATTERNS (or the section patterns) and sentences holding a square bracket. Each sentence stands alone: its neighbours do not make it ineligible.",
+  "_comment": "eligibleSourceSentences(sourceText) -> the normalised sentences of a source a reply may quote whole (no section path given): the splitter, the list-marker rule, normaliseDoseText, minus empty sentences, minus sentences matching OVERDOSE_SENTENCE_PATTERNS (or the section patterns) AND their immediate neighbours, minus sentences holding a square bracket with a digit. sourceSentences(text, sectionPath) gives every sentence with its eligible flag; a section path on the overdose list makes none eligible.",
   "cases": [
     {
       "source": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Always leave at least 4 hours between doses.",
@@ -10,55 +10,49 @@
     },
     {
       "source": "Take 1 or 2 puffs when you need them, every 4–6 hours. Do not use more than 8 puffs in 24 hours.",
-      "eligible": [
-        "take 1 or 2puffs when you need them, every 4-6 hours"
-      ]
+      "eligible": []
     },
     {
       "source": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage.",
-      "eligible": [
-        "adults take 2tablets"
-      ]
+      "eligible": []
     },
     {
       "source": "Adults take 2 tablets. Taking 16 tablets at once can cause serious liver damage.",
-      "eligible": [
-        "adults take 2tablets"
-      ]
+      "eligible": []
     },
     {
       "source": "Take 16 tablets.\nWarning\nThis can be fatal.",
-      "eligible": [
-        "take 16tablets",
-        "warning"
-      ]
+      "eligible": []
     },
     {
       "source": "Take 16 tablets.\n\nThis can be fatal.",
+      "eligible": []
+    },
+    {
+      "source": "Take 16 tablets. It works fast. This can be fatal.",
       "eligible": [
         "take 16tablets"
       ]
     },
     {
-      "source": "Take 16 tablets. It works fast. This can be fatal.",
+      "source": "Do not take more than 8 tablets in 24 hours. Take 2 tablets every 4 hours. Swallow them whole.",
       "eligible": [
-        "take 16tablets",
-        "it works fast"
+        "swallow them whole"
       ]
     },
     {
       "source": "If you take too much\n16 tablets can cause problems.",
-      "eligible": [
-        "16tablets can cause problems"
-      ]
+      "eligible": []
     },
     {
       "source": "Take 1[2]6 tablets.",
       "eligible": []
     },
     {
-      "source": "Take 2 [children only] tablets. Take 2 tablets.",
+      "source": "Take 2 [children only] tablets. Take 2 tablets [a]. Take 2 tablets.",
       "eligible": [
+        "take 2 [children only] tablets",
+        "take 2tablets",
         "take 2tablets"
       ]
     },
@@ -70,9 +64,22 @@
       ]
     },
     {
+      "source": "2. Take 2 tablets.\n3. Wait 4 hours.",
+      "eligible": [
+        "take 2tablets",
+        "wait 4 hours"
+      ]
+    },
+    {
       "source": "16. Take this many tablets.",
       "eligible": [
-        "16. take this many tablets"
+        "take this many tablets"
+      ]
+    },
+    {
+      "source": "8. tablets at once",
+      "eligible": [
+        "8. tablets at once"
       ]
     },
     {
@@ -107,8 +114,33 @@
     {
       "source": "How to take it\nTake 2 tablets every 4 hours.",
       "eligible": [
+        "how to take it take 2tablets every 4 hours"
+      ]
+    },
+    {
+      "source": "How to take it\n\nTake 2 tablets every 4 hours.",
+      "eligible": [
         "how to take it",
         "take 2tablets every 4 hours"
+      ]
+    },
+    {
+      "source": "Adults\n2 tablets up to 4 times in 24 hours.\nChildren aged 10 to 15\n1 tablet up to 4 times in 24 hours.",
+      "eligible": [
+        "adults 2tablets up to 4 times in 24 hours",
+        "children aged 10 to 15 1tablets up to 4 times in 24 hours"
+      ]
+    },
+    {
+      "source": "Never give a child\n16 tablets.",
+      "eligible": [
+        "never give a child 16tablets"
+      ]
+    },
+    {
+      "source": "Take 2 tablets up to\n4 times in 24 hours.",
+      "eligible": [
+        "take 2tablets up to 4 times in 24 hours"
       ]
     }
   ]

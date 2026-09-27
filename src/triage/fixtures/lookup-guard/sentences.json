@@ -1,5 +1,5 @@
 {
-  "_comment": "splitSentences(input): [text, the whitespace after it]. A citation after the full stop, or alone on the very next line, belongs to the sentence before; a decimal point, e.g. and i.e. do not end a sentence.",
+  "_comment": "splitSentences(input): [text, the whitespace after it]. A sentence ends at .!? followed by whitespace or the end. A line break ends a sentence only when the line ends with terminal punctuation (closing quotes, brackets and citations may follow), when the line is a markdown heading, or when the next line is blank or starts a heading or a list item; otherwise the lines are one wrapped sentence and the newline stays inside its text. A citation after the full stop, or alone on the very next line, belongs to the sentence before; a decimal point, e.g., i.e., Dr., approx., and No. before a number do not end a sentence.",
   "cases": [
     {
       "input": "A 2.5 ml dose [1]. B, e.g. this. [2]\nC!",
@@ -79,6 +79,289 @@
         },
         {
           "text": "Yes [1]!",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 500\nmg every time.",
+      "sentences": [
+        {
+          "text": "Take 500\nmg every time.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Adults take\n1000\nmilligrams.",
+      "sentences": [
+        {
+          "text": "Adults take\n1000\nmilligrams.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Adults\n2 tablets.\nChildren\n1 tablet.",
+      "sentences": [
+        {
+          "text": "Adults\n2 tablets.",
+          "sep": "\n"
+        },
+        {
+          "text": "Children\n1 tablet.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 16 tablets.\nWarning\nThis can be fatal.",
+      "sentences": [
+        {
+          "text": "Take 16 tablets.",
+          "sep": "\n"
+        },
+        {
+          "text": "Warning\nThis can be fatal.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 16 tablets.\n\nThis can be fatal.",
+      "sentences": [
+        {
+          "text": "Take 16 tablets.",
+          "sep": "\n\n"
+        },
+        {
+          "text": "This can be fatal.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "- Adults: 500\n- mg",
+      "sentences": [
+        {
+          "text": "- Adults: 500",
+          "sep": "\n"
+        },
+        {
+          "text": "- mg",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Adults:\n\n2 tablets",
+      "sentences": [
+        {
+          "text": "Adults:",
+          "sep": "\n\n"
+        },
+        {
+          "text": "2 tablets",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "# Dosage\nTake 2 tablets.",
+      "sentences": [
+        {
+          "text": "# Dosage",
+          "sep": "\n"
+        },
+        {
+          "text": "Take 2 tablets.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Adults:\n- Take 2 tablets.\n- Wait.",
+      "sentences": [
+        {
+          "text": "Adults:",
+          "sep": "\n"
+        },
+        {
+          "text": "- Take 2 tablets.",
+          "sep": "\n"
+        },
+        {
+          "text": "- Wait.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets up to\n4 times in 24 hours.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets up to\n4 times in 24 hours.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Never give a child\n16 tablets.",
+      "sentences": [
+        {
+          "text": "Never give a child\n16 tablets.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "For children:\n2 tablets up to 4 times in 24 hours [1].",
+      "sentences": [
+        {
+          "text": "For children:\n2 tablets up to 4 times in 24 hours [1].",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets from pack No. 3 [1]. Next.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets from pack No. 3 [1].",
+          "sep": " "
+        },
+        {
+          "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Say no. Then 3 more.",
+      "sentences": [
+        {
+          "text": "Say no.",
+          "sep": " "
+        },
+        {
+          "text": "Then 3 more.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 1 tab. twice daily.",
+      "sentences": [
+        {
+          "text": "Take 1 tab.",
+          "sep": " "
+        },
+        {
+          "text": "twice daily.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "1. Take\n2. tablets at once",
+      "sentences": [
+        {
+          "text": "1. Take",
+          "sep": "\n"
+        },
+        {
+          "text": "2. tablets at once",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "2. Take 2 tablets.\n3. Wait 4 hours.",
+      "sentences": [
+        {
+          "text": "2. Take 2 tablets.",
+          "sep": "\n"
+        },
+        {
+          "text": "3. Wait 4 hours.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets. [1]\nWait.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets. [1]",
+          "sep": "\n"
+        },
+        {
+          "text": "Wait.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets every 4 hours[1]. Next.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets every 4 hours[1].",
+          "sep": " "
+        },
+        {
+          "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Dr. Smith says 2 tablets. Next.",
+      "sentences": [
+        {
+          "text": "Dr. Smith says 2 tablets.",
+          "sep": " "
+        },
+        {
+          "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Wait approx. 4 hours. Next.",
+      "sentences": [
+        {
+          "text": "Wait approx. 4 hours.",
+          "sep": " "
+        },
+        {
+          "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets.\"\nNext.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets.\"",
+          "sep": "\n"
+        },
+        {
+          "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take 2 tablets.\nNext.",
+      "sentences": [
+        {
+          "text": "Take 2 tablets.",
+          "sep": "\n"
+        },
+        {
+          "text": "Next.",
           "sep": ""
         }
       ]

@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared source sets for the dose-cite-v4 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
+  "_comment": "Shared source sets for the dose-cite-v5 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text, in pack order. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
   "paracetamol": [
     {
       "n": 1,
@@ -120,6 +120,20 @@
       "docTitle": "Ibuprofen for adults",
       "sectionPath": "Dosage",
       "text": "Ibuprofen: take 2 tablets."
+    }
+  ],
+  "twoChunks": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "How to take it",
+      "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains."
     }
   ]
 }
