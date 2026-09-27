@@ -1,4 +1,4 @@
-// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v5`.
+// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v6`.
 //
 // Phase 1h M6. The reference lookup lets the model state a dose only when the
 // dose is CITED from the bundled reference pack. This module is the product's
@@ -18,6 +18,8 @@
 // makes it EXTRACTIVE AND ORDERED: once a reply shows a dose, every sentence
 // with content must be such a quote, the quotes must follow source order, and
 // a dose quote is shown only when nothing unverified was said before it.
+// v6 (fix round 6, adjudicated) makes the order CONTIGUOUS and PAGE-ORDERED,
+// and binds a list item to the lead-in line above it.
 //
 // The rule (`applyLookupGuard`):
 //   Per sentence of the reply (`sentencesOf`: the splitter, the list-marker
@@ -40,14 +42,21 @@
 //   is shown):
 //   6. every other sentence with content must also be such a quote, else it is
 //      withheld (`not-a-quote`);
-//   7. the kept quotes must appear in non-decreasing (source n, sentence index)
-//      order; a quote that breaks the order is withheld (`out-of-order`);
-//   8. a dose-bearing quote is kept only if every content sentence before it
+//   7. the kept quotes must be ONE CONTIGUOUS RUN of the page's sentences: the
+//      next quote is the same sentence or the sentence right after the last
+//      one in the same source, or the first sentence of the chunk that
+//      directly follows the last one's chunk on the page (page order is the
+//      sources' `chunkId`; when any source lacks one, their `n`). A quote that
+//      skips or breaks the order is withheld (`order`);
+//   8. a source list item under a lead-in line ending in ":" is quotable only
+//      right after that lead-in, or after the item before it in the same run
+//      (`lead-in` otherwise): the lead-in and its items are one unit;
+//   9. a dose-bearing quote is kept only if every content sentence before it
 //      was kept (`context-unverified` otherwise): no unverified lead-in can
 //      re-target it.
 //   A reply that shows no dose keeps today's behaviour: sentences with no
 //   number and no unit are kept as they are.
-//   9. a run of withheld sentences becomes one `WITHHELD_BANNER`; if no kept
+//  10. a run of withheld sentences becomes one `WITHHELD_BANNER`; if no kept
 //      sentence with content of its own carries a valid citation, the reply is
 //      `LOOKUP_NO_EVIDENCE_TEXT`.
 //
@@ -55,16 +64,16 @@
 //   list-marker rule and normaliser over the source's text; a sentence is not
 //   eligible when it is empty, when its source's section path matches the
 //   overdose list, when it or its immediate neighbour (before or after)
-//   matches `OVERDOSE_SENTENCE_PATTERNS`, or when it holds a square bracket
-//   with a digit in it.
+//   matches `OVERDOSE_SENTENCE_PATTERNS`, when it is a list item whose lead-in
+//   matches that list, or when it holds a square bracket with a digit in it.
 //
 // Precedence per sentence: citation-malformed, citation-out-of-range,
 // overdose-section, overdose-sentence, unreadable, dose-uncited,
-// dose-not-in-source; then over the reply: not-a-quote, out-of-order,
+// dose-not-in-source; then over the reply: not-a-quote, lead-in, order,
 // context-unverified.
 import pin from './detectors.pin.js';
 
-export const LOOKUP_RULE = 'dose-cite-v5';
+export const LOOKUP_RULE = 'dose-cite-v6';
 
 /**
  * The scripted refusal for a lookup with no evidence. Defined ONCE, here, and
@@ -88,7 +97,8 @@ export const WITHHELD_REASONS = Object.freeze({
   DOSE_UNCITED: 'dose-uncited',
   DOSE_NOT_IN_SOURCE: 'dose-not-in-source',
   NOT_A_QUOTE: 'not-a-quote',
-  OUT_OF_ORDER: 'out-of-order',
+  LEAD_IN: 'lead-in',
+  ORDER: 'order',
   CONTEXT_UNVERIFIED: 'context-unverified',
 });
 
@@ -240,11 +250,12 @@ const VULGAR_FRACTION = /[¼-¾⅐-⅟↉]/;
 const EDGE_PUNCTUATION = /^[\s.,;:!?'"()\-•*#`]+|[\s.,;:!?'"()\-•*#`]+$/g;
 
 // An uppercase roman numeral in strict form, two letters or more, as a word.
-const ROMAN = /\b(?=[IVXLCDM]{2,}\b)(M{0,3})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})\b/g;
+const ROMAN = /\b[IVXLCDM]{2,}\b/g;
+const STRICT_ROMAN = /^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/i;
 const ROMAN_VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
 const NOT_ROMAN = new Set(['CM', 'MM']);
 function romanToDigits(word) {
-  if (NOT_ROMAN.has(word) || UNIT_SPELLING_WORD.test(word)) return word;
+  if (!STRICT_ROMAN.test(word) || NOT_ROMAN.has(word) || UNIT_SPELLING_WORD.test(word)) return word;
   let total = 0;
   for (let i = 0; i < word.length; i++) {
     const v = ROMAN_VALUES[word[i]];
@@ -342,26 +353,37 @@ export function normaliseDoseText(text) {
   return s.replace(/\s+/g, ' ').replace(EDGE_PUNCTUATION, '');
 }
 
-/** Does normalised text carry a number, or name a dose unit? Only such a sentence must be a quote. */
+// A lowercase roman numeral of two or more letters in strict form, as its
+// own token, makes a sentence dose-bearing (never mapped to digits: "iv" is
+// also intravenous). Not "cm", "mm" (lengths) or the word "mix".
+const LOWER_ROMAN = /\b[ivxlcdm]{2,}\b/g;
+const NOT_LOWER_ROMAN = new Set(['cm', 'mm', 'mix']);
+const hasLowerRoman = (s) => [...s.matchAll(LOWER_ROMAN)].some((m) => STRICT_ROMAN.test(m[0]) && !NOT_LOWER_ROMAN.has(m[0]));
+
+/** Does normalised text carry a number, name a dose unit, or hold a lowercase roman numeral? Only such a sentence must be a quote. */
 export function isDoseBearing(normalised) {
   const s = String(normalised ?? '');
-  return /\d/.test(s) || UNIT_WORD.test(s);
+  return /\d/.test(s) || UNIT_WORD.test(s) || hasLowerRoman(s);
 }
 
 // What may remain after normalisation: printable ASCII, letters of the Latin
-// script (Latin-1 and Latin Extended: é, ñ, ø ...), and a few symbols the
-// reference text uses (£ € ≥ ≤ ® ©). Anything else — a Cyrillic or Greek
-// letter, a combining mark, a stray symbol — makes the sentence unreadable.
+// script (Latin-1 and Latin Extended: é, ñ, ø ...), a few symbols the
+// reference text uses (£ € ≥ ≤ ® ©), and the Greek letters of drug names
+// (α β γ δ κ μ) when they stand as a word of their own ("β-blockers"), never
+// inside a word with Latin letters. Anything else — a Cyrillic letter, a
+// homoglyph inside a word, a combining mark, a stray symbol — makes the
+// sentence unreadable.
 const READABLE = /^[\x20-\x7E\p{Script=Latin}£€≥≤®©]*$/u;
+const GREEK_WORD = /(?<!\p{L})[αβγδκμ]+(?!\p{L})/gu;
 
 /** Is anything left outside the Latin script and the symbol whitelist after normalisation? */
 export function isUnreadable(normalised) {
-  return !READABLE.test(String(normalised ?? ''));
+  return !READABLE.test(String(normalised ?? '').replace(GREEK_WORD, ''));
 }
 
 // ── Sentences and citations ─────────────────────────────────────────────────
 
-const ABBREVIATION_END = /(?:^|[\s(])(?:e\.g|i\.e|approx|vs|dr|mr|mrs|ms)$/i;
+const ABBREVIATION_END = /(?:^|[\s(])(?:e\.g|i\.e|etc|approx|vs|dr|mr|mrs|ms)$/i;
 // "No." is an abbreviation only when a number follows it ("pack No. 3")
 const NUMBER_ABBREVIATION_END = /(?:^|[\s(])no$/i;
 const TRAILING_CITATION = /^[ \t]*\[[^\]\n]*\]/;
@@ -470,25 +492,38 @@ export function sentencesOf(text) {
 }
 
 const DIGIT_BRACKET = /\[[^\]]*\d[^\]]*\]/;
+const LIST_ITEM = /^\s*(?:[-•*]\s|\d+[.)]\s)/;
 
 /**
- * A source's sentences, in order, each marked eligible or not. Not eligible:
- * an empty sentence; every sentence of a source whose section path matches
- * the overdose list; a sentence with overdose, maximum-dose or harm wording,
- * and the sentence immediately before or after it; a sentence holding a
- * square bracket with a digit in it (the pack writes no citations, and a
+ * A source's sentences, in order, each marked eligible or not, and each list
+ * item bound to its lead-in: a list item whose preceding sentence is a line
+ * ending in ":" (or another item bound to that lead-in) carries `leadIn`, the
+ * index of that line. Not eligible: an empty sentence; every sentence of a
+ * source whose section path matches the overdose list; a sentence with
+ * overdose, maximum-dose or harm wording, and the sentence immediately before
+ * or after it; a list item whose lead-in has that wording; a sentence holding
+ * a square bracket with a digit in it (the pack writes no citations, and a
  * bracketed number is not what the reader would see quoted).
  *
- * @returns {{text: string, normalised: string, eligible: boolean}[]}
+ * @returns {{text: string, normalised: string, eligible: boolean, leadIn: number|null}[]}
  */
 export function sourceSentences(sourceText, sectionPath) {
   const all = sentencesOf(sourceText);
   const overdose = all.map((x) => isOverdoseSentence(x.normalised));
   const section = isOverdoseSection(sectionPath);
+  const leadIns = [];
+  all.forEach((x, i) => {
+    const prev = i - 1;
+    if (!LIST_ITEM.test(x.text) || prev < 0) leadIns.push(null);
+    else if (leadIns[prev] !== null) leadIns.push(leadIns[prev]);
+    else leadIns.push(/:$/.test(all[prev].text.replace(/\s*\[[^\]\n]*\]\s*$/, '')) ? prev : null);
+  });
   return all.map((x, i) => ({
     text: x.text,
     normalised: x.normalised,
-    eligible: Boolean(x.normalised) && !section && !overdose[i] && !overdose[i - 1] && !overdose[i + 1] && !DIGIT_BRACKET.test(x.text),
+    eligible: Boolean(x.normalised) && !section && !overdose[i] && !overdose[i - 1] && !overdose[i + 1]
+      && !(leadIns[i] !== null && overdose[leadIns[i]]) && !DIGIT_BRACKET.test(x.text),
+    leadIn: leadIns[i],
   }));
 }
 
@@ -551,21 +586,30 @@ function judgeSentence({ text, normalised }, { sources, sentencesOfSource }) {
   return { keep: true, cites, dose, positions };
 }
 
-const before = (a, b) => a[0] - b[0] || a[1] - b[1];
+/**
+ * Is the quote at `p` the next sentence of the page after the quote at `l`?
+ * Positions are [source n, sentence index]; `page` gives each source its
+ * page-order key and sentence count.
+ */
+function contiguous(l, p, page) {
+  if (l[0] === p[0]) return p[1] === l[1] || p[1] === l[1] + 1;
+  return page(p[0]).key === page(l[0]).key + 1 && l[1] === page(l[0]).length - 1 && p[1] === 0;
+}
 
 /**
  * The lookup verdict for one finished grounded reply.
  *
- * `sources` is `[{ n, docTitle, sectionPath, text, ... }]` in citation order,
- * which is pack order. A source whose text could not be recovered should
- * carry `text: ''`: every number cited to it then fails, which is the safe
- * direction.
+ * `sources` is `[{ n, chunkId, docTitle, sectionPath, text, ... }]` in
+ * citation order. Page order is read from `chunkId` (the chunk's ordinal in
+ * the pack); when any source lacks one, `n` stands in. A source whose text
+ * could not be recovered should carry `text: ''`: every number cited to it
+ * then fails, which is the safe direction.
  *
  * The verdict is JSON and its shape is stable (persisted through
  * `attach_guard`, replayed by `replayMessage`):
  *
  *   kind          'lookup' — what tells a lookup verdict from a triage one
- *   rule          'dose-cite-v5'
+ *   rule          'dose-cite-v6'
  *   outcome       'grounded', or 'noEvidence' when nothing citable was left
  *   displayText   what is shown and what `attach_guard` writes as the row text
  *   rawReply      the reply as the model wrote it
@@ -583,24 +627,30 @@ export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
     return cache.get(n);
   };
   const ctx = { sources: list, sentencesOfSource };
+  const byChunk = list.every((src) => src && Number.isFinite(src.chunkId));
+  const page = (n) => ({ key: byChunk ? list[n - 1].chunkId : n, length: sentencesOfSource(n).length });
+  const bound = (p) => sentencesOfSource(p[0])[p[1]].leadIn !== null;
   const judged = sentencesOf(raw).map((s) => ({ ...s, content: hasOwnContent(s.text), verdict: judgeSentence(s, ctx) }));
-  // A dose is shown: the reply must be extractive and ordered (clauses 6 to 8).
+  // A dose is shown: the reply must be extractive and ordered (clauses 6 to 9).
   const extractive = judged.some((j) => j.verdict.keep && j.verdict.dose);
   const kept = [];
   const withheld = [];
   const cited = new Set();
   let display = '';
   let lastWasWithheld = false;
-  let last = null;
+  // every position the run of kept quotes so far may be at (a sentence can
+  // occur more than once); null before the first quote
+  let lasts = null;
   let contextOk = true;
   for (const { text, sep, content, verdict } of judged) {
     let v = verdict;
     if (v.keep && content && extractive) {
-      const pos = v.positions.filter((p) => !last || before(p, last) >= 0).sort(before)[0];
+      const next = v.positions.filter((p) => (lasts === null || lasts.some((l) => contiguous(l, p, page)))
+        && (!bound(p) || (lasts !== null && lasts.some((l) => l[0] === p[0] && (l[1] === p[1] - 1 || l[1] === p[1])))));
       if (!v.positions.length) v = withhold(WITHHELD_REASONS.NOT_A_QUOTE);
-      else if (!pos) v = withhold(WITHHELD_REASONS.OUT_OF_ORDER);
+      else if (!next.length) v = withhold(v.positions.every(bound) ? WITHHELD_REASONS.LEAD_IN : WITHHELD_REASONS.ORDER);
       else if (v.dose && !contextOk) v = withhold(WITHHELD_REASONS.CONTEXT_UNVERIFIED);
-      else last = pos;
+      else lasts = next;
     }
     if (v.keep) {
       kept.push(text);

@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared source sets for the dose-cite-v5 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, docTitle, sectionPath, text, in pack order. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
+  "_comment": "Shared source sets for the dose-cite-v6 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, chunkId (page order; absent in most sets, so n stands in), docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
   "paracetamol": [
     {
       "n": 1,
@@ -131,6 +131,76 @@
     },
     {
       "n": 2,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains."
+    }
+  ],
+  "bands": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets. Give 1 tablet up to 4 times in 24 hours. Children aged 12 to 15 can take paracetamol tablets. Give 2 tablets up to 4 times in 24 hours."
+    }
+  ],
+  "bandChunks": [
+    {
+      "n": 1,
+      "chunkId": 20,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "Dosage > 6 to 11",
+      "text": "Children aged 6 to 11 can take paracetamol tablets. Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 21,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "Dosage > 12 to 15",
+      "text": "Children aged 12 to 15 can take paracetamol tablets. Give 2 tablets up to 4 times in 24 hours."
+    }
+  ],
+  "pageOrder": [
+    {
+      "n": 1,
+      "chunkId": 11,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 10,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets."
+    }
+  ],
+  "rankOrder": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets."
+    }
+  ],
+  "farChunks": [
+    {
+      "n": 1,
+      "chunkId": 5,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "How to take it",
+      "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 9,
       "docTitle": "Paracetamol for adults",
       "sectionPath": "About paracetamol",
       "text": "Paracetamol is a common painkiller used to treat aches and pains."

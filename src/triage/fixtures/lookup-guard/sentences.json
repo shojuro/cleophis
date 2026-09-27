@@ -1,5 +1,5 @@
 {
-  "_comment": "splitSentences(input): [text, the whitespace after it]. A sentence ends at .!? followed by whitespace or the end. A line break ends a sentence only when the line ends with terminal punctuation (closing quotes, brackets and citations may follow), when the line is a markdown heading, or when the next line is blank or starts a heading or a list item; otherwise the lines are one wrapped sentence and the newline stays inside its text. A citation after the full stop, or alone on the very next line, belongs to the sentence before; a decimal point, e.g., i.e., Dr., approx., and No. before a number do not end a sentence.",
+  "_comment": "splitSentences(input): [text, the whitespace after it]. A sentence ends at .!? followed by whitespace or the end. A line break ends a sentence only when the line ends with terminal punctuation (closing quotes, brackets and citations may follow), when the line is a markdown heading, or when the next line is blank or starts a heading or a list item; otherwise the lines are one wrapped sentence and the newline stays inside its text. A citation after the full stop, or alone on the very next line, belongs to the sentence before; a decimal point, e.g., i.e., etc., Dr., approx., and No. before a number do not end a sentence.",
   "cases": [
     {
       "input": "A 2.5 ml dose [1]. B, e.g. this. [2]\nC!",
@@ -362,6 +362,58 @@
         },
         {
           "text": "Next.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Take it with food, drink etc. 2 times a day.",
+      "sentences": [
+        {
+          "text": "Take it with food, drink etc. 2 times a day.",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Never give a child:\n- 16 tablets\n- 8 tablets",
+      "sentences": [
+        {
+          "text": "Never give a child:",
+          "sep": "\n"
+        },
+        {
+          "text": "- 16 tablets",
+          "sep": "\n"
+        },
+        {
+          "text": "- 8 tablets",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "Adults:\n\n- 2 tablets",
+      "sentences": [
+        {
+          "text": "Adults:",
+          "sep": "\n\n"
+        },
+        {
+          "text": "- 2 tablets",
+          "sep": ""
+        }
+      ]
+    },
+    {
+      "input": "You must not take\n\n16 tablets.",
+      "sentences": [
+        {
+          "text": "You must not take",
+          "sep": "\n\n"
+        },
+        {
+          "text": "16 tablets.",
           "sep": ""
         }
       ]

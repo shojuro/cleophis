@@ -1,146 +1,442 @@
 {
-  "_comment": "eligibleSourceSentences(sourceText) -> the normalised sentences of a source a reply may quote whole (no section path given): the splitter, the list-marker rule, normaliseDoseText, minus empty sentences, minus sentences matching OVERDOSE_SENTENCE_PATTERNS (or the section patterns) AND their immediate neighbours, minus sentences holding a square bracket with a digit. sourceSentences(text, sectionPath) gives every sentence with its eligible flag; a section path on the overdose list makes none eligible.",
+  "_comment": "sourceSentences(sourceText) with no section path -> every sentence of the source as [normalised, eligible, leadIn]: the splitter, the list-marker rule, normaliseDoseText; not eligible when empty, when matching OVERDOSE_SENTENCE_PATTERNS (or the section patterns) or an immediate neighbour of such a sentence, when a list item whose lead-in matches, or when holding a square bracket with a digit. leadIn is the index of the lead-in line (ending in a colon) a list item is bound to, else null. A section path on the overdose list makes none eligible.",
   "cases": [
     {
       "source": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Always leave at least 4 hours between doses.",
-      "eligible": [
-        "the usual doses is 1 or 2 500mg tablets up to 4 times in 24 hours",
-        "always leave at least 4 hours between doses"
+      "sentences": [
+        [
+          "the usual doses is 1 or 2 500mg tablets up to 4 times in 24 hours",
+          true,
+          null
+        ],
+        [
+          "always leave at least 4 hours between doses",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "Take 1 or 2 puffs when you need them, every 4–6 hours. Do not use more than 8 puffs in 24 hours.",
-      "eligible": []
+      "sentences": [
+        [
+          "take 1 or 2puffs when you need them, every 4-6 hours",
+          false,
+          null
+        ],
+        [
+          "do not use more than 8puffs in 24 hours",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Adults take 2 tablets. If you take too much: 16 tablets can cause liver damage.",
-      "eligible": []
+      "sentences": [
+        [
+          "adults take 2tablets",
+          false,
+          null
+        ],
+        [
+          "if you take too much: 16tablets can cause liver damage",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Adults take 2 tablets. Taking 16 tablets at once can cause serious liver damage.",
-      "eligible": []
+      "sentences": [
+        [
+          "adults take 2tablets",
+          false,
+          null
+        ],
+        [
+          "taking 16tablets at once can cause serious liver damage",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Take 16 tablets.\nWarning\nThis can be fatal.",
-      "eligible": []
+      "sentences": [
+        [
+          "take 16tablets",
+          false,
+          null
+        ],
+        [
+          "warning this can be fatal",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Take 16 tablets.\n\nThis can be fatal.",
-      "eligible": []
+      "sentences": [
+        [
+          "take 16tablets",
+          false,
+          null
+        ],
+        [
+          "this can be fatal",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Take 16 tablets. It works fast. This can be fatal.",
-      "eligible": [
-        "take 16tablets"
+      "sentences": [
+        [
+          "take 16tablets",
+          true,
+          null
+        ],
+        [
+          "it works fast",
+          false,
+          null
+        ],
+        [
+          "this can be fatal",
+          false,
+          null
+        ]
       ]
     },
     {
       "source": "Do not take more than 8 tablets in 24 hours. Take 2 tablets every 4 hours. Swallow them whole.",
-      "eligible": [
-        "swallow them whole"
+      "sentences": [
+        [
+          "do not take more than 8tablets in 24 hours",
+          false,
+          null
+        ],
+        [
+          "take 2tablets every 4 hours",
+          false,
+          null
+        ],
+        [
+          "swallow them whole",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "If you take too much\n16 tablets can cause problems.",
-      "eligible": []
+      "sentences": [
+        [
+          "if you take too much 16tablets can cause problems",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Take 1[2]6 tablets.",
-      "eligible": []
+      "sentences": [
+        [
+          "take 16tablets",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Take 2 [children only] tablets. Take 2 tablets [a]. Take 2 tablets.",
-      "eligible": [
-        "take 2 [children only] tablets",
-        "take 2tablets",
-        "take 2tablets"
+      "sentences": [
+        [
+          "take 2 [children only] tablets",
+          true,
+          null
+        ],
+        [
+          "take 2tablets",
+          true,
+          null
+        ],
+        [
+          "take 2tablets",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "1. Take 500mg\n2. Drink water",
-      "eligible": [
-        "take 500mg",
-        "drink water"
+      "sentences": [
+        [
+          "take 500mg",
+          true,
+          null
+        ],
+        [
+          "drink water",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "2. Take 2 tablets.\n3. Wait 4 hours.",
-      "eligible": [
-        "take 2tablets",
-        "wait 4 hours"
+      "sentences": [
+        [
+          "take 2tablets",
+          true,
+          null
+        ],
+        [
+          "wait 4 hours",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "16. Take this many tablets.",
-      "eligible": [
-        "take this many tablets"
+      "sentences": [
+        [
+          "take this many tablets",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "8. tablets at once",
-      "eligible": [
-        "8. tablets at once"
+      "sentences": [
+        [
+          "8. tablets at once",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "Taking 2 extra tablets by accident is unlikely to be harmful. Go to A&E straight away if you take more than 8 tablets in 24 hours.",
-      "eligible": []
+      "sentences": [
+        [
+          "taking 2 extra tablets by accident is unlikely to be harmful",
+          false,
+          null
+        ],
+        [
+          "go to a&e straight away if you take more than 8tablets in 24 hours",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Maximum dose: do not take more than 8 tablets in 24 hours.",
-      "eligible": []
+      "sentences": [
+        [
+          "maximum doses: do not take more than 8tablets in 24 hours",
+          false,
+          null
+        ]
+      ]
     },
     {
       "source": "Paracetamol is a painkiller.",
-      "eligible": [
-        "paracetamol is a painkiller"
+      "sentences": [
+        [
+          "paracetamol is a painkiller",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "",
-      "eligible": []
+      "sentences": []
     },
     {
       "source": "   ",
-      "eligible": []
+      "sentences": []
     },
     {
       "source": "Give 2. Then 5ml.",
-      "eligible": [
-        "give 2",
-        "then 5ml"
+      "sentences": [
+        [
+          "give 2",
+          true,
+          null
+        ],
+        [
+          "then 5ml",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "How to take it\nTake 2 tablets every 4 hours.",
-      "eligible": [
-        "how to take it take 2tablets every 4 hours"
+      "sentences": [
+        [
+          "how to take it take 2tablets every 4 hours",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "How to take it\n\nTake 2 tablets every 4 hours.",
-      "eligible": [
-        "how to take it",
-        "take 2tablets every 4 hours"
+      "sentences": [
+        [
+          "how to take it",
+          true,
+          null
+        ],
+        [
+          "take 2tablets every 4 hours",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "Adults\n2 tablets up to 4 times in 24 hours.\nChildren aged 10 to 15\n1 tablet up to 4 times in 24 hours.",
-      "eligible": [
-        "adults 2tablets up to 4 times in 24 hours",
-        "children aged 10 to 15 1tablets up to 4 times in 24 hours"
+      "sentences": [
+        [
+          "adults 2tablets up to 4 times in 24 hours",
+          true,
+          null
+        ],
+        [
+          "children aged 10 to 15 1tablets up to 4 times in 24 hours",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "Never give a child\n16 tablets.",
-      "eligible": [
-        "never give a child 16tablets"
+      "sentences": [
+        [
+          "never give a child 16tablets",
+          true,
+          null
+        ]
       ]
     },
     {
       "source": "Take 2 tablets up to\n4 times in 24 hours.",
-      "eligible": [
-        "take 2tablets up to 4 times in 24 hours"
+      "sentences": [
+        [
+          "take 2tablets up to 4 times in 24 hours",
+          true,
+          null
+        ]
+      ]
+    },
+    {
+      "source": "Never give a child:\n- 16 tablets\n- 8 tablets\nTake 1 tablet.",
+      "sentences": [
+        [
+          "never give a child",
+          true,
+          null
+        ],
+        [
+          "16tablets",
+          true,
+          0
+        ],
+        [
+          "8tablets take 1tablets",
+          true,
+          0
+        ]
+      ]
+    },
+    {
+      "source": "Adults:\n\n- 2 tablets up to 4 times in 24 hours",
+      "sentences": [
+        [
+          "adults",
+          true,
+          null
+        ],
+        [
+          "2tablets up to 4 times in 24 hours",
+          true,
+          0
+        ]
+      ]
+    },
+    {
+      "source": "Do not take more than:\n- 8 tablets\n- 2 tablets",
+      "sentences": [
+        [
+          "do not take more than",
+          false,
+          null
+        ],
+        [
+          "8tablets",
+          false,
+          0
+        ],
+        [
+          "2tablets",
+          false,
+          0
+        ]
+      ]
+    },
+    {
+      "source": "Read this first.\n- Take 2 tablets\n- Wait 4 hours",
+      "sentences": [
+        [
+          "read this first",
+          true,
+          null
+        ],
+        [
+          "take 2tablets",
+          true,
+          null
+        ],
+        [
+          "wait 4 hours",
+          true,
+          null
+        ]
+      ]
+    },
+    {
+      "source": "Children aged 6 to 11 can take paracetamol tablets. Give 1 tablet up to 4 times in 24 hours. Children aged 12 to 15 can take paracetamol tablets. Give 2 tablets up to 4 times in 24 hours.",
+      "sentences": [
+        [
+          "children aged 6 to 11 can take paracetamol tablets",
+          true,
+          null
+        ],
+        [
+          "give 1tablets up to 4 times in 24 hours",
+          true,
+          null
+        ],
+        [
+          "children aged 12 to 15 can take paracetamol tablets",
+          true,
+          null
+        ],
+        [
+          "give 2tablets up to 4 times in 24 hours",
+          true,
+          null
+        ]
       ]
     }
   ]

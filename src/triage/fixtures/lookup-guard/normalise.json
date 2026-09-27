@@ -1,5 +1,5 @@
 {
-  "_comment": "normaliseDoseText(input) -> the normalised text (dose-cite-v5). Faithful, never semantic: citation brackets and footnote marks out, paired markdown emphasis out, invisibles out, uppercase roman numerals to digits, NFKC, every Unicode digit to ASCII, lower case, typography to ASCII, thousands separators out, leading-point decimals, number words to digits, half/quarter to one fraction form, unit spellings to their canon and glued to a preceding number, whitespace collapsed, edge punctuation stripped. \"a\", \"an\", \"each\", \"per\", \"to\", \"or\", \"an hour\" stay words. No unit converts to another. The list-marker rule is NOT part of it (see sentencesOf).",
+  "_comment": "normaliseDoseText(input) -> the normalised text (dose-cite-v6). Faithful, never semantic: citation brackets and footnote marks out, paired markdown emphasis out, invisibles out, uppercase roman numerals in strict form to digits, NFKC, every Unicode digit to ASCII, lower case, typography to ASCII, thousands separators out, leading-point decimals, number words to digits, half/quarter to one fraction form, unit spellings to their canon and glued to a preceding number, whitespace collapsed, edge punctuation stripped. \"a\", \"an\", \"each\", \"per\", \"to\", \"or\", \"an hour\" stay words. No unit converts to another. The list-marker rule is NOT part of it (see sentencesOf).",
   "cases": [
     {
       "input": "Take 1[1]6 tablets [1].",
@@ -140,6 +140,22 @@
     {
       "input": "CD",
       "normalised": "400"
+    },
+    {
+      "input": "CIVIL action",
+      "normalised": "civil action"
+    },
+    {
+      "input": "DID",
+      "normalised": "did"
+    },
+    {
+      "input": "XL pack",
+      "normalised": "40 pack"
+    },
+    {
+      "input": "take mix well",
+      "normalised": "take mix well"
     },
     {
       "input": "Take ５００ｍｇ.",

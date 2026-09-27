@@ -1,5 +1,5 @@
 {
-  "_comment": "dose-cite-v5 verdict fixtures, one named group per clause of the rule, plus every adversarial pair from the four M6 re-reviews (probes-round-1..4, the round-4 group also holding the ten verbatim quotes v4 wrongly withheld) and the reviewers' benign lists with their actual v5 outcome (cost). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
+  "_comment": "dose-cite-v6 verdict fixtures, one named group per clause of the rule, plus every adversarial pair from the five M6 re-reviews (probes-round-1..5; the round-4 and round-5 groups also hold the verbatim quotes the previous rule wrongly withheld, named \"quote\") and the reviewers' benign lists with their actual v5 outcome (cost). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
   "groups": {
     "citation-range": [
       {
@@ -947,9 +947,73 @@
         }
       },
       {
-        "name": "a stand-alone micro sign is unreadable",
+        "name": "a stand-alone Greek letter of the drug-name set is readable",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. The µ symbol means micro.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. The µ symbol means micro.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "The µ symbol means micro."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a Greek letter in a drug name is readable (W4)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "If you take β-blockers, take 1 tablet."
+          }
+        ],
+        "replyText": "If you take β-blockers, take 1 tablet [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "If you take β-blockers, take 1 tablet [1].",
+          "kept": [
+            "If you take β-blockers, take 1 tablet [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a Greek letter inside a Latin word is a homoglyph",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 2 puffs."
+          }
+        ],
+        "replyText": "Take 2 pμffs [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 pμffs [1].",
+              "reason": "unreadable"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a Greek letter outside the drug-name set is unreadable",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. The ω symbol.",
         "expected": {
           "outcome": "grounded",
           "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
@@ -958,7 +1022,7 @@
           ],
           "withheld": [
             {
-              "sentence": "The µ symbol means micro.",
+              "sentence": "The ω symbol.",
               "reason": "unreadable"
             }
           ],
@@ -1020,14 +1084,70 @@
         }
       },
       {
-        "name": "iv in lower case is not a number",
+        "name": "iv in lower case is a roman-numeral token, so the sentence must be a quote (V5-4)",
         "sources": "nodoseP",
+        "replyText": "It can be given iv in hospital [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It can be given iv in hospital [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "iv in lower case, quoted",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "It can be given iv in hospital."
+          }
+        ],
         "replyText": "It can be given iv in hospital [1].",
         "expected": {
           "outcome": "grounded",
           "displayText": "It can be given iv in hospital [1].",
           "kept": [
             "It can be given iv in hospital [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "mix is a word, not a numeral",
+        "sources": "nodoseP",
+        "replyText": "Mix it well [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Mix it well [1].",
+          "kept": [
+            "Mix it well [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "civil and mild are not numerals",
+        "sources": "nodoseP",
+        "replyText": "Mild pain needs no civil action [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Mild pain needs no civil action [1].",
+          "kept": [
+            "Mild pain needs no civil action [1]."
           ],
           "withheld": [],
           "citations": [
@@ -3697,7 +3817,7 @@
           "withheld": [
             {
               "sentence": "Take 2 tablets 4 times a day [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
@@ -3750,7 +3870,7 @@
           "withheld": [
             {
               "sentence": "Take 2 tablets [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
@@ -3772,7 +3892,7 @@
           "withheld": [
             {
               "sentence": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
@@ -3864,7 +3984,7 @@
           }
         ],
         "replyText": "Paracetamol is used for pain [1]. Take 2 tablets 4 times a day [2].",
-        "note": "KEPT by v5: both sentences are verbatim quotes in source order. In the product every source is a chunk of the ONE page the lookup resolved to, so a second drug's page cannot be cited; a per-chunk drug field (M4b) would close this for multi-page packs.",
+        "note": "KEPT by v5 and v6: both sentences are verbatim quotes, contiguous across adjacent chunks. In the product every source is a chunk of the ONE page the lookup resolved to, so a second drug's page cannot be cited; a per-chunk drug field (M4b) would close this for multi-page packs.",
         "expected": {
           "outcome": "grounded",
           "displayText": "Paracetamol is used for pain [1]. Take 2 tablets 4 times a day [2].",
@@ -3876,6 +3996,567 @@
           "citations": [
             1,
             2
+          ]
+        }
+      },
+      {
+        "name": "a skipped sentence inside one chunk breaks the run (P1)",
+        "sources": "bands",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 2 tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. WITHHELD",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a skipped sentence across two chunks breaks the run (P2)",
+        "sources": "bandChunks",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 2 tablets up to 4 times in 24 hours [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. WITHHELD",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [2].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the adjacent pair is kept",
+        "sources": "bands",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 1 tablet up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 1 tablet up to 4 times in 24 hours [1].",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1].",
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the last sentence of a chunk then the first of the next chunk is contiguous",
+        "sources": "bandChunks",
+        "replyText": "Give 1 tablet up to 4 times in 24 hours [1]. Children aged 12 to 15 can take paracetamol tablets [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 1 tablet up to 4 times in 24 hours [1]. Children aged 12 to 15 can take paracetamol tablets [2].",
+          "kept": [
+            "Give 1 tablet up to 4 times in 24 hours [1].",
+            "Children aged 12 to 15 can take paracetamol tablets [2]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "the first sentence of a chunk then the second of the next chunk is not",
+        "sources": "bandChunks",
+        "replyText": "Give 1 tablet up to 4 times in 24 hours [1]. Give 2 tablets up to 4 times in 24 hours [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 1 tablet up to 4 times in 24 hours [1]. WITHHELD",
+          "kept": [
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [2].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "page order comes from chunkId, not retrieval rank (W1)",
+        "sources": "pageOrder",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [2]. Give 1 tablet up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [2]. Give 1 tablet up to 4 times in 24 hours [1].",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [2].",
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "without chunkId the retrieval rank stands in, fail closed (W1 cost)",
+        "sources": "rankOrder",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [2]. Give 1 tablet up to 4 times in 24 hours [1].",
+        "note": "a cost until every source carries chunkId",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [2]. WITHHELD",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 1 tablet up to 4 times in 24 hours [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "chunks that are not adjacent on the page are not contiguous",
+        "sources": "farChunks",
+        "replyText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. Paracetamol is a common painkiller used to treat aches and pains [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. WITHHELD",
+          "kept": [
+            "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller used to treat aches and pains [2].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a run reversed within one chunk (W10)",
+        "sources": "bands",
+        "replyText": "Give 1 tablet up to 4 times in 24 hours [1]. Children aged 6 to 11 can take paracetamol tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 1 tablet up to 4 times in 24 hours [1]. WITHHELD",
+          "kept": [
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Children aged 6 to 11 can take paracetamol tablets [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a skipped heading line breaks the run (P5)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Children should see a pharmacist first.\n## Adults\nTake 2 tablets 4 times a day."
+          }
+        ],
+        "replyText": "Children should see a pharmacist first [1]. Take 2 tablets 4 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children should see a pharmacist first [1]. WITHHELD",
+          "kept": [
+            "Children should see a pharmacist first [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets 4 times a day [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a skipped list item breaks the run (P3)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Children aged 6 to 11\n- 1 tablet up to 4 times in 24 hours\nChildren aged 12 to 15\n- 2 tablets up to 4 times in 24 hours"
+          }
+        ],
+        "replyText": "Children aged 6 to 11 [1]\n- 2 tablets up to 4 times in 24 hours [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 [1]\nWITHHELD",
+          "kept": [
+            "Children aged 6 to 11 [1]"
+          ],
+          "withheld": [
+            {
+              "sentence": "- 2 tablets up to 4 times in 24 hours [1]",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "two adjacent context and dose quotes",
+        "sources": "paracetamol",
+        "replyText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. Always leave at least 4 hours between doses [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1]. Always leave at least 4 hours between doses [1].",
+          "kept": [
+            "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].",
+            "Always leave at least 4 hours between doses [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a context quote that skips a sentence is withheld",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a common painkiller used to treat aches and pains [2]. Always leave at least 4 hours between doses [1].",
+        "note": "chunk 2 before chunk 1, and a skip",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller used to treat aches and pains [2]. WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller used to treat aches and pains [2]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Always leave at least 4 hours between doses [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      }
+    ],
+    "lead-in-binding": [
+      {
+        "name": "a list item under a lead-in ending in a colon is not quotable alone (P17)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never give a child:\n- 16 tablets"
+          }
+        ],
+        "replyText": "16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "16 tablets [1].",
+              "reason": "lead-in"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the lead-in quoted right before its item",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never give a child:\n- 16 tablets"
+          }
+        ],
+        "replyText": "Never give a child: [1]\n- 16 tablets [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Never give a child: [1]\n- 16 tablets [1]",
+          "kept": [
+            "Never give a child: [1]",
+            "- 16 tablets [1]"
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a run of items under one lead-in",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Do not:\n- drive\n- take 2 tablets"
+          }
+        ],
+        "replyText": "Do not: [1]\n- drive [1]\n- take 2 tablets [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Do not: [1]\n- drive [1]\n- take 2 tablets [1]",
+          "kept": [
+            "Do not: [1]",
+            "- drive [1]",
+            "- take 2 tablets [1]"
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "the second item without the first is not the run",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Do not:\n- drive\n- take 2 tablets"
+          }
+        ],
+        "replyText": "Do not: [1]\n- take 2 tablets [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Do not: [1]\nWITHHELD",
+          "kept": [
+            "Do not: [1]"
+          ],
+          "withheld": [
+            {
+              "sentence": "- take 2 tablets [1]",
+              "reason": "lead-in"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "an item after the lead-in with a paraphrase between",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never give a child:\n- 16 tablets"
+          }
+        ],
+        "replyText": "Never give a child: [1] This is important. - 16 tablets [1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Never give a child: [1] This is important.",
+              "reason": "not-a-quote"
+            },
+            {
+              "sentence": "- 16 tablets [1]",
+              "reason": "lead-in"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a blank line between the lead-in and its items still binds them",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Adults:\n\n- 2 tablets up to 4 times in 24 hours"
+          }
+        ],
+        "replyText": "Adults: [1]\n- 2 tablets up to 4 times in 24 hours [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Adults: [1]\n- 2 tablets up to 4 times in 24 hours [1]",
+          "kept": [
+            "Adults: [1]",
+            "- 2 tablets up to 4 times in 24 hours [1]"
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a lead-in and item reformatted onto one line are not a quote (W7 cost)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Adults:\n- 2 tablets up to 4 times in 24 hours"
+          }
+        ],
+        "replyText": "Adults: 2 tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Adults: 2 tablets up to 4 times in 24 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "an overdose lead-in makes every item ineligible",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Do not take more than:\n- 8 tablets\n- 2 tablets"
+          }
+        ],
+        "replyText": "Do not take more than: [1]\n- 8 tablets [1]\n- 2 tablets [1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Do not take more than: [1]",
+              "reason": "overdose-sentence"
+            },
+            {
+              "sentence": "- 8 tablets [1]",
+              "reason": "dose-not-in-source"
+            },
+            {
+              "sentence": "- 2 tablets [1]",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a list item with no lead-in is quotable alone",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Read this first.\n- Take 2 tablets\n- Wait 4 hours"
+          }
+        ],
+        "replyText": "Take 2 tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 tablets [1].",
+          "kept": [
+            "Take 2 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a lead-in without a colon does not bind",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "For adults\n- Take 2 tablets"
+          }
+        ],
+        "replyText": "Take 2 tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 tablets [1].",
+          "kept": [
+            "Take 2 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "a lead-in bound item cited from a different reply position",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never give a child:\n- 16 tablets\nTake 2 tablets."
+          }
+        ],
+        "replyText": "Take 2 tablets [1]. Never give a child: [1]",
+        "note": "the item is not quoted; the lead-in after the dose quote is out of order",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "WITHHELD Never give a child: [1]",
+          "kept": [
+            "Never give a child: [1]"
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": [
+            1
           ]
         }
       }
@@ -4047,7 +4728,7 @@
         }
       },
       {
-        "name": "a line before a list item ends",
+        "name": "a line before a list item ends, and a colon lead-in binds the item",
         "sources": [
           {
             "n": 1,
@@ -4057,11 +4738,37 @@
           }
         ],
         "replyText": "Take 2 tablets every 4 hours [1].",
+        "note": "withheld since v6: the item is bound to its lead-in",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets every 4 hours [1].",
+              "reason": "lead-in"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "a line before a list item ends, quoted with its lead-in",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Adults:\n- Take 2 tablets every 4 hours.\n- Wait."
+          }
+        ],
+        "replyText": "Adults: [1]\n- Take 2 tablets every 4 hours [1].",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Take 2 tablets every 4 hours [1].",
+          "displayText": "Adults: [1]\n- Take 2 tablets every 4 hours [1].",
           "kept": [
-            "Take 2 tablets every 4 hours [1]."
+            "Adults: [1]",
+            "- Take 2 tablets every 4 hours [1]."
           ],
           "withheld": [],
           "citations": [
@@ -4872,6 +5579,29 @@
           "displayText": "Take 2 tablets from pack No. 3 [1].",
           "kept": [
             "Take 2 tablets from pack No. 3 [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "Q27: etc. is an abbreviation",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take it with food, drink etc. 2 times a day."
+          }
+        ],
+        "replyText": "Take it with food, drink etc. 2 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take it with food, drink etc. 2 times a day [1].",
+          "kept": [
+            "Take it with food, drink etc. 2 times a day [1]."
           ],
           "withheld": [],
           "citations": [
@@ -9447,7 +10177,7 @@
           "withheld": [
             {
               "sentence": "Take 2 tablets 4 times a day [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
@@ -10261,7 +10991,7 @@
           "withheld": [
             {
               "sentence": "Take 2 tablets [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
@@ -10298,6 +11028,654 @@
           "kept": [
             "Paracetamol is a painkiller [1].",
             "Swallow the lot."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      }
+    ],
+    "probes-round-5": [
+      {
+        "name": "probe P1: a population sentence then a skipped-to dose in one chunk",
+        "sources": "bands",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 2 tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. WITHHELD",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P2: a population sentence then a skipped-to dose in the next chunk",
+        "sources": "bandChunks",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 2 tablets up to 4 times in 24 hours [2].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. WITHHELD",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [2].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P17: a list item without its negative lead-in",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never give a child:\n- 16 tablets"
+          }
+        ],
+        "replyText": "16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "16 tablets [1].",
+              "reason": "lead-in"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe P3: sub-headings inside chunk text, a skipped item",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Children aged 6 to 11\n- 1 tablet up to 4 times in 24 hours\nChildren aged 12 to 15\n- 2 tablets up to 4 times in 24 hours"
+          }
+        ],
+        "replyText": "Children aged 6 to 11 [1]\n- 2 tablets up to 4 times in 24 hours [1]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 [1]\nWITHHELD",
+          "kept": [
+            "Children aged 6 to 11 [1]"
+          ],
+          "withheld": [
+            {
+              "sentence": "- 2 tablets up to 4 times in 24 hours [1]",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P5: a heading inside chunk text, a skipped sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Children should see a pharmacist first.\n## Adults\nTake 2 tablets 4 times a day."
+          }
+        ],
+        "replyText": "Children should see a pharmacist first [1]. Take 2 tablets 4 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children should see a pharmacist first [1]. WITHHELD",
+          "kept": [
+            "Children should see a pharmacist first [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take 2 tablets 4 times a day [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P16: a blank line inside a sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "You must not take\n\n16 tablets."
+          }
+        ],
+        "replyText": "16 tablets [1].",
+        "note": "KEPT by v6: a blank line ends a sentence (v5 rule 3), so \"16 tablets.\" is a sentence of its own and the first quote of a reply may start anywhere; none of the four adjudicated fixes touches this. A one-line change would close it: a blank line after a line with no terminal punctuation joins instead of ending. Class (b): the pack does not produce it.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "16 tablets [1].",
+          "kept": [
+            "16 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P8: a lowercase roman numeral with no unit",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. Take xvi at once.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Take xvi at once.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P10: a footnote mark inside a source number",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 1[a]6 tablets."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "note": "KEPT: a one-letter footnote mark is stripped on both sides, so the source reads 16 tablets. Class (b): no page puts a footnote mark inside a number.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 16 tablets [1].",
+          "kept": [
+            "Take 16 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe P18: a heading line before the dose",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "# Never\nTake 16 tablets."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "note": "KEPT: a markdown heading is its own sentence and the quote may start after it. Class (b): the pack keeps headings in sectionPath.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 16 tablets [1].",
+          "kept": [
+            "Take 16 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe I3: a sentence between a verbatim source sentence and its warning (round 5)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 16 tablets. It works fast. This can be fatal."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "note": "KEPT, disclosed: only immediate neighbours of an overdose sentence are ineligible",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 16 tablets [1].",
+          "kept": [
+            "Take 16 tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "probe N23: an in-order quote from a second drug's page (round 5)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Paracetamol is used for pain."
+          },
+          {
+            "n": 2,
+            "docTitle": "Ibuprofen for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 2 tablets 4 times a day."
+          }
+        ],
+        "replyText": "Paracetamol is used for pain [1]. Take 2 tablets 4 times a day [2].",
+        "note": "KEPT, disclosed: contiguous quotes across adjacent chunks; the product cites one page",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is used for pain [1]. Take 2 tablets 4 times a day [2].",
+          "kept": [
+            "Paracetamol is used for pain [1].",
+            "Take 2 tablets 4 times a day [2]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "quote W1: page order from chunkId, not retrieval rank",
+        "sources": "pageOrder",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [2]. Give 1 tablet up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [2]. Give 1 tablet up to 4 times in 24 hours [1].",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [2].",
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1,
+            2
+          ]
+        }
+      },
+      {
+        "name": "quote Q27: etc. does not end a sentence",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take it with food, drink etc. 2 times a day."
+          }
+        ],
+        "replyText": "Take it with food, drink etc. 2 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take it with food, drink etc. 2 times a day [1].",
+          "kept": [
+            "Take it with food, drink etc. 2 times a day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "quote W4: a Greek letter in a drug name",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "If you take β-blockers, take 1 tablet."
+          }
+        ],
+        "replyText": "If you take β-blockers, take 1 tablet [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "If you take β-blockers, take 1 tablet [1].",
+          "kept": [
+            "If you take β-blockers, take 1 tablet [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: the right pairing",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "This is the dose for adults. Take 2 tablets 4 times a day. This is the dose for children aged 6 to 11. Take 1 tablet 4 times a day."
+          }
+        ],
+        "replyText": "This is the dose for children aged 6 to 11 [1]. Take 1 tablet 4 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "This is the dose for children aged 6 to 11 [1]. Take 1 tablet 4 times a day [1].",
+          "kept": [
+            "This is the dose for children aged 6 to 11 [1].",
+            "Take 1 tablet 4 times a day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: adjacent and correct",
+        "sources": "bands",
+        "replyText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 1 tablet up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Children aged 6 to 11 can take paracetamol tablets [1]. Give 1 tablet up to 4 times in 24 hours [1].",
+          "kept": [
+            "Children aged 6 to 11 can take paracetamol tablets [1].",
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: strikethrough markdown",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 16 tablets."
+          }
+        ],
+        "replyText": "Take ~~2~~ 16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take ~~2~~ 16 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "round 5 sample: a wrapped reply line between a number and its unit",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 2 tablets."
+          }
+        ],
+        "replyText": "Take 2\ntablets [1].",
+        "note": "withheld, as the reviewer recorded: the unit is glued to its number across spaces only, not across a line break, so the wrapped form is not the unwrapped text. A cost of the join rule, outside the adjudicated scope.",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 2\ntablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "round 5 sample: the join keeps a negation",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Never take\n16 tablets."
+          }
+        ],
+        "replyText": "Take 16 tablets [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Take 16 tablets [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "round 5 sample: emphasis inside a number renders identically",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 16 tablets."
+          }
+        ],
+        "replyText": "Take 1**6** tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1**6** tablets [1].",
+          "kept": [
+            "Take 1**6** tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: emphasis on the source side",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take **2** tablets."
+          }
+        ],
+        "replyText": "Take *2* tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take *2* tablets [1].",
+          "kept": [
+            "Take *2* tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: IV tablets quoted",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take IV tablets."
+          }
+        ],
+        "replyText": "Take IV tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take IV tablets [1].",
+          "kept": [
+            "Take IV tablets [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: a footnote mark inside a quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets [x] every 4 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 tablets [x] every 4 hours [1].",
+          "kept": [
+            "Take 2 tablets [x] every 4 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: a reversed run (W10)",
+        "sources": "bands",
+        "replyText": "Give 1 tablet up to 4 times in 24 hours [1]. Children aged 6 to 11 can take paracetamol tablets [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Give 1 tablet up to 4 times in 24 hours [1]. WITHHELD",
+          "kept": [
+            "Give 1 tablet up to 4 times in 24 hours [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "Children aged 6 to 11 can take paracetamol tablets [1].",
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 sample: the dose sentence before a maximum sentence (W6, the founder's cost)",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "Give 2 tablets up to 4 times in 24 hours. Do not give more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Give 2 tablets up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Give 2 tablets up to 4 times in 24 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "round 5 sample: a non-quote lead-in (W2)",
+        "sources": "bands",
+        "replyText": "Here is what the NHS page says. Give 1 tablet up to 4 times in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Here is what the NHS page says.",
+              "reason": "not-a-quote"
+            },
+            {
+              "sentence": "Give 1 tablet up to 4 times in 24 hours [1].",
+              "reason": "context-unverified"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "round 5 sample: an uncited IV in a reply that shows no dose (W9)",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. It can be given IV in hospital.",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "It can be given IV in hospital.",
+              "reason": "dose-uncited"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "round 5 founder group: take it hourly",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. Take it hourly.",
+        "note": "kept: no number and no unit",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. Take it hourly.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "Take it hourly."
           ],
           "withheld": [],
           "citations": [
@@ -11199,6 +12577,7 @@
           }
         ],
         "replyText": "Wait 4 hours [1]. Take 2 tablets [1].",
+        "note": "withheld: the run is reversed",
         "expected": {
           "outcome": "grounded",
           "displayText": "Wait 4 hours [1]. WITHHELD",
@@ -11208,7 +12587,47 @@
           "withheld": [
             {
               "sentence": "Take 2 tablets [1].",
-              "reason": "out-of-order"
+              "reason": "order"
+            }
+          ],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "cost: mix reads as a word, not a roman numeral (v6)",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. Mix it well.",
+        "note": "kept: mix is excluded from the lowercase roman-numeral rule",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. Mix it well.",
+          "kept": [
+            "Paracetamol is a painkiller [1].",
+            "Mix it well."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        }
+      },
+      {
+        "name": "cost: a lowercase iv in a paraphrase (v6)",
+        "sources": "nodoseP",
+        "replyText": "Paracetamol is a painkiller [1]. It can be given iv in hospital.",
+        "note": "withheld: iv is a roman numeral token, so the sentence is dose-bearing and uncited",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "kept": [
+            "Paracetamol is a painkiller [1]."
+          ],
+          "withheld": [
+            {
+              "sentence": "It can be given iv in hospital.",
+              "reason": "dose-uncited"
             }
           ],
           "citations": [
@@ -11229,7 +12648,7 @@
           "withheld": [
             {
               "sentence": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].",
-              "reason": "out-of-order"
+              "reason": "order"
             }
           ],
           "citations": [
