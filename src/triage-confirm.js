@@ -98,6 +98,20 @@ export function signpostsRemovedRow(n) {
     : `${n} sentences giving a crisis line were removed; the product's crisis support is the only one shown.`;
 }
 
+// Phase 1i MA6, displayed doses. A COUNT, never the sentences, for MA1's
+// reason: a dose repeated in the receipt is a dose on screen. Counts both
+// sentences cut and sentences whose dose was redacted in place.
+export function dosesRemovedRow(n) {
+  return n === 1
+    ? 'One sentence giving a dose was removed; a clinician can advise on treatment.'
+    : `${n} sentences giving a dose were removed; a clinician can advise on treatment.`;
+}
+
+// Phase 1i MA6, red-flag scope disclaimers. VERBATIM: a disclaimer in the
+// receipt is harmless, and it tells the health worker the model hedged — often
+// the reason the banner says CANNOT JUDGE.
+export const DISCLAIMER_REMOVED_PREFIX = 'Disclaimer removed: ';
+
 /**
  * What the guard did to this reply, in rows a person can read.
  *
@@ -122,6 +136,10 @@ export function receiptRows(guard) {
   if (guard.crisisReplaced === true && guard.replyShown === false) return [CRISIS_REPLACED_ROW];
   const rows = [];
   for (const sentence of guard.prohibitedRemoved ?? []) rows.push(`Removed: ${sentence}`);
+  if (guard.dosesRemoved > 0) rows.push(dosesRemovedRow(guard.dosesRemoved));
+  for (const sentence of Array.isArray(guard.disclaimersRemoved) ? guard.disclaimersRemoved : []) {
+    rows.push(`${DISCLAIMER_REMOVED_PREFIX}${sentence}`);
+  }
   if (guard.signpostsRemoved > 0) rows.push(signpostsRemovedRow(guard.signpostsRemoved));
   for (const phrase of guard.timeframeStripped ?? []) rows.push(`Time frame removed: ${phrase}`);
   if (guard.timeframeUnlocated) rows.push(TIMEFRAME_WITHHELD_ROW);

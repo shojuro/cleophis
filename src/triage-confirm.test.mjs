@@ -22,7 +22,7 @@ import assert from 'node:assert';
 import { applyGuard } from './triage/guard.js';
 import {
   CONFIRM_ROUTES, CRISIS_ADDED_ROW, CRISIS_LEADS_ROW, CRISIS_REPLACED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
-  signpostsRemovedRow,
+  signpostsRemovedRow, dosesRemovedRow, DISCLAIMER_REMOVED_PREFIX,
   TIMEFRAME_WITHHELD_ROW, TRIAGE_EXPORT_LABEL, TRIAGE_EXPORT_UNAVAILABLE, UNCLEAR_LINE_ROW,
   confirmRequest, confirmResult, confirmState, confirmStatusText, modelRouteOf,
   offersTriageExport, receiptLabel, receiptRows, routeLabel, triageExportPlan, triageLogFileName,
@@ -417,4 +417,44 @@ test('a lookup reply or query row draws no confirmation controls and no receipt'
   ]) {
     assert.deepStrictEqual(confirmState({ supervised: true, message: { id: 7, guard } }), NO_CONFIRM_STATE);
   }
+});
+
+/* ---------------- Phase 1i MA6: doses and disclaimers on the receipt ---------------- */
+
+test('a dose cut says so by COUNT, never by the dose', () => {
+  const v = applyGuard({ userText: 'my head hurts', replyText: 'Do not take more than 8 tablets in 24 hours. Please see your GP.' });
+  assert.strictEqual(v.dosesRemoved, 1);
+  const rows = receiptRows(v);
+  assert.deepStrictEqual(rows, [dosesRemovedRow(1)]);
+  assert.strictEqual(dosesRemovedRow(1), 'One sentence giving a dose was removed; a clinician can advise on treatment.');
+  assert.match(dosesRemovedRow(2), /^2 sentences giving a dose were removed/);
+  assert.strictEqual(rows.join(' ').includes('8 tablets'), false, 'the dose is not in the receipt');
+});
+
+test('a redacted dose in a route-bearing sentence is counted the same way', () => {
+  const v = applyGuard({ userText: 'asthma', replyText: 'Give 2 puffs of the blue inhaler and call 999 if no better in 5 minutes.' });
+  assert.strictEqual(v.dosesRemoved, 1);
+  assert.match(v.displayText, /\[dose removed\]/);
+  const rows = receiptRows(v);
+  assert.ok(rows.includes(dosesRemovedRow(v.dosesRemoved)), rows.join(' | '));
+  assert.strictEqual(/\d puffs/.test(rows.join(' ')), false);
+});
+
+test('a removed scope disclaimer is listed verbatim', () => {
+  const v = applyGuard({ userText: 'lump in my neck', replyText: 'I cannot assess you properly. Please see your GP.' });
+  assert.deepStrictEqual(receiptRows(v), [`${DISCLAIMER_REMOVED_PREFIX}I cannot assess you properly.`]);
+});
+
+test('MA6 rows sit after prohibitedRemoved and before the signpost row, doses before disclaimers', () => {
+  const rows = receiptRows(verdict({
+    prohibitedRemoved: ['Take ibuprofen.'], dosesRemoved: 2, disclaimersRemoved: ['I cannot assess you.'], signpostsRemoved: 1,
+  }));
+  assert.deepStrictEqual(rows, [
+    'Removed: Take ibuprofen.', dosesRemovedRow(2), `${DISCLAIMER_REMOVED_PREFIX}I cannot assess you.`, signpostsRemovedRow(1),
+  ]);
+});
+
+test('an older verdict with no MA6 keys, or zero counts, adds no rows', () => {
+  assert.deepStrictEqual(receiptRows(verdict({})), []);
+  assert.deepStrictEqual(receiptRows(verdict({ dosesRemoved: 0, disclaimersRemoved: [] })), []);
 });
