@@ -444,6 +444,19 @@ export function isDoseBearing(normalised) {
   return /\d/.test(s) || UNIT_WORD.test(s) || hasLowerRoman(s);
 }
 
+// A DOSE TOKEN: a number glued to a DOSE_UNITS canon, in text that has been
+// through `normaliseDoseText` (which glues "500 mg" to "500mg" and turns
+// "two tablets" into "2tablets"). A unit with no number ("take a tablet") is
+// not a token, and neither is a bare number ("call 999"). Exported for the
+// triage guard's `stripDoses` (Phase 1i MA6), so the guard reads doses with
+// this table and never a second tokeniser.
+const DOSE_TOKEN = new RegExp(`\\d+(?:[./]\\d+)?(?:${CANON_ALT})(?![a-z0-9])`, 'g');
+
+/** Every dose token in NORMALISED text, as written there ("500mg", "1/2tablets"). */
+export function doseTokensIn(normalised) {
+  return String(normalised ?? '').match(DOSE_TOKEN) ?? [];
+}
+
 // What may remain after normalisation: printable ASCII, letters of the Latin
 // script (Latin-1 and Latin Extended: é, ñ, ø ...), a few symbols the
 // reference text uses (£ € ≥ ≤ ® ©), and the Greek letters of drug names

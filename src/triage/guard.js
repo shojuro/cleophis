@@ -30,14 +30,24 @@
 //      loses every sentence the frozen detector reads as a crisis signpost
 //      (`dedupeSignposts`), so the product's block is the only crisis line on
 //      screen;
+//   (MA6, Phase 1i) between 3 and 4, on a KEPT reply only: every sentence
+//      carrying a dose token is removed (`stripDoses`, PROHIBITED_NOTE once),
+//      and on a reply whose direction is EMERGENCY or CLINICIAN every scope
+//      disclaimer sentence is removed (`stripScopeDisclaimers`). Neither
+//      touches the route: it was decided in step 1, from the raw reply;
 //   5. the screen check — LAST, on the finished text, crisis block and all. The
 //      block is product text and nothing above rewrites it, so a check that ran
 //      before the append would be the one rule that looks for a time frame,
 //      looking at text that is not what a person sees.
 import {
   NUMBER_WORDS, ROUTE, URGENCY, detectCrisisResponse, detectCrisisStatement,
-  detectMedication, detectNamedDiagnosis, detectRoute,
+  detectMedication, detectNamedDiagnosis, detectRoute, detectScopeDisclaimer,
 } from './detectors.mjs';
+// The lookup guard's OWN tokeniser (MA6): its splitter, list-marker rule,
+// normaliser and DOSE_UNITS dose tokens. Never a second tokeniser.
+import {
+  doseTokensIn, normaliseDoseText, splitSentences, stripListMarker,
+} from './lookup-guard.js';
 // The pin as a GENERATED ES module, not as JSON. `src/index.html` loads
 // `app.js` with no bundler and `app.js` imports this file at module scope, so
 // `import … with { type: 'json' }` would put a Chromium-123 floor on the whole
@@ -378,6 +388,112 @@ export function dedupeSignposts(text) {
   return { text: out, removed: cut.length };
 }
 
+// ── Phase 1i MA6: displayed doses and displayed disclaimers ─────────────────
+//
+// Both steps SPLICE, the way `dedupeSignposts` does: kept sentences keep their
+// bytes, paragraph breaks and abbreviations; a cut sentence goes with the
+// whitespace after it. Sentences come from the lookup guard's `splitSentences`
+// (which knows "2.5 ml" is not a full stop), located in the text in order.
+// A text with nothing to remove comes back UNTOUCHED.
+
+function sentenceSpans(src) {
+  const spans = [];
+  let at = 0;
+  for (const s of splitSentences(src)) {
+    const start = src.indexOf(s.text, at);
+    if (start < 0) continue;
+    const end = start + s.text.length;
+    const endWithSep = end + /^\s*/.exec(src.slice(end))[0].length;
+    spans.push({ start, sepStart: end, end: endWithSep, text: s.text });
+    at = end;
+  }
+  return spans;
+}
+
+function spliceOut(src, cut) {
+  let out = '';
+  let at = 0;
+  // A cut sentence goes with the whitespace after it; where that whitespace
+  // was the stronger break (a paragraph after a line), it replaces the break
+  // before, so "A.\n\nB.\n\nC." without B is "A.\n\nC." and never "A.\nC.".
+  const breaks = (w) => (w.match(/\n/g) ?? []).length;
+  for (const sp of cut) {
+    out += src.slice(at, sp.start);
+    const after = src.slice(sp.sepStart, sp.end);
+    const before = /\s*$/.exec(out)[0];
+    if (breaks(after) > breaks(before)) out = out.slice(0, out.length - before.length) + after;
+    at = sp.end;
+  }
+  out += src.slice(at);
+  return out
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/** Does this sentence carry a dose token, read with the lookup guard's normaliser and DOSE_UNITS? */
+export function carriesDose(sentence) {
+  return doseTokensIn(normaliseDoseText(stripListMarker(sentence))).length > 0;
+}
+
+/**
+ * Remove every sentence carrying a dose token ("500mg", "8 tablets", "half a
+ * tablet"; not "call 999", not "take a tablet"). If anything was removed,
+ * PROHIBITED_NOTE is appended once — at the end, as `filterProhibited` places
+ * it — unless the text already carries it.
+ *
+ * @returns {{text: string, removed: number}} a COUNT: the removed sentences
+ *   survive only in the verdict's `rawReply`, never as display text.
+ */
+export function stripDoses(text) {
+  const src = String(text ?? '');
+  const cut = sentenceSpans(src).filter((sp) => carriesDose(sp.text));
+  if (!cut.length) return { text: src, removed: 0 };
+  const out = spliceOut(src, cut);
+  const note = PROHIBITED_NOTE.trim();
+  if (out.includes(note)) return { text: out, removed: cut.length };
+  return { text: out ? `${out}${PROHIBITED_NOTE}` : note, removed: cut.length };
+}
+
+/**
+ * Remove every sentence the vendored `detectScopeDisclaimer` matches. Not
+ * route-aware by itself; `applyGuard` decides when it applies.
+ *
+ * @returns {{text: string, removed: number}}
+ */
+export function stripScopeDisclaimers(text) {
+  const src = String(text ?? '');
+  const cut = sentenceSpans(src).filter((sp) => detectScopeDisclaimer(sp.text).found);
+  if (!cut.length) return { text: src, removed: 0 };
+  return { text: spliceOut(src, cut), removed: cut.length };
+}
+
+const RED_FLAG_ROUTES = Object.freeze([ROUTE.EMERGENCY, ROUTE.CLINICIAN]);
+
+/**
+ * The disclaimer step's gate: strip only when what is LEFT still directs to
+ * emergency care or a clinician.
+ *
+ * NOT the raw route, because under the r3 router a raw reply carrying a scope
+ * disclaimer is never EMERGENCY or CLINICIAN: a disclaimer beside an emergency
+ * direction routes UNCLEAR ("contradictory-out-of-scope-and-emergency"), beside
+ * a referral OUT_OF_SCOPE. A raw-route gate would never fire. So the question is
+ * asked of the reply with its disclaimer sentences set aside — and that also
+ * guarantees the cut never takes the red-flag direction with it: a reply whose
+ * only direction shares a sentence with the disclaimer ("I cannot judge this;
+ * go to A&E now.") is left whole, because cutting it would leave the reader no
+ * direction at all. SELF_CARE and UNCLEAR remainders are untouched: the floor
+ * is disclaimers on red flags. The verdict's route and banner stay the raw
+ * reply's either way.
+ */
+function stripRedFlagDisclaimers(text) {
+  const d = stripScopeDisclaimers(text);
+  if (!d.removed || !RED_FLAG_ROUTES.includes(detectRoute(d.text).route)) return { text: String(text ?? ''), removed: 0 };
+  return d;
+}
+
 /**
  * Does the text about to be shown STILL state a time frame it should not?
  *
@@ -469,11 +585,28 @@ export function unlocatedTimeFrame(route, displayText) {
  * @param {string} [opts.crisisLine] the entry's crisis line; absent means
  *   CRISIS_BLOCK_DEFAULT under append and CRISIS_LINE_REPLACE under replace
  * @param {boolean} [opts.dedupeSignposts] default: true under replace, false under append
+ * @param {boolean} [opts.stripDoses=true] MA6: remove every dose sentence of a kept reply
+ * @param {boolean} [opts.stripScopeDisclaimers=true] MA6: remove the scope-disclaimer
+ *   sentences of a kept reply whose remaining direction is EMERGENCY or CLINICIAN
+ *
+ * PHASE 1i MA6 KEYS, present for each switch that is on (so both off is the
+ * historical verdict byte for byte), and always present under replace:
+ *
+ *   stripDoses            whether the dose strip ran
+ *   dosesRemoved          how many sentences of the KEPT reply were cut for a
+ *                         dose token; PROHIBITED_NOTE is on screen when > 0
+ *   stripScopeDisclaimers whether the disclaimer strip ran
+ *   disclaimersRemoved    how many scope-disclaimer sentences were cut
+ *
+ * Counts only, like `signpostsRemoved`: the cut sentences stay in `rawReply`
+ * and are never display text. 0 when the replace rule hides the reply. The
+ * route and banner are decided from the raw reply before either strip.
  */
 export function applyGuard({
   userText = '', replyText = '', crisisLine,
   crisisRule = 'append', replaceKeepRoutes = REPLACE_KEEP_ROUTES_DEFAULT,
   dedupeSignposts: dedupe,
+  stripDoses: stripDosesOpt, stripScopeDisclaimers: stripDisclaimersOpt,
 } = {}) {
   // Refused loudly rather than defaulted: a probe run that asked for a rule and
   // silently measured the other would be a registered number about nothing.
@@ -483,6 +616,14 @@ export function applyGuard({
   if (dedupe !== undefined && typeof dedupe !== 'boolean') {
     throw new TypeError(`applyGuard: dedupeSignposts must be a boolean, got ${JSON.stringify(dedupe)}`);
   }
+  for (const [name, value] of [['stripDoses', stripDosesOpt], ['stripScopeDisclaimers', stripDisclaimersOpt]]) {
+    if (value !== undefined && typeof value !== 'boolean') {
+      throw new TypeError(`applyGuard: ${name} must be a boolean, got ${JSON.stringify(value)}`);
+    }
+  }
+  // MA6: both on by default under every rule; `false` switches each off.
+  const dosesOn = stripDosesOpt ?? true;
+  const disclaimersOn = stripDisclaimersOpt ?? true;
   const replace = crisisRule === 'replace';
   const keepRoutes = replace ? validKeepRoutes(replaceKeepRoutes) : null;
   // Each rule's own default line (MA1): the append line says "in addition to
@@ -508,6 +649,31 @@ export function applyGuard({
     if (timeframeStripped.length) display = tidy(`${display}${TIME_FRAME_NOTE}`);
   }
 
+  // MA6: the two product-owned floors, on a KEPT reply only (a reply the
+  // replace rule hides lends nothing to the screen and counts nothing). After
+  // routing — `routing` is never recomputed — and before the banner and the
+  // crisis rule, so the de-duplication and the screen check read the cleaned
+  // reply. `crisisOnInput` reads only the user's words, so asking it here is
+  // the same question asked below.
+  const crisisOnInput = detectCrisisStatement(userText).found;
+  const keptReply = !replace || !crisisOnInput || keepRoutes.includes(routing.route);
+  let dosesRemoved = 0;
+  let disclaimersRemoved = 0;
+  if (keptReply && dosesOn) {
+    const r = stripDoses(display);
+    display = r.text;
+    dosesRemoved = r.removed;
+  }
+  if (keptReply && disclaimersOn) {
+    const r = stripRedFlagDisclaimers(display);
+    display = r.text;
+    disclaimersRemoved = r.removed;
+  }
+  const owned = {
+    ...(replace || dosesOn ? { stripDoses: dosesOn, dosesRemoved } : {}),
+    ...(replace || disclaimersOn ? { stripScopeDisclaimers: disclaimersOn, disclaimersRemoved } : {}),
+  };
+
   if (routing.route === ROUTE.UNCLEAR) {
     display = tidy(`${display} ${BANNERS.out_of_scope.line}`);
   }
@@ -528,10 +694,9 @@ export function applyGuard({
   // model's text entirely. Deciding from `raw` answers a question about a reply
   // that no longer exists, and it fails in the one direction R15 says it must
   // not: no crisis line at the moment it matters.
-  const crisisOnInput = detectCrisisStatement(userText).found;
   if (replace) {
     return replaceVerdict({
-      raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine: line, keepRoutes, dedupeOn,
+      raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine: line, keepRoutes, dedupeOn, owned,
     });
   }
   // Append with de-duplication asked for explicitly (off by default, so the
@@ -592,6 +757,9 @@ export function applyGuard({
     detectorsSha: pin.sha256,
   };
   if (dedupeOn) Object.assign(verdict, { dedupeSignposts: true, signpostsRemoved });
+  // MA6: present only for a switch that is on, so with both off the verdict is
+  // the historical one byte for byte (guard.transcripts.test.mjs's digest).
+  Object.assign(verdict, owned);
   return verdict;
 }
 
@@ -619,7 +787,7 @@ function validKeepRoutes(routes) {
  * later rule removes.
  */
 function replaceVerdict({
-  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn,
+  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn, owned,
 }) {
   const crisisReplaced = crisisOnInput;
   // TWO decisions, deliberately apart (fix round 1, F2). `kept` is the RULE:
@@ -674,5 +842,6 @@ function replaceVerdict({
     routeDetected: routing.route,
     dedupeSignposts: dedupeOn,
     signpostsRemoved,
+    ...owned,
   };
 }

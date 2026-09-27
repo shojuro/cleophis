@@ -19,10 +19,12 @@ import {
   BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_LINE_REPLACE, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
   ROUTE_TO_BANNER, TIME_FRAME_NOTE, applyGuard, crisisReplaceBlock, filterProhibited, routeOfPrefix,
   dedupeSignposts, signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
+  stripDoses, stripScopeDisclaimers,
 } from './guard.js';
+import { doseTokensIn, normaliseDoseText } from './lookup-guard.js';
 import {
   CRISIS_HANDLING, detectCrisisResponse, detectCrisisStatement, detectMedication,
-  detectNamedDiagnosis, detectRoute,
+  detectNamedDiagnosis, detectRoute, detectScopeDisclaimer,
 } from './detectors.mjs';
 
 const pin = JSON.parse(readFileSync(new URL('./detectors.pin.json', import.meta.url), 'utf8'));
@@ -123,9 +125,13 @@ test('the verdict carries every key Tasks 4, 6 and 7 read, on every route', () =
     'Rest and drink fluids.',
     'Hmm.',
   ];
+  const ma6 = ['disclaimersRemoved', 'dosesRemoved', 'stripDoses', 'stripScopeDisclaimers'];
   for (const replyText of replies) {
     const v = applyGuard({ userText: 'sore throat', replyText });
-    assert.deepStrictEqual(Object.keys(v).sort(), expected, replyText);
+    // MA6: the shipped default adds its four keys; both switches off is the historical twelve.
+    assert.deepStrictEqual(Object.keys(v).sort(), [...expected, ...ma6].sort(), replyText);
+    const off = applyGuard({ userText: 'sore throat', replyText, stripDoses: false, stripScopeDisclaimers: false });
+    assert.deepStrictEqual(Object.keys(off).sort(), expected, replyText);
     assert.deepStrictEqual(Object.keys(v.prohibited).sort(), ['diagnosis', 'medication'], replyText);
     assert.strictEqual(v.rawReply, replyText, 'the raw reply is always kept for the log');
     assert.ok(v.banner in BANNERS, replyText);
@@ -1107,10 +1113,12 @@ test('append (the default) keeps the twelve-key verdict and ignores replaceKeepR
     'prohibited', 'prohibitedRemoved', 'rawReply', 'route', 'timeframeStripped',
     'timeframeUnlocated', 'why',
   ];
-  const d = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY });
+  // MA6's switches off: the historical twelve keys (the shipped default adds four).
+  const off = { stripDoses: false, stripScopeDisclaimers: false };
+  const d = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, ...off });
   const a = applyGuard({
     userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisRule: 'append',
-    replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+    replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'], ...off,
   });
   assert.deepStrictEqual(Object.keys(d).sort(), twelve);
   assert.deepStrictEqual(a, d);
@@ -1203,9 +1211,12 @@ test('dedupe: a kept EMERGENCY reply with a wrong Samaritans number shows the ro
 });
 
 test('dedupe: append leaves the model number on screen (off by default), and the append verdict keeps twelve keys', () => {
-  const v = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY });
+  const v = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY, stripDoses: false, stripScopeDisclaimers: false });
   assert.ok(v.displayText.includes('116 124'), v.displayText);
   assert.strictEqual(Object.keys(v).length, 12);
+  const shipped = applyGuard({ userText: DISCLOSURE, replyText: WRONG_NUMBER_EMERGENCY });
+  assert.ok(shipped.displayText.includes('116 124'), 'MA6 does not de-duplicate under append');
+  assert.strictEqual(Object.keys(shipped).length, 16);
   assert.strictEqual('signpostsRemoved' in v, false);
 });
 
@@ -1376,4 +1387,175 @@ test('M4: an explicit empty crisis line falls back to the rule default, never a 
   assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
   const a = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisLine: '' });
   assert.ok(a.displayText.endsWith(CRISIS_BLOCK_DEFAULT));
+});
+
+// ── Phase 1i MA6: the product owns displayed doses and displayed disclaimers ─
+//
+// Two steps on a KEPT reply, after routing and before the banner. Doses:
+// every sentence carrying a dose token (the lookup guard's normaliser and
+// DOSE_UNITS, via `doseTokensIn`) is removed and PROHIBITED_NOTE is appended
+// once. Disclaimers: on a reply whose route, with its disclaimer sentences set
+// aside, is EMERGENCY or CLINICIAN, every sentence `detectScopeDisclaimer`
+// matches is removed. The route and banner are those of the RAW reply, always.
+
+const MA6_DISCLOSURE = 'I want to kill myself and my chest hurts';
+const noDoseOnScreen = (text) => doseTokensIn(normaliseDoseText(text)).length === 0;
+
+test('MA6 doses: the CLINICIAN paracetamol reply shows the note, no dose, and keeps CLINICIAN', () => {
+  const replyText = 'Take 500mg of paracetamol every 4 hours and see your GP this week.';
+  const v = applyGuard({ userText: 'my head hurts', replyText });
+  assert.strictEqual(v.route, 'CLINICIAN');
+  assert.strictEqual(v.banner, 'clinician');
+  assert.ok(v.displayText.includes(PROHIBITED_NOTE.trim()), v.displayText);
+  assert.ok(noDoseOnScreen(v.displayText), v.displayText);
+  assert.strictEqual(v.stripDoses, true);
+  assert.strictEqual(typeof v.dosesRemoved, 'number');
+});
+
+test('MA6 doses: a denied dose the prohibited filter excuses is removed, counted, and noted once', () => {
+  const replyText = 'Do not take more than 8 tablets in 24 hours. Please see your GP.';
+  const off = applyGuard({ userText: 'my head hurts', replyText, stripDoses: false });
+  assert.match(off.displayText, /8 tablets/, 'the prohibited filter alone leaves it on screen');
+  const v = applyGuard({ userText: 'my head hurts', replyText });
+  assert.strictEqual(v.route, off.route);
+  assert.strictEqual(v.banner, off.banner);
+  assert.strictEqual(v.dosesRemoved, 1);
+  assert.strictEqual(v.displayText, `Please see your GP.${PROHIBITED_NOTE}`);
+  assert.strictEqual(v.displayText.split(PROHIBITED_NOTE.trim()).length, 2, 'the note appears once');
+});
+
+test('MA6 doses: the note is not appended twice when the prohibited filter already added it', () => {
+  const replyText = 'Take ibuprofen. Never exceed 3 caplets in a day. Please see your GP.';
+  const v = applyGuard({ userText: 'my back hurts', replyText });
+  assert.ok(v.prohibitedRemoved.length >= 1);
+  assert.ok(noDoseOnScreen(v.displayText), v.displayText);
+  assert.strictEqual(v.displayText.split(PROHIBITED_NOTE.trim()).length, 2, v.displayText);
+});
+
+test('MA6 doses: removal splices, so paragraph breaks and kept bytes survive', () => {
+  // EMERGENCY, because a CLINICIAN reply's time-frame pass already collapses
+  // paragraph breaks with `tidy` before this step sees it (unchanged by MA6).
+  const replyText = 'Call 999 now.\n\nNever give more than 4 g in a day.\n\nStay with them, e.g. sit them up.';
+  const v = applyGuard({ userText: 'he collapsed', replyText });
+  assert.strictEqual(v.route, 'EMERGENCY');
+  assert.strictEqual(v.dosesRemoved, 1);
+  assert.strictEqual(v.displayText, `Call 999 now.\n\nStay with them, e.g. sit them up.${PROHIBITED_NOTE}`);
+  assert.strictEqual(stripDoses('A.\nTake 2 tablets.\n\nB.').text, `A.\n\nB.${PROHIBITED_NOTE}`, 'the stronger break is kept');
+  assert.strictEqual(stripDoses('A. Take 2.5 ml now. B.').text, `A. B.${PROHIBITED_NOTE}`, 'a decimal point is not a full stop');
+});
+
+test('MA6 doses: a reply with no dose token is byte-identical with the step on and off', () => {
+  for (const replyText of ['Call 999 now. Do not drive yourself.', 'Rest, and see a GP if it lasts more than 3 days.']) {
+    const on = applyGuard({ userText: 'x', replyText });
+    const off = applyGuard({ userText: 'x', replyText, stripDoses: false });
+    assert.strictEqual(on.displayText, off.displayText, replyText);
+    assert.strictEqual(on.dosesRemoved, 0);
+  }
+});
+
+test('MA6 doses: on by default under replace too, and off only when switched off', () => {
+  const replyText = 'Call 999 now. Do not take more than 8 tablets.';
+  const on = applyGuard({ userText: MA6_DISCLOSURE, replyText, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'] });
+  assert.strictEqual(on.route, 'EMERGENCY');
+  assert.strictEqual(on.dosesRemoved, 1);
+  assert.ok(noDoseOnScreen(on.displayText), on.displayText);
+  const off = applyGuard({
+    userText: MA6_DISCLOSURE, replyText, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'], stripDoses: false,
+  });
+  assert.match(off.displayText, /8 tablets/);
+  assert.strictEqual(off.stripDoses, false);
+  assert.strictEqual(off.dosesRemoved, 0);
+});
+
+test('MA6 doses + dedupe under replace: a dose inside a crisis-signpost sentence shows neither', () => {
+  const replyText = 'Go to A&E now. Call the Samaritans on 116 123, and do not take more than 8 tablets.';
+  const v = applyGuard({ userText: MA6_DISCLOSURE, replyText, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'] });
+  assert.strictEqual(v.crisisReplaced, true);
+  assert.strictEqual(v.route, 'EMERGENCY');
+  const block = crisisReplaceBlock(CRISIS_LINE_REPLACE);
+  assert.ok(v.displayText.startsWith(block));
+  const tail = v.displayText.slice(block.length);
+  assert.strictEqual(/116 123|samaritans/i.test(tail), false, tail);
+  assert.ok(noDoseOnScreen(v.displayText), v.displayText);
+  assert.match(tail, /Go to A&E now\./);
+  assert.strictEqual(v.dosesRemoved + v.signpostsRemoved, 1, 'one sentence, cut once');
+});
+
+test('MA6 doses: a hidden reply under replace lends nothing and counts nothing', () => {
+  const v = applyGuard({
+    userText: MA6_DISCLOSURE, replyText: 'Rest. Take 2 tablets.', crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY'],
+  });
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.dosesRemoved, 0);
+  assert.strictEqual(v.disclaimersRemoved, 0);
+});
+
+test('MA6 disclaimers: the EMERGENCY direction loses its disclaimer sentence; the raw route and banner are untouched', () => {
+  const replyText = 'I cannot judge what you have decided. Go to A&E now.';
+  const off = applyGuard({ userText: 'crushing chest pain', replyText, stripScopeDisclaimers: false });
+  const v = applyGuard({ userText: 'crushing chest pain', replyText });
+  assert.strictEqual(v.route, off.route, 'the route is the raw reply\'s, before and after');
+  assert.strictEqual(v.banner, off.banner);
+  assert.strictEqual(v.route, detectRoute(replyText).route);
+  assert.strictEqual(detectRoute('Go to A&E now.').route, 'EMERGENCY');
+  assert.strictEqual(v.disclaimersRemoved, 1);
+  assert.strictEqual(detectScopeDisclaimer(v.displayText).found, false, v.displayText);
+  assert.match(v.displayText, /^Go to A&E now\./);
+  assert.strictEqual(v.stripScopeDisclaimers, true);
+});
+
+test('MA6 disclaimers: the one-sentence fixture is LEFT WHOLE — cutting it would take the only A&E direction', () => {
+  // Under r3 this reply routes UNCLEAR (contradictory-out-of-scope-and-emergency),
+  // so its banner is out_of_scope and nothing else on screen says "A&E". The
+  // sentence-level cut would leave no direction at all; the gate refuses it.
+  // A residual on the scope_disclaimer_routing floor, reported, not hidden.
+  const replyText = 'I cannot judge what you have decided; go to A&E now.';
+  const v = applyGuard({ userText: 'crushing chest pain', replyText });
+  const off = applyGuard({ userText: 'crushing chest pain', replyText, stripScopeDisclaimers: false });
+  assert.strictEqual(v.route, 'UNCLEAR');
+  assert.strictEqual(v.route, off.route);
+  assert.strictEqual(v.banner, off.banner);
+  assert.strictEqual(v.disclaimersRemoved, 0);
+  assert.strictEqual(v.displayText, off.displayText);
+  assert.match(v.displayText, /go to A&E now/);
+});
+
+test('MA6 disclaimers: a CLINICIAN referral loses "I cannot assess you properly"', () => {
+  const replyText = 'I cannot assess you properly. Please see your GP.';
+  const v = applyGuard({ userText: 'lump in my neck', replyText });
+  assert.strictEqual(v.disclaimersRemoved, 1);
+  assert.strictEqual(v.displayText, 'Please see your GP.');
+  assert.strictEqual(v.route, detectRoute(replyText).route);
+});
+
+test('MA6 disclaimers: a SELF_CARE reply carrying a disclaimer is untouched — the floor is on red flags', () => {
+  const replyText = "I can't say how serious this is. Rest and drink fluids, and see a GP if it lasts more than 3 days.";
+  assert.strictEqual(detectScopeDisclaimer(replyText).found, true);
+  const v = applyGuard({ userText: 'sore throat', replyText });
+  const off = applyGuard({ userText: 'sore throat', replyText, stripScopeDisclaimers: false });
+  assert.strictEqual(v.route, 'SELF_CARE');
+  assert.strictEqual(v.disclaimersRemoved, 0);
+  assert.strictEqual(v.displayText, off.displayText);
+});
+
+test('MA6: both switches off give the historical verdict, key for key', () => {
+  const replyText = 'Do not take more than 8 tablets in 24 hours. I cannot assess you properly. Please see your GP.';
+  const off = applyGuard({ userText: 'x', replyText, stripDoses: false, stripScopeDisclaimers: false });
+  for (const k of ['stripDoses', 'dosesRemoved', 'stripScopeDisclaimers', 'disclaimersRemoved']) {
+    assert.ok(!(k in off), k);
+  }
+  assert.match(off.displayText, /8 tablets/);
+  assert.match(off.displayText, /cannot assess/);
+});
+
+test('MA6: a non-boolean switch is refused loudly', () => {
+  assert.throws(() => applyGuard({ replyText: 'x', stripDoses: 'on' }), TypeError);
+  assert.throws(() => applyGuard({ replyText: 'x', stripScopeDisclaimers: 1 }), TypeError);
+});
+
+test('MA6: stripDoses and stripScopeDisclaimers direct — untouched text comes back identical', () => {
+  const t = 'Call 999 now.\n\nStay with them.';
+  assert.deepStrictEqual(stripDoses(t), { text: t, removed: 0 });
+  assert.deepStrictEqual(stripScopeDisclaimers(t), { text: t, removed: 0 });
+  assert.deepStrictEqual(stripDoses('Take 2 tablets.'), { text: PROHIBITED_NOTE.trim(), removed: 1 });
 });
