@@ -78,7 +78,7 @@ pub use chunk::{chunk_document, chunk_document_merged, chunk_document_with, Chun
 pub use contract::{
     assemble_system, contract_by_id, contract_for, contract_version, doc_context_for,
     doc_context_line, no_evidence_marker, refusal_with_offer, render_sources, render_sources_with,
-    system_contract, AssembleError, Contract, ContractId, PromptContract, RenderChunk,
+    system_contract, AssembleError, ContractId, PromptContract, RenderChunk,
 };
 pub use docx::{document_from_docx, Error as DocxError};
 pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};

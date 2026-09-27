@@ -89,9 +89,6 @@ pub struct PromptContract {
     pub refusal_with_offer: String,
 }
 
-/// The name the Phase 1h plan uses for a loaded contract.
-pub type Contract = PromptContract;
-
 fn required_str(table: &toml::Table, key: &str, file: &str) -> String {
     table
         .get(key)
