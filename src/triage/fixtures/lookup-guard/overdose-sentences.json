@@ -1,5 +1,5 @@
 {
-  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives; the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
+  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives and their inflections and near-synonyms, fix round 1; a kill word in a sentence naming a microbe or cells is mechanism text and does not match; the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
   "cases": [
     {
       "sentence": "Do not take more than 8 tablets in 24 hours.",
@@ -107,6 +107,74 @@
     },
     {
       "sentence": "Leave 4 hours between doses.",
+      "overdose": false
+    },
+    {
+      "sentence": "Taking more than the maximum can damage your liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can cause liver failure.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 30 tablets will kill you.",
+      "overdose": true
+    },
+    {
+      "sentence": "Amoxicillin kills bacteria.",
+      "overdose": false
+    },
+    {
+      "sentence": "Paracetamol is toxic in large amounts.",
+      "overdose": true
+    },
+    {
+      "sentence": "It would stop your heart.",
+      "overdose": true
+    },
+    {
+      "sentence": "You could stop breathing.",
+      "overdose": true
+    },
+    {
+      "sentence": "It is a threat to life.",
+      "overdose": true
+    },
+    {
+      "sentence": "She overdosed.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be fatally toxic.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol is a painkiller for mild pain.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not take more than the maximum dose.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not take more than the recommended dose.",
+      "overdose": false
+    },
+    {
+      "sentence": "Stop taking it if you get a rash.",
+      "overdose": false
+    },
+    {
+      "sentence": "This will make sure all the bacteria have been killed.",
+      "overdose": false
+    },
+    {
+      "sentence": "You have thoughts about harming yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "It helps stop your heart failure getting worse.",
       "overdose": false
     }
   ]

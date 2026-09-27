@@ -24,7 +24,11 @@
 // narratives: verbatim maximum-dose sentences ("Do not take more than 8
 // tablets in 24 hours.") and route sentences ("Call 111 or go to A&E.") are
 // quotable; a section titled Overdose is still withheld whole, and the
-// section list no longer applies to sentence text. Nothing else changed.
+// section list no longer applies to sentence text. v7 fix round 1 (MA2
+// review): a ROUTE-BEARING sentence must be a quote like a dose-bearing one
+// (`route-uncited`), the sentence list takes the inflections and near-synonyms
+// of its own words, and the section list takes the pack's other overdose
+// headings ("too many", "extra dose").
 //
 // The rule (`applyLookupGuard`):
 //   Per sentence of the reply (`sentencesOf`: the splitter, the list-marker
@@ -43,8 +47,14 @@
 //      (`dose-uncited`); one whose normalised text EQUALS no ELIGIBLE sentence
 //      of a source it cites is withheld (`dose-not-in-source`). Equality, not
 //      prefix, not substring: the model quotes a source sentence whole.
-//   Over the reply, when any sentence passed 5 as a dose-bearing quote (a dose
-//   is shown):
+//  5b. a sentence that is not dose-bearing is ROUTE-BEARING when the vendored
+//      r3 detectors read a care direction in it (`isRouteBearing`: a route
+//      from `detectRoute`, or any direction its scan found, negated,
+//      conditional or offered included). A route-bearing sentence that equals
+//      no eligible sentence of a source it cites (or cites none) is withheld
+//      (`route-uncited`).
+//   Over the reply, when any sentence passed 5 or 5b as a quote (a dose or a
+//   route is shown):
 //   6. every other sentence with content must also be such a quote, else it is
 //      withheld (`not-a-quote`);
 //   7. the kept quotes must be ONE CONTIGUOUS RUN of the page's sentences: the
@@ -56,11 +66,12 @@
 //   8. a source list item under a lead-in line ending in ":" is quotable only
 //      right after that lead-in, or after the item before it in the same run
 //      (`lead-in` otherwise): the lead-in and its items are one unit;
-//   9. a dose-bearing quote is kept only if every content sentence before it
-//      was kept (`context-unverified` otherwise): no unverified lead-in can
-//      re-target it.
-//   A reply that shows no dose keeps today's behaviour: sentences with no
-//   number and no unit are kept as they are.
+//   9. a dose- or route-bearing quote is kept only if every content sentence
+//      before it was kept (`context-unverified` otherwise): no unverified
+//      lead-in can re-target it.
+//   A reply that shows no dose and no route keeps today's behaviour:
+//   sentences with no number, no unit and no care direction are kept as they
+//   are.
 //  10. a run of withheld sentences becomes one `WITHHELD_BANNER`; if no kept
 //      sentence with content of its own carries a valid citation, the reply is
 //      `LOOKUP_NO_EVIDENCE_TEXT`.
@@ -74,9 +85,10 @@
 //
 // Precedence per sentence: citation-malformed, citation-out-of-range,
 // overdose-section, overdose-sentence, unreadable, dose-uncited,
-// dose-not-in-source; then over the reply: not-a-quote, lead-in, order,
+// dose-not-in-source, route-uncited; then over the reply: not-a-quote, lead-in, order,
 // context-unverified.
 import pin from './detectors.pin.js';
+import { UNCLEAR, detectRoute } from './detectors.mjs';
 
 export const LOOKUP_RULE = 'dose-cite-v7';
 
@@ -101,6 +113,7 @@ export const WITHHELD_REASONS = Object.freeze({
   UNREADABLE: 'unreadable',
   DOSE_UNCITED: 'dose-uncited',
   DOSE_NOT_IN_SOURCE: 'dose-not-in-source',
+  ROUTE_UNCITED: 'route-uncited',
   NOT_A_QUOTE: 'not-a-quote',
   LEAD_IN: 'lead-in',
   ORDER: 'order',
@@ -121,6 +134,12 @@ export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
   /\btoo much\b/i,
   /\bpoison/i,
   /\btoxicity\b/i,
+  // v7 fix round 1: the NHS pack's other overdose headings ("If you use too
+  // many", "Accidentally taking an extra dose", "Missed or extra doses")
+  /\btoo many\b/i,
+  /\bextra doses?\b/i,
+  /\bmore than the (?:[a-z]+ )?dose\b/i,
+  /\bwhat if i (?:take|use|give|have)\b.*\b(?:too many|too much|extra)\b/i,
 ]);
 
 /** Does this section path name overdose or maximum-dose material? */
@@ -144,13 +163,19 @@ export const OVERDOSE_SENTENCE_PATTERNS = Object.freeze([
   /\boverdos/i,
   /\btoo much\b/i,
   /\btoo many\b/i,
-  /\bfatal\b/i,
-  /\blethal\b/i,
-  /\b(?:could|can) kill\b/i,
+  /\bfatal(?:ly|ity|ities)?\b/i,
+  /\blethal(?:ly)?\b/i,
+  // a kill word, unless the sentence names what a medicine kills on purpose
+  // ("It works by killing the bacteria"): mechanism text, not a narrative
+  /^(?!.*\b(?:bacteria|bacterium|fung(?:us|i|al)|germs|yeast|virus(?:es)?|parasites?|lice|nits|mites|worms|scabies|insects|cells)\b).*\bkill(?:s|ed|ing)?\b/i,
   /\bpoison/i,
-  /\btoxicity\b/i,
-  /\bliver damage\b/i,
+  /\btoxic(?:ity)?\b/i,
+  /\bliver (?:damage|failure)\b/i,
+  /\b(?:damag|harm)(?:e|es|ed|ing|s)? (?:to )?(?:your|the|their) liver\b/i,
   /\blife[- ]?threatening\b/i,
+  /\bthreat to (?:your |their |his |her )?life\b/i,
+  /\bstop(?:s|ped|ping)? (?:your |their |his |her |the )?heart\b(?! failure)/i,
+  /\bstop(?:s|ped|ping)? breathing\b/i,
   /\bharm(?:s|ed|ful)?\b/i,
   /\bdangerous\b/i,
 ]);
@@ -376,6 +401,21 @@ const LOWER_ROMAN = /\b[ivxlcdm]{2,}\b/g;
 const NOT_LOWER_ROMAN = new Set(['cm', 'mm', 'mix']);
 const hasLowerRoman = (s) => [...s.matchAll(LOWER_ROMAN)].some((m) => STRICT_ROMAN.test(m[0]) && !NOT_LOWER_ROMAN.has(m[0]));
 
+/**
+ * Is this sentence ROUTE-BEARING (v7 fix round 1)? Read by the vendored r3
+ * detectors on the sentence as written: `detectRoute` sets a route, or its
+ * direction scan found any care direction at all (emergency, clinician,
+ * signpost, "not an emergency", self-care), affirmed, negated, conditional or
+ * offered. The second half is needed: "This is not an emergency, there is no
+ * need to go to A&E." and "There is no need to call an ambulance." are
+ * dispositions that `detectRoute` reports as UNCLEAR. A route-bearing
+ * sentence must be a quote exactly as a dose-bearing one must.
+ */
+export function isRouteBearing(sentence) {
+  const r = detectRoute(String(sentence ?? ''));
+  return r.route !== UNCLEAR || Object.values(r.evidence).some((hits) => hits.length > 0);
+}
+
 /** Does normalised text carry a number, name a dose unit, or hold a lowercase roman numeral? Only such a sentence must be a quote. */
 export function isDoseBearing(normalised) {
   const s = String(normalised ?? '');
@@ -599,7 +639,9 @@ function judgeSentence({ text, normalised }, { sources, sentencesOfSource }) {
   const positions = cites.flatMap((n) => sentencesOfSource(n)
     .map((s, i) => (s.eligible && s.normalised === normalised ? [n, i] : null)).filter(Boolean));
   if (dose && !positions.length) return withhold(WITHHELD_REASONS.DOSE_NOT_IN_SOURCE);
-  return { keep: true, cites, dose, positions };
+  const route = !dose && isRouteBearing(text);
+  if (route && !positions.length) return withhold(WITHHELD_REASONS.ROUTE_UNCITED);
+  return { keep: true, cites, dose, route, mustQuote: dose || route, positions };
 }
 
 /**
@@ -647,8 +689,9 @@ export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
   const page = (n) => ({ key: byChunk ? list[n - 1].chunkId : n, length: sentencesOfSource(n).length });
   const bound = (p) => sentencesOfSource(p[0])[p[1]].leadIn !== null;
   const judged = sentencesOf(raw).map((s) => ({ ...s, content: hasOwnContent(s.text), verdict: judgeSentence(s, ctx) }));
-  // A dose is shown: the reply must be extractive and ordered (clauses 6 to 9).
-  const extractive = judged.some((j) => j.verdict.keep && j.verdict.dose);
+  // A dose or a route is shown: the reply must be extractive and ordered
+  // (clauses 6 to 9).
+  const extractive = judged.some((j) => j.verdict.keep && j.verdict.mustQuote);
   const kept = [];
   const withheld = [];
   const cited = new Set();
@@ -665,7 +708,7 @@ export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
         && (!bound(p) || (lasts !== null && lasts.some((l) => l[0] === p[0] && (l[1] === p[1] - 1 || l[1] === p[1])))));
       if (!v.positions.length) v = withhold(WITHHELD_REASONS.NOT_A_QUOTE);
       else if (!next.length) v = withhold(v.positions.every(bound) ? WITHHELD_REASONS.LEAD_IN : WITHHELD_REASONS.ORDER);
-      else if (v.dose && !contextOk) v = withhold(WITHHELD_REASONS.CONTEXT_UNVERIFIED);
+      else if (v.mustQuote && !contextOk) v = withhold(WITHHELD_REASONS.CONTEXT_UNVERIFIED);
       else lasts = next;
     }
     if (v.keep) {

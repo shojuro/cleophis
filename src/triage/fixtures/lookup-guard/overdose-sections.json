@@ -60,6 +60,42 @@
     {
       "path": "",
       "overdose": false
+    },
+    {
+      "path": "Hydrocortisone buccal tablets > How and when to use hydrocortisone buccal tablets > If you use too many",
+      "overdose": true
+    },
+    {
+      "path": "Timolol eye drops > How to use timolol eye drops > If you use too many timolol eye drops",
+      "overdose": true
+    },
+    {
+      "path": "Antibiotics > How to take antibiotics > Accidentally taking an extra dose",
+      "overdose": true
+    },
+    {
+      "path": "Anticoagulant medicines > Dosage > Missed or extra doses > Newer anticoagulants",
+      "overdose": true
+    },
+    {
+      "path": "P > If you take more than the prescribed dose",
+      "overdose": true
+    },
+    {
+      "path": "P > What if I take extra tablets?",
+      "overdose": true
+    },
+    {
+      "path": "Paracetamol for adults > How to take paracetamol and how much to take (dose) > Important",
+      "overdose": false
+    },
+    {
+      "path": "Cinnarizine > How to take cinnarizine and how much to use (dose) > If you miss a dose of cinnarizine",
+      "overdose": false
+    },
+    {
+      "path": "Beclometasone skin cream > How and when to use beclometasone skin cream > How much to put on",
+      "overdose": false
     }
   ]
 }

@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import {
   DOSE_UNITS, LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, OVERDOSE_SECTION_PATTERNS, OVERDOSE_SENTENCE_PATTERNS,
   WITHHELD_BANNER, WITHHELD_REASONS, applyLookupGuard, citationsIn, eligibleSourceSentences, isDoseBearing,
-  isOverdoseSection, isOverdoseSentence, isUnreadable, normaliseDoseText, sentencesOf, sourceSentences, splitSentences,
+  isOverdoseSection, isOverdoseSentence, isRouteBearing, isUnreadable, normaliseDoseText, sentencesOf, sourceSentences, splitSentences,
   stripListMarker,
 } from './lookup-guard.js';
 import pin from './detectors.pin.js';
@@ -49,7 +49,7 @@ test('manifest.json pins every fixture file by sha256 and case count', () => {
 
 test('the verdict fixtures have one named group per clause plus the probe sets, and every reason is exercised', () => {
   assert.deepStrictEqual(Object.keys(GROUPS), [
-    'citation-range', 'overdose-section', 'overdose-sentence', 'maximum-dose-quotable', 'script-check', 'dose-bearing', 'dose-uncited',
+    'citation-range', 'overdose-section', 'overdose-sentence', 'maximum-and-route-quotable', 'script-check', 'dose-bearing', 'dose-uncited', 'route-bearing',
     'extractive-equality', 'extractive-context', 'ordered', 'lead-in-binding', 'source-splitting', 'neighbours',
     'list-markers-and-brackets', 'withholding-and-banner', 'no-evidence-fallback', ...PROBE_GROUPS, 'cost',
   ]);
@@ -157,11 +157,31 @@ test('v7: no dose-instruction or route word is on the sentence list; the section
     assert.strictEqual(isOverdoseSentence(`take 2 tablets, ${w} 8`), false, w);
   }
   for (const w of ['overdose', 'overdosing', 'too many', 'too much', 'fatal', 'lethal', 'could kill', 'can kill', 'poison',
-    'poisoning', 'liver damage', 'life-threatening']) {
+    'poisoning', 'liver damage', 'life-threatening',
+    // fix round 1: inflections and near-synonyms of the list's own words
+    'overdosed', 'overdoses', 'taken too many', 'took too much', 'fatally', 'fatality', 'kill', 'kills', 'killed', 'will kill',
+    'poisonous', 'toxic', 'liver failure', 'damage your liver', 'damage to the liver', 'harm your liver', 'threat to life',
+    'stop your heart', 'stop breathing']) {
     assert.strictEqual(isOverdoseSentence(`it says ${w} here`), true, w);
   }
+  assert.strictEqual(isOverdoseSentence('paracetamol is a painkiller'), false, 'painkiller is not kill');
   assert.strictEqual(isOverdoseSection('Paracetamol > Maximum dose'), true, 'a maximum-dose SECTION is still withheld whole');
   assert.strictEqual(isOverdoseSentence('the maximum dose is 8tablets in 24 hours'), false);
+  // fix round 1: the pack's other overdose headings
+  for (const path of ['X > If you use too many', 'X > Accidentally taking an extra dose', 'X > Missed or extra doses > Warfarin',
+    'X > If you take more than the prescribed dose', 'X > What if I take too many?', 'X > What if I take extra tablets?']) {
+    assert.strictEqual(isOverdoseSection(path), true, path);
+  }
+});
+
+// v7 fix round 1: a sentence the vendored r3 detectors read as a care
+// direction is route-bearing and must be a quote, like a dose.
+test('v7: isRouteBearing reads routes, negated and de-escalating directions, and nothing else', () => {
+  for (const s of ['Go to A&E straight away.', 'This is not an emergency, there is no need to go to A&E.', 'Do not go to A&E, wait and see.',
+    'There is no need to call an ambulance.', 'Taking the whole pack is not an emergency.', 'See a GP.', 'Speak to a pharmacist if you are unsure.']) {
+    assert.strictEqual(isRouteBearing(s), true, s);
+  }
+  for (const s of ['Paracetamol is a painkiller [1].', 'Take it with food.', 'Check the label.']) assert.strictEqual(isRouteBearing(s), false, s);
 });
 
 test('overdose-sections.json: the registered list is frozen and matches what it names', () => {
@@ -194,8 +214,10 @@ test('INVARIANT: kept text is readable, quoted whole, contiguous in page order, 
     for (const s of sentences.filter((x) => x.kept)) {
       assert.ok(!isOverdoseSentence(s.normalised), `${c.name}: overdose wording kept: ${s.text}`);
       assert.ok(!isUnreadable(s.normalised), `${c.name}: unreadable kept: ${s.text}`);
+      if (isRouteBearing(s.text) && !isDoseBearing(s.normalised)) assert.ok(citationsIn(s.text).numbers.length, `${c.name}: uncited route kept: ${s.text}`);
     }
-    const doseShown = sentences.some((s) => s.kept && isDoseBearing(s.normalised));
+    const mustQuote = (s) => isDoseBearing(s.normalised) || isRouteBearing(s.text);
+    const doseShown = sentences.some((s) => s.kept && mustQuote(s));
     if (!doseShown) continue;
     const byChunk = sources.every((src) => Number.isFinite(src.chunkId));
     const page = (n) => ({ key: byChunk ? sources[n - 1].chunkId : n, sentences: sourceSentences(sources[n - 1].text, sources[n - 1].sectionPath) });
@@ -211,7 +233,7 @@ test('INVARIANT: kept text is readable, quoted whole, contiguous in page order, 
           .filter((p) => lasts === null || lasts.some((l) => contiguous(l, p)))
           .filter((p) => page(p[0]).sentences[p[1]].leadIn === null || (lasts !== null && lasts.some((l) => l[0] === p[0] && p[1] - l[1] <= 1)));
         assert.ok(positions.length, `${c.name}: kept content is not a contiguous, lead-in bound whole quote: ${s.text}`);
-        if (isDoseBearing(s.normalised)) assert.ok(allBeforeKept, `${c.name}: a dose quote follows withheld content: ${s.text}`);
+        if (mustQuote(s)) assert.ok(allBeforeKept, `${c.name}: a dose or route quote follows withheld content: ${s.text}`);
         lasts = positions;
       } else allBeforeKept = false;
     }
