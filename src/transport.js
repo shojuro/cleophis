@@ -133,6 +133,15 @@ function mobileTransport({ invoke, Channel, newRequestId }) {
             settle.resolve({
               content: ev.data.content,
               calculations: ev.data.calculations ?? [],
+              // The id of the assistant row `chat_cmds.rs::settle` finalized
+              // for this turn, or null when there was no checkpoint to
+              // finalize (no signed-in account, or no chat). It is the
+              // attachment point for a supervised reply's guard verdict:
+              // the row already exists by the time Done arrives, so the
+              // verdict is attached to it rather than appended as a second
+              // assistant row (task 2.6). Desktop has no checkpointer and
+              // so no id, which is the same `null` branch.
+              messageId: ev.data.messageId ?? null,
             });
             break;
           case 'error':

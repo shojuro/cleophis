@@ -10,6 +10,11 @@
 /// rather than `mobile`, which would also mean iOS.
 #[cfg(target_os = "android")]
 mod android_bridge;
+// Whole-branch review I1/I2: build.rs's triage-catalog check, compiled here
+// only so `cargo test` runs its tests.
+#[cfg(test)]
+#[path = "../build_checks.rs"]
+mod build_checks;
 mod calc;
 mod catalog;
 mod catalog_dist;
@@ -353,6 +358,7 @@ pub fn run() {
             kpack::build_personal_pack,
             kpack::cancel_build,
             kpack::rag_query,
+            kpack::rag_lookup,
             kpack::list_packs,
             kpack::delete_pack,
             cloud::commands::check_password_strength,
@@ -387,6 +393,9 @@ pub fn run() {
             convstore::append_message,
             convstore::search_chats,
             convstore::export_chat_to_file,
+            convstore::confirm_route,
+            convstore::attach_guard,
+            convstore::export_triage_log_to_file,
             chat_cmds::chat_stream,
             chat_cmds::chat_complete,
             chat_cmds::chat_cancel,
@@ -395,6 +404,7 @@ pub fn run() {
             chat_cmds::chat_stage5_probe,
             mobile_native::network_state,
             mobile_native::share_chat,
+            mobile_native::share_triage_log,
             mobile_native::set_screen_privacy
         ])
         .on_window_event(|window, event| {

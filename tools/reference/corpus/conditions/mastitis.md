@@ -1,0 +1,82 @@
+---
+title: "Mastitis"
+url: "https://www.nhs.uk/conditions/mastitis/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "mastitis"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "17 March 2023", "retrieved": "2026-09-26", "title": "Mastitis", "url": "https://www.nhs.uk/conditions/mastitis/"}]
+---
+# Mastitis
+
+**Mastitis is when your breast becomes swollen, hot and painful.**
+
+It is most common in breastfeeding women and does not usually need medical treatment.
+
+## Symptoms of mastitis
+
+Mastitis usually only affects 1 breast, and symptoms often come on quickly. They include:
+
+- a swollen area on your breast that may feel hot and painful to touch – the area may become red but this can be harder to see if you have black or brown skin
+- a wedge-shaped breast lump or a hard area on your breast
+- a burning pain in your breast that might be constant or only when you breastfeed
+- nipple discharge, which may be white or contain streaks of blood
+
+You may also get flu-like symptoms, such as aches, a high temperature (or feeling hot, cold or shivery) and tiredness.
+
+## Things you can do to ease mastitis
+
+### Do
+
+- if you are breastfeeding, continue to breastfeed your baby when they want and for as long as they want. You can also offer your baby a breastfeed if your breasts are uncomfortably full
+- hand express enough breast milk to feed your baby if breastfeeding is too painful, or if your baby does not want to feed from your affected breast
+- when breastfeeding make sure your baby is positioned and attached properly. Your midwife, health visitor or a breastfeeding specialist can advise you.
+- breast pain may be soothed by applying a cold compress (for example a cloth soaked in cold water) to the affected breast for 10 minutes every hour
+- take paracetamol or ibuprofen to reduce any pain or high temperature
+- rest
+- wear a comfortable and supportive bra
+
+### Don’t
+
+- do not wear tight-fitting clothing or bras until you feel better
+- do not take aspirin
+- do not express more milk than your baby needs
+- do not apply firm pressure to the breast - any pressure should be gentle
+- do not stop breastfeeding suddenly – find out how to stop breastfeeding
+- do not apply oils, soaks or creams to your breast
+
+### Non-urgent advice: See a GP if:
+
+- your symptoms do not get better 12 to 24 hours after treating it at home
+- your symptoms do not get better 48 hours after taking antibiotics
+- you get mastitis and you are not breastfeeding
+
+## Treatment for mastitis from a GP
+
+A GP will usually prescribe antibiotics if you have mastitis and your symptoms are not getting better.
+
+If you're breastfeeding a very small amount of the antibiotic may go into your breast milk. There is no risk to your baby, but it might make them irritable and restless.
+
+### What to do if mastitis comes back
+
+If you are breastfeeding and keep getting mastitis, it might be due to problems with positioning and attaching.
+
+If you have any breastfeeding problems, it's important to ask for help from a midwife, health visitor or a breastfeeding specialist as soon as possible.
+
+You can also call the National Breastfeeding Helpline 24 hours a day on 0300 100 0212
+
+## Causes of mastitis
+
+Mastitis is common in breastfeeding women as it can be caused by a build-up of milk.
+
+Women who are not breastfeeding can also get mastitis, as can men. This can be caused by:
+
+- smoking – toxins found in tobacco can damage breast tissue
+- damage to the nipple, such as a piercing or skin condition such as eczema
+- having a breast implant
+- having a weakened immune system due to a health condition such as diabetes
+- shaving or plucking hairs from around your nipples

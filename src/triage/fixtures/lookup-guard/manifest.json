@@ -1,0 +1,42 @@
+{
+  "_comment": "Pins every dose-cite-v6 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
+  "rule": "dose-cite-v6",
+  "files": {
+    "citations.json": {
+      "sha256": "c9388e52b3f8cfec81547b2948e8695ab8d7058495184f97c084b1186c3ee530",
+      "count": 7
+    },
+    "eligible.json": {
+      "sha256": "b91dbb187564a22a21f0816adf53ca5f12e87beacf0103e8fa30c7dc53ff4326",
+      "count": 31
+    },
+    "normalise.json": {
+      "sha256": "77504acb02fd44ba0369d07ebe1ac6775c97aedfabd2f1fd885f67fb99ee2898",
+      "count": 178
+    },
+    "overdose-sections.json": {
+      "sha256": "d672ff84749528a4c1d0a29376ef1b3976c14d03bfe57f0c8d8d7fcf63b86f7a",
+      "count": 15
+    },
+    "overdose-sentences.json": {
+      "sha256": "1f555ff6bbabf5230cb0fe9843aad5e982a4e162795ec24b37680f0966bfa056",
+      "count": 14
+    },
+    "sentences.json": {
+      "sha256": "b4bdc3d36a33e8fba24fb708193126056f8e252929291af37157cd0cafc63852",
+      "count": 34
+    },
+    "sources.json": {
+      "sha256": "c9e290487ed24b20158038c733be19aef291bc1f00b52aa7dab9175ab8af6b21",
+      "count": 16
+    },
+    "units.json": {
+      "sha256": "b99e434bf18a6624eab8d9bad988fd0b9b6aaf32ad533840bb8d9285da6f5703",
+      "count": 32
+    },
+    "verdicts.json": {
+      "sha256": "d57f887bdf85df0c481cd348e6e68f7edd49c07cbade56bf1e4338330eb5780f",
+      "count": 559
+    }
+  }
+}

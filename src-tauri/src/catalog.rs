@@ -15,6 +15,13 @@ pub struct CatalogEntry {
     pub model_file: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Dist-catalog `base_model` label for a FLAT (tier-less) entry, e.g.
+    /// `"Qwen3-1.7B"` for the triage hero. A tiered entry carries it per
+    /// [`TierVariant`] instead. Without it the flat branch of [`hero_variant`]
+    /// resolves no base model and the app cannot say what to install
+    /// (Phase 1g M1). `baseModel` on the wire.
+    #[serde(default)]
+    pub base_model: Option<String>,
     /// The LoRA adapter loaded alongside the base via llama.cpp `--lora`
     /// (never merged). When set, the hero is treated as not-installed until
     /// this file is present too — see `inference::resolve_launch`.
@@ -59,6 +66,71 @@ pub struct CatalogEntry {
     /// hasn't moved to `hero_variant` yet. Absent on non-hero entries.
     #[serde(default)]
     pub tiers: Option<Tiers>,
+    /// A supervised entry: a health worker confirms every reply (spec P2.5).
+    /// The FE applies the triage guard and the pinned-prompt assembly only when
+    /// this is true; the tutor hero leaves it unset.
+    #[serde(default)]
+    pub supervised: bool,
+    /// sha256 of `system_prompt`, first 12 hex chars — the fingerprint the
+    /// triage gates record. A mismatch on device is a different gate.
+    #[serde(default)]
+    pub prompt_fingerprint: Option<String>,
+    /// `Some(false)` disables the calc tool preamble on the system turn. The
+    /// triage model was never gated with it.
+    #[serde(default)]
+    pub tools: Option<bool>,
+    /// Sampling the engine must use for this entry. The triage gates are
+    /// greedy; the app's default is temperature 0.7.
+    #[serde(default)]
+    pub sampling: Option<SamplingOverride>,
+    /// The crisis line the guard appends, region-specific.
+    #[serde(default)]
+    pub crisis_line: Option<String>,
+    /// The guard's crisis rule for this entry (Phase 1h M2): `"append"` or
+    /// `"replace"`. Absent means append — the FE passes no option and
+    /// `applyGuard` runs its default. Phase 1i registers the rule; no shipped
+    /// entry sets it this round. `crisisRule` on the wire.
+    #[serde(default)]
+    pub crisis_rule: Option<String>,
+    /// Under `"replace"`, the routes whose model reply is still shown under the
+    /// product's crisis block (e.g. `["EMERGENCY"]` or
+    /// `["EMERGENCY","CLINICIAN"]`). Absent means `["EMERGENCY"]`, decided in
+    /// the FE. `crisisKeepRoutes` on the wire.
+    #[serde(default)]
+    pub crisis_keep_routes: Option<Vec<String>>,
+    /// The lowest device tier this entry runs acceptably on (Phase 3 P3.3).
+    /// The FE hides "Get" below it.
+    #[serde(default)]
+    pub min_tier: Option<String>,
+    /// The signed reference pack this entry's lookup reads (Phase 1h M5),
+    /// shipped in the bundled pack root. Unset until Task M4b builds and
+    /// signs the pack. `referencePack` on the wire.
+    #[serde(default)]
+    pub reference_pack: Option<ReferencePack>,
+}
+
+/// Pins for a bundled reference pack: `id` is its `pack_id` (and its file
+/// stem under `<resources_root>/packs/`), `sha256` the `.kpack` file's bytes
+/// hash, `content_sha256` the hash over its content (design ruling I13 —
+/// both fingerprints recorded), `version` its `pack_version`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferencePack {
+    pub id: String,
+    pub sha256: String,
+    pub content_sha256: String,
+    pub version: String,
+}
+
+/// The decoding an entry pins, overriding the engine default (temperature
+/// 0.7, 512 tokens). Every triage gate number was produced greedily, so the
+/// entry that has to reproduce those numbers on device says so in the catalog
+/// rather than relying on a default nobody reads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SamplingOverride {
+    pub temperature: f32,
+    pub max_tokens: usize,
 }
 
 /// One device tier's fully-pinned base+adapter identity — everything a launch
@@ -160,7 +232,7 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
         }
     } else {
         ResolvedHero {
-            base_model: None,
+            base_model: entry.base_model.clone(),
             size_params: Some(entry.size_params.clone()),
             model_file: entry.model_file.clone(),
             sha256: entry.sha256.clone(),
@@ -172,6 +244,34 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
             contract_adapter_id: None,
             file_bytes: Some(entry.file_bytes),
         }
+    }
+}
+
+/// Phase 1g M1 (defense in depth): refuse a signed-catalog artifact whose
+/// `sha256` is none of the hero's pinned shas — base, adapter and contract
+/// adapter, across EVERY tier. The FE already picks by these shas
+/// (`src/dist-pick.js`); this is the Rust side refusing to write any other
+/// file into `models/` even if the FE is wrong or bypassed.
+///
+/// Every tier, not just the effective one: a tier switch downloads the
+/// TARGET tier's files before `complete_tier_switch` persists it, so the
+/// effective tier at download time is still the old one. The set is still
+/// exactly the bytes this build pins; a flat entry resolves the same variant
+/// on every tier. Hex case is ignored; an empty sha never matches.
+pub fn check_artifact_pinned(hero: &CatalogEntry, sha256: &str) -> Result<(), String> {
+    let want = sha256.trim();
+    let pinned = !want.is_empty()
+        && ["low", "mid", "high"].iter().any(|tier| {
+            let v = hero_variant(hero, tier);
+            [v.sha256, v.adapter_sha256, v.contract_adapter_sha256]
+                .iter()
+                .flatten()
+                .any(|p| p.trim().eq_ignore_ascii_case(want))
+        });
+    if pinned {
+        Ok(())
+    } else {
+        Err("That file isn't one this build installs — please update the app.".to_string())
     }
 }
 
@@ -220,7 +320,7 @@ mod tests {
     fn real_catalog_file_parses_and_has_hero() {
         let raw = include_str!("../resources/catalog.json");
         let v = parse_catalog(raw).unwrap();
-        assert_eq!(v.len(), 11, "expected 11 catalog entries");
+        assert_eq!(v.len(), 12, "expected 12 catalog entries");
         let h = hero(&v).expect("catalog must contain the hero model");
         assert_eq!(h.id, "socratic-tutor");
         assert!(h.system_prompt.is_some() && h.greeting.is_some());
@@ -276,6 +376,304 @@ mod tests {
         assert_eq!(hero_variant(h, "banana").base_model.as_deref(), Some("Qwen3-4B"));
     }
 
+    // ---- P2.9: the triage catalog variant ----------------------------------
+
+    /// Phase 1h M5: `referencePack` is optional, and parses when present.
+    /// Phase 1h M7 fills the triage hero's pins with the built pack's shas
+    /// (`docs/superpowers/mobile-tools/build-reference-pack.md`); the pack
+    /// bytes themselves are embedded only once the founder signs and the
+    /// M5 embed step runs, so every other catalog entry still carries none.
+    #[test]
+    fn reference_pack_is_optional_and_parses_when_present() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        assert_eq!(
+            hero(&entries).unwrap().reference_pack,
+            Some(ReferencePack {
+                id: "reference-uk-v1".into(),
+                sha256: "5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853".into(),
+                content_sha256: "df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5".into(),
+                version: "2026.09.1".into(),
+            })
+        );
+        assert!(entries
+            .iter()
+            .filter(|e| e.id != "med-triage")
+            .all(|e| e.reference_pack.is_none()));
+
+        let raw = r#"[{"id":"x","name":"X","category":"medical","subject":"S","cover":"covers/x.webp",
+            "sizeParams":"1B","quant":"Q4","fileBytes":1,"blurb":"b",
+            "referencePack":{"id":"reference-uk-v1","sha256":"aa","contentSha256":"bb","version":"2026.09.1"}}]"#;
+        let e = &parse_catalog(raw).unwrap()[0];
+        assert_eq!(
+            e.reference_pack,
+            Some(ReferencePack {
+                id: "reference-uk-v1".into(),
+                sha256: "aa".into(),
+                content_sha256: "bb".into(),
+                version: "2026.09.1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_triage_catalog_parses_and_its_hero_is_the_supervised_triage_entry() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert!(h.supervised);
+        assert_eq!(h.tools, Some(false));
+        let s = h.sampling.as_ref().expect("sampling pinned");
+        assert_eq!(s.temperature, 0.0);
+        assert_eq!(s.max_tokens, 320);
+        assert!(h
+            .prompt_fingerprint
+            .as_deref()
+            .map(|f| f.len() == 12)
+            .unwrap_or(false));
+        assert_eq!(h.chat_template.as_deref(), Some("qwen"));
+        assert!(h.system_prompt.is_some() && h.crisis_line.is_some());
+        assert_eq!(h.min_tier.as_deref(), Some("low"));
+        assert!(
+            !entries.iter().any(|e| e.id == "socratic-tutor" && e.real),
+            "the tutor is not launchable in the triage variant"
+        );
+    }
+
+    /// A15: the shipped triage shape is base + LoRA, exactly like the tutor
+    /// hero — never a merged single-file model. `resolve_launch` fails closed
+    /// when a declared adapter is missing, so dropping `adapterFile` here would
+    /// silently ship the ungated base instead of refusing to launch.
+    #[test]
+    fn the_triage_hero_ships_as_base_plus_lora_not_a_merged_model() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert!(
+            h.model_file.is_some(),
+            "triage hero must declare a base model file"
+        );
+        assert!(
+            h.adapter_file.is_some(),
+            "triage hero must declare an adapter file"
+        );
+        // The base is the SERVED FORM registered for Phase 1g M10: the Q6_K
+        // build of Qwen3-1.7B made on the M8/M9 gate pods from the base f16
+        // with llama.cpp b10042. It hashed identically on all six rung-builds
+        // (1,673,006,944 bytes), and M10's registration records this sha as
+        // `served_base_sha256`, so this literal and that registration must
+        // agree. The adapter is still the `adapter_gguf_sha256` of the
+        // `Qwen3-1.7B-armb-v3` stack in ~/cleophas-triage's work/gate-17b,
+        // work/gate-17b-v7 and work/m4-prompt-ab run-manifest.json (the
+        // shipped rung v3). A device serving a different pair is not serving
+        // the stack any triage number was measured on.
+        assert_eq!(
+            h.sha256.as_deref(),
+            Some("2588912fe87f55b8381b9fc8faacd0e905c9eb2db641a468be693f45ad6fc87a"),
+            "base must be M10's registered served_base_sha256 (the pods' Q6_K build)"
+        );
+        assert_eq!(h.quant, "Q6_K", "the served form is Q6_K");
+        assert_eq!(
+            h.file_bytes, 1_673_006_944,
+            "fileBytes is the Q6_K build's size"
+        );
+        assert_eq!(
+            h.adapter_sha256.as_deref(),
+            Some("5304e464cd485e8a7d8eb75083363e3cc4de0f665e2c785dbd1a1f7e93d13a20"),
+            "adapter must be the v3 gate rung's adapter_gguf_sha256"
+        );
+        // `download_artifact` writes `<app_data>/models/<dist basename>`, and
+        // the pipeline derives those basenames (build_catalog.py's self-test:
+        // `models/Qwen3-1.7B/v1/Qwen3-1.7B-Instruct-Q6_K.gguf` and
+        // `adapters/triage/v3/Qwen3-1.7B/triage-v3-Qwen3-1.7B.gguf`). If the
+        // bundled basenames differ, a finished download never reads as
+        // installed — the mismatch that broke installation before M2.
+        let basename = |p: &Option<String>| {
+            p.as_deref()
+                .and_then(|p| p.rsplit('/').next())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            basename(&h.model_file).as_deref(),
+            Some("Qwen3-1.7B-Instruct-Q6_K.gguf"),
+            "modelFile's basename must be the dist basename the pipeline derives"
+        );
+        assert_eq!(
+            basename(&h.adapter_file).as_deref(),
+            Some("triage-v3-Qwen3-1.7B.gguf"),
+            "adapterFile's basename must be the dist basename the pipeline derives"
+        );
+        assert!(h.adapter_id.is_some());
+        // No `tiers` block: the triage entry is one pinned pair, so
+        // `hero_variant` resolves it through the flat-field fallback.
+        assert!(h.tiers.is_none());
+        let resolved = hero_variant(h, "low");
+        assert_eq!(resolved.model_file, h.model_file);
+        assert_eq!(resolved.adapter_file, h.adapter_file);
+    }
+
+    /// Phase 1g M1: the flat triage entry declares its dist `base_model`,
+    /// and `hero_variant`'s flat branch carries it, so `begin_tier_switch`
+    /// and the FE no longer see an empty base model.
+    #[test]
+    fn the_flat_triage_hero_resolves_its_declared_base_model() {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "med-triage");
+        assert_eq!(h.base_model.as_deref(), Some("Qwen3-1.7B"));
+        for tier in ["low", "mid", "high"] {
+            assert_eq!(
+                hero_variant(h, tier).base_model.as_deref(),
+                Some("Qwen3-1.7B"),
+                "flat entry resolves the same base model on {tier}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flat_base_model_round_trips_as_camel_case() {
+        let one = parse_catalog(
+            r#"[{"id":"f","name":"F","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/f.gguf",
+                 "baseModel":"Qwen3-1.7B","blurb":"b","real":true}]"#,
+        )
+        .unwrap();
+        assert_eq!(one[0].base_model.as_deref(), Some("Qwen3-1.7B"));
+        let wire = serde_json::to_value(&one[0]).unwrap();
+        assert_eq!(wire["baseModel"], "Qwen3-1.7B");
+    }
+
+    #[test]
+    fn the_general_catalog_shows_the_triage_tile_but_does_not_launch_it() {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let t = entries
+            .iter()
+            .find(|e| e.id == "med-triage")
+            .expect("tile present");
+        assert!(!t.real);
+        assert!(
+            t.model_file.is_none(),
+            "the general tile pins no model file"
+        );
+        assert!(t.adapter_file.is_none());
+        // A marketing card is not a supervised entry. Tasks 5 and 6 add FE
+        // readers gated on `supervised === true`; a reader that keys on it
+        // without also checking `real` would otherwise apply triage behaviour
+        // inside the TUTOR app, because this tile ships in the tutor build.
+        // The launchable entry in catalog.triage.json is the only supervised
+        // one, and this asserts the tile is not a second answer to that.
+        assert!(!t.supervised, "the general tile is not a supervised entry");
+        assert_eq!(t.crisis_line, None);
+        assert_eq!(t.prompt_fingerprint, None);
+        assert_eq!(t.sampling, None);
+        assert_eq!(t.tools, None);
+        // `minTier` stays: it is a property of the model the card advertises,
+        // and the drawer reads it to decide whether to offer the card at all.
+        assert_eq!(t.min_tier.as_deref(), Some("low"));
+        assert_eq!(hero(&entries).unwrap().id, "socratic-tutor");
+    }
+
+    /// Exactly one entry across BOTH shipped catalogs declares itself
+    /// supervised, and it is the one that is launchable.
+    #[test]
+    fn only_the_launchable_triage_hero_is_supervised() {
+        let general = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        assert!(
+            !general.iter().any(|e| e.supervised),
+            "no entry in the tutor catalog is supervised"
+        );
+
+        let triage = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        let supervised: Vec<&str> = triage
+            .iter()
+            .filter(|e| e.supervised)
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(supervised, vec!["med-triage"]);
+        assert!(triage.iter().find(|e| e.supervised).unwrap().real);
+    }
+
+    /// The tutor hero's behaviour must be byte-identical after P2.9: no
+    /// `supervised`, no pinned `sampling`, `tools` unset (so the calc preamble
+    /// still rides on its system turn).
+    #[test]
+    fn the_tutor_hero_declares_none_of_the_supervised_fields() {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let h = hero(&entries).expect("a hero");
+        assert_eq!(h.id, "socratic-tutor");
+        assert!(!h.supervised);
+        assert_eq!(h.tools, None);
+        assert_eq!(h.sampling, None);
+        assert_eq!(h.prompt_fingerprint, None);
+        assert_eq!(h.crisis_line, None);
+        assert_eq!(h.min_tier, None);
+    }
+
+    /// Every new field is `#[serde(default)]`, so a catalog written before
+    /// P2.9 — the `SAMPLE` fixture, and the `catalog.json` already sitting in
+    /// app-data on a device that hasn't updated — still parses.
+    #[test]
+    fn entries_without_the_new_fields_still_parse() {
+        let v = parse_catalog(SAMPLE).unwrap();
+        assert!(!v[0].supervised);
+        assert_eq!(v[0].tools, None);
+        assert_eq!(v[0].sampling, None);
+        assert_eq!(v[0].min_tier, None);
+        assert_eq!(v[0].crisis_line, None);
+        assert_eq!(v[0].prompt_fingerprint, None);
+        assert_eq!(v[0].crisis_rule, None);
+        assert_eq!(v[0].crisis_keep_routes, None);
+    }
+
+    /// Phase 1h M2: the crisis rule fields round-trip as camelCase, and the
+    /// shipped triage catalog does NOT set them yet (Phase 1i registers it).
+    #[test]
+    fn the_crisis_rule_fields_round_trip_as_camel_case_and_are_unset_in_the_shipped_catalog() {
+        let one: Vec<CatalogEntry> = parse_catalog(
+            r#"[{"id":"s","name":"S","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/s.gguf",
+                 "blurb":"b","real":true,"supervised":true,
+                 "crisisRule":"replace","crisisKeepRoutes":["EMERGENCY","CLINICIAN"]}]"#,
+        )
+        .unwrap();
+        assert_eq!(one[0].crisis_rule.as_deref(), Some("replace"));
+        assert_eq!(
+            one[0].crisis_keep_routes,
+            Some(vec!["EMERGENCY".to_string(), "CLINICIAN".to_string()])
+        );
+        let back = serde_json::to_value(&one[0]).unwrap();
+        assert_eq!(back["crisisRule"], "replace");
+        assert_eq!(back["crisisKeepRoutes"][1], "CLINICIAN");
+
+        let h = triage_hero();
+        assert_eq!(
+            h.crisis_rule, None,
+            "Phase 1i registers the rule, not this round"
+        );
+        assert_eq!(h.crisis_keep_routes, None);
+    }
+
+    #[test]
+    fn a_sampling_override_round_trips_as_camel_case() {
+        let one: Vec<CatalogEntry> = parse_catalog(
+            r#"[{"id":"s","name":"S","category":"medical","subject":"Triage","cover":"c.webp",
+                 "sizeParams":"1.7B","quant":"Q4_K_M","fileBytes":1,"modelFile":"models/s.gguf",
+                 "blurb":"b","real":true,"supervised":true,"tools":false,
+                 "sampling":{"temperature":0.0,"maxTokens":320},"minTier":"mid"}]"#,
+        )
+        .unwrap();
+        let e = &one[0];
+        assert!(e.supervised);
+        assert_eq!(e.tools, Some(false));
+        assert_eq!(
+            e.sampling,
+            Some(SamplingOverride {
+                temperature: 0.0,
+                max_tokens: 320
+            })
+        );
+        assert_eq!(e.min_tier.as_deref(), Some("mid"));
+    }
+
     #[test]
     fn hero_variant_falls_back_to_flat_fields_without_tiers() {
         // A pre-tiers entry (no `tiers` block) still resolves via flat fields.
@@ -284,6 +682,69 @@ mod tests {
         assert!(entry.tiers.is_none());
         let resolved = hero_variant(entry, "mid");
         assert_eq!(resolved.model_file.as_deref(), Some("models/a.gguf"));
-        assert_eq!(resolved.base_model, None); // flat entries pin no base_model
+        // SAMPLE declares no `baseModel`, so the flat branch resolves none.
+        assert_eq!(resolved.base_model, None);
+    }
+
+    // ---- Phase 1g M1: download_artifact refuses an unpinned sha ----------
+
+    fn triage_hero() -> CatalogEntry {
+        let entries = parse_catalog(include_str!("../resources/catalog.triage.json")).unwrap();
+        hero(&entries).unwrap().clone()
+    }
+
+    fn tutor_hero() -> CatalogEntry {
+        let entries = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        hero(&entries).unwrap().clone()
+    }
+
+    #[test]
+    fn pin_check_accepts_the_flat_heros_pinned_base_and_adapter() {
+        let h = triage_hero();
+        assert!(check_artifact_pinned(&h, h.sha256.as_deref().unwrap()).is_ok());
+        assert!(check_artifact_pinned(&h, h.adapter_sha256.as_deref().unwrap()).is_ok());
+        // Hex case is not identity.
+        let upper = h.sha256.as_deref().unwrap().to_ascii_uppercase();
+        assert!(check_artifact_pinned(&h, &upper).is_ok());
+    }
+
+    #[test]
+    fn pin_check_refuses_an_unpinned_sha() {
+        let h = triage_hero();
+        // The tutor's behavioral 1.7B adapter shares the triage base_model in
+        // the signed catalog; a file like it is exactly what must not land.
+        let err = check_artifact_pinned(&h, &"61ac4957".repeat(8)).unwrap_err();
+        assert!(err.contains("isn't one this build installs"), "{err}");
+        assert!(check_artifact_pinned(&h, "").is_err());
+    }
+
+    #[test]
+    fn pin_check_refuses_everything_for_an_entry_that_pins_nothing() {
+        let v = parse_catalog(SAMPLE).unwrap();
+        // SAMPLE's hero pins no sha256 at all: nothing may be downloaded for it.
+        assert!(check_artifact_pinned(&v[0], &"a".repeat(64)).is_err());
+        assert!(check_artifact_pinned(&v[0], "").is_err());
+    }
+
+    #[test]
+    fn pin_check_accepts_every_tier_of_a_tiered_hero_including_the_contract_adapter() {
+        // A tier switch downloads the TARGET tier's files before
+        // `complete_tier_switch` persists it, so every tier's pins must pass.
+        let h = tutor_hero();
+        let tiers = h.tiers.as_ref().unwrap();
+        for v in [&tiers.low, &tiers.mid, &tiers.high] {
+            assert!(check_artifact_pinned(&h, &v.sha256).is_ok());
+            assert!(check_artifact_pinned(&h, &v.adapter_sha256).is_ok());
+            if let Some(c) = v.contract_adapter_sha256.as_deref() {
+                assert!(check_artifact_pinned(&h, c).is_ok());
+            }
+        }
+        assert!(
+            tiers.mid.contract_adapter_sha256.is_some(),
+            "fixture exercises a contract pin"
+        );
+        // The triage pair is not pinned by the tutor build.
+        let t = triage_hero();
+        assert!(check_artifact_pinned(&h, t.adapter_sha256.as_deref().unwrap()).is_err());
     }
 }

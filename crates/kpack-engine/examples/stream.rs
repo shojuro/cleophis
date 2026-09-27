@@ -89,6 +89,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             max_tokens: args.max_tokens,
             ..Sampling::default()
         },
+        ..SessionConfig::default()
     })?;
 
     let mut messages = Vec::new();
@@ -141,6 +142,12 @@ fn stop_str(s: StopReason) -> &'static str {
         StopReason::Eos => "eos",
         StopReason::MaxTokens => "max_tokens",
         StopReason::Cancelled => "cancelled",
+        // A device-only stop reason (Phase 1c A2): the run ended inside an
+        // unclosed <think> block, so the visible answer is empty and the
+        // emptiness is a truncation. On the Qwen3 triage hero the prompt closes
+        // the block before the first token, so seeing this in a transcript
+        // means the prompt was not the one the gate serves.
+        StopReason::TruncatedInThink => "truncated_in_think",
     }
 }
 

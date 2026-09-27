@@ -146,6 +146,28 @@
     "inside": ["Variables through functions & files", "Reads and explains real tracebacks", "Small guided projects"]
   },
   {
+    "id": "med-triage",
+    "name": "Cleophas Triage",
+    "category": "medical",
+    "subject": "Triage",
+    "cover": "covers/med-triage.webp",
+    "sizeParams": "1.7B",
+    "quant": "Q4_K_M",
+    "fileBytes": 1282439008,
+    "version": 1,
+    "chatTemplate": "qwen",
+    "systemPrompt": "You are a triage assistant. The person describes how they feel. Tell them what to do about it.\n\nThere are four dispositions and no others:\n- emergency care now;\n- see a clinician — say within what time frame;\n- self-care at home — say what change means they should seek care;\n- you cannot judge this one — say so, and point them to someone who can.\n\nDecide by how time-critical the presentation is, not by how familiar it is.",
+    "minTier": "low",
+    "greeting": "Describe how the person feels, in their own words. I will suggest a route; you decide.",
+    "blurb": "Routes a symptom description. A health worker confirms every route.",
+    "real": false,
+    "price": "Pilot",
+    "tps": "measured per device",
+    "eval": "routes, never diagnoses",
+    "long": "A supervised triage assistant: emergency, clinician, self-care, or cannot-judge, with the reason. It never names a diagnosis or a medication. The health worker holds the decision on every reply.",
+    "inside": ["Four dispositions and nothing else", "Crisis signposting in addition to the route", "Every route confirmed by the health worker"]
+  },
+  {
     "id": "anticoag",
     "name": "Anticoagulation Reference",
     "category": "medical",

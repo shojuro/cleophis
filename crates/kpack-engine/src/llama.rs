@@ -46,7 +46,7 @@ use crate::backend::{
 };
 use crate::error::EngineError;
 use crate::prefix::reusable_prefix;
-use crate::template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
+use crate::template::{role_name, ChatMessage, ChatTemplate, ThinkStripper};
 
 /// Process-wide llama.cpp backend, initialized once. Same rationale as
 /// `kpack-embed::bge::shared_backend`: `LlamaBackend::init()` is a global
@@ -203,26 +203,47 @@ impl EngineHandle for LlamaHandle {
             })?;
         }
 
-        // Resolve the per-model chat template. `Auto` reads the template
-        // embedded in the GGUF — the in-process equivalent of the sidecar's
-        // `--jinja`. An explicit family is used only as a fallback / for a
-        // model whose GGUF ships no template.
+        // Resolve the per-model chat template STRING. `chat_template(None)`
+        // reads the one embedded in the GGUF — the in-process equivalent of the
+        // sidecar's `--jinja` — and that is true whatever family the caller
+        // declared.
+        //
+        // 🔴 THE DECLARED FAMILY IS NO LONGER COSMETIC, and the comment that
+        // used to sit here said the opposite. It claimed an explicit family was
+        // "only a fallback / for a model whose GGUF ships no template", which
+        // was true while the family decided nothing but whether to strip.
+        //
+        // Since A2 it decides the THINK POLICY, which shapes the prompt:
+        // `ChatMl` appends the 19-byte pre-closed `<think>\n\n</think>\n\n`
+        // block so the model cannot open one, and `Auto` and `Llama3` append
+        // nothing. So `Auto` and `ChatMl` no longer render the same bytes for a
+        // Qwen3 GGUF — they differ by that block and by whether the model
+        // reasons inside the catalog's 320-token budget. `Auto` on a Qwen3
+        // model serves the THINKING prompt, which is the prompt no gate this
+        // programme has ever run under.
+        //
+        // Nothing here detects the family from the GGUF; it comes from the
+        // `LoadRequest`. The app is safe because the catalog says `"qwen"` and
+        // `template_for` maps that to `ChatMl` (pinned by A2's parity test).
+        // The device-probe harness refuses `--template auto` in its gate mode
+        // for the same reason, rather than trusting the flag to be remembered.
         let chat_template = self
             .model
             .chat_template(None)
             .map_err(|e| EngineError::Backend(format!("chat template: {e}")))?;
 
-        // Whether to strip a start-of-turn <think> block. `Auto` defers to the
-        // declared family; the engine never strips speculatively.
-        let strip_think = self.template.strips_think();
-
+        // The FAMILY is handed down, not a derived bool. The session needs it
+        // twice — for the think policy that shapes the prompt and for the
+        // stripper that guards the stream — and a session holding only the
+        // second is how those two came to disagree in the first place.
         Ok(Box::new(LlamaSession {
             model: &self.model,
             ctx,
             chat_template,
-            strip_think,
+            template: self.template,
             cfg,
             cached: Vec::new(),
+            prompt_sha_logged: false,
         }))
     }
 
@@ -240,7 +261,9 @@ struct LlamaSession<'a> {
     model: &'a LlamaModel,
     ctx: LlamaContext<'a>,
     chat_template: LlamaChatTemplate,
-    strip_think: bool,
+    /// The declared family. Decides the think policy applied to every rendered
+    /// prompt AND whether the stripper runs.
+    template: ChatTemplate,
     cfg: SessionConfig,
     /// Mirror of the tokens currently resident in sequence 0's KV cache, in
     /// position order — prompt tokens plus every generated token that was fed
@@ -249,9 +272,19 @@ struct LlamaSession<'a> {
     /// prefix is actually valid, and reusing a cache you cannot describe is how
     /// you get silent context corruption rather than a fast turn.
     cached: Vec<LlamaToken>,
+    /// Whether this session has already printed its rendered-prompt sha. Once
+    /// per session, not once per turn: the value is a property of the template
+    /// and the system prompt, and a per-turn line would bury it.
+    prompt_sha_logged: bool,
 }
 
 impl EngineSession for LlamaSession<'_> {
+    fn rendered_prompt_sha256(&self, messages: &[ChatMessage]) -> Result<String, EngineError> {
+        Ok(crate::template::prompt_sha256(
+            &self.render_prompt(messages)?,
+        ))
+    }
+
     fn stream(
         &mut self,
         messages: &[ChatMessage],
@@ -286,26 +319,58 @@ impl LlamaSession<'_> {
         messages: &[ChatMessage],
         sink: &mut dyn TokenSink,
     ) -> Result<GenStats, EngineError> {
-        // Render the chat through the model's own template (honors the prompt
-        // contract byte-for-byte: the caller passes the contract system prompt
-        // and rendered sources in as ChatMessages; see the crate docs).
-        let chat: Vec<LlamaChatMessage> = messages
-            .iter()
-            .map(|m| {
-                LlamaChatMessage::new(role_str(m.role).to_string(), m.content.clone())
-                    .map_err(|e| EngineError::Backend(format!("chat message: {e}")))
-            })
-            .collect::<Result<_, _>>()?;
-        let prompt = self
-            .model
-            .apply_chat_template(&self.chat_template, &chat, true)
-            .map_err(|e| EngineError::Backend(format!("apply chat template: {e}")))?;
+        let prompt = self.render_prompt(messages)?;
 
+        // Once per session, at the front of the transcript: the sha of the
+        // exact bytes about to be tokenised. This is the device half of the
+        // rendering-parity check — the pod prints the same digest for the same
+        // message — and it is printed rather than merely returned because a
+        // device transcript has to self-evidence what it served. A run whose
+        // sha differs from the pod's is not a model difference, and without
+        // this line that would be argued about afterwards instead of read off.
         let tokens = self
             .model
             .str_to_token(&prompt, AddBos::Always)
-            .map_err(|e| EngineError::Backend(format!("tokenize: {e}")))?;
+            .map_err(|e| {
+                // The `[prompt]` line is printed BELOW this, so that it can
+                // carry the token count — which means a tokenizer failure would
+                // otherwise produce a transcript with no sha in it at all, and
+                // a caller that refuses such a run (the device-probe script
+                // does) would report "this run cannot say what it served"
+                // instead of the tokenizer error. So the error carries what the
+                // line would have said.
+                EngineError::Backend(format!(
+                    "tokenize: {e} (prompt template={:?} think={:?} bytes={} \
+                     sha256={} — nothing was generated)",
+                    self.template,
+                    self.template.think_policy(),
+                    prompt.len(),
+                    crate::template::prompt_sha256(&prompt),
+                ))
+            })?;
         let prompt_tokens = tokens.len();
+
+        // Printed AFTER tokenising, so the line can carry the token count.
+        //
+        // The sha pins the prompt STRING and stops there. It says nothing about
+        // whether this tokenizer prepended a BOS token on the way to the model
+        // — `AddBos::Always` adds one only if the vocab declares one, and Qwen3
+        // does not, so it *should* be a no-op. "Should" is not a measurement:
+        // the pod and the phone could differ by one leading token with
+        // identical digests, and a one-token shift is exactly the kind of
+        // difference that produces a handful of legitimate-looking
+        // disagreements and no explanation. `tokens=` is what would show it.
+        if !self.prompt_sha_logged {
+            self.prompt_sha_logged = true;
+            eprintln!(
+                "[prompt] template={:?} think={:?} bytes={} tokens={} sha256={}",
+                self.template,
+                self.template.think_policy(),
+                prompt.len(),
+                prompt_tokens,
+                crate::template::prompt_sha256(&prompt)
+            );
+        }
 
         // ---- Prefix-KV reuse (spec task 1.5) ----------------------------
         //
@@ -365,7 +430,22 @@ impl LlamaSession<'_> {
         self.cached.extend_from_slice(&tokens[reuse..]);
 
         let mut sampler = self.build_sampler();
-        let mut stripper = ThinkStripper::new(self.strip_think);
+        // Kept ON as a no-op safety net: the prompt now closes the block
+        // before the first token, so a well-behaved Qwen3 emits none — but a
+        // model that emits one anyway is still stripped rather than shown.
+        // The family decides, unless a caller overrides it. The ONE caller that
+        // does is the device-probe harness, which must record the engine's
+        // output on BOTH sides of the strip: `raw` is the model contract's
+        // evidence and `text` is the product contract's, and a harness that can
+        // only see one of them cannot tell a reply the model never gave from
+        // one the stripper ate. It then applies THIS stripper, `finish()` and
+        // all, so nothing about the rule is re-implemented — only observed
+        // twice. See `SessionConfig::strip_think`.
+        let strip = self
+            .cfg
+            .strip_think
+            .unwrap_or_else(|| self.template.strips_think());
+        let mut stripper = ThinkStripper::new(strip);
         // One decoder for the whole turn: a multi-byte UTF-8 char can straddle
         // two tokens, and the Decoder buffers the partial sequence across calls.
         let mut decoder = encoding_rs::UTF_8.new_decoder();
@@ -416,11 +496,53 @@ impl LlamaSession<'_> {
             pos += 1;
         }
 
+        // End of stream. `push` holds bytes back by design, so a turn that
+        // never flushes loses whatever the stripper was still deciding about —
+        // and a turn that ended inside `<think>` loses ALL of it and returns an
+        // empty string. That was a device-only catastrophic failure mode with
+        // no test and no symptom other than a blank reply.
+        let end = stripper.finish();
+        if !end.text().is_empty() {
+            if let ControlFlow::Break(()) = sink.on_token(end.text()) {
+                stop = StopReason::Cancelled;
+            }
+        }
+        let stop = stop.with_think_truncation(end.truncated_in_think());
+
         Ok(GenStats {
             prompt_tokens,
             generated_tokens: generated,
             stop,
         })
+    }
+
+    /// Render `messages` into the exact bytes this session tokenises.
+    ///
+    /// Two steps, and the second is the whole of task A2. `apply_chat_template`
+    /// goes through `llama_chat_apply_template`, the C template API, which
+    /// takes **no Jinja kwargs** — so the phone cannot ask Qwen3 for
+    /// `enable_thinking=false`, which is what every gate this programme has run
+    /// was served under. `finish_generation_prompt` appends the pre-closed
+    /// block the kwarg would have produced, in the one place that decision
+    /// lives, so the device serves the prompt the gate serves and the model
+    /// physically cannot spend the 320-token budget thinking.
+    ///
+    /// The prompt contract is still honored byte-for-byte: the caller passes the
+    /// contract system prompt and rendered sources in as `ChatMessage`s and the
+    /// engine never re-types them (see the crate docs).
+    fn render_prompt(&self, messages: &[ChatMessage]) -> Result<String, EngineError> {
+        let chat: Vec<LlamaChatMessage> = messages
+            .iter()
+            .map(|m| {
+                LlamaChatMessage::new(role_name(m.role).to_string(), m.content.clone())
+                    .map_err(|e| EngineError::Backend(format!("chat message: {e}")))
+            })
+            .collect::<Result<_, _>>()?;
+        let applied = self
+            .model
+            .apply_chat_template(&self.chat_template, &chat, true)
+            .map_err(|e| EngineError::Backend(format!("apply chat template: {e}")))?;
+        Ok(self.template.finish_generation_prompt(&applied))
     }
 
     /// Drop the reusable prefix entirely — the native cache and the mirror
@@ -451,18 +573,5 @@ impl LlamaSession<'_> {
                 LlamaSampler::dist(s.seed),
             ])
         }
-    }
-}
-
-fn role_str(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        // The role name both shipping families use in their embedded chat
-        // templates. A GGUF whose template lacks a `tool` branch still renders
-        // the turn (llama.cpp falls back rather than erroring), so a tool result
-        // is always visible to the model even on a model we have not profiled.
-        Role::Tool => "tool",
     }
 }

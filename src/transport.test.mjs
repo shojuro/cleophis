@@ -148,6 +148,7 @@ test('mobile streams deltas and resolves from the done event', async () => {
       channel.emit('done', {
         content: 'Hello',
         calculations: [{ expression: '2*3', display: '6' }],
+        messageId: 91,
       });
     },
   });
@@ -159,7 +160,11 @@ test('mobile streams deltas and resolves from the done event', async () => {
   });
 
   assert.deepEqual(deltas, ['Hel', 'lo']);
-  assert.deepEqual(out, { content: 'Hello', calculations: [{ expression: '2*3', display: '6' }] });
+  assert.deepEqual(out, {
+    content: 'Hello',
+    calculations: [{ expression: '2*3', display: '6' }],
+    messageId: 91,
+  });
 
   // The chat id must reach Rust: it is the KV-reuse key, and without it every
   // turn opens a cold session (task 1.5).
@@ -217,8 +222,39 @@ test('aborting a mobile turn cancels it by request id', async () => {
 
   // Cancel is cooperative: the turn still ends through the normal path, with
   // whatever text had streamed. It does NOT reject.
-  channel.emit('done', { content: 'partial', calculations: [] });
-  assert.deepEqual(await turn, { content: 'partial', calculations: [] });
+  channel.emit('done', { content: 'partial', calculations: [], messageId: 5 });
+  assert.deepEqual(await turn, { content: 'partial', calculations: [], messageId: 5 });
+});
+
+/* ---------------- the row id the guard attaches to (task 2.6) ---------------- */
+
+test('the finalized row id from the done event reaches the caller', async () => {
+  // `chat_cmds.rs::settle` finalizes the streaming checkpoint row BEFORE it
+  // sends Done, so by the time the front end has a verdict the assistant row
+  // already exists. Its id is how the verdict is ATTACHED to that row instead
+  // of appended as a second one — see `persistAssistantTurn`.
+  const invoke = recordingInvoke({
+    chat_stream: (args) => args.onEvent.emit('done', { content: 'x', calculations: [], messageId: 404 }),
+  });
+  const out = await mobile({ invoke }).streamTurn({ chatId: 2, messages: [], onDelta: () => {} });
+  assert.equal(out.messageId, 404);
+});
+
+test('a turn with no checkpoint row surfaces a null id rather than an undefined one', async () => {
+  // No signed-in account, or no chat to write into: generation still streams,
+  // it is just not recoverable — and there is no row to attach a verdict to.
+  // One shape either way, so the caller's `messageId == null` branch is the
+  // only branch it needs.
+  const invoke = recordingInvoke({
+    chat_stream: (args) => args.onEvent.emit('done', { content: 'x', calculations: [], messageId: null }),
+  });
+  assert.equal((await mobile({ invoke }).streamTurn({ chatId: null, messages: [], onDelta: () => {} })).messageId, null);
+
+  // And an older Rust build that does not send the field at all.
+  const legacy = recordingInvoke({
+    chat_stream: (args) => args.onEvent.emit('done', { content: 'x', calculations: [] }),
+  });
+  assert.equal((await mobile({ invoke: legacy }).streamTurn({ chatId: 1, messages: [], onDelta: () => {} })).messageId, null);
 });
 
 test('a mobile completion is deliberately unkeyed', async () => {

@@ -33,3 +33,18 @@ tools/pipeline/work/
 
 # generated datasets (synthetic) — never committed
 tools/dataset/work/
+
+# NHS reference corpus fetch cache (tools/reference/fetch_nhs.py): raw HTML, never committed —
+# the extracted corpus under tools/reference/corpus/ is what is committed.
+tools/reference/.cache/
+
+# The bundled NHS reference pack (Phase 1h M4b): built by `kpack-cli
+# build-reference` and signed by the founder, never committed — it rebuilds
+# byte-identically from the committed corpus (docs/superpowers/mobile-tools/
+# build-reference-pack.md). The contract files next to it, chunks.jsonl and
+# titles.json, ARE committed.
+tools/reference/build/*.kpack
+tools/reference/build/*.kpack.sig
+tools/reference/build/*.part
+src-tauri/resources/packs/*.kpack
+src-tauri/resources/packs/*.kpack.sig

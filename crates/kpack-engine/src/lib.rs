@@ -55,6 +55,16 @@ pub mod template;
 #[cfg_attr(not(feature = "real"), allow(dead_code))]
 mod prefix;
 
+/// The device-probe harness's pure half — the prompt-file format, the output
+/// record, the catalog fields the run is answerable to, and every refusal the
+/// gate mode makes. It owns NO rendering: the prompt bytes and their parity sha
+/// are [`template::ChatTemplate`]'s, and the think-strip is [`template::ThinkStripper`]'s.
+/// Outside the `real` gate for the same reason [`cpu`] and `prefix` are: the
+/// parsing, the serialisation and the refusals are the parts a reviewer can be
+/// wrong about in a way no device run would reveal, so they must be tested on a
+/// box with no NDK and no phone.
+pub mod probe_io;
+
 #[cfg(feature = "real")]
 pub mod llama;
 
@@ -67,7 +77,10 @@ pub use backend::{
 };
 pub use error::EngineError;
 pub use mock::{CollectSink, MockBackend};
-pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
+pub use template::{
+    prompt_sha256, role_name, ChatMessage, ChatTemplate, Role, StripFinish, ThinkPolicy,
+    ThinkStripper, QWEN3_THINK_BLOCK,
+};
 
 #[cfg(feature = "real")]
 pub use llama::{backend_system_info, print_kernel_report, LlamaEngine};

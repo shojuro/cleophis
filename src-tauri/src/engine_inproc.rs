@@ -62,7 +62,7 @@ use std::sync::atomic::AtomicBool;
 
 use kpack_engine::{
     AdapterRole, AdapterSpec, ChatMessage, ChatTemplate, EngineBackend, EngineHandle,
-    EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig,
+    EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig, StopReason,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -272,8 +272,13 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                 // The session borrows `handle`, and `Load` has to `unload()` it,
                 // so the borrow is confined to this expression while the
                 // decision it produces outlives it.
-                let end =
-                    serve_one_session(&mut **h, session_config(&tier), turn, &rx, &thermal);
+                let end = serve_one_session(
+                    &mut **h,
+                    session_config(&tier, pinned_sampling(&app)),
+                    turn,
+                    &rx,
+                    &thermal,
+                );
                 match end {
                     SessionEnd::Idle => {}
                     SessionEnd::Yield(next) => pending = Some(next),
@@ -306,9 +311,10 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                         // through here, so the frontend's window updates on the
                         // same event that tells it the engine is ready again.
                         let tier = crate::tier_select::effective_tier(&app);
-                        engine
-                            .n_ctx
-                            .store(session_config(&tier).n_ctx, Ordering::Relaxed);
+                        engine.n_ctx.store(
+                            session_config(&tier, pinned_sampling(&app)).n_ctx,
+                            Ordering::Relaxed,
+                        );
                         engine.set_status(EngineStatus::Ready);
                         let _ = app.emit("engine-ready", engine.info());
                     }
@@ -612,6 +618,14 @@ fn fmt_trace(t: &crate::engine_thermal::ThermalTrace) -> String {
     )
 }
 
+/// What the user reads when a turn ended inside an unclosed `<think>` block.
+///
+/// Not an error and not a silence: the model produced tokens, and every one of
+/// them was reasoning the runtime suppresses. Before Phase 1c that arrived as
+/// an empty string and the chat rendered a blank reply.
+const TRUNCATED_IN_THINK_NOTICE: &str =
+    "The reply was cut short before the answer began. Please send it again.";
+
 impl TurnSource for SessionTurns<'_, '_> {
     fn turn(
         &mut self,
@@ -621,31 +635,38 @@ impl TurnSource for SessionTurns<'_, '_> {
         let rendered: Vec<ChatMessage> = messages.iter().map(to_chat_message).collect();
         let cancel = self.cancel.clone();
         let thermal = self.thermal.clone();
-        // `ControlFlow::Break` is kpack-engine's cooperative cancel: it stops
-        // generation at the next token rather than tearing the session down, so
-        // the handle stays reusable for the next turn.
-        let mut tokens = |text: &str| -> ControlFlow<()> {
-            // Thermal timing is taken HERE and nowhere downstream (H6/A7).
-            // This closure is called once per token by `EngineSession::stream`;
-            // `on_delta` is on the far side of `ToolStream`, which withholds
-            // text that might be tool syntax and releases it in a burst. Timing
-            // there would measure the suppressor's release schedule and read a
-            // held-back stretch as a stall and its flush as a speed-up.
-            thermal.borrow_mut().on_token();
-            sink(text);
-            if cancel.load(Ordering::Relaxed) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
         // Snapshot before the stream so the reconciliation covers exactly this
         // call. The tool loop runs several streams per user-visible turn, and a
         // per-turn total would blur them together — which is the granularity
         // the divergence question needs, since a tool round-trip is one of the
         // things that changes it.
         let before = self.thermal.borrow().sink_calls();
-        let out = self.session.stream(&rendered, &mut tokens);
+        // Whether this stream put ANY text in front of the caller. Needed by
+        // the truncation branch below, and scoped with the closure so `sink` is
+        // free again afterwards.
+        let mut spoke = false;
+        let out = {
+            // `ControlFlow::Break` is kpack-engine's cooperative cancel: it
+            // stops generation at the next token rather than tearing the
+            // session down, so the handle stays reusable for the next turn.
+            let mut tokens = |text: &str| -> ControlFlow<()> {
+                // Thermal timing is taken HERE and nowhere downstream (H6/A7).
+                // This closure is called once per token by `EngineSession::stream`;
+                // `on_delta` is on the far side of `ToolStream`, which withholds
+                // text that might be tool syntax and releases it in a burst. Timing
+                // there would measure the suppressor's release schedule and read a
+                // held-back stretch as a stall and its flush as a speed-up.
+                thermal.borrow_mut().on_token();
+                spoke = true;
+                sink(text);
+                if cancel.load(Ordering::Relaxed) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            self.session.stream(&rendered, &mut tokens)
+        };
         // Only on success: a failed stream has no trustworthy token count, and
         // logging a reconciliation against a partial one would put a fake
         // divergence into the soak transcript.
@@ -653,6 +674,25 @@ impl TurnSource for SessionTurns<'_, '_> {
             self.thermal
                 .borrow_mut()
                 .stream_ended(before, stats.generated_tokens);
+            // The turn died inside an unclosed `<think>` block, so every byte
+            // the model produced was suppressed and the user is looking at an
+            // empty bubble. Say so instead.
+            //
+            // This is the ONLY place the product puts words into a model turn,
+            // and it is deliberate. `tool_loop::run` decides what to display
+            // from this text alone, and an empty string is exactly what it
+            // cannot tell apart from a model with nothing to say — its existing
+            // fallbacks fire on a turn that CALCULATED but never spoke, which
+            // this is not.
+            //
+            // With the pre-closed think block now in the rendered prompt
+            // (`ChatTemplate::finish_generation_prompt`) the Qwen3 hero cannot
+            // open a block at all, so this should be unreachable on the shipping
+            // triage stack — which is why it prints as well as speaks.
+            if stats.stop == StopReason::TruncatedInThink && !spoke {
+                eprintln!("[prompt] stream ended inside an unclosed <think> block");
+                sink(TRUNCATED_IN_THINK_NOTICE);
+            }
         }
         out.map(|_stats| ()).map_err(|e| e.to_string())
     }
@@ -677,11 +717,33 @@ fn to_chat_message(m: &LoopMessage) -> ChatMessage {
 /// Context window per tier (spec §2): 2048 on the floor, 4096 above. The A22 is
 /// a floor device, so 2048 is the shipping default and the larger window is
 /// opt-in by tier rather than by hope.
-fn session_config(tier: &str) -> SessionConfig {
+///
+/// Sampling is the engine default (temperature 0.7) unless the LOADED hero
+/// pins one. The supervised triage entry pins temperature 0, because every
+/// number that entry was gated on was produced greedily — serving it at 0.7
+/// is a different model from the one that passed. `None` reproduces the
+/// pre-P2.9 config field for field, which is what leaves the tutor unchanged.
+fn session_config(tier: &str, pinned: Option<kpack_engine::Sampling>) -> SessionConfig {
     SessionConfig {
         n_ctx: if tier == "low" { 2048 } else { 4096 },
-        ..SessionConfig::default()
+        sampling: pinned.unwrap_or_default(),
+        // `None` = the template family decides, which is the shipping
+        // behaviour: ChatMl/Qwen strips, Llama3 does not. Only the device-probe
+        // harness overrides it, and only to record the raw side as well.
+        strip_think: None,
     }
+}
+
+/// The hero's catalog `sampling` block projected onto the engine's `Sampling`.
+/// Only `temperature` and `max_tokens` are pinnable; `top_k`/`top_p`/`seed`
+/// keep their defaults, which is inert at temperature 0 — the backend takes
+/// the greedy path and never consults them (`kpack-engine/src/llama.rs`).
+fn pinned_sampling(app: &AppHandle) -> Option<kpack_engine::Sampling> {
+    crate::inference::hero_sampling(app).map(|s| kpack_engine::Sampling {
+        temperature: s.temperature,
+        max_tokens: s.max_tokens,
+        ..kpack_engine::Sampling::default()
+    })
 }
 
 /// Guarantees the engine never sits in a non-terminal state after the inference

@@ -1,0 +1,92 @@
+---
+title: "Acromegaly"
+url: "https://www.nhs.uk/conditions/acromegaly/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "acromegaly"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "19 December 2024", "retrieved": "2026-09-26", "title": "Acromegaly", "url": "https://www.nhs.uk/conditions/acromegaly/"}]
+---
+# Acromegaly
+
+Acromegaly is a rare condition where the body makes too much of a hormone that can make parts of your body grow bigger. It can be successfully treated.
+
+## Symptoms of acromegaly
+
+Symptoms of acromegaly can develop slowly. They may include:
+
+- swollen hands and feet
+- tiredness or difficulty sleeping
+- sleep apnoea
+- sweating
+- numbness and weakness in your hands
+- abnormal height growth in children and teenagers (gigantism)
+- body growth – feet, fingers, head, tongue and neck may increase in size
+- headaches
+- joint pain
+- thicker, more oily skin
+- a deeper voice
+- irregular periods
+- erection problems
+
+You usually get acromegaly between the ages of 30 and 50 years old, but you can get symptoms at any age.
+
+## Non-urgent advice: See a GP if:
+
+- you think you may have acromegaly
+
+Early diagnosis and treatment can stop symptoms getting worse.
+
+## Causes of acromegaly
+
+Acromegaly is usually caused by an adenoma (a non-cancerous tumour) in the pituitary gland. This is a pea-sized gland at the back of your brain. An adenoma can cause you to produce too much growth hormone.
+
+Acromegaly is not usually passed on from your parents (inherited).
+
+## What happens at your appointment
+
+Acromegaly may take time to be diagnosed.
+
+If the GP thinks you have it, they may ask to see photographs of you from the past couple of years to check any changes.
+
+They may also refer you to a specialist for tests, including:
+
+- blood tests
+- an MRI scan of your brain to see if you have a tumour
+
+## Treatments for acromegaly
+
+Treatments for acromegaly can include:
+
+- surgery to remove the tumour
+- radiotherapy to target the tumour and reduce growth hormone levels
+- injections or tablets to reduce growth hormone levels
+
+Treatment usually stops your body producing too much growth hormone and usually improves your symptoms.
+
+After treatment, you'll continue to have appointments with a specialist. They can monitor how well your pituitary gland is working and check that your treatment is right for you.
+
+## Complications of acromegaly
+
+Acromegaly can increase your risk of:
+
+- type 2 diabetes
+- high blood pressure (hypertension)
+- heart disease
+- bowel polyps
+
+You'll have regular health checks to monitor these conditions, including colonoscopy screenings to check for bowel polyps.
+
+## Recording information about you and your condition
+
+If you have acromegaly, your care team will pass information on to the National Congenital Anomaly and Rare Disease Registration Service (NCARDRS).
+
+This helps scientists find better ways to treat and prevent this condition. You can opt out of the register at any time.
+
+## Find out more
+
+- The Pituitary Foundation

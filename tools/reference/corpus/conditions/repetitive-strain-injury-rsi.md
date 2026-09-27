@@ -1,0 +1,101 @@
+---
+title: "Repetitive strain injury (RSI)"
+url: "https://www.nhs.uk/conditions/repetitive-strain-injury-rsi/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "repetitive-strain-injury-rsi"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "28 May 2026", "retrieved": "2026-09-26", "title": "Repetitive strain injury (RSI)", "url": "https://www.nhs.uk/conditions/repetitive-strain-injury-rsi/"}]
+---
+# Repetitive strain injury (RSI)
+
+Repetitive strain injury (RSI) is a term sometimes used for pain caused by repeated movement of part of the body. It often gets better on its own, but there are things you can do to help speed up your recovery.
+
+## Symptoms of repetitive strain injury (RSI)
+
+You can get repetitive strain injury (RSI) in many parts of the body, such as the:
+
+- shoulders
+- elbows
+- forearms and wrists
+- hands and fingers
+
+The symptoms usually start gradually and can include:
+
+- pain, which may feel like burning, aching or throbbing
+- stiffness and weakness
+- tingling, pins-and-needles or numbness
+- muscle cramps
+- swelling
+
+## Causes of repetitive strain injury (RSI)
+
+Repetitive strain injury (RSI) is caused by repeated use of a body part, such as your shoulder, elbow, forearm, wrist or hand.
+
+For example, you can get RSI if:
+
+- you do repetitive activities like hairdressing, decorating, typing or working on an assembly line
+- you play sports like golf or tennis that involve lots of repetitive movements
+- you have poor posture when sitting or standing at work
+- you use hand-held power tools regularly
+
+Repetitive or strenuous work does not always cause RSI. Many people do the same job for years without having a problem.
+
+Pain in a part of the body like the arm is often caused by a combination of things, including aging.
+
+## Things you can do to help ease repetitive strain injury (RSI)
+
+There are a number of things you can do to help ease the symptoms of repetitive strain injury (RSI).
+
+### Do
+
+- keep active – you may need to limit the amount of activity you do to start with before gradually increasing it
+- take paracetamol or anti-inflammatory painkillers like ibuprofen – you can get tablets or gels that you rub on the painful area
+- try using a cold pack (or a bag of frozen peas) wrapped in a towel on the affected area for up to 20 minutes every 2 to 3 hours
+- speak to your employer about ways they can help you continue working, like changing the way you work or reducing your hours
+
+### Don’t
+
+- do not rest the affected area for more than a few days – resting for too long can lead to the affected body part becoming weaker and less flexible
+
+### A pharmacist can help with RSI
+
+You can ask a pharmacist about painkilling tablets and gels.
+
+## Non-urgent advice: See a GP if:
+
+- you have symptoms of repetitive strain injury (RSI) and they are not going away or are getting worse
+
+### Refer yourself for back or joint help
+
+In many areas you may be able to get help, such as physiotherapy, from NHS community musculoskeletal (MSK) services without needing a referral from a GP.
+
+Get NHS help for back or joint problems
+
+## Treatment for repetitive strain injury (RSI)
+
+Most people with repetitive strain injury (RSI) are able to manage their symptoms and get better without further treatment.
+
+### Physiotherapy
+
+If your symptoms do not improve, you may need physiotherapy.
+
+As well as massaging the affected area, a physiotherapist can show you exercises to help strengthen your muscles and improve your posture.
+
+Physiotherapy is free on the NHS throughout the UK but waiting times can be long. You can also pay to see a physiotherapist privately.
+
+### Occupational therapy
+
+An occupational therapist can help by working out what’s causing the problem. They can suggest exercises, equipment, or changes to your workspace to reduce pain and prevent the symptoms getting worse.
+
+A GP may be able to refer you for occupational therapy. You can also pay to see an occupational therapist privately.
+
+### Other treatments
+
+Sometimes steroid injections may be recommended to help reduce pain and swelling.
+
+Rarely, surgery may be needed if RSI is very severe.
