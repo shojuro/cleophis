@@ -409,7 +409,7 @@ test('a larger pinned reply shrinks the room for the prompt: over budget with 10
 /* ---------------- Phase 1i MA3: the excerpt fallback ---------------- */
 
 import { LOOKUP_EXCERPT_FOOTER } from './lookup-turn.js';
-import { EXCERPT_OMISSION } from './triage/lookup-guard.js';
+import { EXCERPT_OMISSION, LOOKUP_RULE } from './triage/lookup-guard.js';
 import { replayMessage } from './triage-turn.js';
 
 // Three sources of one page, CITED out of page order: [1] is the page's
@@ -496,7 +496,7 @@ test('the excerpt verdict: kind lookup, outcome excerpts, the rule, the shown so
   const v = lookupForPersistence(r.verdict, ENTRY);
   assert.strictEqual(v.kind, 'lookup');
   assert.strictEqual(v.outcome, 'excerpts');
-  assert.strictEqual(v.rule, 'dose-cite-v6');
+  assert.strictEqual(v.rule, LOOKUP_RULE);
   assert.strictEqual(v.displayText, EXPECTED_EXCERPTS);
   assert.deepStrictEqual(v.citations, [1, 2]);
   assert.deepStrictEqual(v.withheld.map((w) => w.reason), ['dose-not-in-source', 'dose-not-in-source']);

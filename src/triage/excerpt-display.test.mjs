@@ -69,10 +69,12 @@ test('an overdose-narrative sentence is dropped, with the neighbours the guard a
 test('every shown sentence is one the guard marks eligible: never a second rule', () => {
   const text = 'Adults: take 1 or 2 tablets. Do not take more than 8 tablets in 24 hours. '
     + 'See [1] for details. Swallow it whole.';
-  const eligible = new Set(sourceSentences(text, 'Dosage').filter((s) => s.eligible).map((s) => s.text));
+  // Whatever the guard's lists say (v7 made the maximum-dose sentence
+  // quotable), the excerpt shows exactly the guard's eligible sentences.
+  const eligible = sourceSentences(text, 'Dosage').filter((s) => s.eligible).map((s) => s.text);
   const r = excerptDisplay([src(1, 1, 'Dosage', text)]);
-  for (const s of r.blocks.flatMap((b) => b.sentences)) assert.ok(eligible.has(s), s);
-  assert.ok(!r.blocks.some((b) => /more than|\[1\]/.test(b.text)));
+  assert.deepStrictEqual(r.blocks.flatMap((b) => b.sentences), eligible);
+  assert.ok(!r.blocks.some((b) => /\[1\]/.test(b.text)), 'a bracketed digit is never shown');
 });
 
 test('a list item bound to an overdose lead-in is dropped with its lead-in', () => {
