@@ -11,7 +11,10 @@
 //      disclosure gets the product's fixed block (the founder's replace rule,
 //      with the entry's crisis line). No retrieval, no model.
 //   2. No reference pack on the entry: a plain message. No retrieval, no model.
-//   3. `rag_lookup` (lexical only). noEvidence -> the scripted refusal;
+//   3. `rag_lookup` (lexical only). A pack whose manifest `contentSha256` /
+//      `packVersion` differ from the catalog's `referencePack` pins is not
+//      the pinned pack: the plain unavailable message, whatever its status.
+//      noEvidence -> the scripted refusal;
 //      didYouMean -> the list of close titles; unavailable, an error, or a
 //      status nobody knows -> the plain message. None of these runs the model.
 //   4. grounded -> the budget check (a hard error when over), then the model
@@ -99,6 +102,34 @@ export function sourcesFromPrompt(prompt, citations) {
     text: prompt.slice(starts[i].textAt, i + 1 < starts.length ? starts[i + 1].at : prompt.length),
   }));
 }
+
+// ── The pack identity check (whole-branch review I2) ────────────────────────
+
+/**
+ * The identity the pack that answered reported (`rag_lookup`'s manifest
+ * `contentSha256` and `packVersion`), or null when it reported none.
+ */
+export function reportedPack(rag) {
+  const content = optString(rag && rag.contentSha256);
+  const version = optString(rag && rag.packVersion);
+  return content && version ? { contentSha256: content, version } : null;
+}
+
+/**
+ * True only when the pack that answered is the catalog's pinned pack: both
+ * its reported `contentSha256` and version equal `entry.referencePack`'s
+ * pins. A missing pin or a missing report is a mismatch — the check fails
+ * closed.
+ */
+export function packMatchesPin(rag, entry) {
+  const reported = reportedPack(rag);
+  const pin = (entry && entry.referencePack) || {};
+  return reported != null
+    && reported.contentSha256 === optString(pin.contentSha256)
+    && reported.version === optString(pin.version);
+}
+
+export const LOOKUP_PACK_MISMATCH_ERROR = 'the reference pack does not match the catalog pin';
 
 // ── The turn ────────────────────────────────────────────────────────────────
 
@@ -214,18 +245,27 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
   }
 
   const status = rag && rag.status;
-  if (status === 'noEvidence') return scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT);
+  if (status !== 'grounded' && status !== 'noEvidence' && status !== 'didYouMean') {
+    return scripted('unavailable', LOOKUP_UNAVAILABLE_TEXT);
+  }
+  // Every answer below comes from the pack, so it must be the pinned pack.
+  if (!packMatchesPin(rag, entry)) {
+    return scripted('unavailable', LOOKUP_UNAVAILABLE_TEXT, { error: LOOKUP_PACK_MISMATCH_ERROR });
+  }
+  // What the pack itself reported, carried to `lookupForPersistence`.
+  const pack = { referencePack: { id: packId, ...reportedPack(rag) } };
+
+  if (status === 'noEvidence') return scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT, pack);
   if (status === 'didYouMean') {
     const candidates = (Array.isArray(rag.candidates) ? rag.candidates : [])
       .filter((c) => typeof c === 'string' && c.trim());
     return candidates.length
-      ? scripted('didYouMean', didYouMeanText(candidates), { candidates })
-      : scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT);
+      ? scripted('didYouMean', didYouMeanText(candidates), { candidates, ...pack })
+      : scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT, pack);
   }
-  if (status !== 'grounded') return scripted('unavailable', LOOKUP_UNAVAILABLE_TEXT);
 
   const citations = Array.isArray(rag.citations) ? rag.citations : [];
-  if (!citations.length) return scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT);
+  if (!citations.length) return scripted('noEvidence', LOOKUP_NO_EVIDENCE_TEXT, pack);
 
   const replyTokens = lookupReplyTokens(entry);
   let assembled;
@@ -246,6 +286,7 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
   const verdict = {
     ...applyLookupGuard({ replyText: reply && reply.content, sources }),
     sources: citations.map(sourceRecord),
+    ...pack,
   };
   return {
     outcome: verdict.outcome,
@@ -258,21 +299,31 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
 }
 
 /**
- * The lookup verdict as PERSISTED: model and pack provenance by sha, stamped
- * on a copy from the entry the turn was sent under (the same reason
- * `guardForPersistence` stamps the triage verdict). No prompt fingerprint:
- * the lookup's prompt is the Rust-assembled grounded one, not the catalog's.
+ * The lookup verdict as PERSISTED: model provenance by sha, stamped on a copy
+ * from the entry the turn was sent under (the same reason
+ * `guardForPersistence` stamps the triage verdict), and pack provenance from
+ * what the PACK reported (whole-branch review I2): `id`, `contentSha256` and
+ * `version` are the answering pack's own, and `sha256` is the catalog's
+ * file pin — the pack does not hash itself per query, but `build.rs` refuses
+ * a triage build whose embedded pack differs from that pin, and a report is
+ * only kept when it matched the catalog's other two pins. A verdict no pack
+ * answered (crisis first, unavailable) persists `referencePack: null`. No
+ * prompt fingerprint: the lookup's prompt is the Rust-assembled grounded one.
  */
 export function lookupForPersistence(verdict, entry = null) {
   if (!verdict) return null;
   const str = (v) => (typeof v === 'string' ? v : '');
-  const pack = (entry && entry.referencePack) || {};
+  const reported = verdict.referencePack;
+  const pin = (entry && entry.referencePack) || {};
   return {
     ...verdict,
     modelSha: str(entry && entry.sha256),
     adapterSha: str(entry && entry.adapterSha256),
-    referencePack: {
-      id: str(pack.id), sha256: str(pack.sha256), contentSha256: str(pack.contentSha256), version: str(pack.version),
-    },
+    referencePack: reported
+      ? {
+        id: str(reported.id), sha256: str(pin.sha256),
+        contentSha256: str(reported.contentSha256), version: str(reported.version),
+      }
+      : null,
   };
 }

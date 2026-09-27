@@ -9,8 +9,9 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
-  CITATION_LINE_TEMPLATE, CITATION_SOURCE_SEP, LOOKUP_OVER_BUDGET_TEXT, LOOKUP_UNAVAILABLE_TEXT,
-  didYouMeanText, lookupForPersistence, referencePackId, runLookupTurn, sourcesFromPrompt,
+  CITATION_LINE_TEMPLATE, CITATION_SOURCE_SEP, LOOKUP_OVER_BUDGET_TEXT, LOOKUP_PACK_MISMATCH_ERROR,
+  LOOKUP_UNAVAILABLE_TEXT, didYouMeanText, lookupForPersistence, packMatchesPin, referencePackId, reportedPack,
+  runLookupTurn, sourcesFromPrompt,
 } from './lookup-turn.js';
 import { LOOKUP_NO_EVIDENCE_TEXT, WITHHELD_BANNER } from './triage/lookup-guard.js';
 import { BANNERS, CRISIS_BLOCK_DEFAULT, crisisReplaceBlock } from './triage/guard.js';
@@ -37,7 +38,9 @@ const TEXTS = [
 const PROMPT = `${CONTRACT}\n\nThese sources are excerpts from: Paracetamol.\n\n`
   + `[1] (Paracetamol, How and when to take it, L1): ${TEXTS[0]}\n`
   + `[2] (Paracetamol, If you take too much): ${TEXTS[1]}`;
-const GROUNDED = Object.freeze({ status: 'grounded', prompt: PROMPT, citations: CITATIONS, candidates: [] });
+// What the pinned pack reports about itself (its manifest), equal to ENTRY's pins.
+const PACK = Object.freeze({ contentSha256: 'content-sha', packVersion: '2026.09.1' });
+const GROUNDED = Object.freeze({ status: 'grounded', prompt: PROMPT, citations: CITATIONS, candidates: [], ...PACK });
 
 function mockInvoke(result) {
   const calls = [];
@@ -85,7 +88,7 @@ test('crisis FIRST: an entry with no crisis line falls back to the product defau
 /* ---------------- scripted outcomes: no model ---------------- */
 
 test('noEvidence -> the scripted refusal, no model', async () => {
-  const invoke = mockInvoke({ status: 'noEvidence', prompt: '[[NO_EVIDENCE]]', citations: [], candidates: [] });
+  const invoke = mockInvoke({ status: 'noEvidence', prompt: '[[NO_EVIDENCE]]', citations: [], candidates: [], ...PACK });
   const generate = mockModel();
   const r = await runLookupTurn({ text: 'zzzz', entry: ENTRY, invoke, generate });
   assert.deepStrictEqual(invoke.calls, [{ cmd: 'rag_lookup', args: { query: 'zzzz', packId: 'reference-uk-v1' } }]);
@@ -95,7 +98,7 @@ test('noEvidence -> the scripted refusal, no model', async () => {
 });
 
 test('didYouMean -> the list of titles, no model', async () => {
-  const invoke = mockInvoke({ status: 'didYouMean', prompt: null, citations: [], candidates: ['Paracetamol', 'Paracetamol for children'] });
+  const invoke = mockInvoke({ status: 'didYouMean', prompt: null, citations: [], candidates: ['Paracetamol', 'Paracetamol for children'], ...PACK });
   const generate = mockModel();
   const r = await runLookupTurn({ text: 'paracetemol', entry: ENTRY, invoke, generate });
   assert.strictEqual(generate.calls.length, 0);
@@ -108,7 +111,7 @@ test('didYouMean -> the list of titles, no model', async () => {
 
 test('didYouMean with no usable candidates is the scripted refusal', async () => {
   const r = await runLookupTurn({
-    text: 'x', entry: ENTRY, invoke: mockInvoke({ status: 'didYouMean', candidates: ['', 7, null] }), generate: mockModel(),
+    text: 'x', entry: ENTRY, invoke: mockInvoke({ status: 'didYouMean', candidates: ['', 7, null], ...PACK }), generate: mockModel(),
   });
   assert.strictEqual(r.outcome, 'noEvidence');
   assert.strictEqual(r.displayText, LOOKUP_NO_EVIDENCE_TEXT);
@@ -141,7 +144,7 @@ test('unavailable: rag_lookup says unavailable, fails, or answers an unknown sta
 test('a grounded status with no citations is not grounded: scripted refusal, no model', async () => {
   const generate = mockModel();
   const r = await runLookupTurn({
-    text: 'p', entry: ENTRY, invoke: mockInvoke({ status: 'grounded', prompt: PROMPT, citations: [] }), generate,
+    text: 'p', entry: ENTRY, invoke: mockInvoke({ status: 'grounded', prompt: PROMPT, citations: [], ...PACK }), generate,
   });
   assert.strictEqual(r.outcome, 'noEvidence');
   assert.strictEqual(generate.calls.length, 0);
@@ -156,6 +159,64 @@ test('over budget: a hard error, surfaced, with no model call and nothing to per
   assert.strictEqual(r.verdict, null);
   assert.match(r.error, /over budget/);
   assert.strictEqual(generate.calls.length, 0);
+});
+
+/* ---------------- the pack identity check (whole-branch review I2) ---------------- */
+
+test('a pack whose reported content sha or version differs from the catalog pin answers nothing, no model', async () => {
+  const mismatches = [
+    { ...GROUNDED, contentSha256: 'other-content-sha' },
+    { ...GROUNDED, packVersion: '2026.10.1' },
+    { ...GROUNDED, contentSha256: null },
+    { ...GROUNDED, packVersion: undefined },
+    { status: 'noEvidence', prompt: '[[NO_EVIDENCE]]', citations: [], candidates: [], contentSha256: 'other' },
+    { status: 'didYouMean', candidates: ['Paracetamol'], packVersion: 'x', contentSha256: 'content-sha' },
+  ];
+  for (const rag of mismatches) {
+    const generate = mockModel('The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].');
+    const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(rag), generate });
+    assert.strictEqual(r.outcome, 'unavailable', JSON.stringify(rag));
+    assert.strictEqual(r.displayText, LOOKUP_UNAVAILABLE_TEXT);
+    assert.strictEqual(r.error, undefined, 'the error lives on the verdict');
+    assert.strictEqual(r.verdict.error, LOOKUP_PACK_MISMATCH_ERROR);
+    assert.strictEqual(generate.calls.length, 0);
+    assert.strictEqual(lookupForPersistence(r.verdict, ENTRY).referencePack, null, 'no pack answered');
+  }
+});
+
+test('the pin check fails closed when the catalog entry carries no content or version pin', async () => {
+  for (const referencePack of [{ id: 'reference-uk-v1' }, { id: 'reference-uk-v1', contentSha256: 'content-sha' }]) {
+    const generate = mockModel();
+    const r = await runLookupTurn({
+      text: 'paracetamol', entry: { ...ENTRY, referencePack }, invoke: mockInvoke(GROUNDED), generate,
+    });
+    assert.strictEqual(r.outcome, 'unavailable');
+    assert.strictEqual(generate.calls.length, 0);
+  }
+});
+
+test('packMatchesPin and reportedPack read exactly the two manifest fields', () => {
+  assert.deepStrictEqual(reportedPack(GROUNDED), { contentSha256: 'content-sha', version: '2026.09.1' });
+  assert.strictEqual(reportedPack({ status: 'unavailable', contentSha256: null, packVersion: null }), null);
+  assert.strictEqual(reportedPack(null), null);
+  assert.strictEqual(packMatchesPin(GROUNDED, ENTRY), true);
+  assert.strictEqual(packMatchesPin(GROUNDED, { ...ENTRY, referencePack: { ...ENTRY.referencePack, version: 'v2' } }), false);
+  assert.strictEqual(packMatchesPin(GROUNDED, null), false);
+});
+
+test('every pack-answered outcome persists the identity the pack reported', async () => {
+  const cases = [
+    [{ status: 'noEvidence', prompt: '[[NO_EVIDENCE]]', citations: [], candidates: [], ...PACK }, mockModel(), 'noEvidence'],
+    [{ status: 'didYouMean', candidates: ['Paracetamol'], ...PACK }, mockModel(), 'didYouMean'],
+    [GROUNDED, mockModel('The usual dose is one or two 500mg tablets up to 4 times in 24 hours [1].'), 'grounded'],
+  ];
+  for (const [rag, generate, outcome] of cases) {
+    const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(rag), generate });
+    assert.strictEqual(r.outcome, outcome);
+    assert.deepStrictEqual(r.verdict.referencePack, { id: 'reference-uk-v1', contentSha256: 'content-sha', version: '2026.09.1' });
+    assert.deepStrictEqual(lookupForPersistence(r.verdict, ENTRY).referencePack,
+      { id: 'reference-uk-v1', sha256: 'pack-sha', contentSha256: 'content-sha', version: '2026.09.1' });
+  }
 });
 
 /* ---------------- grounded: model, then the LOOKUP guard only ---------------- */
@@ -231,15 +292,33 @@ test('referencePackId reads only a supervised entry\'s non-empty pack id', () =>
   assert.strictEqual(referencePackId(null), null);
 });
 
-test('lookupForPersistence stamps model and pack provenance on a copy', () => {
-  const v = { kind: 'lookup', outcome: 'grounded' };
+test('lookupForPersistence stamps model provenance and the PACK-reported identity on a copy', () => {
+  // The pack reported values the catalog does not carry: those, not the
+  // catalog's, are what is persisted (sha256 stays the catalog's file pin).
+  const v = {
+    kind: 'lookup', outcome: 'grounded',
+    referencePack: { id: 'reference-uk-v1', contentSha256: 'reported-content', version: 'reported-version' },
+  };
   const p = lookupForPersistence(v, ENTRY);
   assert.notStrictEqual(p, v);
   assert.deepStrictEqual(p, {
     kind: 'lookup', outcome: 'grounded', modelSha: 'model-sha', adapterSha: 'adapter-sha',
-    referencePack: { id: 'reference-uk-v1', sha256: 'pack-sha', contentSha256: 'content-sha', version: '2026.09.1' },
+    referencePack: { id: 'reference-uk-v1', sha256: 'pack-sha', contentSha256: 'reported-content', version: 'reported-version' },
   });
   assert.strictEqual(lookupForPersistence(null, ENTRY), null);
+});
+
+test('lookupForPersistence records no pack when none answered (crisis first, unavailable)', async () => {
+  const crisis = await runLookupTurn({
+    text: 'I want to kill myself', entry: ENTRY, invoke: mockInvoke(GROUNDED), generate: mockModel(),
+  });
+  assert.strictEqual(lookupForPersistence(crisis.verdict, ENTRY).referencePack, null);
+  const missing = await runLookupTurn({
+    text: 'paracetamol', entry: ENTRY, invoke: mockInvoke({ status: 'unavailable', contentSha256: null, packVersion: null }),
+    generate: mockModel(),
+  });
+  assert.strictEqual(missing.outcome, 'unavailable');
+  assert.strictEqual(lookupForPersistence(missing.verdict, ENTRY).referencePack, null);
 });
 
 /* ---------------- citation display rule (controller ruling, M4a's NHS reuse terms) ---------------- */

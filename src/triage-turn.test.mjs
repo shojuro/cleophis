@@ -785,9 +785,11 @@ test('the lookup turn never reads the chat history: its model call is the ground
   const calls = [];
   const r = await runLookupTurn({
     text: 'paracetamol',
-    entry: { supervised: true, referencePack: { id: 'p' } },
+    entry: { supervised: true, referencePack: { id: 'p', contentSha256: 'c', version: 'v' } },
     invoke: async () => ({
       status: 'grounded',
+      contentSha256: 'c',
+      packVersion: 'v',
       prompt: 'C\n\n[1] (Paracetamol, Dosage): Take 500mg.',
       citations: [{ n: 1, docTitle: 'Paracetamol', sectionPath: 'Dosage', locator: '' }],
     }),
