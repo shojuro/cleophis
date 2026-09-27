@@ -27,8 +27,9 @@
 //      disclosure instead puts the product's acknowledgement + signpost block
 //      FIRST and shows the model's reply under it only when that reply carries
 //      a route in `replaceKeepRoutes` — see `applyGuard`; a kept reply then
-//      loses every sentence that signposts crisis help (`dedupeSignposts`), so
-//      the product's block is the only crisis line on screen;
+//      loses every sentence the frozen detector reads as a crisis signpost
+//      (`dedupeSignposts`), so the product's block is the only crisis line on
+//      screen;
 //   5. the screen check — LAST, on the finished text, crisis block and all. The
 //      block is product text and nothing above rewrites it, so a check that ran
 //      before the append would be the one rule that looks for a time frame,
@@ -300,46 +301,80 @@ export function signpostsCrisisSupport(text) {
   return signposted.some((label) => CRISIS_SIGNPOST_LABELS.includes(label));
 }
 
-/**
- * Does this text signpost crisis help AT ALL — any of the detector's labels,
- * the ambiguous 'named crisis service' included?
- *
- * The DE-DUPLICATION question, and deliberately wider than
- * `signpostsCrisisSupport`. That function decides whether to WITHHOLD the
- * product's block, where a false positive costs a missing crisis line, so the
- * ambiguous label is excluded. De-duplication runs only when the block is
- * ALREADY on screen, and a false positive there costs one ordinary sentence
- * ("give your neighbour a shout") — while a false negative shows a
- * model-written number beside the product's, and "the Samaritans on 116 124"
- * carries only the 'named crisis service' label. Every sentence
- * `signpostsCrisisSupport` matches is matched here too.
- */
-function signpostsAnyCrisisHelp(text) {
-  return detectCrisisResponse(String(text ?? '')).signposted.length > 0;
-}
+// A phone-number-like token: a digit, at least four digits/spaces/hyphens, a
+// digit ("116 124", "85258", "0800 068 4141"). Not "999", "5 minutes" or "1953"
+// alone — see `isCrisisSignpostSentence`.
+const PHONE_LIKE = /\d[\d\s-]{4,}\d/;
 
 /**
- * Remove every sentence of a KEPT reply that signposts crisis help, so that
- * when the product's crisis block is on screen it is the only crisis line and
- * no model-written number — right or wrong — reaches the reader (Phase 1i MA1).
+ * Is this SENTENCE a crisis signpost the de-duplication must cut?
  *
- * Sentence-level, like `filterProhibited`. Text with nothing to remove is
- * returned UNTOUCHED (paragraph breaks and all), so a reply with no signpost
- * is byte-identical with the rule on or off. If what is left still signposts
- * as a whole — a signpost no single sentence carries — the whole reply part
- * goes: fail toward showing less, and the block is still there.
+ * Two ways in, both read from the frozen detector's own labels:
+ *   1. `signpostsCrisisSupport(sentence)` — a registered crisis number, a
+ *      "crisis line/team/helpline" phrase, a crisis text line, "suicide
+ *      prevention". Every one of these is a signpost by itself.
+ *   2. the ambiguous 'named crisis service' label AND a phone-number-like
+ *      token in the same sentence — "ring the Samaritans on 116 124", "text
+ *      SHOUT to 85258".
+ *
+ * NOT the ambiguous label alone. Its pattern carries a bare `\bshout\b` and
+ * `\bpapyrus\b`, and in an EMERGENCY reply "shout" is a first-aid verb: "Gently
+ * tap his shoulders and shout, 'Are you okay?'" is in two of the saved red-flag
+ * replies, and cutting it removes the responsiveness check from the one reply
+ * the block leaves on screen (fix round 1, F1). The cost of the narrowing is a
+ * bare "the Samaritans are always there" — a redundant signpost with no number
+ * — staying beside the product's block.
+ */
+function isCrisisSignpostSentence(sentence) {
+  if (signpostsCrisisSupport(sentence)) return true;
+  const { signposted } = detectCrisisResponse(String(sentence ?? ''));
+  return signposted.includes('named crisis service') && PHONE_LIKE.test(sentence);
+}
+
+// Sentences for the de-duplication. SENTENCES plus any closing quote or bracket
+// after the full stop, so `shout, "Are you okay?"` is ONE sentence and removing
+// a neighbour never strands its `"`. Local, not a change to SENTENCES: that one
+// is shared with `filterProhibited`, whose bytes the append digest pins.
+const DEDUPE_SENTENCES = /[^.!?]+[.!?]+["'\u201d\u2019)\]]*|[^.!?]+$/g;
+
+/**
+ * Remove every sentence of a KEPT reply that is a crisis signpost
+ * (`isCrisisSignpostSentence`), so that when the product's crisis block is on
+ * screen it is the only crisis line: no number inside a sentence the frozen
+ * detector reads as a crisis signpost reaches the reader (Phase 1i MA1). A
+ * number in a sentence the detector does not read as a crisis signpost — "call
+ * the free helpline on 0800 …", "ring 116 132" — is NOT removed; the triage
+ * census defines its wrong-number floor the same way.
+ *
+ * Removal SPLICES the original text: kept sentences keep their bytes, their
+ * paragraph breaks and abbreviations ("e.g."); only the cut spans go, and the
+ * whitespace they leave is tidied. Text with nothing to remove is returned
+ * UNTOUCHED, so a reply with no signpost is byte-identical with the rule on or
+ * off. If what is left still signposts crisis support as a whole, the whole
+ * reply part goes: fail toward showing less, and the block is still there.
  *
  * @returns {{text: string, removed: number}} `removed` is a COUNT; the removed
  *   sentences survive only in the verdict's `rawReply`, never as display text.
  */
 export function dedupeSignposts(text) {
   const src = String(text ?? '');
-  if (!signpostsAnyCrisisHelp(src)) return { text: src, removed: 0 };
-  const sentences = (src.match(SENTENCES) ?? []).map((x) => x.trim()).filter(Boolean);
-  const kept = sentences.filter((x) => !signpostsAnyCrisisHelp(x));
-  const out = tidy(kept.join(' '));
-  if (signpostsAnyCrisisHelp(out)) return { text: '', removed: sentences.length };
-  return { text: out, removed: sentences.length - kept.length };
+  const spans = [...src.matchAll(DEDUPE_SENTENCES)]
+    .filter((m) => m[0].trim())
+    .map((m) => ({ start: m.index, end: m.index + m[0].length, text: m[0] }));
+  const cut = spans.filter((sp) => isCrisisSignpostSentence(sp.text));
+  if (!cut.length) return { text: src, removed: 0 };
+  let out = '';
+  let at = 0;
+  for (const sp of cut) { out += src.slice(at, sp.start); at = sp.end; }
+  out += src.slice(at);
+  out = out
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+  if (signpostsCrisisSupport(out)) return { text: '', removed: spans.length };
+  return { text: out, removed: cut.length };
 }
 
 /**
@@ -406,9 +441,12 @@ export function unlocatedTimeFrame(route, displayText) {
  *   crisisRule          'replace'
  *   keepRoutes          the routes whose reply is still shown under the block
  *   crisisReplaced      the disclosure fired and the block LEADS the display
- *   replyShown          the model's (filtered) reply is on screen under it;
- *                       true whenever the rule did not fire
- *   routeDetected       detectRoute of the RAW reply — what decided replyShown
+ *   replyShown          some of the model's (filtered) reply is on screen
+ *                       under it; true whenever the rule did not fire. False
+ *                       when the route is not kept, AND when it is kept but
+ *                       de-duplication cut every sentence
+ *   routeDetected       detectRoute of the RAW reply — what decided whether the
+ *                       route is kept
  *   dedupeSignposts     whether de-duplication ran (Phase 1i MA1; default true)
  *   signpostsRemoved    how many sentences of the KEPT reply were cut because
  *                       they signposted crisis help beside the product's block.
@@ -418,9 +456,10 @@ export function unlocatedTimeFrame(route, displayText) {
  * Under `append`, `dedupeSignposts: true` must be asked for explicitly; the
  * verdict then carries those two keys as well (and only then).
  *
- * and when the block replaced the reply outright (`crisisReplaced &&
- * !replyShown`) `banner` is null: no route banner is drawn over text the
- * model did not write. `crisisLineAppended` is false throughout, because
+ * and when the route is NOT kept `banner` is null: no route banner is drawn
+ * over text the model did not write. A KEPT route whose reply de-duplication
+ * emptied keeps its banner with `replyShown` false: the banner is then the
+ * route's only carrier on screen (fix round 1, F2). `crisisLineAppended` is false throughout, because
  * nothing is appended UNDER a reply.
  *
  * @param {object} opts
@@ -448,7 +487,8 @@ export function applyGuard({
   // Each rule's own default line (MA1): the append line says "in addition to
   // the advice above" because under append it IS below the advice; the replace
   // block leads, so its default line does not.
-  const line = crisisLine ?? (replace ? CRISIS_LINE_REPLACE : CRISIS_BLOCK_DEFAULT);
+  // `||`, not `??`: an empty line would leave a block with no number (M4).
+  const line = crisisLine || (replace ? CRISIS_LINE_REPLACE : CRISIS_BLOCK_DEFAULT);
   // On by default under replace, off under append (MA1). An explicit value wins.
   const dedupeOn = dedupe ?? replace;
 
@@ -581,32 +621,42 @@ function replaceVerdict({
   raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn,
 }) {
   const crisisReplaced = crisisOnInput;
-  const replyShown = !crisisReplaced || keepRoutes.includes(routing.route);
+  // TWO decisions, deliberately apart (fix round 1, F2). `kept` is the RULE:
+  // the route is in the keep set, so its banner is drawn. `replyShown` is the
+  // SCREEN: some of the model's text is actually under the block. They differ
+  // only when de-duplication empties a kept reply ("Go to A&E now and call the
+  // Samaritans on 116 123." is one sentence): the block stands alone, and the
+  // banner STAYS, because once the sentence is gone the banner is the route's
+  // only carrier — nulling it would lose the EMERGENCY direction entirely.
+  const kept = !crisisReplaced || keepRoutes.includes(routing.route);
   const block = crisisReplaceBlock(crisisLine);
-  const compose = (replyPart) => {
-    if (!crisisReplaced) return replyPart;
-    return replyShown && replyPart ? `${block}\n\n${replyPart}` : block;
-  };
 
   // De-duplication (MA1): the block is on screen whenever the rule fired; the
   // only model text beside it is a KEPT reply, so that is what is cleaned. A
-  // hidden reply lends nothing to the screen and counts nothing. If every
-  // sentence goes, the block stands alone and the route banner stays.
+  // hidden reply lends nothing to the screen and counts nothing.
   let signpostsRemoved = 0;
-  if (dedupeOn && crisisReplaced && replyShown) {
+  if (dedupeOn && crisisReplaced && kept) {
     const d = dedupeSignposts(display);
     display = d.text;
     signpostsRemoved = d.removed;
   }
+  const replyShown = !crisisReplaced || (kept && display !== '');
+  const compose = (replyPart) => {
+    if (!crisisReplaced) return replyPart;
+    return replyShown ? `${block}\n\n${replyPart}` : block;
+  };
 
   let screen = compose(display);
   const timeframeUnlocated = unlocatedTimeFrame(routing.route, screen);
+  // `signpostsRemoved` still counts what de-duplication cut even when this
+  // fallback then replaces the reply part with the note: it is the count of
+  // the rule's cuts, not of sentences missing from the final screen (M5).
   if (timeframeUnlocated) screen = compose(tidy(TIME_FRAME_NOTE));
 
   return {
     route: routing.route,
     why: routing.why,
-    banner: crisisReplaced && !replyShown ? null : banner,
+    banner: crisisReplaced && !kept ? null : banner,
     displayText: screen,
     rawReply: raw,
     timeframeStripped,

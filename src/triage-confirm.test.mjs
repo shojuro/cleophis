@@ -22,6 +22,7 @@ import assert from 'node:assert';
 import { applyGuard } from './triage/guard.js';
 import {
   CONFIRM_ROUTES, CRISIS_ADDED_ROW, CRISIS_LEADS_ROW, CRISIS_REPLACED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
+  signpostsRemovedRow,
   TIMEFRAME_WITHHELD_ROW, TRIAGE_EXPORT_LABEL, TRIAGE_EXPORT_UNAVAILABLE, UNCLEAR_LINE_ROW,
   confirmRequest, confirmResult, confirmState, confirmStatusText, modelRouteOf,
   offersTriageExport, receiptLabel, receiptRows, routeLabel, triageExportPlan, triageLogFileName,
@@ -379,6 +380,32 @@ test('a reply KEPT under the crisis block keeps its removals, and says the block
   assert.strictEqual(rows[rows.length - 1], CRISIS_LEADS_ROW);
   assert.ok(rows.slice(0, -1).every((r) => r.startsWith('Removed: ')), rows.join(' | '));
   assert.strictEqual(rows.includes(CRISIS_ADDED_ROW), false, 'nothing was added UNDER the reply');
+});
+
+/* ---------------- Phase 1i MA1: de-duplicated signposts on the receipt ---------------- */
+
+test('a kept reply that lost a crisis-line sentence says so by COUNT, never by the sentence', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Call 999 now for an ambulance. You can also ring the Samaritans on 116 124.',
+    crisisRule: 'replace',
+  });
+  assert.strictEqual(v.signpostsRemoved, 1);
+  const rows = receiptRows(v);
+  assert.deepStrictEqual(rows, [signpostsRemovedRow(1), CRISIS_LEADS_ROW]);
+  assert.strictEqual(rows.join(' ').includes('116 124'), false, 'the wrong number is not in the receipt');
+  assert.match(signpostsRemovedRow(2), /^2 sentences/);
+});
+
+test('a kept reply de-duplication EMPTIED reads as replaced on the receipt', () => {
+  const v = applyGuard({
+    userText: "i don't want to be here anymore",
+    replyText: 'Go to A&E now and call the Samaritans on 116 123.',
+    crisisRule: 'replace',
+  });
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.banner, 'emergency');
+  assert.deepStrictEqual(receiptRows(v), [CRISIS_REPLACED_ROW]);
 });
 
 /* ---------------- Phase 1h M6: a lookup row has no route to confirm ---------------- */

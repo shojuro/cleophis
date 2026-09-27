@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   BANNERS, CRISIS_ACKNOWLEDGEMENT, CRISIS_BLOCK_DEFAULT, CRISIS_LINE_REPLACE, CRISIS_SIGNPOST_LABELS, PROHIBITED_NOTE,
   ROUTE_TO_BANNER, TIME_FRAME_NOTE, applyGuard, crisisReplaceBlock, filterProhibited, routeOfPrefix,
-  signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
+  dedupeSignposts, signpostsCrisisSupport, stripTimeFrames, unlocatedTimeFrame,
 } from './guard.js';
 import {
   CRISIS_HANDLING, detectCrisisResponse, detectCrisisStatement, detectMedication,
@@ -1251,7 +1251,9 @@ test('dedupe: a kept reply that is ALL signpost leaves the block alone on screen
     userText: DISCLOSURE, replyText: onlyReply, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
   });
   assert.strictEqual(only.routeDetected, 'CLINICIAN');
-  assert.strictEqual(only.replyShown, true);
+  // F2: nothing of the model's reply is on screen, so replyShown is false; the
+  // route is KEPT, so its banner stays as the route's only carrier.
+  assert.strictEqual(only.replyShown, false);
   assert.strictEqual(only.banner, 'clinician', 'the route banner stays');
   assert.strictEqual(only.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
   assert.strictEqual(only.signpostsRemoved, 1);
@@ -1282,4 +1284,94 @@ test('dedupe under append, when asked for: the model signpost is cut and the pro
 
 test('dedupe: a non-boolean flag is refused loudly', () => {
   assert.throws(() => applyGuard({ userText: DISCLOSURE, replyText: 'x', crisisRule: 'replace', dedupeSignposts: 'on' }), /dedupeSignposts/);
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+const redflagRows = JSON.parse(readFileSync(new URL('./fixtures/redflag-arms.json', import.meta.url), 'utf8')).rows;
+const SEIZURE_SHOUT_REPLIES = redflagRows
+  .filter((r) => r.id === 'neurological-03' && /tap (?:his|their) shoulders? and shout, "Are you okay\?"/.test(r.reply ?? ''))
+  .map((r) => r.reply);
+
+test('F1: first-aid "shout" sentences are KEPT; a crisis-service sentence with a number is REMOVED', () => {
+  assert.strictEqual(SEIZURE_SHOUT_REPLIES.length, 2, 'the two saved seizure replies');
+  const keptCases = [
+    'Gently tap his shoulders and shout, "Are you okay?"',
+    'Give your neighbour a shout if it gets worse.',
+    'The word papyrus is unrelated.',
+    ...SEIZURE_SHOUT_REPLIES,
+  ];
+  for (const t of keptCases) {
+    const d = dedupeSignposts(t);
+    assert.strictEqual(d.removed, 0, t);
+    assert.strictEqual(d.text, t, 'untouched, byte for byte');
+  }
+  for (const t of [
+    'You can also ring the Samaritans on 116 124.',
+    'Text SHOUT to 85258.',
+    'The Samaritans are free on 116 123.',
+  ]) {
+    assert.deepStrictEqual(dedupeSignposts(t), { text: '', removed: 1 }, t);
+  }
+});
+
+test('F1 on the product path: the overdose first-aid reply keeps its responsiveness check, with no stray quote', () => {
+  const reply = 'Call 999 now. Gently tap his shoulders and shout, "Are you okay?" If he doesn\'t respond, he may be '
+    + 'unconscious. You can also ring the Samaritans on 116 124. Do not give him anything to drink.';
+  const v = applyGuard({
+    userText: "my partner took all his tablets on purpose and now he's not responding",
+    replyText: reply, crisisLine: CRISIS_LINE_REPLACE, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+  });
+  assert.strictEqual(v.crisisReplaced, true);
+  const tail = v.displayText.slice(crisisReplaceBlock(CRISIS_LINE_REPLACE).length);
+  assert.strictEqual(tail, '\n\nCall 999 now. Gently tap his shoulders and shout, "Are you okay?" If he doesn\'t respond, '
+    + 'he may be unconscious. Do not give him anything to drink.');
+  assert.strictEqual(v.signpostsRemoved, 1);
+});
+
+test('F1 on the saved seizure replies: disclosure + replace keeps every first-aid step', () => {
+  for (const reply of SEIZURE_SHOUT_REPLIES) {
+    const v = applyGuard({ userText: DISCLOSURE, replyText: reply, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'] });
+    const off = applyGuard({ userText: DISCLOSURE, replyText: reply, crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'], dedupeSignposts: false });
+    assert.strictEqual(v.signpostsRemoved, 0);
+    assert.strictEqual(v.displayText, off.displayText);
+    assert.ok(v.displayText.includes('shout, "Are you okay?"'));
+  }
+});
+
+test('F2: a kept reply emptied by de-duplication shows the block alone, keeps its banner, and says replyShown false', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: 'Go to A&E now and call the Samaritans on 116 123.', crisisRule: 'replace' });
+  assert.strictEqual(v.routeDetected, 'EMERGENCY');
+  assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.banner, 'emergency', 'the banner carries the route once the sentence is gone');
+  assert.strictEqual(v.signpostsRemoved, 1);
+});
+
+test('M1: removal splices — paragraph breaks and abbreviations in the kept text survive', () => {
+  assert.deepStrictEqual(
+    dedupeSignposts('Call 999 now.\n\nThe Samaritans are on 116 124.\n\nDo not drive yourself. Stay with someone.'),
+    { text: 'Call 999 now.\n\nDo not drive yourself. Stay with someone.', removed: 1 },
+  );
+  assert.deepStrictEqual(
+    dedupeSignposts('Call 999 now e.g. an ambulance. Samaritans: 116 123. Stay put.'),
+    { text: 'Call 999 now e.g. an ambulance. Stay put.', removed: 1 },
+  );
+});
+
+test('M2: dedupeSignposts direct — untouched text comes back identical, a mixed text is counted', () => {
+  const clean = 'Call 999 now.\n\nDo not drive yourself.';
+  assert.deepStrictEqual(dedupeSignposts(clean), { text: clean, removed: 0 });
+  assert.deepStrictEqual(dedupeSignposts(''), { text: '', removed: 0 });
+  assert.deepStrictEqual(
+    dedupeSignposts('See your GP. Call a crisis line. Text SHOUT to 85258 or call 116 123. Rest.'),
+    { text: 'See your GP. Rest.', removed: 2 },
+  );
+});
+
+test('M4: an explicit empty crisis line falls back to the rule default, never a block with no number', () => {
+  const v = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisLine: '', crisisRule: 'replace' });
+  assert.strictEqual(v.displayText, crisisReplaceBlock(CRISIS_LINE_REPLACE));
+  const a = applyGuard({ userText: DISCLOSURE, replyText: CLINICIAN_REPLY, crisisLine: '' });
+  assert.ok(a.displayText.endsWith(CRISIS_BLOCK_DEFAULT));
 });

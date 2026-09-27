@@ -89,6 +89,14 @@ export const NO_CHANGES_ROW = 'Nothing was removed from this reply.';
 export const CRISIS_REPLACED_ROW =
   'The product\'s crisis support replaced the model\'s reply, which is not shown.';
 export const CRISIS_LEADS_ROW = 'The product\'s crisis support was placed above the reply.';
+// Phase 1i MA1, signpost de-duplication. A COUNT, never the sentences: the
+// removed crisis lines are never display text anywhere, this panel included —
+// a wrong number repeated in the receipt is still a wrong number on screen.
+export function signpostsRemovedRow(n) {
+  return n === 1
+    ? 'One sentence giving a crisis line was removed; the product\'s crisis support is the only one shown.'
+    : `${n} sentences giving a crisis line were removed; the product's crisis support is the only one shown.`;
+}
 
 /**
  * What the guard did to this reply, in rows a person can read.
@@ -114,6 +122,7 @@ export function receiptRows(guard) {
   if (guard.crisisReplaced === true && guard.replyShown === false) return [CRISIS_REPLACED_ROW];
   const rows = [];
   for (const sentence of guard.prohibitedRemoved ?? []) rows.push(`Removed: ${sentence}`);
+  if (guard.signpostsRemoved > 0) rows.push(signpostsRemovedRow(guard.signpostsRemoved));
   for (const phrase of guard.timeframeStripped ?? []) rows.push(`Time frame removed: ${phrase}`);
   if (guard.timeframeUnlocated) rows.push(TIMEFRAME_WITHHELD_ROW);
   if (guard.crisisLineAppended) rows.push(CRISIS_ADDED_ROW);

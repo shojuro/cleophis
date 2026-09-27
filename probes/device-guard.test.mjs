@@ -445,8 +445,10 @@ test('the CLI takes --dedupe-signposts and writes it into the header and every r
   for (const [flags, want, removed] of [
     [['--crisis-rule', 'replace'], true, 1],
     [['--crisis-rule', 'replace', '--dedupe-signposts', 'off'], false, 0],
-    [[], false, 0],
-    [['--dedupe-signposts', 'on'], true, 1],
+    [[], true, 1],
+    [['--crisis-rule', 'append'], false, 0],
+    [['--crisis-rule', 'append', '--dedupe-signposts', 'on'], true, 1],
+    [['--dedupe-signposts', 'off'], false, 0],
   ]) {
     const outPath = join(dir, `out-${flags.join('_') || 'none'}.json`);
     execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, ...flags], { stdio: 'pipe' });
@@ -458,4 +460,54 @@ test('the CLI takes --dedupe-signposts and writes it into the header and every r
   }
   assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
     '--dedupe-signposts', 'maybe'], { stdio: 'pipe' }), /dedupe-signposts/);
+});
+
+// ── Fix round 1, F4: the rule defaults to the catalog entry's ───────────────
+
+test('crisisOptions with an entry: absent flags take the entry rule and keep set; flags override', () => {
+  assert.deepStrictEqual(crisisOptions({ entry: triage }), {
+    crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'], dedupeSignposts: true, crisisRuleSource: 'catalog',
+  });
+  assert.deepStrictEqual(crisisOptions({ entry: triage, crisisRule: 'append' }), {
+    crisisRule: 'append', keepRoutes: null, dedupeSignposts: false, crisisRuleSource: 'flag',
+  });
+  assert.deepStrictEqual(crisisOptions({ entry: triage, keepRoutes: 'EMERGENCY' }).keepRoutes, ['EMERGENCY']);
+  assert.deepStrictEqual(crisisOptions({ entry: triage, crisisRule: 'replace' }).keepRoutes, ['EMERGENCY', 'CLINICIAN']);
+  const noRule = { ...triage, crisisRule: undefined, crisisKeepRoutes: undefined };
+  assert.strictEqual(crisisOptions({ entry: noRule }).crisisRule, 'append');
+  assert.throws(() => crisisOptions({ entry: triage, crisisRule: 'append', keepRoutes: 'EMERGENCY' }), /only with --crisis-rule replace/);
+});
+
+test('the CLI with no rule flag measures the registered rule, and says where it came from', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-f4-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', DISCLOSE, 'Please see your GP.'))}\n`);
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  const outPath = join(dir, 'out.json');
+  execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath], { stdio: 'pipe' });
+  const [h, r] = parseJsonl(readFileSync(outPath, 'utf8'));
+  assert.strictEqual(h.crisis_rule, 'replace');
+  assert.deepStrictEqual(h.keep_routes, ['EMERGENCY', 'CLINICIAN']);
+  assert.strictEqual(h.dedupe_signposts, true);
+  assert.strictEqual(h.crisis_rule_source, 'catalog');
+  assert.strictEqual(r.crisis_rule, 'replace');
+  assert.strictEqual(r.reply_shown, true, 'CLINICIAN is kept under the registered rule');
+
+  const appendOut = join(dir, 'append.json');
+  execFileSync(process.execPath, [script, '--in', inPath, '--out', appendOut, '--crisis-rule', 'append'], { stdio: 'pipe' });
+  const [ha, ra] = parseJsonl(readFileSync(appendOut, 'utf8'));
+  assert.strictEqual(ha.crisis_rule, 'append');
+  assert.strictEqual(ha.crisis_rule_source, 'flag');
+  assert.strictEqual(ra.crisis_line_appended, true);
+});
+
+test('F2 in the record: a kept reply emptied by de-duplication records reply_shown false with its banner', () => {
+  const g = guardRecord(
+    rec('x', DISCLOSE, 'Go to A&E now and call the Samaritans on 116 123.'),
+    { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'] },
+  );
+  assert.strictEqual(g.reply_shown, false);
+  assert.strictEqual(g.route_banner, 'emergency');
+  assert.strictEqual(g.signposts_removed, 1);
+  assert.strictEqual(g.display, crisisReplaceBlock(crisisLine));
 });

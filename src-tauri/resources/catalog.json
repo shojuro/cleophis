@@ -165,7 +165,7 @@
     "tps": "measured per device",
     "eval": "routes, never diagnoses",
     "long": "A supervised triage assistant: emergency, clinician, self-care, or cannot-judge, with the reason. It never names a diagnosis or a medication. The health worker holds the decision on every reply.",
-    "inside": ["Four dispositions and nothing else", "Crisis signposting in addition to the route", "Every route confirmed by the health worker"]
+    "inside": ["Four dispositions and nothing else", "Crisis support first; the route is kept when it is urgent", "Every route confirmed by the health worker"]
   },
   {
     "id": "anticoag",

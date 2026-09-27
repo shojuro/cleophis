@@ -47,18 +47,23 @@
 //   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
 //   [--dedupe-signposts on|off]
 //
-// `--crisis-rule` selects `applyGuard`'s crisis rule (Phase 1h M2). `append`,
-// the default, is what ships; `replace` is the founder's 2026-09-27 rule under
-// measurement — on a disclosure the product's acknowledgement + signpost block
-// leads the display and the model's reply is shown under it only when its
-// route is in `--keep-routes` (default EMERGENCY; the other registered variant
-// is EMERGENCY,CLINICIAN). Both are echoed in the header beside
-// `detectors_sha` and on every record, so a scorer can never read a file
-// without knowing which rule produced it.
+// THE RULE DEFAULTS TO THE CATALOG ENTRY'S (Phase 1i MA1 fix round 1), read
+// through `crisisRuleFor` — the same sanitised reader the app uses — so a run
+// with no flags measures what the phone runs. The registered rule is `replace`
+// with keep routes EMERGENCY,CLINICIAN: on a disclosure the product's
+// acknowledgement + signpost block leads the display and the model's reply is
+// shown under it only when its route is kept. `append` is the REPORTED twin,
+// measured with `--crisis-rule append`. `--crisis-rule` and `--keep-routes` are
+// explicit overrides. What ran is echoed in the header beside `detectors_sha`
+// (with `crisis_rule_source`: catalog or flag) and on every record, so a scorer
+// can never read a file without knowing which rule produced it.
 //
 // `--dedupe-signposts` (Phase 1i MA1) — when the product's crisis block is on
-// screen, cut every sentence of the kept reply that signposts crisis help, so
-// the block is the only crisis line and no model-written number is displayed.
+// screen, cut every sentence of the kept reply that the frozen detector reads
+// as a crisis signpost, so the block is the only crisis line: no number inside
+// a sentence the frozen detector reads as a crisis signpost is displayed. A
+// number in any other sentence is not touched (the census's wrong-number floor
+// uses the same definition).
 // The default follows the rule: on under `replace`, off under `append`. The
 // value is echoed as `dedupe_signposts` in the header (the triage census reads
 // it there) and on every record, with `signposts_removed` per record.
@@ -71,6 +76,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CRISIS_RULES, REPLACE_KEEP_ROUTES_DEFAULT, applyGuard } from '../src/triage/guard.js';
 import { ROUTE } from '../src/triage/detectors.mjs';
+import { crisisRuleFor } from '../src/triage-turn.js';
 import pin from '../src/triage/detectors.pin.js';
 
 const DEFAULT_CATALOG = new URL('../src-tauri/resources/catalog.triage.json', import.meta.url);
@@ -111,23 +117,34 @@ export function catalogEntry(path = DEFAULT_CATALOG, id = null) {
  * discovered per record would write a file of 260 "device failures" — a failed
  * bar produced by a typo. Refused here, the run fails with nothing written.
  *
- * @returns {{crisisRule: 'append'|'replace', keepRoutes: string[]|null, dedupeSignposts: boolean}}
+ * With an `entry`, an absent flag takes the ENTRY's rule and keep set through
+ * `crisisRuleFor` (the app's reader); an entry with no rule means append.
+ * Without one (unit callers), an absent rule means append and an absent keep
+ * set REPLACE_KEEP_ROUTES_DEFAULT, as before.
+ *
+ * @returns {{crisisRule: 'append'|'replace', keepRoutes: string[]|null, dedupeSignposts: boolean,
+ *   crisisRuleSource: 'catalog'|'flag'|'default'}}
  *   `keepRoutes` is null under `append`, which reads no keep set.
  *   `dedupeSignposts` defaults to the rule's own default (on under replace).
  */
-export function crisisOptions({ crisisRule = null, keepRoutes = null, dedupeSignposts = null } = {}) {
-  const rule = crisisRule ?? 'append';
+export function crisisOptions({
+  crisisRule = null, keepRoutes = null, dedupeSignposts = null, entry = null,
+} = {}) {
+  const fromEntry = entry ? crisisRuleFor(entry) : {};
+  const source = crisisRule != null ? 'flag' : (entry ? 'catalog' : 'default');
+  const rule = crisisRule ?? fromEntry.crisisRule ?? 'append';
   if (!CRISIS_RULES.includes(rule)) {
     throw new Error(`--crisis-rule must be one of ${CRISIS_RULES.join('|')}, got ${JSON.stringify(crisisRule)}`);
   }
   const dedupe = parseDedupe(dedupeSignposts, rule);
+  const out = (keep) => ({
+    crisisRule: rule, keepRoutes: keep, dedupeSignposts: dedupe, ...(entry ? { crisisRuleSource: source } : {}),
+  });
   if (rule !== 'replace') {
     if (keepRoutes != null) throw new Error('--keep-routes is read only with --crisis-rule replace');
-    return { crisisRule: rule, keepRoutes: null, dedupeSignposts: dedupe };
+    return out(null);
   }
-  if (keepRoutes == null) {
-    return { crisisRule: rule, keepRoutes: [...REPLACE_KEEP_ROUTES_DEFAULT], dedupeSignposts: dedupe };
-  }
+  if (keepRoutes == null) return out([...(fromEntry.replaceKeepRoutes ?? REPLACE_KEEP_ROUTES_DEFAULT)]);
   const list = Array.isArray(keepRoutes)
     ? [...keepRoutes]
     : String(keepRoutes).split(',').map((r) => r.trim()).filter(Boolean);
@@ -135,7 +152,7 @@ export function crisisOptions({ crisisRule = null, keepRoutes = null, dedupeSign
   if (!list.length || list.some((r) => !known.includes(r))) {
     throw new Error(`--keep-routes must be a comma list of ${known.join('|')}, got ${JSON.stringify(keepRoutes)}`);
   }
-  return { crisisRule: rule, keepRoutes: list, dedupeSignposts: dedupe };
+  return out(list);
 }
 
 /** `on|off` (or a boolean) to a boolean; absent follows the rule. Refused otherwise. */
@@ -163,7 +180,7 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
  */
 export function headerRecord({
   source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
-  dedupeSignposts = null,
+  dedupeSignposts = null, crisisRuleSource = null,
 }) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
@@ -186,6 +203,9 @@ export function headerRecord({
     // Phase 1i MA1: whether a kept reply's crisis signposts were cut beside the
     // product's block. The triage census reads this line.
     dedupe_signposts: dedupeFor(dedupeSignposts, crisisRule),
+    // Where the rule came from: 'catalog' (the entry's registered rule, no
+    // flag), 'flag' (an explicit --crisis-rule), or null for a unit caller.
+    crisis_rule_source: crisisRuleSource,
     detectors_pin_file_sha: pin.sha256,
     crisis_line_sha256: sha256(crisisLine),
   };
@@ -386,8 +406,8 @@ export function summarise(guarded) {
 export function run({
   inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null, dedupeSignposts = null,
 }) {
-  const rule = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts });
   const entry = catalogEntry(catalogPath ?? DEFAULT_CATALOG, catalogId ?? null);
+  const { crisisRuleSource, ...rule } = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts, entry });
   const records = parseJsonl(readFileSync(inPath, 'utf8'));
   if (!records.length) throw new Error(`${inPath} holds no records`);
   const { guarded, skipped } = guardAll(records, { crisisLine: entry.crisisLine, ...rule });
@@ -398,6 +418,7 @@ export function run({
     records: guarded.length,
     skipped,
     ...rule,
+    crisisRuleSource,
   });
   const body = [header, ...guarded].map((r) => JSON.stringify(r)).join('\n');
   writeFileSync(outPath, `${body}\n`, 'utf8');
@@ -430,7 +451,7 @@ function main(argv) {
     dedupeSignposts: args['dedupe-signposts'],
   });
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
-  process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule}`
+  process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule} (${header.crisis_rule_source})`
     + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}`
     + ` dedupe-signposts ${header.dedupe_signposts ? 'on' : 'off'}\n`);
   process.stderr.write(`[device-guard] ${JSON.stringify(summary)}\n`);
