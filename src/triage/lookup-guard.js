@@ -610,6 +610,78 @@ export function eligibleSourceSentences(sourceText, sectionPath) {
   return sourceSentences(sourceText, sectionPath).filter((x) => x.eligible).map((x) => x.normalised);
 }
 
+/**
+ * Page order over sources in citation order: `key(n)` is source n's
+ * `chunkId` (its ordinal in the pack) when EVERY source carries one, else n.
+ * One definition, read by the guard's order clause and by `excerptDisplay`.
+ */
+function pageKeyOf(list) {
+  const byChunk = list.every((src) => src && Number.isFinite(src.chunkId));
+  return (n) => (byChunk ? list[n - 1].chunkId : n);
+}
+
+// ── The excerpt fallback (Phase 1i MA3, founder decision 6) ─────────────────
+//
+// When a grounded lookup's reply keeps nothing, the product shows the
+// retrieved source text itself, verbatim, and never the model's words. What
+// may be shown is exactly what the guard lets a reply QUOTE: the eligibility
+// of `sourceSentences`, never a second rule. On top of it, clause 8's unit: a
+// list item bound to a lead-in is shown only right after its lead-in, or
+// after the item before it, both shown.
+
+/** Stands in for a run of source sentences the excerpt leaves out. */
+export const EXCERPT_OMISSION = '[…]';
+
+/**
+ * The excerpts a grounded lookup shows when its reply kept nothing.
+ *
+ * `sources` is `[{ n, chunkId, sectionPath, text, ... }]` in citation order,
+ * as `applyLookupGuard` takes them. Blocks come in page order; a source that
+ * shows no sentence (a withheld section, an unrecovered text, every sentence
+ * ineligible) has no block. Within a block, shown sentences keep the source's
+ * own spacing and line breaks, and each run of left-out sentences becomes one
+ * `EXCERPT_OMISSION`.
+ *
+ * @returns {{blocks: {n: number, sentences: string[], text: string}[], shown: number}}
+ *   `shown` is the number of source sentences shown, over every block.
+ */
+export function excerptDisplay(sources) {
+  const list = Array.isArray(sources) ? sources.filter(Boolean) : [];
+  const key = pageKeyOf(list);
+  const order = list.map((_, i) => i + 1).sort((a, b) => key(a) - key(b) || a - b);
+  const blocks = [];
+  let shown = 0;
+  for (const n of order) {
+    const src = list[n - 1];
+    const sents = sourceSentences(src.text, src.sectionPath);
+    // `sourceSentences` is `splitSentences` mapped one to one: same length, same order.
+    const seps = splitSentences(src.text).map((x) => x.sep);
+    const show = sents.map((x) => x.eligible);
+    for (let i = 0; i < show.length; i++) {
+      if (show[i] && sents[i].leadIn !== null && !show[i - 1]) show[i] = false;
+    }
+    if (!show.some(Boolean)) continue;
+    const sentences = [];
+    let text = '';
+    let omitting = false;
+    sents.forEach((x, i) => {
+      if (show[i]) {
+        sentences.push(x.text);
+        text += x.text + seps[i];
+        omitting = false;
+      } else if (omitting) {
+        text = text.replace(/\s*$/, '') + seps[i];
+      } else {
+        text += EXCERPT_OMISSION + seps[i];
+        omitting = true;
+      }
+    });
+    shown += sentences.length;
+    blocks.push({ n: src.n, sentences, text: text.trim() });
+  }
+  return { blocks, shown };
+}
+
 const CITATION_LIST = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
 const CITATION_BRACKET = /\[([^\]\n]*)\]/g;
 
@@ -707,8 +779,8 @@ export function applyLookupGuard({ replyText = '', sources = [] } = {}) {
     return cache.get(n);
   };
   const ctx = { sources: list, sentencesOfSource };
-  const byChunk = list.every((src) => src && Number.isFinite(src.chunkId));
-  const page = (n) => ({ key: byChunk ? list[n - 1].chunkId : n, length: sentencesOfSource(n).length });
+  const pageKey = pageKeyOf(list);
+  const page = (n) => ({ key: pageKey(n), length: sentencesOfSource(n).length });
   const bound = (p) => sentencesOfSource(p[0])[p[1]].leadIn !== null;
   const judged = sentencesOf(raw).map((s) => ({ ...s, content: hasOwnContent(s.text), verdict: judgeSentence(s, ctx) }));
   // A dose or a route is shown: the reply must be extractive and ordered
