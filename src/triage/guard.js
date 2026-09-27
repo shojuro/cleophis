@@ -502,23 +502,30 @@ export const DOSE_REDACTED = '[dose removed]';
  * caller treats as "cut the sentence" (fail toward showing less).
  */
 function redactDoses(sentence) {
+  // Every question is asked of the text WITH THE MARKER DELETED (fix round 2,
+  // N1): the normaliser cannot glue a number to a unit across "[dose removed]",
+  // so "two [dose removed] tablets" would read clean while "two ... tablets" is
+  // a tablet count on screen. With the marker gone the window grows to cover
+  // it: "two 500 mg tablets" -> "[dose removed]".
+  const bare = (s) => s.split(DOSE_REDACTED).join(' ');
+  const has = (s) => carriesDose(bare(s));
   const parts = sentence.split(/(\s+)/); // words at even indexes
   const words = () => parts.filter((_, i) => i % 2 === 0);
   const joinWords = (ws, a, b) => ws.slice(a, b + 1).join(' ');
-  for (let guard = 0; guard < 20 && carriesDose(parts.join('')); guard += 1) {
+  for (let guard = 0; guard < 20 && has(parts.join('')); guard += 1) {
     const ws = words();
     let end = -1;
-    for (let j = 0; j < ws.length; j += 1) if (carriesDose(joinWords(ws, 0, j))) { end = j; break; }
+    for (let j = 0; j < ws.length; j += 1) if (has(joinWords(ws, 0, j))) { end = j; break; }
     if (end < 0) return null;
     let start = 0;
-    for (let i = end; i >= 0; i -= 1) if (carriesDose(joinWords(ws, i, end))) { start = i; break; }
+    for (let i = end; i >= 0; i -= 1) if (has(joinWords(ws, i, end))) { start = i; break; }
     const lead = /^[("'“‘[]*/.exec(ws[start])[0];
     const trail = /[.,;:!?)"'”’\]]*$/.exec(ws[end])[0];
     // replace words start..end (parts indexes 2*start .. 2*end) by one word
     parts.splice(2 * start, 2 * (end - start) + 1, `${lead}${DOSE_REDACTED}${trail}`);
   }
   const out = parts.join('');
-  return carriesDose(out) ? null : out;
+  return has(out) ? null : out;
 }
 
 /**

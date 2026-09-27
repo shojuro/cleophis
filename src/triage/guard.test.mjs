@@ -1644,3 +1644,36 @@ test('MA6 M2: a heading whose whole section was cut goes with it', () => {
   const keep = stripDoses('### Care\n- Take 2 tablets.\n- Rest.');
   assert.strictEqual(keep.text, `### Care\n- Rest.${PROHIBITED_NOTE}`, 'a section with a kept line keeps its heading');
 });
+
+// ── MA6 fix round 2 ─────────────────────────────────────────────────────────
+
+test('MA6 N1: the marker never hides an adjacent count — the window grows over it', () => {
+  const a = applyGuard({ userText: 'x', replyText: 'Go to A&E now, and do not take more than two 500 mg tablets before you get there.' });
+  assert.strictEqual(a.route, 'EMERGENCY');
+  assert.deepStrictEqual(a.prohibitedRemoved, []);
+  assert.strictEqual(a.dosesRemoved, 1);
+  assert.strictEqual(a.displayText,
+    `Go to A&E now, and do not take more than ${DOSE_REDACTED} before you get there.${PROHIBITED_NOTE}`);
+  assert.strictEqual(stripDoses('Call 999 now and give one 500 mg tablet, then two more tablets later.').text,
+    `Call 999 now and give ${DOSE_REDACTED}, then two more tablets later.${PROHIBITED_NOTE}`);
+  for (const t of [a.displayText]) assert.strictEqual(carriesDose(t.split(DOSE_REDACTED).join(' ')), false, t);
+});
+
+test('MA6 N1: the round-1 redactions are byte-identical after the fix', () => {
+  assert.strictEqual(stripDoses('Give 2 puffs of the blue inhaler and call 999 if no better in 5 minutes.').text,
+    `Give ${DOSE_REDACTED} of the blue inhaler and call 999 if no better in 5 minutes.${PROHIBITED_NOTE}`);
+  assert.strictEqual(stripDoses('Go to A&E now and take no more than 2 tablets.').text,
+    `Go to A&E now and take no more than ${DOSE_REDACTED}.${PROHIBITED_NOTE}`);
+  assert.strictEqual(stripDoses('Call 999, and give (half a tablet) now.').text,
+    `Call 999, and give (${DOSE_REDACTED}) now.${PROHIBITED_NOTE}`);
+  assert.strictEqual(stripDoses('Call 999 now and give 2 puffs, then 4 puffs.').text,
+    `Call 999 now and give ${DOSE_REDACTED}, then ${DOSE_REDACTED}.${PROHIBITED_NOTE}`);
+});
+
+test('MA6 N1: known residual, the definition\'s limit — an unglued count ("2 x", "two more") stays', () => {
+  // The raw sentences never carried a "2 tablets" token either: "x" and "more"
+  // are not glued by the normaliser, the same class as "a couple of tablets".
+  assert.strictEqual(stripDoses('Call 999 now and give 2 x 500 mg tablets.').text,
+    `Call 999 now and give 2 x ${DOSE_REDACTED} tablets.${PROHIBITED_NOTE}`);
+  assert.strictEqual(carriesDose('then two more tablets later'), false);
+});
