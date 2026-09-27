@@ -16,9 +16,12 @@ kpack-core = { path = "../kpack-core" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.10.9"
+# `lookup --curator-key HEX` builds the verifying key for `mount_lexical`
+# (M5b addendum); the built-pack tests also sign with a throwaway key. Same
+# exact pin as kpack-core's.
+ed25519-dalek = "=2.2.0"
 
 [dev-dependencies]
-# Signs a test-built pack with a throwaway key so `Pack::mount_lexical`'s
-# curated signature check runs in the built-pack tests. Same exact pin as
-# kpack-core's.
-ed25519-dalek = "=2.2.0"
+# Turns a test-built pack into a schema-v1 pack (no titles table) for the
+# `lookup` "unavailable" test. Same version and features as kpack-core's.
+rusqlite = { version = "0.40.1", features = ["bundled"] }

@@ -107,13 +107,19 @@ fn committed_corpus_rebuilds_byte_identically_and_reproduces_the_contract_files(
     }
 }
 
-fn mounted() -> Pack {
+/// A copy of the built pack signed with a throwaway key: the curated
+/// signature check runs.
+fn signed_copy() -> (PathBuf, ed25519_dalek::VerifyingKey) {
     let b = built();
-    // Sign a copy with a throwaway key: the curated signature check runs.
     let dir = unique_dir("real-mount");
     let path = dir.join("reference-uk-v1.kpack");
     std::fs::copy(&b.pack, &path).unwrap();
     let key = sign(&path);
+    (path, key)
+}
+
+fn mounted() -> Pack {
+    let (path, key) = signed_copy();
     let ctx = LoadContext {
         available_embedder_sha256: &[],
         curator_key: Some(key),
@@ -319,6 +325,59 @@ fn every_title_content_word_resolves() {
             other => panic!("{w:?} -> {other:?}"),
         }
     }
+}
+
+/// M5b addendum: `kpack-cli lookup` over the real signed pack — the
+/// two-page did-you-mean, and a Found page whose chunk ids (and every other
+/// chunk field) join the committed `chunks.jsonl`.
+#[test]
+fn lookup_subcommand_over_the_real_pack() {
+    let (path, key) = signed_copy();
+    let hex: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let batch = path.parent().unwrap().join("q.jsonl");
+    std::fs::write(&batch, "\"paracetamol\"\n\"Gout\"\n").unwrap();
+    let o = run_cli(
+        &["lookup", "--pack", path.to_str().unwrap(), "--curator-key", &hex, "--batch", batch.to_str().unwrap()],
+        None,
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let recs: Vec<Value> = String::from_utf8(o.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(recs.len(), 2);
+    let t: Value = serde_json::from_slice(&std::fs::read(committed().2.join("titles.json")).unwrap()).unwrap();
+    for r in &recs {
+        assert_eq!(r["pack"]["pack_id"], "reference-uk-v1");
+        assert_eq!(r["pack"]["content_sha256"], t["header"]["content_sha256"]);
+        assert_eq!(r["pack"]["version"], t["header"]["pack_version"]);
+    }
+    assert_eq!(recs[0]["outcome"], "did_you_mean");
+    assert_eq!(
+        recs[0]["candidates"],
+        serde_json::json!(["Paracetamol for adults", "Paracetamol for children (Calpol)"])
+    );
+    let gout = &recs[1];
+    assert_eq!(gout["outcome"], "found");
+    assert_eq!(gout["doc"]["title"], "Gout");
+    assert_eq!(gout["doc"]["slug"], "gout");
+    let chunks = gout["chunks"].as_array().unwrap();
+    assert!(!chunks.is_empty() && chunks.len() <= 3);
+    let rows: Vec<Value> = std::fs::read_to_string(committed().2.join("chunks.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for c in chunks {
+        let row = rows.iter().find(|r| r["chunk_id"] == c["chunk_id"]).expect("the chunk id is in chunks.jsonl");
+        assert_eq!(row["doc_id"], gout["doc"]["doc_id"]);
+        for f in ["section_path", "locator", "url", "retrieved_at", "token_count", "content_sha"] {
+            assert_eq!(c[f], row[f], "{f}");
+        }
+    }
+    // The phone's order: the same ids retrieve_lexical returns.
+    let LexicalOutcome::Found { chunks: want, .. } = retrieve_lexical(&mounted(), "Gout", 3).unwrap() else {
+        panic!("Gout")
+    };
+    let ids: Vec<i64> = chunks.iter().map(|c| c["chunk_id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, want.iter().map(|c| c.id).collect::<Vec<_>>());
 }
 
 #[test]

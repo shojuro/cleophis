@@ -319,3 +319,171 @@ fn a_clusters_file_that_disagrees_with_the_corpus_is_refused() {
     let o = build_from(&corpus, &clusters);
     assert!(String::from_utf8_lossy(&o.stderr).contains("belongs to none of its pages"));
 }
+
+// --- `kpack-cli lookup` (Phase 1h M5b addendum) ---------------------------
+
+/// A fixture pack built and signed with the throwaway key; returns its path
+/// and that key as hex (the `--curator-key` value).
+fn signed_fixture_pack(name: &str) -> (PathBuf, String) {
+    let out = unique_dir(name);
+    assert!(build(&out).status.success());
+    let path = out.join("reference-uk-v1.kpack");
+    let key = sign(&path);
+    (path, key.to_bytes().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn lookup_cli(pack: &Path, key: &str, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["lookup", "--pack", pack.to_str().unwrap(), "--curator-key", key];
+    args.extend_from_slice(extra);
+    run_cli(&args, None)
+}
+
+fn records(o: &std::process::Output) -> Vec<Value> {
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8(o.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn lookup_prints_each_outcome_kind_as_the_phone_sees_it() {
+    let (pack_path, key) = signed_fixture_pack("lookup-kinds");
+    let ctx = LoadContext {
+        available_embedder_sha256: &[],
+        curator_key: Some(sign(&pack_path)),
+    };
+    let (pack, manifest) = Pack::mount_lexical(&pack_path, &ctx).unwrap();
+    let pack_json = serde_json::json!({
+        "pack_id": "reference-uk-v1",
+        "version": manifest.pack_version,
+        "content_sha256": pack.manifest_get("content_sha256").unwrap().unwrap(),
+    });
+
+    // found: the doc, and the chunks in the order the assembler numbers them.
+    let o = lookup_cli(&pack_path, &key, &["--query", "COPD", "--json"]);
+    let rec = &records(&o)[0];
+    assert_eq!(rec["query"], "COPD");
+    assert_eq!(rec["normalised_query"], "copd");
+    assert_eq!(rec["outcome"], "found");
+    assert_eq!(rec["pack"], pack_json);
+    assert!(rec.get("candidates").is_none());
+    let LexicalOutcome::Found { doc_id, title, chunks, .. } = retrieve_lexical(&pack, "COPD", 3).unwrap() else {
+        panic!("COPD")
+    };
+    assert_eq!(rec["doc"]["doc_id"], doc_id);
+    assert_eq!(rec["doc"]["title"], title.as_str());
+    let slug = pack.titles().unwrap().into_iter().find(|t| t.doc_id == doc_id).unwrap().slug;
+    assert_eq!(rec["doc"]["slug"], slug.as_str());
+    let got = rec["chunks"].as_array().unwrap();
+    assert_eq!(got.len(), chunks.len());
+    // Each chunk joins the committed-format chunks.jsonl row on chunk_id,
+    // with the same section_path, locator, url, retrieved_at, token_count
+    // and content_sha.
+    let rows: Vec<Value> = std::fs::read_to_string(pack_path.parent().unwrap().join("chunks.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for (g, c) in got.iter().zip(&chunks) {
+        assert_eq!(g["chunk_id"], c.id);
+        assert_eq!(g["content_sha"], chunk_content_sha256(&c.text, &c.section_path, &c.locator, &title).as_str());
+        let row = rows.iter().find(|r| r["chunk_id"] == g["chunk_id"]).unwrap();
+        for f in ["section_path", "locator", "url", "retrieved_at", "token_count", "content_sha"] {
+            assert_eq!(g[f], row[f], "{f}");
+        }
+    }
+    let keys: Vec<&str> = got[0].as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["chunk_id", "content_sha", "locator", "retrieved_at", "section_path", "token_count", "url"]);
+    // --k caps the chunks exactly as retrieve_lexical does.
+    let rec1 = &records(&lookup_cli(&pack_path, &key, &["--query", "COPD", "--k", "1"]))[0];
+    assert_eq!(rec1["chunks"].as_array().unwrap().len(), 1);
+    assert_eq!(rec1["chunks"][0], got[0]);
+
+    // did_you_mean: the lone population-scoped page is offered.
+    let rec = &records(&lookup_cli(&pack_path, &key, &["--query", "paracetamol"]))[0];
+    assert_eq!(rec["outcome"], "did_you_mean");
+    assert_eq!(rec["candidates"], serde_json::json!(["Paracetamol for adults"]));
+    assert!(rec.get("doc").is_none() && rec.get("chunks").is_none());
+
+    // not_found.
+    let rec = &records(&lookup_cli(&pack_path, &key, &["--query", "Zeltrofen"]))[0];
+    assert_eq!(rec["outcome"], "not_found");
+    assert_eq!(
+        rec.as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["normalised_query", "outcome", "pack", "query"]
+    );
+
+    // Deterministic: the same bytes every run.
+    let a = lookup_cli(&pack_path, &key, &["--query", "COPD"]);
+    let b = lookup_cli(&pack_path, &key, &["--query", "COPD"]);
+    assert_eq!(a.stdout, b.stdout);
+    assert_eq!(a.stdout, o.stdout, "--json changes nothing");
+}
+
+#[test]
+fn lookup_on_a_schema_v1_pack_is_unavailable() {
+    let (pack_path, key) = signed_fixture_pack("lookup-v1");
+    {
+        let conn = rusqlite::Connection::open(&pack_path).unwrap();
+        conn.execute_batch("DROP TABLE titles; UPDATE manifest SET value = '1' WHERE key = 'schema_version';")
+            .unwrap();
+    }
+    sign(&pack_path); // re-sign the changed bytes
+    let rec = &records(&lookup_cli(&pack_path, &key, &["--query", "COPD"]))[0];
+    assert_eq!(rec["outcome"], "unavailable");
+    assert!(rec.get("doc").is_none() && rec.get("candidates").is_none());
+}
+
+#[test]
+fn lookup_batch_writes_one_record_per_query_in_input_order() {
+    let (pack_path, key) = signed_fixture_pack("lookup-batch");
+    let batch = pack_path.parent().unwrap().join("queries.jsonl");
+    std::fs::write(
+        &batch,
+        "\"Zeltrofen\"\n{\"query\": \"COPD\", \"k\": 1}\n\n\"paracetamol\"\n{\"query\": \"COPD\"}\n\"Calpol\"\n",
+    )
+    .unwrap();
+    let got = records(&lookup_cli(&pack_path, &key, &["--batch", batch.to_str().unwrap()]));
+    let singles: Vec<Value> = [
+        vec!["--query", "Zeltrofen"],
+        vec!["--query", "COPD", "--k", "1"],
+        vec!["--query", "paracetamol"],
+        vec!["--query", "COPD"],
+        vec!["--query", "Calpol"],
+    ]
+    .iter()
+    .map(|a| records(&lookup_cli(&pack_path, &key, a)).remove(0))
+    .collect();
+    assert_eq!(got, singles, "batch = the single runs, in input order (blank lines skipped)");
+    assert_eq!(
+        got.iter().map(|r| r["outcome"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["not_found", "found", "did_you_mean", "found", "found"]
+    );
+
+    // A bad line is refused, naming it.
+    std::fs::write(&batch, "\"COPD\"\n{\"q\": \"x\"}\n").unwrap();
+    let o = lookup_cli(&pack_path, &key, &["--batch", batch.to_str().unwrap()]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("batch line 2"), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn lookup_refuses_bad_arguments_and_a_pack_not_signed_by_the_key() {
+    let (pack_path, key) = signed_fixture_pack("lookup-refuse");
+    let p = pack_path.to_str().unwrap();
+    // Without --curator-key the pinned PRODUCTION key is used, and this
+    // pack is signed by a throwaway key: refused, as the app would.
+    let o = run_cli(&["lookup", "--pack", p, "--query", "COPD"], None);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("cannot mount"));
+    for args in [
+        vec!["lookup", "--pack", p, "--curator-key", &key],                                     // no query
+        vec!["lookup", "--pack", p, "--curator-key", &key, "--query", "a", "--batch", "b"], // both
+        vec!["lookup", "--pack", p, "--curator-key", "abc", "--query", "COPD"],             // bad key
+        vec!["lookup", "--pack", p, "--curator-key", &key, "--query", "COPD", "--k", "x"],  // bad k
+    ] {
+        assert!(!run_cli(&args, None).status.success(), "{args:?}");
+    }
+}

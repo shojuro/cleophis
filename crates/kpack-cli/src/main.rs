@@ -4,16 +4,23 @@
 //! SOURCE_DATE_EPOCH=<secs> kpack-cli build-reference --corpus DIR --clusters FILE --out DIR
 //!                                  [--pack-id ID] [--pack-version V]
 //! kpack-cli verify --corpus DIR --clusters FILE --dir DIR
+//! kpack-cli lookup --pack FILE (--query TEXT | --batch FILE) [--k N] [--json] [--curator-key HEX]
 //! ```
 
+use kpack_cli::lookup::{parse_batch_line, parse_public_key_hex, LookupPack, DEFAULT_LOOKUP_K};
 use kpack_cli::{build_reference, verify, Options, DEFAULT_PACK_ID, DEFAULT_PACK_VERSION};
+use std::io::Write;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   SOURCE_DATE_EPOCH=<secs> kpack-cli build-reference --corpus DIR --clusters FILE --out DIR [--pack-id ID] [--pack-version V]
-  kpack-cli verify --corpus DIR --clusters FILE --dir DIR";
+  kpack-cli verify --corpus DIR --clusters FILE --dir DIR
+  kpack-cli lookup --pack FILE (--query TEXT | --batch FILE) [--k N] [--json] [--curator-key HEX]
+    prints one JSON record per query (the output is always JSON; --json is accepted for clarity);
+    --batch reads one query per line (a JSON string or {\"query\": ..., \"k\": ...}) and writes
+    one record per line in input order; --curator-key overrides the pinned production key";
 
 /// `--flag value` pairs after the subcommand; unknown or repeated flags and
 /// a flag without a value are errors.
@@ -70,6 +77,39 @@ fn run(args: &[String]) -> Result<(), String> {
             } else {
                 Err(format!("verify FAILED:\n  {}", r.mismatches.join("\n  ")))
             }
+        }
+        "lookup" => {
+            // `--json` is the only valueless flag: the output is always JSON.
+            let rest: Vec<String> = rest.iter().filter(|a| a.as_str() != "--json").cloned().collect();
+            let f = flags(&rest, &["pack", "query", "batch", "k", "curator-key"])?;
+            let k = match f.get("k") {
+                Some(k) => k.parse::<usize>().map_err(|_| format!("--k {k:?} is not a whole number"))?,
+                None => DEFAULT_LOOKUP_K,
+            };
+            let key = f.get("curator-key").map(|h| parse_public_key_hex(h)).transpose().map_err(|e| e.to_string())?;
+            let queries: Vec<(String, usize)> = match (f.get("query"), f.get("batch")) {
+                (Some(q), None) => vec![(q.clone(), k)],
+                (None, Some(path)) => {
+                    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+                    let mut qs = Vec::new();
+                    for (i, line) in text.lines().enumerate() {
+                        if let Some(q) = parse_batch_line(line, i + 1, k).map_err(|e| e.to_string())? {
+                            qs.push(q);
+                        }
+                    }
+                    qs
+                }
+                _ => return Err("lookup needs exactly one of --query and --batch".to_string()),
+            };
+            let pack = LookupPack::mount(&required(&f, "pack")?, key).map_err(|e| e.to_string())?;
+            let stdout = std::io::stdout();
+            let mut out = std::io::BufWriter::new(stdout.lock());
+            for (q, k) in queries {
+                let rec = pack.lookup(&q, k).map_err(|e| e.to_string())?;
+                writeln!(out, "{rec}").map_err(|e| format!("writing output: {e}"))?;
+            }
+            out.flush().map_err(|e| format!("writing output: {e}"))?;
+            Ok(())
         }
         "-h" | "--help" | "help" => {
             println!("{USAGE}");

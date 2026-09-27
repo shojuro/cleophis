@@ -5,8 +5,10 @@
 //! ```text
 //! SOURCE_DATE_EPOCH=<secs> kpack-cli build-reference --corpus DIR --clusters FILE --out DIR
 //! kpack-cli verify --corpus DIR --clusters FILE --dir DIR
+//! kpack-cli lookup --pack FILE (--query TEXT | --batch FILE) [--k N] [--json] [--curator-key HEX]
 //! ```
 //!
+//! `lookup` prints what the phone's lexical lookup returns (see [`lookup`]).
 //! `build-reference` writes `<out>/<pack-id>.kpack` (default
 //! `reference-uk-v1.kpack`), `<out>/chunks.jsonl` and `<out>/titles.json`.
 //! `verify` rebuilds from scratch into a temporary directory, with the
@@ -39,6 +41,8 @@
 //!   input pins and the hashing rules) and one title-index entry per page.
 //!
 //! No network, no embedder, no LLM (A28/A33).
+
+pub mod lookup;
 
 use kpack_core::lexical_build::{MANIFEST_CONTENT_SHA256, MANIFEST_SOURCE_DATE_EPOCH};
 use kpack_core::{
