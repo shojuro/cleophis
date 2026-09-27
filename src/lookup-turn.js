@@ -20,10 +20,15 @@
 //   4. grounded -> the budget check (a hard error when over), then the model
 //      with the Rust-assembled prompt and the query as its single user turn,
 //      then the LOOKUP guard (`applyLookupGuard`) — never `applyGuard`.
+//   5. (Phase 1i MA3, founder decision 6) the guard kept nothing -> the
+//      EXCERPT FALLBACK: the retrieved sources' own text, verbatim, through
+//      the guard's source eligibility (`excerptDisplay`), each block under its
+//      citation line. The model's words are never shown. Only when no source
+//      has a sentence to show is it the scripted refusal.
 import { detectCrisisStatement } from './triage/detectors.mjs';
 import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from './triage/guard.js';
 import {
-  LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, applyLookupGuard,
+  LOOKUP_NO_EVIDENCE_TEXT, LOOKUP_RULE, applyLookupGuard, excerptDisplay,
 } from './triage/lookup-guard.js';
 import pin from './triage/detectors.pin.js';
 import { LOOKUP_REPLY_TOKENS, LookupBudgetError, assembleLookupMessages } from './prompt-assembly.js';
@@ -178,9 +183,19 @@ const sourceRecord = (c) => ({
 export const LOOKUP_SOURCE_FOOTER =
   "Reference pages: NHS website, Open Government Licence v3.0. The wording above is the assistant's, not the NHS's.";
 
+/**
+ * The footer under the EXCERPT fallback (Phase 1i MA3). The grounded footer's
+ * second sentence ("the wording above is the assistant's") is false for
+ * verbatim NHS text, so the excerpts carry their own. Founder-rewordable here.
+ */
+export const LOOKUP_EXCERPT_FOOTER =
+  "Reference pages: NHS website, Open Government Licence v3.0. The excerpts above are the NHS's own wording; […] marks text left out.";
+
 /** The footer for a lookup outcome, or null. */
 export function lookupFooterFor(outcome) {
-  return outcome === 'grounded' ? LOOKUP_SOURCE_FOOTER : null;
+  if (outcome === 'grounded') return LOOKUP_SOURCE_FOOTER;
+  if (outcome === 'excerpts') return LOOKUP_EXCERPT_FOOTER;
+  return null;
 }
 
 // Only an https URL is ever a link: a pack is signed, but the renderer does not
@@ -210,6 +225,29 @@ export function lookupCitationRow(c) {
     url: httpsUrl(c.url) ?? httpsUrl(c.locator),
     asAt: date ? `as at ${date}` : null,
   };
+}
+
+/**
+ * The heading of one excerpt block: `[n] title · section`, then the URL and
+ * "as at" on a second line when the source carries either (`lookupCitationRow`,
+ * so the block reads like the citation list).
+ */
+export function excerptHeading(c) {
+  const r = lookupCitationRow(c);
+  const first = `[${r.n}] ${r.title}${r.sectionPath ? ` · ${r.sectionPath}` : ''}`;
+  const second = [r.url, r.asAt].filter(Boolean).join(' · ');
+  return second ? `${first}\n${second}` : first;
+}
+
+/**
+ * The excerpt fallback's display text from `excerptDisplay`'s blocks, or null
+ * when no block shows a sentence.
+ */
+export function excerptDisplayText(excerpts, citations) {
+  const byN = new Map((citations ?? []).map((c) => [c.n, c]));
+  const blocks = (excerpts && excerpts.blocks) || [];
+  if (!blocks.length) return null;
+  return blocks.map((b) => `${excerptHeading(byN.get(b.n) ?? { n: b.n })}\n${b.text}`).join('\n\n');
 }
 
 /**
@@ -285,11 +323,28 @@ export async function runLookupTurn({ text, entry, invoke, generate }) {
 
   const sources = sourcesFromPrompt(rag.prompt, citations);
   const reply = await generate({ system: assembled.system, messages: assembled.messages, maxTokens: replyTokens });
-  const verdict = {
+  let verdict = {
     ...applyLookupGuard({ replyText: reply && reply.content, sources }),
     sources: citations.map(sourceRecord),
     ...pack,
   };
+  // The guard kept nothing: the sources speak for themselves (MA3). The raw
+  // reply stays on the verdict as it does on every grounded verdict; `kept`
+  // is empty because no model sentence is shown.
+  if (verdict.outcome === 'noEvidence') {
+    const excerpts = excerptDisplay(sources);
+    const text = excerpts.shown > 0 ? excerptDisplayText(excerpts, citations) : null;
+    if (text) {
+      verdict = {
+        ...verdict,
+        outcome: 'excerpts',
+        displayText: text,
+        kept: [],
+        citations: excerpts.blocks.map((b) => b.n).sort((a, b) => a - b),
+        excerptsShown: excerpts.shown,
+      };
+    }
+  }
   return {
     outcome: verdict.outcome,
     displayText: verdict.displayText,

@@ -502,7 +502,8 @@ function replayLookup({ role, content, guard }) {
       withheldReasons: withheld.map((w) => w.reason),
       citations: sources.filter((src) => cited.includes(src.n)),
       candidates: Array.isArray(guard.candidates) ? guard.candidates : [],
-      // The NHS reuse footer: grounded replies only (controller ruling).
+      // The NHS reuse footer: grounded replies and the excerpt fallback
+      // (controller ruling; Phase 1i MA3), each with its own wording.
       footer: lookupFooterFor(guard.outcome),
     },
   };

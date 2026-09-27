@@ -2666,8 +2666,11 @@ function renderLookupExtras(el, lookup) {
     el.appendChild(note);
   }
   if (lookup.citations && lookup.citations.length) renderLookupCitations(el, lookup.citations);
-  // The NHS reuse footer: present on a grounded reply only (`lookup.footer`
-  // is null for the refusal, the did-you-mean list and the crisis block).
+  // The NHS reuse footer: present on a grounded reply and, in its own
+  // wording, under the excerpt fallback (Phase 1i MA3); `lookup.footer` is
+  // null for the refusal, the did-you-mean list and the crisis block. An
+  // excerpts row's text is the verbatim NHS excerpts, each under its
+  // citation line, and renders like a grounded reply.
   if (lookup.footer) {
     const foot = document.createElement('div');
     foot.className = 'lookup-footer';

@@ -248,13 +248,20 @@ test('grounded: the model gets the grounded prompt + the query only, and the rep
   assert.ok(r.verdict.sources.every((s) => !('text' in s)));
 });
 
-test('grounded: a reply with nothing citable left is the scripted refusal', async () => {
+test('grounded: a reply with nothing citable left, over sources with nothing showable, is the scripted refusal', async () => {
+  // Phase 1i MA3: the refusal survives only when the excerpt fallback has
+  // nothing to show either (here every source sits in a withheld section).
+  const cites = CITATIONS.map((c) => ({ ...c, sectionPath: 'If you take too much' }));
+  const prompt = PROMPT.replace('How and when to take it', 'If you take too much');
   const r = await runLookupTurn({
-    text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(GROUNDED), generate: mockModel('I am not sure.'),
+    text: 'paracetamol', entry: ENTRY, invoke: mockInvoke({ ...GROUNDED, prompt, citations: cites }),
+    generate: mockModel('I am not sure.'),
   });
   assert.strictEqual(r.outcome, 'noEvidence');
   assert.strictEqual(r.displayText, LOOKUP_NO_EVIDENCE_TEXT);
   assert.deepStrictEqual(r.citations, []);
+  assert.strictEqual(r.modelCalled, true);
+  assert.ok(!('excerptsShown' in r.verdict));
 });
 
 /* ---------------- recovering the source texts ---------------- */
@@ -397,4 +404,146 @@ test('a larger pinned reply shrinks the room for the prompt: over budget with 10
   assert.strictEqual(at1000.outcome, 'overBudget');
   assert.match(at1000.error, /\+ 1000\)/);
   assert.strictEqual(generate.calls.length, 0);
+});
+
+/* ---------------- Phase 1i MA3: the excerpt fallback ---------------- */
+
+import { LOOKUP_EXCERPT_FOOTER } from './lookup-turn.js';
+import { EXCERPT_OMISSION } from './triage/lookup-guard.js';
+import { replayMessage } from './triage-turn.js';
+
+// Three sources of one page, CITED out of page order: [1] is the page's
+// third chunk, [2] its first, [3] an overdose section.
+const EX_CITATIONS = [
+  { n: 1, packId: 'reference-uk-v1', chunkId: 23, docTitle: 'Paracetamol for adults', sectionPath: 'Side effects', locator: '' },
+  {
+    n: 2, packId: 'reference-uk-v1', chunkId: 21, docTitle: 'Paracetamol for adults', sectionPath: 'How and when to take it',
+    locator: 'L2', url: 'https://www.nhs.uk/medicines/paracetamol-for-adults/', retrievedAt: '2026-09-20',
+  },
+  { n: 3, packId: 'reference-uk-v1', chunkId: 22, docTitle: 'Paracetamol for adults', sectionPath: 'If you take too much', locator: '' },
+];
+const EX_TEXTS = [
+  'Side effects are rare. Most people have no problems. Taking too much can cause liver damage. Keep it out of reach. It is sold in pharmacies.',
+  'The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Swallow the tablets with water.',
+  'Paracetamol is dangerous in overdose. Go to A&E straight away.',
+];
+const EX_PROMPT = `${CONTRACT}\n\nThese sources are excerpts from: Paracetamol for adults.\n\n`
+  + `[1] (Paracetamol for adults, Side effects): ${EX_TEXTS[0]}\n`
+  + `[2] (Paracetamol for adults, How and when to take it, L2): ${EX_TEXTS[1]}\n`
+  + `[3] (Paracetamol for adults, If you take too much): ${EX_TEXTS[2]}`;
+const EX_GROUNDED = Object.freeze({ status: 'grounded', prompt: EX_PROMPT, citations: EX_CITATIONS, candidates: [], ...PACK });
+// A paraphrase: every content sentence withheld, nothing kept.
+const PARAPHRASE = 'You can take 1g up to four times a day [2]. Take two tablets with food [1].';
+
+const EXPECTED_EXCERPTS = [
+  '[2] Paracetamol for adults · How and when to take it',
+  'https://www.nhs.uk/medicines/paracetamol-for-adults/ · as at 2026-09-20',
+  EX_TEXTS[1],
+  '',
+  '[1] Paracetamol for adults · Side effects',
+  `Side effects are rare. ${EXCERPT_OMISSION} It is sold in pharmacies.`,
+].join('\n');
+
+async function excerptTurn(reply = PARAPHRASE) {
+  const generate = mockModel(reply);
+  const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(EX_GROUNDED), generate });
+  return { r, generate };
+}
+
+test('grounded -> model -> nothing kept -> the excerpts, verbatim, in page order, each under its citation line', async () => {
+  const { r, generate } = await excerptTurn();
+  assert.strictEqual(generate.calls.length, 1);
+  assert.strictEqual(r.modelCalled, true);
+  assert.strictEqual(r.messageId, 42);
+  assert.strictEqual(r.outcome, 'excerpts');
+  assert.strictEqual(r.displayText, EXPECTED_EXCERPTS);
+});
+
+test('the excerpts never show the model\'s words', async () => {
+  const { r } = await excerptTurn();
+  assert.ok(!r.displayText.includes('1g'));
+  assert.ok(!r.displayText.includes('with food'));
+  assert.ok(!r.displayText.includes(WITHHELD_BANNER));
+  assert.deepStrictEqual(r.verdict.kept, [], 'no model sentence was shown');
+});
+
+test('the excerpts obey the guard\'s eligibility: a withheld section shows nothing, an overdose sentence and its neighbours are dropped', async () => {
+  const { r } = await excerptTurn();
+  for (const gone of ['dangerous', 'A&E', 'liver damage', 'Keep it out of reach', 'Most people', 'Taking too much']) {
+    assert.ok(!r.displayText.includes(gone), gone);
+  }
+  assert.ok(!r.displayText.includes('[3]'), 'the overdose-section source has no block');
+  assert.strictEqual(r.verdict.excerptsShown, 4);
+});
+
+test('the excerpts carry the OGL footer for excerpts, not the assistant-wording one', async () => {
+  const { r } = await excerptTurn();
+  assert.strictEqual(lookupFooterFor(r.outcome), LOOKUP_EXCERPT_FOOTER);
+  assert.notStrictEqual(LOOKUP_EXCERPT_FOOTER, LOOKUP_SOURCE_FOOTER);
+  assert.match(LOOKUP_EXCERPT_FOOTER, /^Reference pages: NHS website, Open Government Licence v3\.0\./);
+  assert.ok(!/assistant/.test(LOOKUP_EXCERPT_FOOTER));
+  assert.strictEqual(lookupFooterFor('grounded'), LOOKUP_SOURCE_FOOTER);
+});
+
+test('the excerpt verdict: kind lookup, outcome excerpts, the rule, the shown sources as citations, the withheld tally, excerptsShown', async () => {
+  const { r } = await excerptTurn();
+  const v = lookupForPersistence(r.verdict, ENTRY);
+  assert.strictEqual(v.kind, 'lookup');
+  assert.strictEqual(v.outcome, 'excerpts');
+  assert.strictEqual(v.rule, 'dose-cite-v6');
+  assert.strictEqual(v.displayText, EXPECTED_EXCERPTS);
+  assert.deepStrictEqual(v.citations, [1, 2]);
+  assert.deepStrictEqual(v.withheld.map((w) => w.reason), ['dose-not-in-source', 'dose-not-in-source']);
+  assert.strictEqual(v.excerptsShown, 4);
+  assert.strictEqual(v.rawReply, PARAPHRASE, 'the raw reply stays where the grounded path keeps it');
+  assert.deepStrictEqual(v.sources.map((s) => s.n), [1, 2, 3]);
+  assert.ok(v.sources.every((s) => !('text' in s)));
+  assert.deepStrictEqual(v.referencePack,
+    { id: 'reference-uk-v1', sha256: 'pack-sha', contentSha256: 'content-sha', version: '2026.09.1' });
+  assert.deepStrictEqual(r.citations, [EX_CITATIONS[0], EX_CITATIONS[1]], 'the sources shown, in citation order');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(v)), v);
+});
+
+test('an excerpts row replays from its persisted record alone, like a grounded one', async () => {
+  const { r } = await excerptTurn();
+  const guard = JSON.parse(JSON.stringify(lookupForPersistence(r.verdict, ENTRY)));
+  const view = replayMessage({ supervised: true, role: 'assistant', content: 'RAW paraphrase', guard });
+  assert.strictEqual(view.banner, null);
+  assert.strictEqual(view.withheld, false);
+  assert.strictEqual(view.text, EXPECTED_EXCERPTS);
+  assert.strictEqual(view.lookup.outcome, 'excerpts');
+  assert.strictEqual(view.lookup.footer, LOOKUP_EXCERPT_FOOTER);
+  assert.deepStrictEqual(view.lookup.citations.map((c) => c.n), [1, 2]);
+  assert.strictEqual(view.lookup.withheldCount, 2);
+});
+
+test('a grounded reply that keeps one sentence is unchanged by the fallback', async () => {
+  const { r } = await excerptTurn(
+    'The usual dose is one or two 500mg tablets up to 4 times in 24 hours [2]. You could take 1g.');
+  assert.strictEqual(r.outcome, 'grounded');
+  assert.strictEqual(r.displayText,
+    `The usual dose is one or two 500mg tablets up to 4 times in 24 hours [2]. ${WITHHELD_BANNER}`);
+  assert.ok(!('excerptsShown' in r.verdict));
+  assert.strictEqual(lookupFooterFor(r.outcome), LOOKUP_SOURCE_FOOTER);
+});
+
+test('the scripted branches never fall back to excerpts and never call the model', async () => {
+  const cases = [
+    [{ status: 'noEvidence', ...PACK }, 'noEvidence'],
+    [{ status: 'didYouMean', candidates: ['Paracetamol for adults'], ...PACK }, 'didYouMean'],
+    [{ status: 'unavailable' }, 'unavailable'],
+    [{ ...EX_GROUNDED, citations: [] }, 'noEvidence'],
+  ];
+  for (const [rag, outcome] of cases) {
+    const generate = mockModel(PARAPHRASE);
+    const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(rag), generate });
+    assert.strictEqual(r.outcome, outcome, outcome);
+    assert.strictEqual(generate.calls.length, 0, outcome);
+    assert.ok(!('excerptsShown' in r.verdict), outcome);
+  }
+  const crisis = await runLookupTurn({
+    text: 'I want to kill myself', entry: ENTRY, invoke: mockInvoke(EX_GROUNDED), generate: mockModel(PARAPHRASE),
+  });
+  assert.strictEqual(crisis.outcome, 'crisis');
+  assert.strictEqual(crisis.modelCalled, false);
 });
