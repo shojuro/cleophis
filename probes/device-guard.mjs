@@ -45,6 +45,7 @@
 //                                --out work/device-probes/m7.R58N.guard.json
 //   [--catalog src-tauri/resources/catalog.triage.json] [--catalog-id med-triage]
 //   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
+//   [--dedupe-signposts on|off]
 //
 // `--crisis-rule` selects `applyGuard`'s crisis rule (Phase 1h M2). `append`,
 // the default, is what ships; `replace` is the founder's 2026-09-27 rule under
@@ -54,6 +55,13 @@
 // is EMERGENCY,CLINICIAN). Both are echoed in the header beside
 // `detectors_sha` and on every record, so a scorer can never read a file
 // without knowing which rule produced it.
+//
+// `--dedupe-signposts` (Phase 1i MA1) — when the product's crisis block is on
+// screen, cut every sentence of the kept reply that signposts crisis help, so
+// the block is the only crisis line and no model-written number is displayed.
+// The default follows the rule: on under `replace`, off under `append`. The
+// value is echoed as `dedupe_signposts` in the header (the triage census reads
+// it there) and on every record, with `signposts_removed` per record.
 //
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
@@ -103,19 +111,23 @@ export function catalogEntry(path = DEFAULT_CATALOG, id = null) {
  * discovered per record would write a file of 260 "device failures" — a failed
  * bar produced by a typo. Refused here, the run fails with nothing written.
  *
- * @returns {{crisisRule: 'append'|'replace', keepRoutes: string[]|null}}
+ * @returns {{crisisRule: 'append'|'replace', keepRoutes: string[]|null, dedupeSignposts: boolean}}
  *   `keepRoutes` is null under `append`, which reads no keep set.
+ *   `dedupeSignposts` defaults to the rule's own default (on under replace).
  */
-export function crisisOptions({ crisisRule = null, keepRoutes = null } = {}) {
+export function crisisOptions({ crisisRule = null, keepRoutes = null, dedupeSignposts = null } = {}) {
   const rule = crisisRule ?? 'append';
   if (!CRISIS_RULES.includes(rule)) {
     throw new Error(`--crisis-rule must be one of ${CRISIS_RULES.join('|')}, got ${JSON.stringify(crisisRule)}`);
   }
+  const dedupe = parseDedupe(dedupeSignposts, rule);
   if (rule !== 'replace') {
     if (keepRoutes != null) throw new Error('--keep-routes is read only with --crisis-rule replace');
-    return { crisisRule: rule, keepRoutes: null };
+    return { crisisRule: rule, keepRoutes: null, dedupeSignposts: dedupe };
   }
-  if (keepRoutes == null) return { crisisRule: rule, keepRoutes: [...REPLACE_KEEP_ROUTES_DEFAULT] };
+  if (keepRoutes == null) {
+    return { crisisRule: rule, keepRoutes: [...REPLACE_KEEP_ROUTES_DEFAULT], dedupeSignposts: dedupe };
+  }
   const list = Array.isArray(keepRoutes)
     ? [...keepRoutes]
     : String(keepRoutes).split(',').map((r) => r.trim()).filter(Boolean);
@@ -123,8 +135,20 @@ export function crisisOptions({ crisisRule = null, keepRoutes = null } = {}) {
   if (!list.length || list.some((r) => !known.includes(r))) {
     throw new Error(`--keep-routes must be a comma list of ${known.join('|')}, got ${JSON.stringify(keepRoutes)}`);
   }
-  return { crisisRule: rule, keepRoutes: list };
+  return { crisisRule: rule, keepRoutes: list, dedupeSignposts: dedupe };
 }
+
+/** `on|off` (or a boolean) to a boolean; absent follows the rule. Refused otherwise. */
+function parseDedupe(value, rule) {
+  if (value == null) return rule === 'replace';
+  if (value === true || value === 'on') return true;
+  if (value === false || value === 'off') return false;
+  throw new Error(`--dedupe-signposts must be on|off, got ${JSON.stringify(value)}`);
+}
+
+/** The effective de-duplication for a guard call: explicit, else the rule's default. */
+const dedupeFor = (dedupeSignposts, crisisRule) => (typeof dedupeSignposts === 'boolean'
+  ? dedupeSignposts : crisisRule === 'replace');
 
 const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex');
 
@@ -139,6 +163,7 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
  */
 export function headerRecord({
   source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
+  dedupeSignposts = null,
 }) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
@@ -158,6 +183,9 @@ export function headerRecord({
     // decided every display below. `keep_routes` is null under `append`.
     crisis_rule: crisisRule,
     keep_routes: crisisRule === 'replace' ? [...keepRoutes] : null,
+    // Phase 1i MA1: whether a kept reply's crisis signposts were cut beside the
+    // product's block. The triage census reads this line.
+    dedupe_signposts: dedupeFor(dedupeSignposts, crisisRule),
     detectors_pin_file_sha: pin.sha256,
     crisis_line_sha256: sha256(crisisLine),
   };
@@ -171,7 +199,9 @@ export function headerRecord({
  * diagnostic; it is never what a patient reads and must never be scored as if
  * it were.
  */
-export function guardRecord(record, { crisisLine, crisisRule = 'append', keepRoutes = null }) {
+export function guardRecord(record, {
+  crisisLine, crisisRule = 'append', keepRoutes = null, dedupeSignposts = null,
+}) {
   const { id, user, text, state } = record ?? {};
   // The PATIENT'S WORDS, refused the same way the reply is. `String(user ?? '')`
   // would have guarded the record against an empty patient turn, and an empty
@@ -209,12 +239,14 @@ export function guardRecord(record, { crisisLine, crisisRule = 'append', keepRou
     );
   }
   const replace = crisisRule === 'replace';
+  const dedupe = dedupeFor(dedupeSignposts, crisisRule);
   const v = applyGuard({
     userText: user,
     replyText: text,
     crisisLine,
     crisisRule,
     ...(replace && keepRoutes ? { replaceKeepRoutes: keepRoutes } : {}),
+    dedupeSignposts: dedupe,
   });
   return {
     id,
@@ -242,6 +274,10 @@ export function guardRecord(record, { crisisLine, crisisRule = 'append', keepRou
     crisis_replaced: replace ? v.crisisReplaced : false,
     reply_shown: replace ? v.replyShown : true,
     route_detected: replace ? v.routeDetected : v.route,
+    // Phase 1i MA1: on every record, whichever rule ran. The removed sentences
+    // are never display text; they remain only in the harness file's `text`.
+    dedupe_signposts: dedupe,
+    signposts_removed: v.signpostsRemoved ?? 0,
   };
 }
 
@@ -260,7 +296,7 @@ export function guardRecord(record, { crisisLine, crisisRule = 'append', keepRou
  * file inventing a reply. An empty display fails the item, which is what a
  * device failure should do.
  */
-function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null } = {}) {
+function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null, dedupeSignposts = null } = {}) {
   return {
     id: record?.id ?? null,
     display: '',
@@ -283,6 +319,8 @@ function refusedEntry(record, reason, { crisisRule = 'append', keepRoutes = null
     crisis_replaced: false,
     reply_shown: false,
     route_detected: null,
+    dedupe_signposts: dedupeFor(dedupeSignposts, crisisRule),
+    signposts_removed: 0,
   };
 }
 
@@ -319,6 +357,7 @@ export function summarise(guarded) {
   let refused = 0;
   let replaced = 0;
   let hidden = 0;
+  let signpostsRemoved = 0;
   for (const g of guarded) {
     if (g.refused) { refused += 1; continue; }
     banners[g.route_banner] = (banners[g.route_banner] ?? 0) + 1;
@@ -328,6 +367,7 @@ export function summarise(guarded) {
     if (g.timeframe_unlocated) unlocated += 1;
     if (g.crisis_replaced) replaced += 1;
     if (g.crisis_replaced && !g.reply_shown) hidden += 1;
+    signpostsRemoved += g.signposts_removed ?? 0;
   }
   return {
     records: guarded.length,
@@ -339,11 +379,14 @@ export function summarise(guarded) {
     timeframe_unlocated: unlocated,
     crisis_replaced: replaced,
     reply_hidden: hidden,
+    signposts_removed: signpostsRemoved,
   };
 }
 
-export function run({ inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null }) {
-  const rule = crisisOptions({ crisisRule, keepRoutes });
+export function run({
+  inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null, dedupeSignposts = null,
+}) {
+  const rule = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts });
   const entry = catalogEntry(catalogPath ?? DEFAULT_CATALOG, catalogId ?? null);
   const records = parseJsonl(readFileSync(inPath, 'utf8'));
   if (!records.length) throw new Error(`${inPath} holds no records`);
@@ -364,6 +407,7 @@ export function run({ inPath, outPath, catalogPath, catalogId, crisisRule = null
 function main(argv) {
   const args = {
     in: null, out: null, catalog: null, 'catalog-id': null, 'crisis-rule': null, 'keep-routes': null,
+    'dedupe-signposts': null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const f = argv[i].replace(/^--/, '');
@@ -374,7 +418,7 @@ function main(argv) {
   }
   if (!args.in || !args.out) {
     throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID] '
-      + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]');
+      + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]] [--dedupe-signposts on|off]');
   }
   const { header, skipped, summary } = run({
     inPath: args.in,
@@ -383,10 +427,12 @@ function main(argv) {
     catalogId: args['catalog-id'],
     crisisRule: args['crisis-rule'],
     keepRoutes: args['keep-routes'],
+    dedupeSignposts: args['dedupe-signposts'],
   });
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
   process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule}`
-    + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}\n`);
+    + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}`
+    + ` dedupe-signposts ${header.dedupe_signposts ? 'on' : 'off'}\n`);
   process.stderr.write(`[device-guard] ${JSON.stringify(summary)}\n`);
   for (const s of skipped) {
     process.stderr.write(`[device-guard] REFUSED ${s.id} (state=${s.state}): ${s.reason}\n`);

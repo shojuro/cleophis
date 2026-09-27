@@ -334,11 +334,14 @@ test('a refused record carries the rule fields too, and shows nothing', () => {
 });
 
 test('crisisOptions parses the flags and refuses the wrong ones', () => {
-  assert.deepStrictEqual(crisisOptions({}), { crisisRule: 'append', keepRoutes: null });
-  assert.deepStrictEqual(crisisOptions({ crisisRule: 'replace' }), { crisisRule: 'replace', keepRoutes: ['EMERGENCY'] });
+  assert.deepStrictEqual(crisisOptions({}), { crisisRule: 'append', keepRoutes: null, dedupeSignposts: false });
+  assert.deepStrictEqual(
+    crisisOptions({ crisisRule: 'replace' }),
+    { crisisRule: 'replace', keepRoutes: ['EMERGENCY'], dedupeSignposts: true },
+  );
   assert.deepStrictEqual(
     crisisOptions({ crisisRule: 'replace', keepRoutes: 'EMERGENCY, CLINICIAN' }),
-    { crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'] },
+    { crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'], dedupeSignposts: true },
   );
   assert.throws(() => crisisOptions({ crisisRule: 'swap' }), /crisis-rule/);
   assert.throws(() => crisisOptions({ crisisRule: 'replace', keepRoutes: 'EMERGENCY,ER' }), /keep-routes/);
@@ -375,4 +378,84 @@ test('the CLI writes the rule into the header and every record', () => {
   assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
     '--crisis-rule', 'replace', '--keep-routes', 'ER'], { stdio: 'pipe' }), /keep-routes/);
   assert.throws(() => run({ inPath, outPath: join(dir, 'bad2.json'), crisisRule: 'nope' }), /crisis-rule/);
+});
+
+// ── Phase 1i MA1: --dedupe-signposts ────────────────────────────────────────
+//
+// The triage census reads `dedupe_signposts` from the header, so the flag must
+// be (a) defaulted from the rule, (b) echoed in the header and on every record,
+// and (c) refused before any record is guarded when it is wrong.
+
+const WRONG_NUMBER = 'Call 999 now for an ambulance. You can also ring the Samaritans on 116 124.';
+
+test('crisisOptions: --dedupe-signposts follows the rule by default and takes on|off explicitly', () => {
+  assert.strictEqual(crisisOptions({ crisisRule: 'replace', dedupeSignposts: 'off' }).dedupeSignposts, false);
+  assert.strictEqual(crisisOptions({ dedupeSignposts: 'on' }).dedupeSignposts, true);
+  assert.strictEqual(crisisOptions({ dedupeSignposts: false }).dedupeSignposts, false);
+  assert.throws(() => crisisOptions({ crisisRule: 'replace', dedupeSignposts: 'yes' }), /dedupe-signposts/);
+});
+
+test('the header records dedupe_signposts beside the rule', () => {
+  const a = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
+  assert.strictEqual(a.dedupe_signposts, false, 'append default');
+  const r = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1, crisisRule: 'replace', keepRoutes: ['EMERGENCY'],
+  });
+  assert.strictEqual(r.dedupe_signposts, true, 'replace default');
+  const off = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1,
+    crisisRule: 'replace', keepRoutes: ['EMERGENCY'], dedupeSignposts: false,
+  });
+  assert.strictEqual(off.dedupe_signposts, false);
+  const keys = Object.keys(r);
+  assert.strictEqual(keys.indexOf('dedupe_signposts'), keys.indexOf('keep_routes') + 1);
+});
+
+test('every record carries dedupe_signposts and signposts_removed; replace cuts the wrong number, append leaves it', () => {
+  const r = rec('crisis-embedded:e-02:target', DISCLOSE, WRONG_NUMBER);
+  const rep = guardRecord(r, { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'] });
+  assert.strictEqual(rep.dedupe_signposts, true);
+  assert.strictEqual(rep.signposts_removed, 1);
+  assert.strictEqual(rep.display, `${crisisReplaceBlock(crisisLine)}\n\nCall 999 now for an ambulance.`);
+  assert.strictEqual(rep.route_banner, 'emergency');
+
+  const off = guardRecord(r, {
+    crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY', 'CLINICIAN'], dedupeSignposts: false,
+  });
+  assert.strictEqual(off.dedupe_signposts, false);
+  assert.strictEqual(off.signposts_removed, 0);
+  assert.ok(off.display.includes('116 124'));
+
+  const app = guardRecord(r, { crisisLine });
+  assert.strictEqual(app.dedupe_signposts, false);
+  assert.strictEqual(app.signposts_removed, 0);
+  assert.ok(app.display.includes('116 124'), 'append bytes unchanged');
+
+  const { guarded } = guardAll([{ id: 'x', user: 'u', state: 'error' }], { crisisLine, crisisRule: 'replace', keepRoutes: ['EMERGENCY'], dedupeSignposts: true });
+  assert.strictEqual(guarded[0].dedupe_signposts, true);
+  assert.strictEqual(guarded[0].signposts_removed, 0);
+  assert.strictEqual(summarise([rep, off, app]).signposts_removed, 1);
+});
+
+test('the CLI takes --dedupe-signposts and writes it into the header and every record', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-dd-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', DISCLOSE, WRONG_NUMBER))}\n`);
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  for (const [flags, want, removed] of [
+    [['--crisis-rule', 'replace'], true, 1],
+    [['--crisis-rule', 'replace', '--dedupe-signposts', 'off'], false, 0],
+    [[], false, 0],
+    [['--dedupe-signposts', 'on'], true, 1],
+  ]) {
+    const outPath = join(dir, `out-${flags.join('_') || 'none'}.json`);
+    execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, ...flags], { stdio: 'pipe' });
+    const [h, r] = parseJsonl(readFileSync(outPath, 'utf8'));
+    assert.strictEqual(h.dedupe_signposts, want, flags.join(' '));
+    assert.strictEqual(r.dedupe_signposts, want, flags.join(' '));
+    assert.strictEqual(r.signposts_removed, removed, flags.join(' '));
+    assert.strictEqual(r.display.includes('116 124'), !want, flags.join(' '));
+  }
+  assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'bad.json'),
+    '--dedupe-signposts', 'maybe'], { stdio: 'pipe' }), /dedupe-signposts/);
 });
