@@ -432,8 +432,6 @@ export function replayMessage({ supervised = false, role = 'assistant', content 
 // untouched. `lookup` is a SINGLE-TURN reference lookup (see lookup-turn.js):
 // it sends no history, and its rows are never part of triage history.
 
-export const TURN_MODES = Object.freeze(['triage', 'lookup']);
-
 /**
  * The marker persisted on a lookup's USER row (through `append_message`'s
  * `guard` argument), so a reopened chat still knows that row was a lookup
@@ -453,16 +451,26 @@ export function isLookupMessage(msg) {
  * also the assistant row that answers a lookup query even when it carries no
  * verdict (a lookup reply whose `attach_guard` never landed still holds the
  * model's raw reply to a lookup, which is not triage history either).
- * A chat with no lookups comes back element for element as it went in.
+ *
+ * With `supervised: true`, EVERY assistant row with no verdict is out too
+ * (whole-branch review M7): an unguarded supervised reply was withheld on
+ * screen, may hold a raw model reply (a lookup reply whose query row also
+ * failed to persist, or a triage reply whose attach failed), and is never
+ * valid history. A live supervised reply always carries its verdict in
+ * memory, so this drops only rows the reader never saw.
+ *
+ * A chat with no lookups and no unguarded supervised replies comes back
+ * element for element as it went in.
  */
-export function triageHistory(messages) {
+export function triageHistory(messages, { supervised = false } = {}) {
   const out = [];
   let afterLookupQuery = false;
   for (const msg of messages ?? []) {
     const lookup = isLookupMessage(msg);
     const answersLookup = afterLookupQuery && msg && msg.role === 'assistant';
+    const unguardedSupervised = supervised && !!msg && msg.role === 'assistant' && !msg.guard;
     afterLookupQuery = lookup && msg.role === 'user';
-    if (!lookup && !answersLookup) out.push(msg);
+    if (!lookup && !answersLookup && !unguardedSupervised) out.push(msg);
   }
   return out;
 }

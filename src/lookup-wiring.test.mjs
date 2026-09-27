@@ -23,7 +23,7 @@ function body(name) {
 }
 
 test('the triage turn windows over triage history, never the raw transcript', () => {
-  assert.ok(APP.includes('windowMessages(triageHistory(state.chat.messages), sys, m.greeting'));
+  assert.ok(APP.includes('windowMessages(triageHistory(state.chat.messages, { supervised }), sys, m.greeting'));
   assert.ok(!/windowMessages\(state\.chat\.messages, sys/.test(APP));
 });
 

@@ -1567,7 +1567,7 @@ function updateContextDivider() {
   // not a guarantee.
   // Windowed over TRIAGE history (Phase 1h M6: lookup rows are never sent),
   // then mapped back to the transcript to find the bubble.
-  const history = triageHistory(state.chat.messages);
+  const history = triageHistory(state.chat.messages, { supervised: m.supervised === true });
   const { droppedCount } = windowMessages(history, m.systemPrompt, m.greeting, engineWindow(state.engine));
   if (droppedCount <= 0) return;
   // index 0 of .msg is the greeting bubble; indices 1.. map 1:1 to
@@ -2284,7 +2284,7 @@ async function sendCompletion(userText) {
     // Phase 1h M6: over TRIAGE history only. A lookup row (query or reply)
     // never reaches a triage turn; `triageHistory` returns a chat with no
     // lookups element for element, so this is the old call for every such chat.
-    const win = windowMessages(triageHistory(state.chat.messages), sys, m.greeting, engineWindow(state.engine));
+    const win = windowMessages(triageHistory(state.chat.messages, { supervised }), sys, m.greeting, engineWindow(state.engine));
     // Assembled again with the windowed history now that `sys` (and thus the
     // budget it leaves for history) is known — see windowMessages above. For
     // a supervised entry this drops the greeting turn entirely; its tokens
@@ -2446,7 +2446,7 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
   // fresh send, else the last user message (a retry chip replays a pushed one).
   const userTurn = turn && turn.userText != null
     ? turn.userText
-    : ([...triageHistory(state.chat.messages)].reverse().find((x) => x.role === 'user')?.content ?? '');
+    : ([...triageHistory(state.chat.messages, { supervised })].reverse().find((x) => x.role === 'user')?.content ?? '');
   const verdict = supervised && shown
     ? applyGuard({
       userText: userTurn,

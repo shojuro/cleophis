@@ -720,7 +720,7 @@ test('a replaced verdict replays with NO banner, not the out-of-scope one', () =
 /* ---------------- Phase 1h M6: the lookup mode ---------------- */
 
 import {
-  LOOKUP_QUERY_GUARD, TURN_MODES, isLookupMessage, triageHistory,
+  LOOKUP_QUERY_GUARD, isLookupMessage, triageHistory,
 } from './triage-turn.js';
 import { LOOKUP_SOURCE_FOOTER, runLookupTurn } from './lookup-turn.js';
 
@@ -738,9 +738,7 @@ const LOOKUP_REPLY_GUARD = Object.freeze({
   ],
 });
 
-test('the two turn modes', () => {
-  assert.deepStrictEqual([...TURN_MODES], ['triage', 'lookup']);
-  assert.ok(Object.isFrozen(TURN_MODES));
+test('the lookup query marker', () => {
   assert.deepStrictEqual({ ...LOOKUP_QUERY_GUARD }, { kind: 'lookup', role: 'query' });
 });
 
@@ -773,6 +771,26 @@ test('a lookup row never enters triage history, and neither does the reply to a 
   for (const leaked of ['paracetamol', 'lookup reply', 'ibuprofen', 'raw unguarded lookup reply']) {
     assert.ok(!wire.includes(leaked), leaked);
   }
+});
+
+test('supervised: an unguarded assistant row never enters triage history (whole-branch review M7)', () => {
+  // The double failure: the lookup query's append_message failed (no marker
+  // row, so nothing says the next reply answers a lookup) AND the reply's
+  // attach_guard failed, leaving the raw lookup reply as a plain row.
+  const messages = [
+    { role: 'user', content: 'chest pain' },
+    { role: 'assistant', content: 'triage reply', guard: { route: 'EMERGENCY', banner: 'emergency' } },
+    { role: 'user', content: 'paracetamol' },
+    { role: 'assistant', content: 'raw lookup reply, take 1g' },
+    { role: 'user', content: 'now a headache' },
+  ];
+  assert.deepStrictEqual(
+    triageHistory(messages, { supervised: true }).map((m) => m.content),
+    ['chest pain', 'triage reply', 'paracetamol', 'now a headache'],
+  );
+  // Not supervised (the tutor): an assistant row with no verdict is ordinary history.
+  assert.deepStrictEqual(triageHistory(messages), messages);
+  assert.deepStrictEqual(triageHistory(messages, { supervised: false }), messages);
 });
 
 test('triageHistory leaves a chat with no lookups exactly as it was', () => {
