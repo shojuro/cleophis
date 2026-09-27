@@ -1021,9 +1021,9 @@ impl ConvStore {
         // [`Self::attach_guard`] uses and for the same reason: the verdict this
         // confirmation is about must not be attached (or replaced) between the
         // check and the write.
-        let (role, has_guard): (String, bool) = conn
+        let (role, guard): (String, Option<String>) = conn
             .query_row(
-                "SELECT role, guard IS NOT NULL FROM messages WHERE id = ?1",
+                "SELECT role, guard FROM messages WHERE id = ?1",
                 params![message_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1033,9 +1033,21 @@ impl ConvStore {
         if role != "assistant" {
             return Err(format!("no assistant message with id {message_id}"));
         }
-        if !has_guard {
+        let Some(guard) = guard else {
             return Err(format!(
                 "message {message_id} carries no verdict to confirm"
+            ));
+        };
+        // A reference LOOKUP reply carries a verdict but no route: there is
+        // nothing to agree or disagree with (whole-branch review M6). The
+        // front end never offers it; the store refuses it too.
+        let is_lookup = serde_json::from_str::<Value>(&guard)
+            .ok()
+            .and_then(|g| g.get("kind").and_then(Value::as_str).map(|k| k == "lookup"))
+            .unwrap_or(false);
+        if is_lookup {
+            return Err(format!(
+                "message {message_id} is a reference lookup reply; it has no route to confirm"
             ));
         }
         conn.execute(
@@ -1146,9 +1158,35 @@ impl ConvStore {
         Ok(existing)
     }
 
+    /// Export columns that belong to a TRIAGE verdict; `null` on a lookup line.
+    const TRIAGE_ONLY_EXPORT_COLUMNS: [&'static str; 10] = [
+        "model_route",
+        "banner",
+        "timeframe_stripped",
+        "timeframe_unlocated",
+        "crisis_line_appended",
+        "prohibited",
+        "prohibited_removed",
+        "confirmed_route",
+        "confirmed_at",
+        "overridden",
+    ];
+
+    /// Export columns that belong to a LOOKUP verdict; `null` on a triage line.
+    const LOOKUP_ONLY_EXPORT_COLUMNS: [&'static str; 6] =
+        ["outcome", "rule", "citations", "withheld", "reference_pack", "crisis_on_input"];
+
     /// One JSON line per guarded assistant message, paired with the user
     /// turn that preceded it — the triage override log the clinical review
     /// reads. `chat_id: None` exports every chat of this account.
+    ///
+    /// Every line carries `"kind": "triage" | "lookup"` (whole-branch review
+    /// I3). A reference LOOKUP reply (`guard.kind == "lookup"`) is not a
+    /// triage verdict: its route, banner, receipt and confirmation columns
+    /// are `null` — never `"UNCLEAR"` — and it carries the lookup columns
+    /// instead (`outcome`, `rule`, `citations`, `withheld`,
+    /// `reference_pack`, `crisis_on_input`), which are `null` on a triage
+    /// line. Both kinds share the pairing, text and provenance columns.
     ///
     /// Takes no lock of its own: every read goes through `get_chat`/
     /// `list_chats`, which each take and release the per-account
@@ -1172,6 +1210,9 @@ impl ConvStore {
                 let Some(guard) = m.guard.as_ref() else {
                     continue;
                 };
+                let is_lookup = guard.get("kind").and_then(Value::as_str) == Some("lookup");
+                // Meaningful on a triage line only; a lookup line nulls it
+                // (and every other triage column) below.
                 let model_route = guard
                     .get("route")
                     .and_then(|v| v.as_str())
@@ -1182,7 +1223,7 @@ impl ConvStore {
                     .as_deref()
                     .map(|c| c != model_route)
                     .unwrap_or(false);
-                let line = serde_json::json!({
+                let mut line = serde_json::json!({
                     "chat_id": chat.id,
                     "message_id": m.id,
                     "created_at": m.created_at,
@@ -1255,6 +1296,36 @@ impl ConvStore {
                     "model_sha": guard.get("modelSha").and_then(Value::as_str).unwrap_or(""),
                     "adapter_sha": guard.get("adapterSha").and_then(Value::as_str).unwrap_or(""),
                 });
+                let obj = line.as_object_mut().expect("json! builds an object");
+                if is_lookup {
+                    obj.insert("kind".into(), Value::from("lookup"));
+                    for key in Self::TRIAGE_ONLY_EXPORT_COLUMNS {
+                        obj.insert(key.into(), Value::Null);
+                    }
+                    let field = |k: &str| guard.get(k).cloned().unwrap_or(Value::Null);
+                    obj.insert("outcome".into(), field("outcome"));
+                    obj.insert("rule".into(), field("rule"));
+                    // Lists, never `null`, for `prohibited_removed`'s reason:
+                    // a lookup verdict with no array cited / withheld nothing.
+                    // `withheld` is the receipt: each withheld sentence with
+                    // its reason, as the lookup guard recorded it.
+                    for (column, key) in [("citations", "citations"), ("withheld", "withheld")] {
+                        let list = guard.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+                        obj.insert(column.into(), Value::Array(list));
+                    }
+                    // What the answering pack reported (`lookupForPersistence`);
+                    // `null` when no pack answered (crisis first, unavailable).
+                    obj.insert("reference_pack".into(), field("referencePack"));
+                    obj.insert(
+                        "crisis_on_input".into(),
+                        Value::Bool(guard.get("crisisOnInput").and_then(Value::as_bool).unwrap_or(false)),
+                    );
+                } else {
+                    obj.insert("kind".into(), Value::from("triage"));
+                    for key in Self::LOOKUP_ONLY_EXPORT_COLUMNS {
+                        obj.insert(key.into(), Value::Null);
+                    }
+                }
                 out.push_str(&line.to_string());
                 out.push('\n');
             }
@@ -2705,6 +2776,154 @@ mod tests {
             .unwrap();
         let info = store.confirm_route(USER, bare.id, "EMERGENCY").unwrap();
         assert_eq!(info.confirmed_route.as_deref(), Some("EMERGENCY"));
+    }
+
+    /// Whole-branch review I3: a lookup reply and a triage reply in ONE chat
+    /// export as two kinds of line. The lookup line carries the lookup shape
+    /// and nulls every triage column (never `"UNCLEAR"`); the triage line
+    /// is unchanged apart from `kind` and the nulled lookup columns.
+    #[test]
+    fn export_triage_log_labels_lookup_and_triage_replies_by_kind() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        // The lookup query row carries the front end's marker guard; user
+        // rows are never audit lines, but they pair with the reply after.
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "paracetamol",
+                None,
+                None,
+                Some(json!({"kind": "lookup", "role": "query"})),
+            )
+            .unwrap();
+        let reference_pack = json!({
+            "id": "reference-uk-v1",
+            "sha256": "5c7b2c98",
+            "contentSha256": "df9429a1",
+            "version": "2026.09.1"
+        });
+        let withheld = json!([{"sentence": "Do not take more than 8 tablets.", "reason": "overdose-section"}]);
+        let lookup = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "The usual dose is 1 or 2 tablets [1].",
+                None,
+                None,
+                Some(json!({
+                    "kind": "lookup",
+                    "rule": "dose-cite-v6",
+                    "outcome": "grounded",
+                    "displayText": "The usual dose is 1 or 2 tablets [1].",
+                    "rawReply": "The usual dose is 1 or 2 tablets [1]. Do not take more than 8 tablets.",
+                    "kept": [],
+                    "withheld": withheld.clone(),
+                    "citations": [1],
+                    "detectorsSha": "abc",
+                    "modelSha": "25162bff",
+                    "adapterSha": "5304e464",
+                    "referencePack": reference_pack.clone()
+                })),
+            )
+            .unwrap();
+        // The store refuses a confirmation on the lookup reply (M6).
+        let err = store.confirm_route(USER, lookup.id, "EMERGENCY").unwrap_err();
+        assert!(err.contains("lookup"), "{err}");
+        assert_eq!(store.get_chat(USER, chat.id).unwrap().messages[1].confirmed_route, None);
+
+        store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+        let triage = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Call 999 now.",
+                None,
+                None,
+                Some(json!({"route": "EMERGENCY", "banner": "emergency", "detectorsSha": "abc"})),
+            )
+            .unwrap();
+        store.confirm_route(USER, triage.id, "EMERGENCY").unwrap();
+
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+
+        let l = &lines[0];
+        assert_eq!(l["kind"], "lookup");
+        assert_eq!(l["user_text"], "paracetamol");
+        assert_eq!(l["outcome"], "grounded");
+        assert_eq!(l["rule"], "dose-cite-v6");
+        assert_eq!(l["citations"], json!([1]));
+        assert_eq!(l["withheld"], withheld);
+        assert_eq!(l["reference_pack"], reference_pack);
+        assert_eq!(l["crisis_on_input"], json!(false));
+        assert_eq!(l["display_text"], "The usual dose is 1 or 2 tablets [1].");
+        assert_eq!(l["model_sha"], "25162bff");
+        for key in ConvStore::TRIAGE_ONLY_EXPORT_COLUMNS {
+            assert_eq!(l[key], serde_json::Value::Null, "lookup line: {key} must be null");
+        }
+
+        let t = &lines[1];
+        assert_eq!(t["kind"], "triage");
+        assert_eq!(t["user_text"], "chest pain");
+        assert_eq!(t["model_route"], "EMERGENCY");
+        assert_eq!(t["confirmed_route"], "EMERGENCY");
+        assert_eq!(t["overridden"], false);
+        assert_eq!(t["prohibited_removed"], json!([]));
+        for key in ConvStore::LOOKUP_ONLY_EXPORT_COLUMNS {
+            assert_eq!(t[key], serde_json::Value::Null, "triage line: {key} must be null");
+        }
+    }
+
+    /// A crisis-first lookup (no pack answered) exports as a lookup line with
+    /// `crisis_on_input: true` and a null `reference_pack`.
+    #[test]
+    fn export_triage_log_records_a_crisis_first_lookup() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "I want to end my life", None, None, None)
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Please tell the health worker with you now.",
+                None,
+                None,
+                Some(json!({
+                    "kind": "lookup",
+                    "rule": "dose-cite-v6",
+                    "outcome": "crisis",
+                    "rawReply": null,
+                    "crisisOnInput": true,
+                    "referencePack": null
+                })),
+            )
+            .unwrap();
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "lookup");
+        assert_eq!(line["outcome"], "crisis");
+        assert_eq!(line["crisis_on_input"], json!(true));
+        assert_eq!(line["reference_pack"], serde_json::Value::Null);
+        assert_eq!(line["withheld"], json!([]));
+        assert_eq!(line["model_route"], serde_json::Value::Null);
     }
 
     /// An UNGUARDED chat contributes no lines, and a confirmation that
