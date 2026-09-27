@@ -1,28 +1,80 @@
 {
-  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS (and the section list). A matching SOURCE sentence, and the one right before it, verify nothing; a matching REPLY sentence is withheld.",
+  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives; the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
   "cases": [
     {
       "sentence": "Do not take more than 8 tablets in 24 hours.",
-      "overdose": true
+      "overdose": false
     },
     {
       "sentence": "Maximum 4 doses in 24 hours.",
-      "overdose": true
+      "overdose": false
+    },
+    {
+      "sentence": "The maximum dose is 8 tablets in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not exceed 8 tablets in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "Take no more than 2 at a time.",
+      "overdose": false
+    },
+    {
+      "sentence": "Take up to 4 times a day.",
+      "overdose": false
+    },
+    {
+      "sentence": "At most 4 doses a day.",
+      "overdose": false
+    },
+    {
+      "sentence": "Go to A&E straight away.",
+      "overdose": false
+    },
+    {
+      "sentence": "Call 999 in an emergency.",
+      "overdose": false
+    },
+    {
+      "sentence": "Call 111 or go to A&E if the pain is severe.",
+      "overdose": false
+    },
+    {
+      "sentence": "Go to hospital if it gets worse.",
+      "overdose": false
     },
     {
       "sentence": "Taking too many can cause serious liver damage.",
       "overdose": true
     },
     {
-      "sentence": "Go to A&E straight away.",
-      "overdose": true
-    },
-    {
-      "sentence": "Call 999 in an emergency.",
-      "overdose": true
-    },
-    {
       "sentence": "It can be fatal.",
+      "overdose": true
+    },
+    {
+      "sentence": "A large amount can be lethal.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 20 tablets could kill you.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can kill.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol poisoning can damage the liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be life-threatening.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol toxicity is serious.",
       "overdose": true
     },
     {

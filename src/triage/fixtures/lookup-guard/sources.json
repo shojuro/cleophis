@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared source sets for the dose-cite-v6 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, chunkId (page order; absent in most sets, so n stands in), docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
+  "_comment": "Shared source sets for the dose-cite-v7 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, chunkId (page order; absent in most sets, so n stands in), docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
   "paracetamol": [
     {
       "n": 1,

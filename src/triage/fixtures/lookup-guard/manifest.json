@@ -1,17 +1,17 @@
 {
-  "_comment": "Pins every dose-cite-v6 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
-  "rule": "dose-cite-v6",
+  "_comment": "Pins every dose-cite-v7 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
+  "rule": "dose-cite-v7",
   "files": {
     "citations.json": {
       "sha256": "c9388e52b3f8cfec81547b2948e8695ab8d7058495184f97c084b1186c3ee530",
       "count": 7
     },
     "eligible.json": {
-      "sha256": "b91dbb187564a22a21f0816adf53ca5f12e87beacf0103e8fa30c7dc53ff4326",
+      "sha256": "a38fe279d1b9dbd433fd7b5cea94ff5bc5890d8f11532803bc40bef29dc6e624",
       "count": 31
     },
     "normalise.json": {
-      "sha256": "77504acb02fd44ba0369d07ebe1ac6775c97aedfabd2f1fd885f67fb99ee2898",
+      "sha256": "18379b69ff8466aa55b52b00cb02b5bae96b322b90cd64ce30a2cfb07ff71f96",
       "count": 178
     },
     "overdose-sections.json": {
@@ -19,15 +19,15 @@
       "count": 15
     },
     "overdose-sentences.json": {
-      "sha256": "1f555ff6bbabf5230cb0fe9843aad5e982a4e162795ec24b37680f0966bfa056",
-      "count": 14
+      "sha256": "66b62615c3c01836095085f94b0d2185849a2bcb57d9eff159f600db0ebe3f5d",
+      "count": 27
     },
     "sentences.json": {
       "sha256": "b4bdc3d36a33e8fba24fb708193126056f8e252929291af37157cd0cafc63852",
       "count": 34
     },
     "sources.json": {
-      "sha256": "c9e290487ed24b20158038c733be19aef291bc1f00b52aa7dab9175ab8af6b21",
+      "sha256": "9a9e2e19701a8fe29dee1650b827ca047b7083922d0b798a69b28625904c737f",
       "count": 16
     },
     "units.json": {
@@ -35,8 +35,8 @@
       "count": 32
     },
     "verdicts.json": {
-      "sha256": "d57f887bdf85df0c481cd348e6e68f7edd49c07cbade56bf1e4338330eb5780f",
-      "count": 559
+      "sha256": "c72021d554ae755112aa6739c0a64115254b8be2b699c19a9e8b08c4850c6c8d",
+      "count": 579
     }
   }
 }

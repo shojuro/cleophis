@@ -1,5 +1,5 @@
 {
-  "_comment": "dose-cite-v6 verdict fixtures, one named group per clause of the rule, plus every adversarial pair from the five M6 re-reviews (probes-round-1..5; the round-4 and round-5 groups also hold the verbatim quotes the previous rule wrongly withheld, named \"quote\") and the reviewers' benign lists with their actual v5 outcome (cost). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
+  "_comment": "dose-cite-v7 verdict fixtures, one named group per clause of the rule, a group for what v7 makes quotable (maximum-dose-quotable), plus every adversarial pair from the five M6 re-reviews (probes-round-1..5; the round-4 and round-5 groups also hold the verbatim quotes the previous rule wrongly withheld, named \"quote\") and the reviewers' benign lists with their actual outcome under the current rule (cost; a v6 -> v7 change is in the case note). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
   "groups": {
     "citation-range": [
       {
@@ -230,7 +230,7 @@
     ],
     "overdose-sentence": [
       {
-        "name": "a reply sentence with maximum-dose wording is withheld outright, even as a verbatim quote",
+        "name": "v7: a verbatim maximum-dose quote is kept (v6 withheld it outright)",
         "sources": [
           {
             "n": 1,
@@ -241,38 +241,35 @@
         ],
         "replyText": "Do not take more than 8 tablets in 24 hours [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take more than 8 tablets in 24 hours [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take more than 8 tablets in 24 hours [1].",
+          "kept": [
+            "Do not take more than 8 tablets in 24 hours [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. \"more than\" left the sentence list (founder decision 2026-09-28): a verbatim maximum-dose sentence is quotable."
       },
       {
-        "name": "a reply sentence with emergency wording is withheld even with no number",
+        "name": "v7: emergency wording with no number is kept (route words left the list)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. In an emergency, call for help.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. In an emergency, call for help.",
           "kept": [
-            "Paracetamol is a painkiller [1]."
+            "Paracetamol is a painkiller [1].",
+            "In an emergency, call for help."
           ],
-          "withheld": [
-            {
-              "sentence": "In an emergency, call for help.",
-              "reason": "overdose-sentence"
-            }
-          ],
+          "withheld": [],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v6 -> v7: KEPT. \"emergency\" left the sentence list; the reply shows no dose, so a sentence with no number is kept as it is."
       },
       {
         "name": "harm wording is withheld even as a verbatim quote",
@@ -320,7 +317,7 @@
         }
       },
       {
-        "name": "A&E is withheld",
+        "name": "v7: a verbatim A&E route quote is kept",
         "sources": [
           {
             "n": 1,
@@ -331,20 +328,20 @@
         ],
         "replyText": "Go to A&E straight away [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Go to A&E straight away [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Go to A&E straight away [1].",
+          "kept": [
+            "Go to A&E straight away [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. \"A&E\" left the sentence list; the quote is verbatim."
       },
       {
-        "name": "the list is read after NFKC, so fullwidth letters do not hide it",
+        "name": "v7: a fullwidth dose-instruction word normalises to the same verbatim quote and is kept",
         "sources": [
           {
             "n": 1,
@@ -355,20 +352,20 @@
         ],
         "replyText": "Do not take ｍｏｒｅ than 8 tablets [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take ｍｏｒｅ than 8 tablets [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take ｍｏｒｅ than 8 tablets [1].",
+          "kept": [
+            "Do not take ｍｏｒｅ than 8 tablets [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. \"more than\" left the list; after NFKC the reply equals the source sentence. The NFKC reading of the list is pinned by the narrative case below."
       },
       {
-        "name": "the list is read with citation brackets removed",
+        "name": "v7: a citation inside a dose-instruction quote is removed and the quote kept",
         "sources": [
           {
             "n": 1,
@@ -379,17 +376,17 @@
         ],
         "replyText": "Do not take more [1] than 8 tablets.",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take more [1] than 8 tablets.",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take more [1] than 8 tablets.",
+          "kept": [
+            "Do not take more [1] than 8 tablets."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. \"more than\" left the list; with the bracket out the reply equals the source sentence. The bracket-free reading of the list is pinned by the narrative case below."
       },
       {
         "name": "harmless is not harm",
@@ -413,6 +410,415 @@
             1
           ]
         }
+      },
+      {
+        "name": "the narrative list is read after NFKC, so fullwidth letters do not hide it",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "It can be fatal."
+          }
+        ],
+        "replyText": "It can be ｆａｔａｌ [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It can be ｆａｔａｌ [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "the narrative list is read with citation brackets removed",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take too many."
+          }
+        ],
+        "replyText": "Do not take too [1] many.",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Do not take too [1] many.",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "lethal wording is withheld even as a verbatim quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "A large amount can be lethal."
+          }
+        ],
+        "replyText": "A large amount can be lethal [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "A large amount can be lethal [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "could kill is withheld even as a verbatim quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Taking 20 tablets could kill you."
+          }
+        ],
+        "replyText": "Taking 20 tablets could kill you [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Taking 20 tablets could kill you [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "poisoning is withheld even as a verbatim quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Paracetamol poisoning can damage the liver."
+          }
+        ],
+        "replyText": "Paracetamol poisoning can damage the liver [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol poisoning can damage the liver [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "life-threatening is withheld even as a verbatim quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "It can be life-threatening."
+          }
+        ],
+        "replyText": "It can be life‑threatening [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It can be life‑threatening [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        }
+      }
+    ],
+    "maximum-dose-quotable": [
+      {
+        "name": "quote: a verbatim maximum-dose sentence is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Do not take more than 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Do not take more than 8 tablets in 24 hours [1].",
+          "kept": [
+            "Do not take more than 8 tablets in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "The founder decision (2026-09-28): health workers need maximum doses. Withheld in v6 (overdose-sentence)."
+      },
+      {
+        "name": "quote: a dose then its maximum, one contiguous run",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 or 2 tablets every 4 to 6 hours. Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Take 1 or 2 tablets every 4 to 6 hours [1]. Do not take more than 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1 or 2 tablets every 4 to 6 hours [1]. Do not take more than 8 tablets in 24 hours [1].",
+          "kept": [
+            "Take 1 or 2 tablets every 4 to 6 hours [1].",
+            "Do not take more than 8 tablets in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "Both halves withheld in v6 (the maximum by the list, the dose by the neighbour rule)."
+      },
+      {
+        "name": "quote: \"the maximum dose is\" is kept: the section list no longer reads sentence text",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "The maximum dose is 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "The maximum dose is 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "The maximum dose is 8 tablets in 24 hours [1].",
+          "kept": [
+            "The maximum dose is 8 tablets in 24 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 matched this sentence through the section list (\"maximum dose\"); v7 applies the section list to section paths only."
+      },
+      {
+        "name": "quote: a verbatim route sentence (111 and A&E) is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Call 111 or go to A&E if the pain is severe."
+          }
+        ],
+        "replyText": "Call 111 or go to A&E if the pain is severe [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Call 111 or go to A&E if the pain is severe [1].",
+          "kept": [
+            "Call 111 or go to A&E if the pain is severe [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "Withheld in v6 (\"A&E\")."
+      },
+      {
+        "name": "quote: a verbatim call 999 route sentence is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Call 999 in an emergency."
+          }
+        ],
+        "replyText": "Call 999 in an emergency [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Call 999 in an emergency [1].",
+          "kept": [
+            "Call 999 in an emergency [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "Withheld in v6 (\"emergency\")."
+      },
+      {
+        "name": "quote: a verbatim up to 4 times a day sentence is kept",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 2 tablets up to 4 times a day."
+          }
+        ],
+        "replyText": "Take 2 tablets up to 4 times a day [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 tablets up to 4 times a day [1].",
+          "kept": [
+            "Take 2 tablets up to 4 times a day [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "\"up to\" was never on the list; pinned so it cannot join it."
+      },
+      {
+        "name": "an overdose narrative with no route word is withheld, even verbatim",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Taking too many tablets can cause serious liver damage."
+          }
+        ],
+        "replyText": "Taking too many tablets can cause serious liver damage [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Taking too many tablets can cause serious liver damage [1].",
+              "reason": "overdose-sentence"
+            }
+          ],
+          "citations": []
+        },
+        "note": "No route word and no dose-instruction word: the narrative words alone withhold it."
+      },
+      {
+        "name": "a maximum-dose sentence next to an overdose narrative verifies nothing",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take more than 8 tablets in 24 hours. Taking more can be fatal."
+          }
+        ],
+        "replyText": "Do not take more than 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Do not take more than 8 tablets in 24 hours [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        },
+        "note": "The neighbour rule is unchanged."
+      },
+      {
+        "name": "a maximum-dose quote from a section titled Overdose is withheld",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "Paracetamol > Overdose",
+            "text": "Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Do not take more than 8 tablets in 24 hours [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Do not take more than 8 tablets in 24 hours [1].",
+              "reason": "overdose-section"
+            }
+          ],
+          "citations": []
+        },
+        "note": "OVERDOSE_SECTION_PATTERNS is unchanged."
+      },
+      {
+        "name": "a maximum-dose quote from a section titled Maximum dose is withheld",
+        "sources": "salbutamol",
+        "replyText": "Never take more than 8 puffs in 24 hours [2].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Never take more than 8 puffs in 24 hours [2].",
+              "reason": "overdose-section"
+            }
+          ],
+          "citations": []
+        },
+        "note": "The section list still names maximum-dose sections."
+      },
+      {
+        "name": "a paraphrased maximum dose is not a quote",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Do not take more than 8 tablets in 24 hours."
+          }
+        ],
+        "replyText": "Never take more than 8 tablets a day [1].",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Never take more than 8 tablets a day [1].",
+              "reason": "dose-not-in-source"
+            }
+          ],
+          "citations": []
+        },
+        "note": "Extractive equality is unchanged."
       }
     ],
     "script-check": [
@@ -4454,7 +4860,7 @@
         }
       },
       {
-        "name": "an overdose lead-in makes every item ineligible",
+        "name": "v7: a maximum-dose lead-in and its items are one quotable run",
         "sources": [
           {
             "n": 1,
@@ -4465,12 +4871,38 @@
         ],
         "replyText": "Do not take more than: [1]\n- 8 tablets [1]\n- 2 tablets [1]",
         "expected": {
+          "outcome": "grounded",
+          "displayText": "Do not take more than: [1]\n- 8 tablets [1]\n- 2 tablets [1]",
+          "kept": [
+            "Do not take more than: [1]",
+            "- 8 tablets [1]",
+            "- 2 tablets [1]"
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. \"more than\" left the list, so the lead-in is eligible and binds its items as before. An overdose-narrative lead-in is pinned by the case below."
+      },
+      {
+        "name": "an overdose-narrative lead-in makes every item ineligible",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "Paracetamol for adults",
+            "sectionPath": "How to take it",
+            "text": "If you take too many:\n- 8 tablets\n- 2 tablets"
+          }
+        ],
+        "replyText": "If you take too many: [1]\n- 8 tablets [1]\n- 2 tablets [1]",
+        "expected": {
           "outcome": "noEvidence",
           "displayText": "NO_EVIDENCE",
           "kept": [],
           "withheld": [
             {
-              "sentence": "Do not take more than: [1]",
+              "sentence": "If you take too many: [1]",
               "reason": "overdose-sentence"
             },
             {
@@ -4971,13 +5403,54 @@
         }
       },
       {
-        "name": "the sentence after an overdose sentence is not eligible",
+        "name": "v7: the sentence after a maximum-dose sentence is eligible",
         "sources": [
           {
             "n": 1,
             "docTitle": "P",
             "sectionPath": "P > How to take it",
             "text": "Do not take more than 8 tablets in 24 hours. Take 2 tablets every 4 hours."
+          }
+        ],
+        "replyText": "Take 2 tablets every 4 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 2 tablets every 4 hours [1].",
+          "kept": [
+            "Take 2 tablets every 4 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. The maximum-dose sentence is no longer overdose wording, so its neighbour is eligible. The narrative neighbour is pinned by the case below."
+      },
+      {
+        "name": "v7: the sentence before a maximum-dose sentence is eligible (V4 cost lifted)",
+        "sources": "salbutamol",
+        "replyText": "Take 1 or 2 puffs when you need them, every 4–6 hours [1].",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Take 1 or 2 puffs when you need them, every 4–6 hours [1].",
+          "kept": [
+            "Take 1 or 2 puffs when you need them, every 4–6 hours [1]."
+          ],
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. The founder lifted the V4 cost: \"Do not use more than 8 puffs\" is no longer overdose wording."
+      },
+      {
+        "name": "the sentence after an overdose-narrative sentence is not eligible",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Taking too many can cause liver damage. Take 2 tablets every 4 hours."
           }
         ],
         "replyText": "Take 2 tablets every 4 hours [1].",
@@ -4995,8 +5468,15 @@
         }
       },
       {
-        "name": "the sentence before an overdose sentence is not eligible (V4 cost)",
-        "sources": "salbutamol",
+        "name": "the sentence before an overdose-narrative sentence is not eligible",
+        "sources": [
+          {
+            "n": 1,
+            "docTitle": "P",
+            "sectionPath": "P > How to take it",
+            "text": "Take 1 or 2 puffs when you need them, every 4–6 hours. Too many puffs can be dangerous."
+          }
+        ],
         "replyText": "Take 1 or 2 puffs when you need them, every 4–6 hours [1].",
         "expected": {
           "outcome": "noEvidence",
@@ -11611,17 +12091,17 @@
         ],
         "replyText": "Give 2 tablets up to 4 times in 24 hours [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Give 2 tablets up to 4 times in 24 hours [1].",
-              "reason": "dose-not-in-source"
-            }
+          "outcome": "grounded",
+          "displayText": "Give 2 tablets up to 4 times in 24 hours [1].",
+          "kept": [
+            "Give 2 tablets up to 4 times in 24 hours [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT. The founder's decision (2026-09-28) lifts this cost: the following maximum sentence is no longer overdose wording, so the neighbour rule does not reach it. Not a probe pair; class (b) cost."
       },
       {
         "name": "round 5 sample: a non-quote lead-in (W2)",
@@ -12033,17 +12513,17 @@
         ],
         "replyText": "Do not take it for more than 3 days without advice [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take it for more than 3 days without advice [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take it for more than 3 days without advice [1].",
+          "kept": [
+            "Do not take it for more than 3 days without advice [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (\"more than\" left the sentence list)."
       },
       {
         "name": "benign B14: about an hour against about 1 hour",
@@ -12152,17 +12632,17 @@
         ],
         "replyText": "Do not take more than 4 doses in 24 hours [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take more than 4 doses in 24 hours [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take more than 4 doses in 24 hours [1].",
+          "kept": [
+            "Do not take more than 4 doses in 24 hours [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (\"more than\" left the sentence list)."
       },
       {
         "name": "benign B34: more than 8 tablets against a maximum-dose sentence",
@@ -12182,11 +12662,12 @@
           "withheld": [
             {
               "sentence": "Do not take more than 8 tablets in 24 hours [1].",
-              "reason": "overdose-sentence"
+              "reason": "dose-not-in-source"
             }
           ],
           "citations": []
-        }
+        },
+        "note": "v6 -> v7: still withheld, reason overdose-sentence -> dose-not-in-source: the source sentence begins \"Maximum dose:\", so the reply is not the whole sentence."
       },
       {
         "name": "benign V1: an emergency, call 999, a verbatim quote",
@@ -12200,17 +12681,17 @@
         ],
         "replyText": "If it is an emergency, call 999 [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "If it is an emergency, call 999 [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "If it is an emergency, call 999 [1].",
+          "kept": [
+            "If it is an emergency, call 999 [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (\"emergency\" left the sentence list)."
       },
       {
         "name": "benign V2: not harmful, a verbatim quote",
@@ -12248,17 +12729,17 @@
         ],
         "replyText": "Do not take more than 2 tablets at a time [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Do not take more than 2 tablets at a time [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Do not take more than 2 tablets at a time [1].",
+          "kept": [
+            "Do not take more than 2 tablets at a time [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (\"more than\" left the sentence list)."
       },
       {
         "name": "benign V4: the sentence before a maximum sentence",
@@ -12272,17 +12753,17 @@
         ],
         "replyText": "Take 1 or 2 puffs when needed [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Take 1 or 2 puffs when needed [1].",
-              "reason": "dose-not-in-source"
-            }
+          "outcome": "grounded",
+          "displayText": "Take 1 or 2 puffs when needed [1].",
+          "kept": [
+            "Take 1 or 2 puffs when needed [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (the maximum sentence is no longer overdose wording, so the neighbour rule does not reach it)."
       },
       {
         "name": "benign V5: anyone 16 or over against aged 16 and over",
@@ -12320,17 +12801,17 @@
         ],
         "replyText": "Check the maximum on the label [1].",
         "expected": {
-          "outcome": "noEvidence",
-          "displayText": "NO_EVIDENCE",
-          "kept": [],
-          "withheld": [
-            {
-              "sentence": "Check the maximum on the label [1].",
-              "reason": "overdose-sentence"
-            }
+          "outcome": "grounded",
+          "displayText": "Check the maximum on the label [1].",
+          "kept": [
+            "Check the maximum on the label [1]."
           ],
-          "citations": []
-        }
+          "withheld": [],
+          "citations": [
+            1
+          ]
+        },
+        "note": "v6 -> v7: KEPT (\"maximum\" left the sentence list; no number, no dose shown)."
       },
       {
         "name": "benign V10: the sentence before a harm sentence",

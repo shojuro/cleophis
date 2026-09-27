@@ -1,6 +1,6 @@
 // src/triage/lookup-guard.test.mjs — node --test src/
 //
-// The dose-cite-v6 rule, driven ENTIRELY by the JSON fixtures in
+// The dose-cite-v7 rule, driven ENTIRELY by the JSON fixtures in
 // fixtures/lookup-guard/ — the files the triage repo's probes/dose-cite.mjs
 // vendors and asserts identity against. Nothing about the rule's behaviour is
 // pinned only here: every vector a second implementation must reproduce is in
@@ -49,7 +49,7 @@ test('manifest.json pins every fixture file by sha256 and case count', () => {
 
 test('the verdict fixtures have one named group per clause plus the probe sets, and every reason is exercised', () => {
   assert.deepStrictEqual(Object.keys(GROUPS), [
-    'citation-range', 'overdose-section', 'overdose-sentence', 'script-check', 'dose-bearing', 'dose-uncited',
+    'citation-range', 'overdose-section', 'overdose-sentence', 'maximum-dose-quotable', 'script-check', 'dose-bearing', 'dose-uncited',
     'extractive-equality', 'extractive-context', 'ordered', 'lead-in-binding', 'source-splitting', 'neighbours',
     'list-markers-and-brackets', 'withholding-and-banner', 'no-evidence-fallback', ...PROBE_GROUPS, 'cost',
   ]);
@@ -64,7 +64,7 @@ test('the verdict fixtures have one named group per clause plus the probe sets, 
 
 for (const [group, cases] of Object.entries(GROUPS)) {
   for (const c of cases) {
-    test(`dose-cite-v6 [${group}]: ${c.name}`, () => {
+    test(`dose-cite-v7 [${group}]: ${c.name}`, () => {
       const sources = sourcesOf(c);
       assert.ok(sources, `unknown source set ${c.sources}`);
       const v = applyLookupGuard({ replyText: c.replyText, sources });
@@ -81,7 +81,7 @@ for (const [group, cases] of Object.entries(GROUPS)) {
 // except the ones the report names, which carry a note saying KEPT and why.
 // The "quote" cases of rounds 4 and 5 are the verbatim quotes the previous
 // rule wrongly withheld: every one is kept.
-test('every prior adversarial pair is withheld unless its fixture notes why v6 keeps it; every named quote is kept', () => {
+test('every prior adversarial pair is withheld unless its fixture notes why it is kept; every named quote is kept', () => {
   for (const group of PROBE_GROUPS) {
     for (const c of GROUPS[group]) {
       if (/^quote /.test(c.name)) assert.deepStrictEqual(c.expected.withheld, [], `${group}: ${c.name} is not kept`);
@@ -134,12 +134,34 @@ test('eligible.json: sourceSentences, with eligibility and lead-in binding', () 
   }
   assert.deepStrictEqual(eligibleSourceSentences(undefined), []);
   assert.deepStrictEqual(eligibleSourceSentences('Take 2 tablets.', 'If you take too much'), [], 'an overdose section path makes nothing eligible');
-  assert.deepStrictEqual(sourceSentences('Take 2 tablets. Do not take more than 8.').map((s) => s.eligible), [false, false]);
+  assert.deepStrictEqual(sourceSentences('Take 2 tablets. Taking too many can be fatal.').map((s) => s.eligible), [false, false]);
+  // v7: a maximum-dose sentence is not overdose wording, so it and its neighbour are eligible
+  assert.deepStrictEqual(sourceSentences('Take 2 tablets. Do not take more than 8.').map((s) => s.eligible), [true, true]);
 });
 
 test('overdose-sentences.json: the registered sentence list is frozen and matches what it names', () => {
   assert.ok(Object.isFrozen(OVERDOSE_SENTENCE_PATTERNS));
-  for (const c of fixture('overdose-sentences.json').cases) assert.strictEqual(isOverdoseSentence(c.sentence), c.overdose, c.sentence);
+  for (const c of fixture('overdose-sentences.json').cases) {
+    assert.strictEqual(isOverdoseSentence(c.sentence), c.overdose, c.sentence);
+    assert.strictEqual(isOverdoseSentence(normaliseDoseText(c.sentence)), c.overdose, `normalised: ${c.sentence}`);
+  }
+});
+
+// v7 (founder decision 2026-09-28): the sentence list names overdose
+// NARRATIVES only. No dose-instruction word and no route word may match it,
+// and the section list (which names maximum-dose sections) no longer reads
+// sentence text.
+test('v7: no dose-instruction or route word is on the sentence list; the section list reads section paths only', () => {
+  for (const w of ['more than', 'no more than', 'maximum', 'max', 'up to', 'do not exceed', 'at most', 'the maximum dose is',
+    'a&e', 'accident and emergency', '999', '111', 'emergency', 'go to hospital', 'call']) {
+    assert.strictEqual(isOverdoseSentence(`take 2 tablets, ${w} 8`), false, w);
+  }
+  for (const w of ['overdose', 'overdosing', 'too many', 'too much', 'fatal', 'lethal', 'could kill', 'can kill', 'poison',
+    'poisoning', 'liver damage', 'life-threatening']) {
+    assert.strictEqual(isOverdoseSentence(`it says ${w} here`), true, w);
+  }
+  assert.strictEqual(isOverdoseSection('Paracetamol > Maximum dose'), true, 'a maximum-dose SECTION is still withheld whole');
+  assert.strictEqual(isOverdoseSentence('the maximum dose is 8tablets in 24 hours'), false);
 });
 
 test('overdose-sections.json: the registered list is frozen and matches what it names', () => {
@@ -154,7 +176,7 @@ test('citations.json: citationsIn', () => {
   }
 });
 
-// The v6 invariant, checked over every verdict fixture rather than case by
+// The v6/v7 invariant, checked over every verdict fixture rather than case by
 // case: a kept sentence carries no overdose wording and is readable. When a
 // reply shows a dose, every kept sentence with content is a whole eligible
 // sentence of a source it cites, the kept quotes form one contiguous run of
@@ -204,7 +226,7 @@ test('the verdict shape is stable JSON with kind lookup', () => {
     'kind', 'rule', 'outcome', 'displayText', 'rawReply', 'kept', 'withheld', 'citations', 'detectorsSha',
   ]);
   assert.strictEqual(v.kind, 'lookup');
-  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v6');
+  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v7');
   assert.strictEqual(v.detectorsSha, pin.sha256);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(v)), v);
 });

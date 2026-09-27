@@ -1,4 +1,4 @@
-// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v6`.
+// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v7`.
 //
 // Phase 1h M6. The reference lookup lets the model state a dose only when the
 // dose is CITED from the bundled reference pack. This module is the product's
@@ -20,6 +20,11 @@
 // a dose quote is shown only when nothing unverified was said before it.
 // v6 (fix round 6, adjudicated) makes the order CONTIGUOUS and PAGE-ORDERED,
 // and binds a list item to the lead-in line above it.
+// v7 (Phase 1i MA2, founder decision) narrows the SENTENCE list to overdose
+// narratives: verbatim maximum-dose sentences ("Do not take more than 8
+// tablets in 24 hours.") and route sentences ("Call 111 or go to A&E.") are
+// quotable; a section titled Overdose is still withheld whole, and the
+// section list no longer applies to sentence text. Nothing else changed.
 //
 // The rule (`applyLookupGuard`):
 //   Per sentence of the reply (`sentencesOf`: the splitter, the list-marker
@@ -73,7 +78,7 @@
 // context-unverified.
 import pin from './detectors.pin.js';
 
-export const LOOKUP_RULE = 'dose-cite-v6';
+export const LOOKUP_RULE = 'dose-cite-v7';
 
 /**
  * The scripted refusal for a lookup with no evidence. Defined ONCE, here, and
@@ -102,12 +107,12 @@ export const WITHHELD_REASONS = Object.freeze({
   CONTEXT_UNVERIFIED: 'context-unverified',
 });
 
-// ── The founder's overdose lists (kept as registered; their cost is listed) ──
+// ── The founder's overdose lists (v7: the sentence list is narratives only) ──
 
 /**
  * Overdose and maximum-dose material the lookup never quotes from. Matched
- * against a source's SECTION PATH (clause 2) and, through
- * `isOverdoseSentence`, against sentence text.
+ * against a source's SECTION PATH (clause 2) only (v7: no longer against
+ * sentence text). The list itself is unchanged in v7.
  */
 export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
   /\boverdos/i,
@@ -118,37 +123,48 @@ export const OVERDOSE_SECTION_PATTERNS = Object.freeze([
   /\btoxicity\b/i,
 ]);
 
-/** Does this section path (or sentence) name overdose or maximum-dose material? */
+/** Does this section path name overdose or maximum-dose material? */
 export function isOverdoseSection(sectionPath) {
   const s = String(sectionPath ?? '');
   return OVERDOSE_SECTION_PATTERNS.some((re) => re.test(s));
 }
 
 /**
- * Overdose, maximum-dose and harm wording at SENTENCE level (registered in fix
- * round 3). A REPLY sentence that matches is withheld outright; a SOURCE
- * sentence that matches, and its immediate neighbours, are never sentences a
- * reply may quote. Deliberately broad: it also withholds benign "do not take
- * more than" advice, which is the founder's registered cost.
+ * Overdose NARRATIVE wording at SENTENCE level (v7, founder decision
+ * 2026-09-28: verbatim maximum-dose sentences are quotable; only overdose
+ * narratives are withheld). A REPLY sentence that matches is withheld
+ * outright; a SOURCE sentence that matches, and its immediate neighbours, are
+ * never sentences a reply may quote. v7 removed the dose-instruction words
+ * ("more than", "maximum", "max") and the route words ("A&E", "accident and
+ * emergency", "emergency"): "Do not take more than 8 tablets in 24 hours." and
+ * "Call 111 or go to A&E." are quotable when they are verbatim. Matched on
+ * normalised (lower-case, ASCII-dash) text.
  */
 export const OVERDOSE_SENTENCE_PATTERNS = Object.freeze([
-  /\bmore than\b/i,
-  /\bmaximum\b|\bmax\b/i,
-  /\bliver damage\b/i,
-  /\ba ?& ?e\b|\baccident and emergency\b/i,
-  /\bemergency\b/i,
-  /\bfatal\b/i,
-  /\bharm(?:s|ed|ful)?\b/i,
-  /\bdangerous\b/i,
   /\boverdos/i,
   /\btoo much\b/i,
   /\btoo many\b/i,
+  /\bfatal\b/i,
+  /\blethal\b/i,
+  /\b(?:could|can) kill\b/i,
+  /\bpoison/i,
+  /\btoxicity\b/i,
+  /\bliver damage\b/i,
+  /\blife[- ]?threatening\b/i,
+  /\bharm(?:s|ed|ful)?\b/i,
+  /\bdangerous\b/i,
 ]);
 
-/** Does this sentence carry overdose, maximum-dose or harm wording? */
+/**
+ * Does this sentence carry overdose-narrative wording? v7: the sentence list
+ * only. The section list is no longer applied to sentence text, so a
+ * sentence naming a "maximum dose" is judged like any other; every narrative
+ * word of the section list ("overdos", "too much", "poison", "toxicity") is in
+ * the sentence list too.
+ */
 export function isOverdoseSentence(sentence) {
   const s = String(sentence ?? '');
-  return OVERDOSE_SENTENCE_PATTERNS.some((re) => re.test(s)) || isOverdoseSection(s);
+  return OVERDOSE_SENTENCE_PATTERNS.some((re) => re.test(s));
 }
 
 // ── The unit table ──────────────────────────────────────────────────────────
@@ -500,10 +516,10 @@ const LIST_ITEM = /^\s*(?:[-•*]\s|\d+[.)]\s)/;
  * ending in ":" (or another item bound to that lead-in) carries `leadIn`, the
  * index of that line. Not eligible: an empty sentence; every sentence of a
  * source whose section path matches the overdose list; a sentence with
- * overdose, maximum-dose or harm wording, and the sentence immediately before
- * or after it; a list item whose lead-in has that wording; a sentence holding
- * a square bracket with a digit in it (the pack writes no citations, and a
- * bracketed number is not what the reader would see quoted).
+ * overdose-narrative wording (`OVERDOSE_SENTENCE_PATTERNS`), and the sentence
+ * immediately before or after it; a list item whose lead-in has that wording;
+ * a sentence holding a square bracket with a digit in it (the pack writes no
+ * citations, and a bracketed number is not what the reader would see quoted).
  *
  * @returns {{text: string, normalised: string, eligible: boolean, leadIn: number|null}[]}
  */
@@ -609,7 +625,7 @@ function contiguous(l, p, page) {
  * `attach_guard`, replayed by `replayMessage`):
  *
  *   kind          'lookup' — what tells a lookup verdict from a triage one
- *   rule          'dose-cite-v6'
+ *   rule          'dose-cite-v7'
  *   outcome       'grounded', or 'noEvidence' when nothing citable was left
  *   displayText   what is shown and what `attach_guard` writes as the row text
  *   rawReply      the reply as the model wrote it

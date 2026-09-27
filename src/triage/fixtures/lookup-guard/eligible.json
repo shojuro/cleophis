@@ -1,5 +1,5 @@
 {
-  "_comment": "sourceSentences(sourceText) with no section path -> every sentence of the source as [normalised, eligible, leadIn]: the splitter, the list-marker rule, normaliseDoseText; not eligible when empty, when matching OVERDOSE_SENTENCE_PATTERNS (or the section patterns) or an immediate neighbour of such a sentence, when a list item whose lead-in matches, or when holding a square bracket with a digit. leadIn is the index of the lead-in line (ending in a colon) a list item is bound to, else null. A section path on the overdose list makes none eligible.",
+  "_comment": "sourceSentences(sourceText) with no section path -> every sentence of the source as [normalised, eligible, leadIn]: the splitter, the list-marker rule, normaliseDoseText; not eligible when empty, when matching OVERDOSE_SENTENCE_PATTERNS (dose-cite-v7: overdose narratives only) or an immediate neighbour of such a sentence, when a list item whose lead-in matches, or when holding a square bracket with a digit. leadIn is the index of the lead-in line (ending in a colon) a list item is bound to, else null. A section path on the overdose list makes none eligible.",
   "cases": [
     {
       "source": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Always leave at least 4 hours between doses.",
@@ -21,12 +21,12 @@
       "sentences": [
         [
           "take 1 or 2puffs when you need them, every 4-6 hours",
-          false,
+          true,
           null
         ],
         [
           "do not use more than 8puffs in 24 hours",
-          false,
+          true,
           null
         ]
       ]
@@ -116,12 +116,12 @@
       "sentences": [
         [
           "do not take more than 8tablets in 24 hours",
-          false,
+          true,
           null
         ],
         [
           "take 2tablets every 4 hours",
-          false,
+          true,
           null
         ],
         [
@@ -241,7 +241,7 @@
       "sentences": [
         [
           "maximum doses: do not take more than 8tablets in 24 hours",
-          false,
+          true,
           null
         ]
       ]
@@ -379,17 +379,17 @@
       "sentences": [
         [
           "do not take more than",
-          false,
+          true,
           null
         ],
         [
           "8tablets",
-          false,
+          true,
           0
         ],
         [
           "2tablets",
-          false,
+          true,
           0
         ]
       ]
