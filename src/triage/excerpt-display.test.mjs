@@ -105,3 +105,24 @@ test('a source whose text was not recovered shows nothing; no source at all show
   assert.deepStrictEqual(excerptDisplay([]), { blocks: [], shown: 0 });
   assert.deepStrictEqual(excerptDisplay(undefined), { blocks: [], shown: 0 });
 });
+
+test('a lead-in whose items are all hidden is not shown alone (the unit, the other direction)', () => {
+  const text = 'Paracetamol is a painkiller.\n\nDo not take it if you:\n- are allergic [see 1]\n- have liver problems\n\nIt is sold in shops.';
+  const r = excerptDisplay([src(1, 1, 'About', text)]);
+  assert.deepStrictEqual(r.blocks[0].sentences, ['Paracetamol is a painkiller.', 'It is sold in shops.']);
+  assert.ok(!r.blocks[0].text.includes('Do not take it if you'));
+  assert.strictEqual(r.shown, 2);
+});
+
+test('a lead-in with at least one item shown stays', () => {
+  const text = 'Do not take it if you:\n- have liver problems\n- are allergic [see 1]';
+  const r = excerptDisplay([src(1, 1, 'About', text)]);
+  assert.deepStrictEqual(r.blocks[0].sentences, ['Do not take it if you:', '- have liver problems']);
+});
+
+test('a hole in the source list is skipped, and page order is the guard\'s over the SAME list (citation order)', () => {
+  // With the hole filtered out, every remaining source has a chunkId and the
+  // order would be [3, 1]; the guard sees the hole and orders by n.
+  const r = excerptDisplay([src(1, 9, 'About', 'First.'), null, src(3, 2, 'About', 'Third.')]);
+  assert.deepStrictEqual(r.blocks.map((b) => b.n), [1, 3]);
+});

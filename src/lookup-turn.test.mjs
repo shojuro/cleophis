@@ -446,13 +446,19 @@ const EXPECTED_EXCERPTS = [
 
 async function excerptTurn(reply = PARAPHRASE) {
   const generate = mockModel(reply);
-  const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke: mockInvoke(EX_GROUNDED), generate });
-  return { r, generate };
+  const invoke = mockInvoke(EX_GROUNDED);
+  const r = await runLookupTurn({ text: 'paracetamol', entry: ENTRY, invoke, generate });
+  return { r, generate, invoke };
 }
 
 test('grounded -> model -> nothing kept -> the excerpts, verbatim, in page order, each under its citation line', async () => {
-  const { r, generate } = await excerptTurn();
+  const { r, generate, invoke } = await excerptTurn();
+  assert.deepStrictEqual(invoke.calls, [{ cmd: 'rag_lookup', args: { query: 'paracetamol', packId: 'reference-uk-v1' } }]);
   assert.strictEqual(generate.calls.length, 1);
+  assert.deepStrictEqual(generate.calls[0].messages, [
+    { role: 'system', content: EX_PROMPT },
+    { role: 'user', content: 'paracetamol' },
+  ]);
   assert.strictEqual(r.modelCalled, true);
   assert.strictEqual(r.messageId, 42);
   assert.strictEqual(r.outcome, 'excerpts');
@@ -541,9 +547,29 @@ test('the scripted branches never fall back to excerpts and never call the model
     assert.strictEqual(generate.calls.length, 0, outcome);
     assert.ok(!('excerptsShown' in r.verdict), outcome);
   }
+  const crisisInvoke = mockInvoke(EX_GROUNDED);
+  const crisisModel = mockModel(PARAPHRASE);
   const crisis = await runLookupTurn({
-    text: 'I want to kill myself', entry: ENTRY, invoke: mockInvoke(EX_GROUNDED), generate: mockModel(PARAPHRASE),
+    text: 'I want to kill myself', entry: ENTRY, invoke: crisisInvoke, generate: crisisModel,
   });
   assert.strictEqual(crisis.outcome, 'crisis');
   assert.strictEqual(crisis.modelCalled, false);
+  assert.strictEqual(crisisInvoke.calls.length, 0, 'crisis first: no rag_lookup');
+  assert.strictEqual(crisisModel.calls.length, 0, 'crisis first: no model');
+  assert.ok(!('excerptsShown' in crisis.verdict));
+});
+
+import { lookupWithheldNote } from './lookup-turn.js';
+
+test('the withheld note: unchanged under a grounded reply, and under the excerpts it says the assistant\'s answer was replaced', async () => {
+  assert.strictEqual(lookupWithheldNote({ outcome: 'grounded', withheldCount: 0 }), null);
+  assert.strictEqual(lookupWithheldNote({ outcome: 'grounded', withheldCount: 1 }),
+    '1 sentence was withheld: the reference pack does not confirm it.');
+  assert.strictEqual(lookupWithheldNote({ outcome: 'grounded', withheldCount: 3 }),
+    '3 sentences were withheld: the reference pack does not confirm them.');
+  const { r } = await excerptTurn();
+  const view = replayMessage({ supervised: true, role: 'assistant', content: '', guard: lookupForPersistence(r.verdict, ENTRY) });
+  assert.strictEqual(lookupWithheldNote(view.lookup),
+    "The assistant's answer was withheld: the reference pack does not confirm it. The NHS excerpts are shown instead.");
+  assert.strictEqual(view.lookup.withheldCount, 2, 'the tally is kept on the verdict');
 });

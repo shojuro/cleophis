@@ -228,6 +228,21 @@ export function lookupCitationRow(c) {
 }
 
 /**
+ * The note under a lookup reply about withheld sentences, or null when none
+ * was withheld. Under the excerpt fallback the withheld sentences are the
+ * model's, which the reader never sees, so the note says the assistant's
+ * answer was replaced rather than counting sentences under NHS text.
+ */
+export function lookupWithheldNote(lookup) {
+  const count = (lookup && lookup.withheldCount) || 0;
+  if (count <= 0) return null;
+  if (lookup.outcome === 'excerpts') {
+    return "The assistant's answer was withheld: the reference pack does not confirm it. The NHS excerpts are shown instead.";
+  }
+  return `${count} sentence${count === 1 ? ' was' : 's were'} withheld: the reference pack does not confirm ${count === 1 ? 'it' : 'them'}.`;
+}
+
+/**
  * The heading of one excerpt block: `[n] title · section`, then the URL and
  * "as at" on a second line when the source carries either (`lookupCitationRow`,
  * so the block reads like the citation list).

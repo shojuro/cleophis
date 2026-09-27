@@ -2926,6 +2926,83 @@ mod tests {
         assert_eq!(line["model_route"], serde_json::Value::Null);
     }
 
+    /// Phase 1i MA3: an EXCERPT-fallback lookup (the guard kept nothing, the
+    /// verbatim NHS excerpts were shown) exports through the lookup shape with
+    /// `outcome: "excerpts"` — the column `reference_excerpts_shown` is read
+    /// from — and every triage column null, never `"UNCLEAR"`.
+    #[test]
+    fn export_triage_log_carries_the_excerpts_outcome() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "paracetamol",
+                None,
+                None,
+                Some(json!({"kind": "lookup", "role": "query"})),
+            )
+            .unwrap();
+        let reference_pack = json!({
+            "id": "reference-uk-v1",
+            "sha256": "5c7b2c98",
+            "contentSha256": "df9429a1",
+            "version": "2026.09.1"
+        });
+        let withheld = json!([{"sentence": "You can take 1g [1].", "reason": "dose-not-in-source"}]);
+        let excerpts = "[1] Paracetamol for adults \u{b7} How and when to take it\nThe usual dose is 1 or 2 tablets.";
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                excerpts,
+                None,
+                None,
+                Some(json!({
+                    "kind": "lookup",
+                    "rule": "dose-cite-v6",
+                    "outcome": "excerpts",
+                    "displayText": excerpts,
+                    "rawReply": "You can take 1g [1].",
+                    "kept": [],
+                    "withheld": withheld.clone(),
+                    "citations": [1, 2],
+                    "excerptsShown": 4,
+                    "detectorsSha": "abc",
+                    "modelSha": "25162bff",
+                    "adapterSha": "5304e464",
+                    "referencePack": reference_pack.clone()
+                })),
+            )
+            .unwrap();
+
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1);
+        let l = &lines[0];
+        assert_eq!(l["kind"], "lookup");
+        assert_eq!(l["outcome"], "excerpts");
+        assert_eq!(l["rule"], "dose-cite-v6");
+        assert_eq!(l["citations"], json!([1, 2]));
+        assert_eq!(l["withheld"], withheld);
+        assert_eq!(l["withheld"].as_array().map(Vec::len), Some(1));
+        assert_eq!(l["reference_pack"], reference_pack);
+        assert_eq!(l["crisis_on_input"], json!(false));
+        assert_eq!(l["display_text"], excerpts);
+        for key in ConvStore::TRIAGE_ONLY_EXPORT_COLUMNS {
+            assert_eq!(l[key], serde_json::Value::Null, "excerpts line: {key} must be null");
+            assert_ne!(l[key], "UNCLEAR", "excerpts line: {key}");
+        }
+    }
+
     /// An UNGUARDED chat contributes no lines, and a confirmation that
     /// differs from the model's route is reported as an override.
     #[test]

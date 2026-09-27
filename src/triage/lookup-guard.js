@@ -583,7 +583,10 @@ const LIST_ITEM = /^\s*(?:[-•*]\s|\d+[.)]\s)/;
  * a sentence holding a square bracket with a digit in it (the pack writes no
  * citations, and a bracketed number is not what the reader would see quoted).
  *
- * @returns {{text: string, normalised: string, eligible: boolean, leadIn: number|null}[]}
+ * `sep` is the whitespace that followed the sentence in the source, so a
+ * verbatim excerpt keeps the source's own spacing and line breaks.
+ *
+ * @returns {{text: string, sep: string, normalised: string, eligible: boolean, leadIn: number|null}[]}
  */
 export function sourceSentences(sourceText, sectionPath) {
   const all = sentencesOf(sourceText);
@@ -598,6 +601,7 @@ export function sourceSentences(sourceText, sectionPath) {
   });
   return all.map((x, i) => ({
     text: x.text,
+    sep: x.sep,
     normalised: x.normalised,
     eligible: Boolean(x.normalised) && !section && !overdose[i] && !overdose[i - 1] && !overdose[i + 1]
       && !(leadIns[i] !== null && overdose[leadIns[i]]) && !DIGIT_BRACKET.test(x.text),
@@ -625,9 +629,10 @@ function pageKeyOf(list) {
 // When a grounded lookup's reply keeps nothing, the product shows the
 // retrieved source text itself, verbatim, and never the model's words. What
 // may be shown is exactly what the guard lets a reply QUOTE: the eligibility
-// of `sourceSentences`, never a second rule. On top of it, clause 8's unit: a
-// list item bound to a lead-in is shown only right after its lead-in, or
-// after the item before it, both shown.
+// of `sourceSentences`, never a second rule. On top of it, clause 8's unit,
+// in both directions: a list item bound to a lead-in is shown only right
+// after its lead-in, or after the item before it, both shown; and a lead-in
+// is shown only when at least one of its items is.
 
 /** Stands in for a run of source sentences the excerpt leaves out. */
 export const EXCERPT_OMISSION = '[…]';
@@ -646,19 +651,24 @@ export const EXCERPT_OMISSION = '[…]';
  *   `shown` is the number of source sentences shown, over every block.
  */
 export function excerptDisplay(sources) {
-  const list = Array.isArray(sources) ? sources.filter(Boolean) : [];
+  // The same list the guard indexes, holes included, so page order agrees.
+  const list = Array.isArray(sources) ? sources : [];
   const key = pageKeyOf(list);
   const order = list.map((_, i) => i + 1).sort((a, b) => key(a) - key(b) || a - b);
   const blocks = [];
   let shown = 0;
   for (const n of order) {
     const src = list[n - 1];
+    if (!src) continue;
     const sents = sourceSentences(src.text, src.sectionPath);
-    // `sourceSentences` is `splitSentences` mapped one to one: same length, same order.
-    const seps = splitSentences(src.text).map((x) => x.sep);
     const show = sents.map((x) => x.eligible);
     for (let i = 0; i < show.length; i++) {
       if (show[i] && sents[i].leadIn !== null && !show[i - 1]) show[i] = false;
+    }
+    // A lead-in with none of its items shown is not shown either.
+    const leadInsWithItemShown = new Set(sents.filter((x, i) => show[i] && x.leadIn !== null).map((x) => x.leadIn));
+    for (const k of new Set(sents.map((x) => x.leadIn).filter((k) => k !== null))) {
+      if (!leadInsWithItemShown.has(k)) show[k] = false;
     }
     if (!show.some(Boolean)) continue;
     const sentences = [];
@@ -667,12 +677,12 @@ export function excerptDisplay(sources) {
     sents.forEach((x, i) => {
       if (show[i]) {
         sentences.push(x.text);
-        text += x.text + seps[i];
+        text += x.text + x.sep;
         omitting = false;
       } else if (omitting) {
-        text = text.replace(/\s*$/, '') + seps[i];
+        text = text.replace(/\s*$/, '') + x.sep;
       } else {
-        text += EXCERPT_OMISSION + seps[i];
+        text += EXCERPT_OMISSION + x.sep;
         omitting = true;
       }
     });

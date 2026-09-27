@@ -18,7 +18,9 @@ import {
 } from './triage-turn.js';
 // Phase 1h M6: the reference LOOKUP mode on the supervised screen. Its
 // decisions live in lookup-turn.js (tested); this file draws them.
-import { lookupCitationRow, lookupForPersistence, referencePackId, runLookupTurn } from './lookup-turn.js';
+import {
+  lookupCitationRow, lookupForPersistence, lookupWithheldNote, referencePackId, runLookupTurn,
+} from './lookup-turn.js';
 // Task 8: the health worker's decision on a supervised reply, and the audit
 // log's way out. Gated on the same `supervised === true` as everything above.
 import {
@@ -2659,10 +2661,11 @@ function renderLookupExtras(el, lookup) {
   tag.textContent = lookup.query ? 'Look up' : 'Reference lookup';
   el.prepend(tag);
   if (lookup.query) return;
-  if (lookup.withheldCount > 0) {
+  const withheldNote = lookupWithheldNote(lookup);
+  if (withheldNote) {
     const note = document.createElement('div');
     note.className = 'lookup-withheld';
-    note.textContent = `${lookup.withheldCount} sentence${lookup.withheldCount === 1 ? ' was' : 's were'} withheld: the reference pack does not confirm ${lookup.withheldCount === 1 ? 'it' : 'them'}.`;
+    note.textContent = withheldNote;
     el.appendChild(note);
   }
   if (lookup.citations && lookup.citations.length) renderLookupCitations(el, lookup.citations);
