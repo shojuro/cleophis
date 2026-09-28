@@ -415,48 +415,45 @@ function isCrisisSignpostSentence(sentence) {
   return signposted.includes('named crisis service') && PHONE_LIKE.test(sentence);
 }
 
-// Sentences for the de-duplication. SENTENCES plus any closing quote or bracket
-// after the full stop, so `shout, "Are you okay?"` is ONE sentence and removing
-// a neighbour never strands its `"`. Local, not a change to SENTENCES: that one
-// is shared with `filterProhibited`, whose bytes the append digest pins.
-const DEDUPE_SENTENCES = /[^.!?]+[.!?]+["'\u201d\u2019)\]]*|[^.!?]+$/g;
-
 /**
- * Remove every sentence of a KEPT reply that is a crisis signpost
- * (`isCrisisSignpostSentence`), so that when the product's crisis block is on
- * screen it is the only crisis line: no number inside a sentence the frozen
- * detector reads as a crisis signpost reaches the reader (Phase 1i MA1). A
- * number in a sentence the detector does not read as a crisis signpost — "call
- * the free helpline on 0800 …", "ring 116 132" — is NOT removed; the triage
- * census defines its wrong-number floor the same way.
+ * Remove every sentence of a KEPT reply that could put a second crisis line
+ * beside the product's block, so that the block is the only crisis line on
+ * screen (Phase 1i MA1):
+ *   - a sentence the frozen detector reads as a crisis signpost
+ *     (`isCrisisSignpostSentence`), AND
+ *   - (whole-branch fix round, I3) any sentence carrying a phone-number-like
+ *     token (`PHONE_LIKE`, five or more digits), whatever the detector's
+ *     labels. "You can also ring 116 132 any time to talk to someone." and
+ *     "call 0800 068 4141 (HOPELINEUK)" name no service the detector knows,
+ *     so they stayed beside the block: two numbers on one screen, one wrong.
+ *     The only numbers a triage reply legitimately gives are 999, 111 and
+ *     112, and three digits are never PHONE_LIKE. Over the 1,000 saved
+ *     replies five sentences are phone-like ("20-20-20 rule", "5-4-3-2-1
+ *     technique"), all in SELF_CARE replies the registered rule never keeps.
  *
- * Removal SPLICES the original text: kept sentences keep their bytes, their
- * paragraph breaks and abbreviations ("e.g."); only the cut spans go, and the
- * whitespace they leave is tidied. Text with nothing to remove is returned
- * UNTOUCHED, so a reply with no signpost is byte-identical with the rule on or
- * off. If what is left still signposts crisis support as a whole, the whole
- * reply part goes: fail toward showing less, and the block is still there.
+ * This is broader than the triage census's registered wrong-number floor,
+ * which counts numbers inside sentences the detector reads as a crisis
+ * signpost; the census reports the broader count beside it.
+ *
+ * Sentences come from the lookup guard's `splitSentences` (via
+ * `sentenceSpans`, fix round M1): the old local splitter broke at "e.g." and
+ * spliced "Call 999 now, e.g. from a landline." into "landline.g. tonight".
+ * Removal SPLICES the original text (`spliceOut`): kept sentences keep their
+ * bytes and paragraph breaks; a heading whose whole section went goes too.
+ * Text with nothing to remove is returned UNTOUCHED, so a reply with no
+ * signpost is byte-identical with the rule on or off. If what is left still
+ * signposts crisis support as a whole, the whole reply part goes: fail toward
+ * showing less, and the block is still there.
  *
  * @returns {{text: string, removed: number}} `removed` is a COUNT; the removed
  *   sentences survive only in the verdict's `rawReply`, never as display text.
  */
 export function dedupeSignposts(text) {
   const src = String(text ?? '');
-  const spans = [...src.matchAll(DEDUPE_SENTENCES)]
-    .filter((m) => m[0].trim())
-    .map((m) => ({ start: m.index, end: m.index + m[0].length, text: m[0] }));
-  const cut = spans.filter((sp) => isCrisisSignpostSentence(sp.text));
+  const spans = sentenceSpans(src);
+  const cut = spans.filter((sp) => isCrisisSignpostSentence(sp.text) || PHONE_LIKE.test(sp.text));
   if (!cut.length) return { text: src, removed: 0 };
-  let out = '';
-  let at = 0;
-  for (const sp of cut) { out += src.slice(at, sp.start); at = sp.end; }
-  out += src.slice(at);
-  out = out
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+  const out = spliceOut(src, orphanHeadings(spans, cut));
   if (signpostsCrisisSupport(out)) return { text: '', removed: spans.length };
   return { text: out, removed: cut.length };
 }

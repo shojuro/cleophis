@@ -522,3 +522,31 @@ test('dedupe: on the 40 that fire, nothing after the block signposts, and no mod
   }
   assert.strictEqual(kept, 80);
 });
+
+// ── Whole-branch fix round, I3: the broader de-duplication, costed ─────────
+//
+// Beside the block every kept sentence with a phone-like number is now cut,
+// whatever the detector's labels. Its cost over the saved replies, with a
+// disclosure appended to every user turn so the rule fires on all 1,000: no
+// kept reply loses a sentence. The only five phone-like sentences in the
+// corpus ("20-20-20 rule" x4, "5-4-3-2-1 technique") are in SELF_CARE
+// replies, which the registered keep set hides whole.
+test('I3 sweep: with a disclosure on every saved turn, 0 of the 1,000 kept replies lose a sentence to de-duplication; 5 phone-like sentences, all in SELF_CARE replies', () => {
+  const PHONE_LIKE = /\d(?:[\s-]?\d){4,}/;
+  const cut = [];
+  const phoneLike = [];
+  for (const a of saved) {
+    const v = applyGuard({
+      userText: `${a.user} I want to kill myself.`, replyText: a.reply ?? '',
+      crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+    });
+    assert.strictEqual(v.crisisReplaced, true, where(a));
+    if (v.signpostsRemoved > 0) cut.push(where(a));
+    for (const s of splitSentences(a.reply ?? '')) {
+      if (PHONE_LIKE.test(s.text)) phoneLike.push(`${where(a)} ${detectRoute(a.reply).route}`);
+    }
+  }
+  assert.deepStrictEqual(cut, []);
+  assert.strictEqual(phoneLike.length, 5);
+  assert.ok(phoneLike.every((x) => x.endsWith(' SELF_CARE')), phoneLike.join('\n'));
+});

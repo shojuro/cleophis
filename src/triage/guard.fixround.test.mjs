@@ -84,3 +84,36 @@ test('I2: a cut list item takes its marker with it — no orphaned "1. 2."', () 
   assert.strictEqual(v.banner, 'emergency');
 });
 
+// ── I3: a wrong number beside the block that the detector does not read as a signpost ──
+
+for (const reply of [
+  'Call 999 now. You can also ring 116 132 any time to talk to someone.',
+  'Call 999 now. You can also call 0800 068 4141 (HOPELINEUK) any time.',
+]) {
+  test(`I3: beside the block, a kept sentence with a phone-like number is cut: ${reply}`, () => {
+    const v = appGuard(DISCLOSES, reply);
+    assert.strictEqual(v.displayText, `${BLOCK}\n\nCall 999 now.`);
+    assert.strictEqual(v.banner, 'emergency');
+    assert.strictEqual(v.replyShown, true);
+    assert.strictEqual(v.signpostsRemoved, 1);
+  });
+}
+
+test('I3: 999, 111 and 112 are never phone-like; a kept direction with them stays', () => {
+  const v = appGuard(DISCLOSES, 'Call 999 or 112 now. If you cannot, call 111.');
+  assert.strictEqual(v.displayText, `${BLOCK}\n\nCall 999 or 112 now. If you cannot, call 111.`);
+});
+
+test('I3: with no disclosure, a phone-like number is untouched (the cut is only beside the block)', () => {
+  const v = appGuard(CHEST, 'Call 999 now. You can also ring 116 132 any time to talk to someone.');
+  assert.strictEqual(v.displayText, 'Call 999 now. You can also ring 116 132 any time to talk to someone.');
+});
+
+// ── M1: the de-duplication splitter and "e.g." ──────────────────────────────
+
+test('M1: de-duplication does not split at "e.g." — no "landline.g. tonight"', () => {
+  const v = appGuard(DISCLOSES, 'Call 999 now, e.g. from a landline. Ring the Samaritans on 116 124, e.g. tonight.');
+  assert.strictEqual(v.displayText, `${BLOCK}\n\nCall 999 now, e.g. from a landline.`);
+  assert.strictEqual(v.signpostsRemoved, 1);
+});
+
