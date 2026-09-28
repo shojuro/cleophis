@@ -150,6 +150,46 @@ test('every conversation and lookup step names its input, its export row and at 
   }
 });
 
+// ── TC1 fix round 1 ─────────────────────────────────────────────────────────
+
+const INPUTS_FILE = new URL('../docs/superpowers/mobile-tools/phone-journey-inputs.txt', import.meta.url);
+
+/** `phone-journey-inputs.txt`: `ID` on one line, the input on the next, a blank line between. */
+export function inputsFile(text) {
+  const out = {};
+  for (const block of text.split(/\n\s*\n/)) {
+    const lines = block.split('\n').filter((l) => l !== '');
+    if (!lines.length || lines[0].startsWith('#')) continue;
+    assert.equal(lines.length, 2, `a block of the inputs file is not an id and one line: ${JSON.stringify(block)}`);
+    out[lines[0]] = lines[1];
+  }
+  return out;
+}
+
+test('every ```text block is claimed: expect, expect-source, input, or marked literal (review Minor 1)', () => {
+  const md = readChecklist();
+  const re = /(^|\n)(.*)\n```text\n/g;
+  let n = 0;
+  for (let m = re.exec(md); m; m = re.exec(md)) {
+    n += 1;
+    assert.match(m[2], /^<!-- (expect: .+|expect-source: .+|input: [A-Z]\d|literal) -->$/,
+      `a text block is preceded by ${JSON.stringify(m[2])}, not a claim`);
+  }
+  assert.ok(n >= 50, `only ${n} text blocks found`);
+});
+
+test('the inputs file the founder pastes from equals the checklist inputs, byte for byte (review I3)', () => {
+  assert.ok(existsSync(INPUTS_FILE), 'docs/superpowers/mobile-tools/phone-journey-inputs.txt is missing');
+  assert.deepEqual(inputsFile(readFileSync(INPUTS_FILE, 'utf8')), inputBlocks(readChecklist()));
+});
+
+test('the rollback step names the Android package from its config, never the desktop id (review I2)', () => {
+  const { body } = steps(readChecklist()).C1;
+  assert.ok(body.includes('<!-- expect-source: src-tauri/tauri.android.conf.json -->'), 'C1 does not pin the package');
+  assert.ok(!body.includes('com.cleophis.desktop'), 'C1 names the desktop identifier');
+  assert.ok(body.includes('${PKG:-com.cleophis.app}'), 'C1 does not use the PKG default');
+});
+
 test('the parser refuses what it should: a wrong string is caught, not skipped', () => {
   const md = '<!-- expect: guard.CRISIS_LINE_REPLACE -->\n```text\nCall the wrong number.\n```\n';
   const [b] = expectBlocks(md);
