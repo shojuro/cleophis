@@ -19,9 +19,9 @@
 // carries a verdict.
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { applyGuard } from './triage/guard.js';
+import { applyGuard, carriesDose, redactDoses } from './triage/guard.js';
 import {
-  CONFIRM_ROUTES, CRISIS_ADDED_ROW, CRISIS_LEADS_ROW, CRISIS_REPLACED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
+  CONFIRM_ROUTES, CRISIS_ADDED_ROW, CRISIS_LEADS_ROW, CRISIS_ONLY_ROW, CRISIS_REPLACED_ROW, NO_CHANGES_ROW, NO_CONFIRM_STATE, ROUTE_LABELS,
   signpostsRemovedRow, dosesRemovedRow, DISCLAIMER_REMOVED_PREFIX,
   TIMEFRAME_WITHHELD_ROW, TRIAGE_EXPORT_LABEL, TRIAGE_EXPORT_UNAVAILABLE, UNCLEAR_LINE_ROW,
   confirmRequest, confirmResult, confirmState, confirmStatusText, modelRouteOf,
@@ -113,7 +113,7 @@ test('a reply whose persist never landed shows the receipt and no controls', () 
   const st = confirmState({ supervised: true, message: { guard: verdict({ prohibitedRemoved: ['Take 400mg.'] }) } });
   assert.strictEqual(st.render, true);
   assert.strictEqual(st.controls, 'none');
-  assert.deepStrictEqual(st.receipt.rows, ['Removed: Take 400mg.']);
+  assert.deepStrictEqual(st.receipt.rows, ['Removed: Take [dose removed].']);
 });
 
 test('a confirmed reply comes back locked, naming the confirmed route', () => {
@@ -189,8 +189,10 @@ test('every removed sentence is quoted as written, in the order it was written',
   const rows = receiptRows(verdict({
     prohibitedRemoved: ['Take ibuprofen 400mg every six hours.', 'This is likely appendicitis.'],
   }));
+  // Whole-branch fix round, I5: the dose in a removed sentence is redacted in
+  // the receipt too; a diagnosis sentence stays verbatim.
   assert.deepStrictEqual(rows, [
-    'Removed: Take ibuprofen 400mg every six hours.',
+    'Removed: Take ibuprofen [dose removed] every six hours.',
     'Removed: This is likely appendicitis.',
   ]);
 });
@@ -208,7 +210,7 @@ test('what the guard ADDED is on the receipt too, after what it removed', () => 
     prohibitedRemoved: ['Take 400mg.'],
     crisisLineAppended: true,
   }));
-  assert.deepStrictEqual(rows, ['Removed: Take 400mg.', CRISIS_ADDED_ROW]);
+  assert.deepStrictEqual(rows, ['Removed: Take [dose removed].', CRISIS_ADDED_ROW]);
 });
 
 test('a withheld referral says the model\'s text is not on screen', () => {
@@ -246,8 +248,10 @@ test('the receipt of a REAL verdict names the sentence the guard removed', () =>
   assert.ok(v.prohibitedRemoved.length > 0, 'the fixture must actually trip the filter');
   const rows = receiptRows(v);
   for (const sentence of v.prohibitedRemoved) {
-    assert.ok(rows.includes(`Removed: ${sentence}`), `receipt is missing: ${sentence}`);
+    const listed = carriesDose(sentence) ? redactDoses(sentence) : sentence;
+    assert.ok(rows.includes(`Removed: ${listed}`), `receipt is missing: ${sentence}`);
   }
+  assert.ok(rows.every((r) => !carriesDose(r)), 'no receipt row repeats a dose');
   assert.ok(!v.displayText.includes('400mg'), 'the dose must not be on screen');
 });
 
@@ -397,7 +401,7 @@ test('a kept reply that lost a crisis-line sentence says so by COUNT, never by t
   assert.match(signpostsRemovedRow(2), /^2 sentences/);
 });
 
-test('a kept reply de-duplication EMPTIED reads as replaced on the receipt', () => {
+test('a kept reply de-duplication EMPTIED gets its own rows, never "replaced" (whole-branch fix round, M4)', () => {
   const v = applyGuard({
     userText: "i don't want to be here anymore",
     replyText: 'Go to A&E now and call the Samaritans on 116 123.',
@@ -405,7 +409,7 @@ test('a kept reply de-duplication EMPTIED reads as replaced on the receipt', () 
   });
   assert.strictEqual(v.replyShown, false);
   assert.strictEqual(v.banner, 'emergency');
-  assert.deepStrictEqual(receiptRows(v), [CRISIS_REPLACED_ROW]);
+  assert.deepStrictEqual(receiptRows(v), [signpostsRemovedRow(1), CRISIS_ONLY_ROW]);
 });
 
 /* ---------------- Phase 1h M6: a lookup row has no route to confirm ---------------- */

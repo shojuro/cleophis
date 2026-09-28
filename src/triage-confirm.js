@@ -27,6 +27,8 @@
 // "nothing" for an unsupervised chat, so the tutor's identity is a test rather
 // than a claim.
 
+import { carriesDose, redactDoses } from './triage/guard.js';
+
 /**
  * The four routes the contract defines, in `confirm_route`'s own order, with
  * the words a health worker reads.
@@ -77,6 +79,13 @@ export function modelRouteOf(guard) {
 
 /* ---------------- the removal receipt ---------------- */
 
+// Whole-branch fix round, I5: the receipt applies its own principle to the
+// removed sentences too. A sentence the prohibited filter cut for a dose is
+// listed with every dose redacted in place (the guard's own `redactDoses`,
+// the one tokeniser); one whose dose cannot be located is not listed at all,
+// only counted. Diagnosis and drug-name sentences with no dose stay verbatim.
+// (`carriesDose` and `redactDoses` are imported at the top of this module.)
+
 export const CRISIS_ADDED_ROW = 'The product\'s crisis line was added under the reply.';
 export const TIMEFRAME_WITHHELD_ROW =
   'A stated time frame could not be removed, so the model\'s own text is not shown.';
@@ -89,6 +98,11 @@ export const NO_CHANGES_ROW = 'Nothing was removed from this reply.';
 export const CRISIS_REPLACED_ROW =
   'The product\'s crisis support replaced the model\'s reply, which is not shown.';
 export const CRISIS_LEADS_ROW = 'The product\'s crisis support was placed above the reply.';
+// Whole-branch fix round, M4: a KEPT reply that de-duplication emptied. The
+// banner is drawn and nothing of the model's text is under the block, so
+// neither "replaced the model's reply" nor "placed above the reply" is true.
+export const CRISIS_ONLY_ROW =
+  'The product\'s crisis support is shown alone: nothing else in the reply remained, so the route banner carries the model\'s route.';
 // Phase 1i MA1, signpost de-duplication. A COUNT, never the sentences: the
 // removed crisis lines are never display text anywhere, this panel included —
 // a wrong number repeated in the receipt is still a wrong number on screen.
@@ -105,6 +119,14 @@ export function dosesRemovedRow(n) {
   return n === 1
     ? 'One sentence giving a dose was removed; a clinician can advise on treatment.'
     : `${n} sentences giving a dose were removed; a clinician can advise on treatment.`;
+}
+
+// Whole-branch fix round, I5: removed dose sentences whose dose could not be
+// redacted in place are counted, never quoted.
+export function doseSentencesWithheldRow(n) {
+  return n === 1
+    ? 'One removed sentence gave a dose, so it is not repeated here.'
+    : `${n} removed sentences gave a dose, so they are not repeated here.`;
 }
 
 // Phase 1i MA6, red-flag scope disclaimers. VERBATIM: a disclaimer in the
@@ -133,9 +155,17 @@ export const DISCLAIMER_REMOVED_PREFIX = 'Disclaimer removed: ';
  */
 export function receiptRows(guard) {
   if (!guard) return [];
-  if (guard.crisisReplaced === true && guard.replyShown === false) return [CRISIS_REPLACED_ROW];
+  // Hidden (not kept: no banner) -> the one row. A kept reply de-duplication
+  // emptied keeps its banner and reads its own rows below (M4).
+  if (guard.crisisReplaced === true && guard.replyShown === false && !guard.banner) return [CRISIS_REPLACED_ROW];
   const rows = [];
-  for (const sentence of guard.prohibitedRemoved ?? []) rows.push(`Removed: ${sentence}`);
+  let doseWithheld = 0;
+  for (const sentence of guard.prohibitedRemoved ?? []) {
+    const shown = carriesDose(sentence) ? redactDoses(sentence) : sentence;
+    if (shown === null) doseWithheld += 1;
+    else rows.push(`Removed: ${shown}`);
+  }
+  if (doseWithheld > 0) rows.push(doseSentencesWithheldRow(doseWithheld));
   if (guard.dosesRemoved > 0) rows.push(dosesRemovedRow(guard.dosesRemoved));
   for (const sentence of Array.isArray(guard.disclaimersRemoved) ? guard.disclaimersRemoved : []) {
     rows.push(`${DISCLAIMER_REMOVED_PREFIX}${sentence}`);
@@ -145,7 +175,7 @@ export function receiptRows(guard) {
   if (guard.timeframeUnlocated) rows.push(TIMEFRAME_WITHHELD_ROW);
   if (guard.crisisLineAppended) rows.push(CRISIS_ADDED_ROW);
   if (guard.route === 'UNCLEAR') rows.push(UNCLEAR_LINE_ROW);
-  if (guard.crisisReplaced === true) rows.push(CRISIS_LEADS_ROW);
+  if (guard.crisisReplaced === true) rows.push(guard.replyShown === false ? CRISIS_ONLY_ROW : CRISIS_LEADS_ROW);
   return rows;
 }
 

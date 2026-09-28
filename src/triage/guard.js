@@ -564,7 +564,7 @@ export const DOSE_REDACTED = '[dose removed]';
  * window's edges stays. Returns null if a dose could not be located, which the
  * caller treats as "cut the sentence" (fail toward showing less).
  */
-function redactDoses(sentence) {
+export function redactDoses(sentence) {
   // Every question is asked of the text WITH THE MARKER DELETED (fix round 2,
   // N1): the normaliser cannot glue a number to a unit across "[dose removed]",
   // so "two [dose removed] tablets" would read clean while "two ... tablets" is

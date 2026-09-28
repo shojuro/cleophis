@@ -15,7 +15,7 @@ import {
 import { detectMedication, detectRoute } from './detectors.mjs';
 import { splitSentences } from './lookup-guard.js';
 import { crisisRuleFor } from '../triage-turn.js';
-import { CRISIS_LEADS_ROW, receiptRows } from '../triage-confirm.js';
+import { CRISIS_LEADS_ROW, CRISIS_ONLY_ROW, receiptRows } from '../triage-confirm.js';
 
 const CATALOG = JSON.parse(readFileSync(new URL('../../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8'));
 const ENTRY = CATALOG.find((e) => e.id === 'med-triage');
@@ -115,6 +115,51 @@ test('M1: de-duplication does not split at "e.g." — no "landline.g. tonight"',
   const v = appGuard(DISCLOSES, 'Call 999 now, e.g. from a landline. Ring the Samaritans on 116 124, e.g. tonight.');
   assert.strictEqual(v.displayText, `${BLOCK}\n\nCall 999 now, e.g. from a landline.`);
   assert.strictEqual(v.signpostsRemoved, 1);
+});
+
+// ── I5: the receipt never repeats a dose ────────────────────────────────────
+
+test('I5: a removed lethal-quantity sentence is not repeated verbatim in the receipt', () => {
+  const v = appGuard(CHEST, 'Anything over 24 tablets in a day can be fatal, so see a doctor today.');
+  const rows = receiptRows(v);
+  assert.ok(rows.length > 0);
+  for (const r of rows) assert.strictEqual(carriesDose(r.split(DOSE_REDACTED).join(' ')), false, r);
+  assert.strictEqual(rows.some((r) => /24 tablets/.test(r)), false, rows.join(' | '));
+});
+
+test('I5: no receipt row carries a dose, over a set of dose replies; diagnosis sentences stay verbatim', () => {
+  for (const reply of [
+    'Take 2.5 ml. Call 111.',
+    'Take 500mg paracetamol every 4 hours. See your GP today.',
+    'Take two tablets of ibuprofen three times a day. See your GP.',
+    '### What to do\n1. Take 2 tablets of paracetamol.\n2. Call 999 now.',
+  ]) {
+    const v = appGuard(CHEST, reply);
+    for (const r of receiptRows(v)) assert.strictEqual(carriesDose(r.split(DOSE_REDACTED).join(' ')), false, `${reply} -> ${r}`);
+  }
+  const dx = appGuard(CHEST, 'This sounds like angina. Call 999 now.');
+  assert.ok(receiptRows(dx).includes('Removed: This sounds like angina.'), receiptRows(dx).join(' | '));
+});
+
+// ── M4: a kept reply that de-duplication emptied ────────────────────────────
+
+test('M4: a kept reply emptied by de-duplication gets its own receipt rows, not "replaced the model\'s reply"', () => {
+  const v = appGuard(DISCLOSES, 'Go to A&E now and call the Samaritans on 116 123.');
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.banner, 'emergency');
+  const rows = receiptRows(v);
+  assert.strictEqual(rows.some((r) => /replaced the model's reply/.test(r)), false, rows.join(' | '));
+  assert.deepStrictEqual(rows, [
+    'One sentence giving a crisis line was removed; the product\'s crisis support is the only one shown.',
+    CRISIS_ONLY_ROW,
+  ]);
+  assert.ok(rows.includes(CRISIS_LEADS_ROW) === false, 'nothing is shown under the block');
+});
+
+test('M4: a hidden (not kept) reply still reads "replaced the model\'s reply" alone', () => {
+  const v = appGuard(DISCLOSES, 'Rest and drink fluids.');
+  assert.strictEqual(v.banner, null);
+  assert.deepStrictEqual(receiptRows(v), ["The product's crisis support replaced the model's reply, which is not shown."]);
 });
 
 // ── I4: a disclaimer the product strips no longer hides the direction ───────
