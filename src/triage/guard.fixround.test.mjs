@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
 import {
-  DOSE_REDACTED, PROHIBITED_NOTE, applyGuard, carriesDose, crisisReplaceBlock,
+  BANNERS, DOSE_REDACTED, PROHIBITED_NOTE, applyGuard, carriesDose, crisisReplaceBlock,
 } from './guard.js';
 import { detectMedication, detectRoute } from './detectors.mjs';
 import { splitSentences } from './lookup-guard.js';
@@ -117,3 +117,47 @@ test('M1: de-duplication does not split at "e.g." — no "landline.g. tonight"',
   assert.strictEqual(v.signpostsRemoved, 1);
 });
 
+// ── I4: a disclaimer the product strips no longer hides the direction ───────
+
+test('I4: "I cannot judge how serious this is. Call 999 now." on a disclosure keeps the direction under the block', () => {
+  const v = appGuard(DISCLOSES, 'I cannot judge how serious this is. Call 999 now.');
+  assert.strictEqual(v.route, 'UNCLEAR', 'the verdict route is still the raw route');
+  assert.strictEqual(v.why, 'contradictory-out-of-scope-and-emergency');
+  assert.strictEqual(v.replyShown, true);
+  // The raw route is UNCLEAR, so the product's UNCLEAR line follows, exactly
+  // as it does on the same reply with no disclosure.
+  assert.strictEqual(v.displayText, `${BLOCK}\n\nCall 999 now. ${BANNERS.out_of_scope.line}`);
+  assert.strictEqual(v.banner, 'out_of_scope', 'the raw route\'s banner, as with no disclosure');
+  assert.deepStrictEqual(v.disclaimersRemoved, ['I cannot judge how serious this is.']);
+});
+
+test('I4: the no-disclosure display of the same reply is unchanged', () => {
+  const v = appGuard(CHEST, 'I cannot judge how serious this is. Call 999 now.');
+  assert.strictEqual(v.banner, 'out_of_scope');
+  assert.strictEqual(detectRoute(v.displayText.replace(/ The model has no basis.*$/, '')).route, 'EMERGENCY');
+});
+
+test('I4: a disclaimer beside a SELF-CARE remainder is still hidden on a disclosure', () => {
+  const v = appGuard(DISCLOSES, 'I cannot assess this properly. Rest and drink plenty of fluids.');
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.displayText, BLOCK);
+  assert.strictEqual(v.banner, null);
+});
+
+test('I4: a disclaimer beside a referral (no-basis-to-triage-and-signposted) keeps the referral under the block', () => {
+  const reply = 'I am not able to assess this. Please see your GP.';
+  const v = appGuard(DISCLOSES, reply);
+  assert.strictEqual(v.why, 'no-basis-to-triage-and-signposted', v.why);
+  assert.strictEqual(v.replyShown, true);
+  assert.strictEqual(v.banner, 'out_of_scope');
+  assert.strictEqual(v.displayText, `${BLOCK}\n\nPlease see your GP.`);
+});
+
+test('I4: with the disclaimer strip switched off, the keep decision is the raw route again (hidden)', () => {
+  const v = applyGuard({
+    userText: DISCLOSES, replyText: 'I cannot judge how serious this is. Call 999 now.',
+    crisisLine: ENTRY.crisisLine, ...crisisRuleFor(ENTRY), stripScopeDisclaimers: false,
+  });
+  assert.strictEqual(v.replyShown, false);
+  assert.strictEqual(v.banner, null);
+});

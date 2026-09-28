@@ -654,6 +654,11 @@ export function stripScopeDisclaimers(text) {
 
 const RED_FLAG_ROUTES = Object.freeze([ROUTE.EMERGENCY, ROUTE.CLINICIAN]);
 
+// The r3 router's reasons for a disclaimer beside a red-flag direction (I4).
+const REMAINDER_KEEP_WHYS = Object.freeze([
+  'contradictory-out-of-scope-and-emergency', 'no-basis-to-triage-and-signposted',
+]);
+
 /**
  * The disclaimer step's gate: strip only when the reply, WITH ITS DISCLAIMER
  * SENTENCES SET ASIDE, routes EMERGENCY or CLINICIAN (ratified in MA6 review).
@@ -746,8 +751,10 @@ export function unlocatedTimeFrame(route, displayText) {
  *                       under it; true whenever the rule did not fire. False
  *                       when the route is not kept, AND when it is kept but
  *                       de-duplication cut every sentence
- *   routeDetected       detectRoute of the RAW reply — what decided whether the
- *                       route is kept
+ *   routeDetected       detectRoute of the RAW reply — what decides whether the
+ *                       route is kept, except for the two r3 contradiction
+ *                       reasons, where the disclaimer-stripped remainder's
+ *                       route decides (whole-branch fix round, I4)
  *   dedupeSignposts     whether de-duplication ran (Phase 1i MA1; default true)
  *   signpostsRemoved    how many sentences of the KEPT reply were cut because
  *                       they signposted crisis help beside the product's block.
@@ -851,7 +858,21 @@ export function applyGuard({
   // reply. `crisisOnInput` reads only the user's words, so asking it here is
   // the same question asked below.
   const crisisOnInput = detectCrisisStatement(userText).found;
-  const keptReply = !replace || !crisisOnInput || keepRoutes.includes(routing.route);
+  let keptReply = !replace || !crisisOnInput || keepRoutes.includes(routing.route);
+  // Whole-branch fix round, I4. Under the r3 router a scope disclaimer beside
+  // a red-flag direction routes the raw reply UNCLEAR
+  // ("contradictory-out-of-scope-and-emergency") or OUT_OF_SCOPE
+  // ("no-basis-to-triage-and-signposted"), neither in the keep set, so on a
+  // disclosure "I cannot judge how serious this is. Call 999 now." was hidden
+  // whole although the disclaimer step below would have left "Call 999 now."
+  // For those two reasons only, the KEEP decision reads the reply as the
+  // disclaimer step would leave it. The verdict's `route`, `why` and `banner`
+  // stay the raw reply's (so the banner is the raw route's, as it is for the
+  // same reply with no disclosure); only whether the reply is shown moves.
+  if (!keptReply && crisisOnInput && disclaimersOn && REMAINDER_KEEP_WHYS.includes(routing.why)) {
+    const d = stripRedFlagDisclaimers(display);
+    keptReply = d.removed.length > 0 && keepRoutes.includes(detectRoute(d.text).route);
+  }
   let dosesRemoved = 0;
   let disclaimersRemoved = [];
   if (keptReply && dosesOn) {
@@ -892,6 +913,7 @@ export function applyGuard({
   if (replace) {
     return replaceVerdict({
       raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine: line, keepRoutes, dedupeOn, owned,
+      kept: keptReply,
     });
   }
   // Append with de-duplication asked for explicitly (off by default, so the
@@ -982,7 +1004,7 @@ function validKeepRoutes(routes) {
  * later rule removes.
  */
 function replaceVerdict({
-  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn, owned,
+  raw, routing, banner, display, prohibited, timeframeStripped, crisisOnInput, crisisLine, keepRoutes, dedupeOn, owned, kept,
 }) {
   const crisisReplaced = crisisOnInput;
   // TWO decisions, deliberately apart (fix round 1, F2). `kept` is the RULE:
@@ -992,7 +1014,9 @@ function replaceVerdict({
   // Samaritans on 116 123." is one sentence): the block stands alone, and the
   // banner STAYS, because once the sentence is gone the banner is the route's
   // only carrier — nulling it would lose the EMERGENCY direction entirely.
-  const kept = !crisisReplaced || keepRoutes.includes(routing.route);
+  // `kept` is decided once, in `applyGuard` (the route in the keep set, or —
+  // I4 — the disclaimer-stripped remainder's route for the two contradiction
+  // reasons), so the strips above and the screen here agree.
   const block = crisisReplaceBlock(crisisLine);
 
   // De-duplication (MA1): the block is on screen whenever the rule fired; the

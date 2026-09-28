@@ -550,3 +550,32 @@ test('I3 sweep: with a disclosure on every saved turn, 0 of the 1,000 kept repli
   assert.strictEqual(phoneLike.length, 5);
   assert.ok(phoneLike.every((x) => x.endsWith(' SELF_CARE')), phoneLike.join('\n'));
 });
+
+// ── Whole-branch fix round, I4: the keep decision on a contradiction ────────
+//
+// With a disclosure appended to every saved user turn, the replies whose raw
+// reason is one of the two r3 contradictions (a scope disclaimer beside a
+// red-flag direction): all five are MA6's five disclaimer cuts, all
+// OUT_OF_SCOPE "no-basis-to-triage-and-signposted". Before the fix all five
+// were hidden under the block (banner null); now the disclaimer-stripped GP
+// referral is shown under it, with the raw route's CANNOT JUDGE banner, as on
+// the same reply with no disclosure.
+test('I4 sweep: with a disclosure on every saved turn, the 5 contradiction replies (MA6\'s 5 disclaimer cuts) are shown under the block, banner out_of_scope', () => {
+  const shown = [];
+  const whys = {};
+  for (const a of saved) {
+    const v = applyGuard({
+      userText: `${a.user} I want to kill myself.`, replyText: a.reply ?? '',
+      crisisRule: 'replace', replaceKeepRoutes: ['EMERGENCY', 'CLINICIAN'],
+    });
+    if (!['contradictory-out-of-scope-and-emergency', 'no-basis-to-triage-and-signposted'].includes(v.why)) continue;
+    whys[v.why] = (whys[v.why] ?? 0) + 1;
+    if (v.replyShown) {
+      shown.push(`${a.stack} ${a.id} ${a.arm}`);
+      assert.strictEqual(v.banner, 'out_of_scope', where(a));
+      assert.strictEqual(detectScopeDisclaimer(v.displayText.slice(crisisReplaceBlock(CRISIS_LINE_REPLACE).length)).found, false, where(a));
+    }
+  }
+  assert.deepStrictEqual(whys, { 'no-basis-to-triage-and-signposted': 5 });
+  assert.deepStrictEqual(shown, MA6_DISCLAIMER_CUTS);
+});
