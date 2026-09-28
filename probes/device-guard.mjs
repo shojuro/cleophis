@@ -46,6 +46,7 @@
 //   [--catalog src-tauri/resources/catalog.triage.json] [--catalog-id med-triage]
 //   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
 //   [--dedupe-signposts on|off] [--strip-doses on|off] [--strip-disclaimers on|off]
+//   [--app-build <mobile commit>]
 //
 // THE RULE DEFAULTS TO THE CATALOG ENTRY'S (Phase 1i MA1 fix round 1), read
 // through `crisisRuleFor` — the same sanitised reader the app uses — so a run
@@ -91,9 +92,17 @@
 // were vendored against is named here rather than left for a reader to infer
 // from the commit sha.
 //
+// `app_build`, `catalog_sha256`, `model_sha256`, `adapter_sha256` (Phase 1i
+// TC1) — the build and the bytes the run answers to, appended to the header so
+// the device journey's reader (triage `pipeline/analysis/device_journey.py`)
+// can refuse a probe run that does not name the registered build, catalog,
+// model and adapter. `--app-build` names the build; without it, this
+// checkout's HEAD.
+//
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -234,6 +243,7 @@ const sha256 = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex
 export function headerRecord({
   source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
   dedupeSignposts = null, crisisRuleSource = null, stripDoses = null, stripDisclaimers = null,
+  appBuild = null, catalogSha256 = null, modelSha256 = null, adapterSha256 = null,
 }) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
@@ -268,7 +278,32 @@ export function headerRecord({
     crisis_rule_source: crisisRuleSource,
     detectors_pin_file_sha: pin.sha256,
     crisis_line_sha256: sha256(crisisLine),
+    // Phase 1i TC1: what the device journey's reader pins this run to, beside
+    // the detector pin and the crisis rule above. `app_build` is the mobile
+    // commit whose guard produced every display below; `catalog_sha256` is the
+    // sha256 of the catalog FILE this run read; `model_sha256` and
+    // `adapter_sha256` are that entry's pins, which run-device-probes.sh checks
+    // on the device before the harness runs. Null when the caller did not say:
+    // the reader turns a null into NOT MEASURED, never into a match.
+    app_build: appBuild ?? null,
+    catalog_sha256: catalogSha256 ?? null,
+    model_sha256: modelSha256 ?? null,
+    adapter_sha256: adapterSha256 ?? null,
   };
+}
+
+/**
+ * The commit this checkout is at, or null when git cannot say. The fallback
+ * for `--app-build`: the harness and this guard are built and run from the
+ * mobile checkout, so its HEAD is the build unless the caller names another.
+ */
+export function checkoutHead(cwd = fileURLToPath(new URL('..', import.meta.url))) {
+  try {
+    const out = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return /^[0-9a-f]{40}$/.test(out.trim()) ? out.trim() : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -487,9 +522,10 @@ export function summarise(guarded) {
 
 export function run({
   inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null, dedupeSignposts = null,
-  stripDoses = null, stripDisclaimers = null,
+  stripDoses = null, stripDisclaimers = null, appBuild = null,
 }) {
-  const entry = catalogEntry(catalogPath ?? DEFAULT_CATALOG, catalogId ?? null);
+  const catalogFile = catalogPath ?? DEFAULT_CATALOG;
+  const entry = catalogEntry(catalogFile, catalogId ?? null);
   const { crisisRuleSource, ...crisis } = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts, entry });
   const rule = { ...crisis, ...stripOptions({ stripDoses, stripDisclaimers }) };
   const records = parseJsonl(readFileSync(inPath, 'utf8'));
@@ -503,6 +539,10 @@ export function run({
     skipped,
     ...rule,
     crisisRuleSource,
+    appBuild: appBuild ?? checkoutHead(),
+    catalogSha256: createHash('sha256').update(readFileSync(catalogFile)).digest('hex'),
+    modelSha256: typeof entry.sha256 === 'string' ? entry.sha256 : null,
+    adapterSha256: typeof entry.adapterSha256 === 'string' ? entry.adapterSha256 : null,
   });
   const body = [header, ...guarded].map((r) => JSON.stringify(r)).join('\n');
   writeFileSync(outPath, `${body}\n`, 'utf8');
@@ -512,7 +552,7 @@ export function run({
 function main(argv) {
   const args = {
     in: null, out: null, catalog: null, 'catalog-id': null, 'crisis-rule': null, 'keep-routes': null,
-    'dedupe-signposts': null, 'strip-doses': null, 'strip-disclaimers': null,
+    'dedupe-signposts': null, 'strip-doses': null, 'strip-disclaimers': null, 'app-build': null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const f = argv[i].replace(/^--/, '');
@@ -524,7 +564,7 @@ function main(argv) {
   if (!args.in || !args.out) {
     throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID] '
       + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]] [--dedupe-signposts on|off] '
-      + '[--strip-doses on|off] [--strip-disclaimers on|off]');
+      + '[--strip-doses on|off] [--strip-disclaimers on|off] [--app-build <mobile commit>]');
   }
   const { header, skipped, summary } = run({
     inPath: args.in,
@@ -536,7 +576,9 @@ function main(argv) {
     dedupeSignposts: args['dedupe-signposts'],
     stripDoses: args['strip-doses'],
     stripDisclaimers: args['strip-disclaimers'],
+    appBuild: args['app-build'],
   });
+  process.stderr.write(`[device-guard] build ${header.app_build ?? '(unknown)'} catalog ${header.catalog_sha256}\n`);
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
   process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule} (${header.crisis_rule_source})`
     + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}`

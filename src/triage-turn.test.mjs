@@ -279,7 +279,7 @@ test('applyGuard\'s twelve-key verdict shape is NOT changed by the stamp', () =>
     assert.notStrictEqual(stamped, verdict);
     assert.deepStrictEqual(
       Object.keys(stamped).sort(),
-      [...before, 'adapterSha', 'modelSha', 'promptFingerprint'].sort(),
+      [...before, 'adapterSha', 'appBuild', 'catalogSha256', 'modelSha', 'promptFingerprint'].sort(),
     );
   }
 });
@@ -289,12 +289,25 @@ test('an entry that pins no shas stamps empty strings, never null and never a mi
   // a reader never has to handle both `null` and `""` for "not recorded".
   const stamped = guardForPersistence({ route: 'SELF_CARE' }, { supervised: true });
   assert.deepStrictEqual(stamped, {
-    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '',
+    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '', catalogSha256: '', appBuild: '',
   });
   const noEntry = guardForPersistence({ route: 'SELF_CARE' }, null);
   assert.deepStrictEqual(noEntry, {
-    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '',
+    route: 'SELF_CARE', promptFingerprint: '', modelSha: '', adapterSha: '', catalogSha256: '', appBuild: '',
   });
+});
+
+test('Phase 1i TC1: the persisted verdict names the catalog and the app build the turn ran under', () => {
+  // `get_catalog` stamps both onto every entry it returns (the sha256 of the
+  // catalog file the app parsed, and the build's CLEOPHIS_APP_BUILD); the row
+  // carries them so the device journey's reader can refuse an export that is
+  // not the registered build and catalog.
+  const entry = { ...TRIAGE_ENTRY, catalogSha256: 'c'.repeat(64), appBuild: 'abc123' };
+  const verdict = applyGuard({ userText: 'chest pain', replyText: 'Call 999 now.' });
+  const stamped = guardForPersistence(verdict, entry);
+  assert.strictEqual(stamped.catalogSha256, 'c'.repeat(64));
+  assert.strictEqual(stamped.appBuild, 'abc123');
+  assert.strictEqual(guardForPersistence(verdict, { ...entry, appBuild: 7 }).appBuild, '', 'a non-string is not a build');
 });
 
 test('TUTOR IDENTITY: no verdict means no stamp, so the invoke args are unchanged', () => {

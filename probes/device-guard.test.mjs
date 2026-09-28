@@ -18,6 +18,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { CRISIS_LINE_REPLACE, crisisReplaceBlock } from '../src/triage/guard.js';
@@ -621,6 +622,7 @@ test('the header\'s whole key shape is pinned', () => {
     'header', 'source', 'catalog_id', 'records', 'skipped', 'lookup_rule', 'detectors_sha',
     'crisis_rule', 'keep_routes', 'dedupe_signposts', 'strip_doses', 'strip_disclaimers',
     'crisis_rule_source', 'detectors_pin_file_sha', 'crisis_line_sha256',
+    'app_build', 'catalog_sha256', 'model_sha256', 'adapter_sha256',
   ]);
 });
 
@@ -692,4 +694,67 @@ test('M7: guardRecord under crisisOptions({entry}) + stripOptions({}) equals the
   });
   assert.deepStrictEqual(mismatches, []);
   assert.ok(replaced >= 1000 + 40 * 4, `the replace rule fired on ${replaced}`);
+});
+
+// ── Phase 1i TC1: the header pins the build and the bytes ───────────────────
+//
+// The device journey's reader (triage `device_journey.py`) accepts a probe run
+// only when its guard header names the app build, the catalog, the model and
+// the adapter, beside the detector pin and the crisis rule it already carried:
+// anything missing or differing from the release registration is NOT MEASURED.
+// `catalog_sha256` is the sha256 of the catalog FILE this run read (the entry's
+// pins and the crisis rule came out of it); `model_sha256` and `adapter_sha256`
+// are that entry's pins, which `run-device-probes.sh` verified on the device
+// before the harness ran; `app_build` is the mobile commit whose guard produced
+// the display (`--app-build`, else `git rev-parse HEAD` of this checkout).
+
+test('the header echoes the build and the catalog, model and adapter pins, null when absent', () => {
+  const h = headerRecord({
+    source: 's', catalogId: 'med-triage', crisisLine, records: 1,
+    appBuild: 'abc123', catalogSha256: 'c'.repeat(64), modelSha256: 'm'.repeat(64), adapterSha256: 'a'.repeat(64),
+  });
+  assert.strictEqual(h.app_build, 'abc123');
+  assert.strictEqual(h.catalog_sha256, 'c'.repeat(64));
+  assert.strictEqual(h.model_sha256, 'm'.repeat(64));
+  assert.strictEqual(h.adapter_sha256, 'a'.repeat(64));
+  const bare = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
+  for (const k of ['app_build', 'catalog_sha256', 'model_sha256', 'adapter_sha256']) {
+    assert.strictEqual(bare[k], null, `${k} is null, never invented, when the caller did not say`);
+  }
+});
+
+test('run() pins the catalog file it read, that entry\'s model and adapter, and the build it was given', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-tc1-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
+  const catalogPath = fileURLToPath(new URL('../src-tauri/resources/catalog.triage.json', import.meta.url));
+  const want = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
+  const { header } = run({ inPath, outPath: join(dir, 'out.json'), catalogPath, appBuild: 'deadbeef' });
+  assert.strictEqual(header.catalog_sha256, want);
+  assert.strictEqual(header.model_sha256, triage.sha256);
+  assert.strictEqual(header.adapter_sha256, triage.adapterSha256);
+  assert.strictEqual(header.app_build, 'deadbeef');
+});
+
+test('with no --app-build the header names this checkout\'s HEAD', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-tc1-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8',
+  }).trim();
+  const { header } = run({ inPath, outPath: join(dir, 'out.json') });
+  assert.strictEqual(header.app_build, head);
+});
+
+test('the CLI takes --app-build and writes it into the header', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-tc1-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
+  const outPath = join(dir, 'out.json');
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, '--app-build', 'feedface'], { stdio: 'pipe' });
+  const [h] = parseJsonl(readFileSync(outPath, 'utf8'));
+  assert.strictEqual(h.app_build, 'feedface');
+  assert.strictEqual(h.model_sha256, triage.sha256);
 });

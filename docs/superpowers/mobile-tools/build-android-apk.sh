@@ -42,6 +42,16 @@ esac
 # when present). Declared with rerun-if-env-changed, so switching variants
 # re-evaluates it even on the shared CARGO_TARGET_DIR.
 export CLEOPHIS_VARIANT="$VARIANT"
+# Phase 1i TC1: the build names itself. src-tauri/src/catalog.rs reads this at
+# compile time (`APP_BUILD`, via option_env!, which rustc tracks in its
+# dep-info) and `get_catalog` stamps it onto every entry, so every exported
+# triage-log line says which commit produced it. HEAD, not HEAD plus a dirty
+# flag: a triage build swaps the catalog in and is therefore always "dirty",
+# and the catalog's own sha rides separately on every line. Empty when git
+# cannot say, which the device journey's reader reads as NOT MEASURED.
+CLEOPHIS_APP_BUILD="$(git -C "$(cd "$(dirname "$0")/../../.." && pwd)" rev-parse HEAD 2>/dev/null || true)"
+export CLEOPHIS_APP_BUILD
+echo "== app build: ${CLEOPHIS_APP_BUILD:-<unknown>} =="
 
 export CARGO_TARGET_DIR=/home/$USER/cleophis-mobile-target
 

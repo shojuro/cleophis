@@ -391,6 +391,9 @@ export function lookupForPersistence(verdict, entry = null) {
     ...verdict,
     modelSha: str(entry && entry.sha256),
     adapterSha: str(entry && entry.adapterSha256),
+    // Phase 1i TC1: as `guardForPersistence` (triage-turn.js).
+    catalogSha256: str(entry && entry.catalogSha256),
+    appBuild: str(entry && entry.appBuild),
     referencePack: reported
       ? {
         id: str(reported.id), sha256: str(pin.sha256),

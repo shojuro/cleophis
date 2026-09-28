@@ -204,7 +204,8 @@ export function crisisRuleFor(entry) {
 
 /**
  * The verdict as it is PERSISTED: `applyGuard`'s twelve keys plus the three
- * that say which bytes produced the reply.
+ * that say which bytes produced the reply, and (Phase 1i TC1) the two that say
+ * which catalog file and which app build the turn ran under.
  *
  * WHY IT IS NOT IN `applyGuard`. That function's shape is pinned by Task 3's
  * tests and it is pure in the strong sense — a verdict is a function of the
@@ -223,7 +224,7 @@ export function crisisRuleFor(entry) {
  * that changes mid-stream cannot rewrite the provenance of a reply already
  * given.
  *
- * Always all three, always strings, `''` when the entry pins none, so every
+ * Always all five, always strings, `''` when the entry pins none, so every
  * guarded row has one shape. The tutor never reaches here: a null verdict
  * returns null and `persistAssistantTurn` is called with exactly the argument
  * set it was called with before this existed.
@@ -238,6 +239,12 @@ export function guardForPersistence(verdict, entry = null) {
     promptFingerprint: str(entry && entry.promptFingerprint),
     modelSha: str(entry && entry.sha256),
     adapterSha: str(entry && entry.adapterSha256),
+    // Phase 1i TC1: the catalog FILE and the app build this turn ran under,
+    // stamped onto every entry by `get_catalog` (lib.rs). The device
+    // journey's reader refuses an export whose rows do not name the
+    // registered build and catalog.
+    catalogSha256: str(entry && entry.catalogSha256),
+    appBuild: str(entry && entry.appBuild),
   };
 }
 

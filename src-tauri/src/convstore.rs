@@ -1159,7 +1159,7 @@ impl ConvStore {
     }
 
     /// Export columns that belong to a TRIAGE verdict; `null` on a lookup line.
-    const TRIAGE_ONLY_EXPORT_COLUMNS: [&'static str; 10] = [
+    const TRIAGE_ONLY_EXPORT_COLUMNS: [&'static str; 12] = [
         "model_route",
         "banner",
         "timeframe_stripped",
@@ -1170,6 +1170,8 @@ impl ConvStore {
         "confirmed_route",
         "confirmed_at",
         "overridden",
+        "crisis_rule",
+        "keep_routes",
     ];
 
     /// Export columns that belong to a LOOKUP verdict; `null` on a triage line.
@@ -1297,6 +1299,29 @@ impl ConvStore {
                     "adapter_sha": guard.get("adapterSha").and_then(Value::as_str).unwrap_or(""),
                 });
                 let obj = line.as_object_mut().expect("json! builds an object");
+                // Phase 1i TC1: the build and the catalog file this turn ran
+                // under (stamped at persistence from the entry, like the three
+                // shas above), and the crisis rule that decided a triage
+                // display. The device journey's reader pins an export to the
+                // registration by these, beside `detectors_sha`, `model_sha`
+                // and `adapter_sha`. Strings, `""` when absent, for the shas'
+                // reason; the rule and its keep set are the verdict's own
+                // values, `null` on a verdict written under `append` (which
+                // records neither) and on every lookup line (nulled below).
+                // Inserted here rather than inside `json!` above, which is
+                // already a long macro invocation.
+                let text_of =
+                    |k: &str| Value::from(guard.get(k).and_then(Value::as_str).unwrap_or(""));
+                obj.insert("app_build".into(), text_of("appBuild"));
+                obj.insert("catalog_sha256".into(), text_of("catalogSha256"));
+                obj.insert(
+                    "crisis_rule".into(),
+                    guard.get("crisisRule").cloned().unwrap_or(Value::Null),
+                );
+                obj.insert(
+                    "keep_routes".into(),
+                    guard.get("keepRoutes").cloned().unwrap_or(Value::Null),
+                );
                 if is_lookup {
                     obj.insert("kind".into(), Value::from("lookup"));
                     for key in Self::TRIAGE_ONLY_EXPORT_COLUMNS {
@@ -2885,6 +2910,118 @@ mod tests {
         for key in ConvStore::LOOKUP_ONLY_EXPORT_COLUMNS {
             assert_eq!(t[key], serde_json::Value::Null, "triage line: {key} must be null");
         }
+    }
+
+    /// Phase 1i TC1: every line names the app build and the catalog file the
+    /// turn ran under, and a triage line names the crisis rule and keep set
+    /// that decided its display. A verdict that carries none of them (one
+    /// written before this existed) exports `""` for the two strings and
+    /// `null` for the rule; a lookup line nulls the rule like every other
+    /// triage column.
+    #[test]
+    fn export_triage_log_carries_the_build_the_catalog_and_the_crisis_rule() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "Triage", None, None, "med-triage", vec![])
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "i've been thinking about ending it all.",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Thank you for telling me.",
+                None,
+                None,
+                Some(json!({
+                    "route": "UNCLEAR", "banner": null, "detectorsSha": "abc",
+                    "crisisRule": "replace", "keepRoutes": ["EMERGENCY", "CLINICIAN"],
+                    "crisisReplaced": true, "replyShown": false,
+                    "modelSha": "25162bff", "adapterSha": "5304e464",
+                    "catalogSha256": "c0ffee", "appBuild": "abc123"
+                })),
+            )
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "Oxivastine",
+                None,
+                None,
+                Some(json!({"kind": "lookup", "role": "query"})),
+            )
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "The reference pack has nothing on that.",
+                None,
+                None,
+                Some(json!({
+                    "kind": "lookup", "rule": "dose-cite-v7", "outcome": "noEvidence",
+                    "displayText": "The reference pack has nothing on that.", "rawReply": null,
+                    "citations": [], "withheld": [], "detectorsSha": "abc",
+                    "catalogSha256": "c0ffee", "appBuild": "abc123"
+                })),
+            )
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .unwrap();
+        store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "Call 999 now.",
+                None,
+                None,
+                Some(json!({"route": "EMERGENCY", "banner": "emergency", "detectorsSha": "abc"})),
+            )
+            .unwrap();
+
+        let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
+        let lines: Vec<serde_json::Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3);
+
+        let t = &lines[0];
+        assert_eq!(t["kind"], "triage");
+        assert_eq!(t["app_build"], "abc123");
+        assert_eq!(t["catalog_sha256"], "c0ffee");
+        assert_eq!(t["crisis_rule"], "replace");
+        assert_eq!(t["keep_routes"], json!(["EMERGENCY", "CLINICIAN"]));
+
+        let l = &lines[1];
+        assert_eq!(l["kind"], "lookup");
+        assert_eq!(l["app_build"], "abc123");
+        assert_eq!(l["catalog_sha256"], "c0ffee");
+        assert_eq!(l["rule"], "dose-cite-v7");
+        assert_eq!(l["crisis_rule"], serde_json::Value::Null);
+        assert_eq!(l["keep_routes"], serde_json::Value::Null);
+
+        // A verdict from before the stamp: strings empty, rule null.
+        let old = &lines[2];
+        assert_eq!(old["app_build"], "");
+        assert_eq!(old["catalog_sha256"], "");
+        assert_eq!(old["crisis_rule"], serde_json::Value::Null);
+        assert_eq!(old["keep_routes"], serde_json::Value::Null);
     }
 
     /// A crisis-first lookup (no pack answered) exports as a lookup line with

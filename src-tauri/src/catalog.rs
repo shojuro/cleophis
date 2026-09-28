@@ -285,6 +285,33 @@ pub fn hero(entries: &[CatalogEntry]) -> Option<&CatalogEntry> {
     entries.iter().find(|e| e.real && e.model_file.is_some())
 }
 
+/// Phase 1i TC1: the build this binary is, as `build-android-apk.sh` names it
+/// (`CLEOPHIS_APP_BUILD`, the mobile commit), or `""` when the build did not
+/// say. Read at compile time; rustc records the variable in its dep-info, so
+/// a build under a different value recompiles this crate.
+pub const APP_BUILD: &str = match option_env!("CLEOPHIS_APP_BUILD") {
+    Some(v) => v,
+    None => "",
+};
+
+/// sha256 hex of the catalog text `get_catalog` parsed: the catalog FILE this
+/// app runs, whose entry pins the model, the adapter and the crisis rule.
+pub fn catalog_sha256(raw: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(raw.as_bytes()))
+}
+
+/// Phase 1i TC1: stamp the catalog file's sha and the app build onto one
+/// entry as `get_catalog` hands it to the front end (`catalogSha256`,
+/// `appBuild`). The front end copies both onto every persisted verdict
+/// (`guardForPersistence`, `lookupForPersistence`) and `export_triage_log`
+/// writes them on every line, so the device journey's reader can refuse an
+/// export that is not the registered build and catalog.
+pub fn stamp_provenance(entry: &mut serde_json::Value, catalog_sha256: &str, app_build: &str) {
+    entry["catalogSha256"] = serde_json::Value::String(catalog_sha256.to_string());
+    entry["appBuild"] = serde_json::Value::String(app_build.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +343,33 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(parse_catalog("not json").is_err());
+    }
+
+    /// Phase 1i TC1: the provenance `get_catalog` stamps is the sha256 of the
+    /// text it parsed and the build it was given, as camelCase strings, and
+    /// it leaves every other field alone.
+    #[test]
+    fn stamp_provenance_adds_the_catalog_sha_and_the_build_and_nothing_else() {
+        // sha256("abc"), the FIPS 180-2 test vector.
+        assert_eq!(
+            catalog_sha256("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let mut v = serde_json::json!({"id": "med-triage", "sha256": "25162bff"});
+        stamp_provenance(&mut v, &catalog_sha256("abc"), "abc123");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "id": "med-triage",
+                "sha256": "25162bff",
+                "catalogSha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                "appBuild": "abc123"
+            })
+        );
+        // A build that names nothing stamps "", never a missing key.
+        let mut w = serde_json::json!({"id": "a"});
+        stamp_provenance(&mut w, "x", "");
+        assert_eq!(w["appBuild"], "");
     }
 
     #[test]

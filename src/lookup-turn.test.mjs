@@ -311,9 +311,17 @@ test('lookupForPersistence stamps model provenance and the PACK-reported identit
   assert.notStrictEqual(p, v);
   assert.deepStrictEqual(p, {
     kind: 'lookup', outcome: 'grounded', modelSha: 'model-sha', adapterSha: 'adapter-sha',
+    catalogSha256: '', appBuild: '',
     referencePack: { id: 'reference-uk-v1', sha256: 'pack-sha', contentSha256: 'reported-content', version: 'reported-version' },
   });
   assert.strictEqual(lookupForPersistence(null, ENTRY), null);
+});
+
+test('Phase 1i TC1: lookupForPersistence names the catalog and the app build the lookup ran under', () => {
+  const entry = { ...ENTRY, catalogSha256: 'c'.repeat(64), appBuild: 'abc123' };
+  const p = lookupForPersistence({ kind: 'lookup', outcome: 'crisis', referencePack: null }, entry);
+  assert.strictEqual(p.catalogSha256, 'c'.repeat(64));
+  assert.strictEqual(p.appBuild, 'abc123');
 });
 
 test('lookupForPersistence records no pack when none answered (crisis first, unavailable)', async () => {

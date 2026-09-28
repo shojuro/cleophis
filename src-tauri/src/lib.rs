@@ -169,6 +169,9 @@ fn get_catalog(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> 
     let root = inference::resources_root(&app);
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = catalog::parse_catalog(&raw)?;
+    // Phase 1i TC1: every entry names the catalog file and the build it came
+    // from; the front end stamps both onto each persisted verdict.
+    let catalog_sha = catalog::catalog_sha256(&raw);
     Ok(entries
         .into_iter()
         .map(|e| {
@@ -176,6 +179,7 @@ fn get_catalog(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> 
             let mut v = serde_json::to_value(&e).unwrap();
             v["coverAbs"] =
                 serde_json::Value::String(cover_abs.to_string_lossy().into_owned());
+            catalog::stamp_provenance(&mut v, &catalog_sha, catalog::APP_BUILD);
             v
         })
         .collect())
