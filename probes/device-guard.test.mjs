@@ -623,6 +623,7 @@ test('the header\'s whole key shape is pinned', () => {
     'crisis_rule', 'keep_routes', 'dedupe_signposts', 'strip_doses', 'strip_disclaimers',
     'crisis_rule_source', 'detectors_pin_file_sha', 'crisis_line_sha256',
     'app_build', 'catalog_sha256', 'model_sha256', 'adapter_sha256',
+    'checkout_head', 'checkout_dirty',
   ]);
 });
 
@@ -729,7 +730,9 @@ test('run() pins the catalog file it read, that entry\'s model and adapter, and 
   writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
   const catalogPath = fileURLToPath(new URL('../src-tauri/resources/catalog.triage.json', import.meta.url));
   const want = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
-  const { header } = run({ inPath, outPath: join(dir, 'out.json'), catalogPath, appBuild: 'deadbeef' });
+  const { header } = run({
+    inPath, outPath: join(dir, 'out.json'), catalogPath, appBuild: 'deadbeef', allowDeclaredBuild: true,
+  });
   assert.strictEqual(header.catalog_sha256, want);
   assert.strictEqual(header.model_sha256, triage.sha256);
   assert.strictEqual(header.adapter_sha256, triage.adapterSha256);
@@ -747,13 +750,48 @@ test('with no --app-build the header names this checkout\'s HEAD', () => {
   assert.strictEqual(header.app_build, head);
 });
 
+// ── TC1 fix round 1 (review I4): the build is the checkout's, never typed ──
+//
+// A declared build names whatever was typed, not the guard code that ran; a
+// laptop checkout at the wrong commit — the honest mistake the pin exists to
+// catch — would pass. So the header always records the checkout's HEAD and
+// whether `src/triage/` is dirty, `app_build` IS that head, and a declared
+// build is accepted only behind `--allow-declared-build` (tests and fixtures).
+
+test('the header always records the checkout head and whether src/triage is dirty', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-i4-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
+  const repo = fileURLToPath(new URL('..', import.meta.url));
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  const dirty = execFileSync('git', ['status', '--porcelain', '--', 'src/triage/'], { cwd: repo, encoding: 'utf8' }).trim() !== '';
+  const { header } = run({ inPath, outPath: join(dir, 'out.json') });
+  assert.strictEqual(header.checkout_head, head);
+  assert.strictEqual(header.checkout_dirty, dirty);
+  assert.strictEqual(header.app_build, head, 'with no declared build the build IS the checkout head');
+  const declared = run({ inPath, outPath: join(dir, 'out2.json'), appBuild: 'f'.repeat(40), allowDeclaredBuild: true });
+  assert.strictEqual(declared.header.app_build, 'f'.repeat(40));
+  assert.strictEqual(declared.header.checkout_head, head, 'the head is recorded beside a declared build');
+});
+
+test('a declared build without --allow-declared-build is refused before anything is written', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'device-guard-i4-'));
+  const inPath = join(dir, 'in.json');
+  writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
+  assert.throws(() => run({ inPath, outPath: join(dir, 'out.json'), appBuild: 'deadbeef' }), /allow-declared-build/);
+  const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
+  assert.throws(() => execFileSync(process.execPath, [script, '--in', inPath, '--out', join(dir, 'cli.json'),
+    '--app-build', 'feedface'], { stdio: 'pipe' }), /allow-declared-build/);
+});
+
 test('the CLI takes --app-build and writes it into the header', () => {
   const dir = mkdtempSync(join(tmpdir(), 'device-guard-tc1-'));
   const inPath = join(dir, 'in.json');
   writeFileSync(inPath, `${JSON.stringify(rec('a', 'sore throat', 'Rest at home and drink fluids.'))}\n`);
   const outPath = join(dir, 'out.json');
   const script = fileURLToPath(new URL('./device-guard.mjs', import.meta.url));
-  execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, '--app-build', 'feedface'], { stdio: 'pipe' });
+  execFileSync(process.execPath, [script, '--in', inPath, '--out', outPath, '--app-build', 'feedface',
+    '--allow-declared-build'], { stdio: 'pipe' });
   const [h] = parseJsonl(readFileSync(outPath, 'utf8'));
   assert.strictEqual(h.app_build, 'feedface');
   assert.strictEqual(h.model_sha256, triage.sha256);

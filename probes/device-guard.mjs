@@ -46,7 +46,7 @@
 //   [--catalog src-tauri/resources/catalog.triage.json] [--catalog-id med-triage]
 //   [--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]]
 //   [--dedupe-signposts on|off] [--strip-doses on|off] [--strip-disclaimers on|off]
-//   [--app-build <mobile commit>]
+//   [--app-build <id> --allow-declared-build]   (tests and fixtures only)
 //
 // THE RULE DEFAULTS TO THE CATALOG ENTRY'S (Phase 1i MA1 fix round 1), read
 // through `crisisRuleFor` — the same sanitised reader the app uses — so a run
@@ -96,8 +96,10 @@
 // TC1) — the build and the bytes the run answers to, appended to the header so
 // the device journey's reader (triage `pipeline/analysis/device_journey.py`)
 // can refuse a probe run that does not name the registered build, catalog,
-// model and adapter. `--app-build` names the build; without it, this
-// checkout's HEAD.
+// model and adapter. The build is this checkout's HEAD, recorded again as
+// `checkout_head` beside `checkout_dirty` (src/triage/ differs from HEAD); a
+// declared `--app-build` is accepted only with `--allow-declared-build`
+// (tests and fixtures), and the reader faults when the two differ.
 //
 // Output: a header object on line 1, then EXACTLY one object per input record:
 //   {"id", "display", "route_banner", "removed": [...], ...}
@@ -244,6 +246,7 @@ export function headerRecord({
   source, catalogId, crisisLine, records, skipped = [], crisisRule = 'append', keepRoutes = null,
   dedupeSignposts = null, crisisRuleSource = null, stripDoses = null, stripDisclaimers = null,
   appBuild = null, catalogSha256 = null, modelSha256 = null, adapterSha256 = null,
+  checkoutHead: head = null, checkoutDirty = null,
 }) {
   const probe = applyGuard({ userText: '', replyText: 'Call 999 now.' });
   return {
@@ -289,6 +292,11 @@ export function headerRecord({
     catalog_sha256: catalogSha256 ?? null,
     model_sha256: modelSha256 ?? null,
     adapter_sha256: adapterSha256 ?? null,
+    // TC1 fix round 1 (review I4): the checkout this guard ran from, always,
+    // and whether `src/triage/` differs from it. The reader faults when
+    // `app_build` is not this head, or the guard files are dirty.
+    checkout_head: head ?? null,
+    checkout_dirty: typeof checkoutDirty === 'boolean' ? checkoutDirty : null,
   };
 }
 
@@ -297,7 +305,23 @@ export function headerRecord({
  * for `--app-build`: the harness and this guard are built and run from the
  * mobile checkout, so its HEAD is the build unless the caller names another.
  */
-export function checkoutHead(cwd = fileURLToPath(new URL('..', import.meta.url))) {
+const REPO = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * Whether the guard's own files (`src/triage/`) differ from HEAD in this
+ * checkout, or null when git cannot say.
+ */
+export function checkoutDirty(cwd = REPO) {
+  try {
+    const out = execFileSync('git', ['status', '--porcelain', '--', 'src/triage/'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return out.trim() !== '';
+  } catch (_) {
+    return null;
+  }
+}
+
+export function checkoutHead(cwd = REPO) {
   try {
     const out = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     return /^[0-9a-f]{40}$/.test(out.trim()) ? out.trim() : null;
@@ -522,8 +546,14 @@ export function summarise(guarded) {
 
 export function run({
   inPath, outPath, catalogPath, catalogId, crisisRule = null, keepRoutes = null, dedupeSignposts = null,
-  stripDoses = null, stripDisclaimers = null, appBuild = null,
+  stripDoses = null, stripDisclaimers = null, appBuild = null, allowDeclaredBuild = false,
 }) {
+  // Review I4: a typed build names what was typed, not the code that ran.
+  if (appBuild != null && allowDeclaredBuild !== true) {
+    throw new Error('--app-build is accepted only with --allow-declared-build (tests and fixtures); '
+      + 'a real run records this checkout\'s HEAD as the build');
+  }
+  const head = checkoutHead();
   const catalogFile = catalogPath ?? DEFAULT_CATALOG;
   const entry = catalogEntry(catalogFile, catalogId ?? null);
   const { crisisRuleSource, ...crisis } = crisisOptions({ crisisRule, keepRoutes, dedupeSignposts, entry });
@@ -539,7 +569,9 @@ export function run({
     skipped,
     ...rule,
     crisisRuleSource,
-    appBuild: appBuild ?? checkoutHead(),
+    appBuild: appBuild ?? head,
+    checkoutHead: head,
+    checkoutDirty: checkoutDirty(),
     catalogSha256: createHash('sha256').update(readFileSync(catalogFile)).digest('hex'),
     modelSha256: typeof entry.sha256 === 'string' ? entry.sha256 : null,
     adapterSha256: typeof entry.adapterSha256 === 'string' ? entry.adapterSha256 : null,
@@ -554,8 +586,10 @@ function main(argv) {
     in: null, out: null, catalog: null, 'catalog-id': null, 'crisis-rule': null, 'keep-routes': null,
     'dedupe-signposts': null, 'strip-doses': null, 'strip-disclaimers': null, 'app-build': null,
   };
+  let allowDeclaredBuild = false;
   for (let i = 0; i < argv.length; i += 1) {
     const f = argv[i].replace(/^--/, '');
+    if (f === 'allow-declared-build') { allowDeclaredBuild = true; continue; }
     if (!(f in args)) throw new Error(`unknown flag ${argv[i]}`);
     i += 1;
     if (i >= argv.length) throw new Error(`${argv[i - 1]} needs a value`);
@@ -564,7 +598,7 @@ function main(argv) {
   if (!args.in || !args.out) {
     throw new Error('usage: device-guard.mjs --in <harness.json> --out <guard.json> [--catalog P] [--catalog-id ID] '
       + '[--crisis-rule append|replace] [--keep-routes EMERGENCY[,CLINICIAN]] [--dedupe-signposts on|off] '
-      + '[--strip-doses on|off] [--strip-disclaimers on|off] [--app-build <mobile commit>]');
+      + '[--strip-doses on|off] [--strip-disclaimers on|off] [--app-build <id> --allow-declared-build]');
   }
   const { header, skipped, summary } = run({
     inPath: args.in,
@@ -577,8 +611,10 @@ function main(argv) {
     stripDoses: args['strip-doses'],
     stripDisclaimers: args['strip-disclaimers'],
     appBuild: args['app-build'],
+    allowDeclaredBuild,
   });
-  process.stderr.write(`[device-guard] build ${header.app_build ?? '(unknown)'} catalog ${header.catalog_sha256}\n`);
+  process.stderr.write(`[device-guard] build ${header.app_build ?? '(unknown)'} checkout ${header.checkout_head ?? '(unknown)'}`
+    + `${header.checkout_dirty ? ' DIRTY src/triage/' : ''} catalog ${header.catalog_sha256}\n`);
   process.stderr.write(`[device-guard] detectors ${header.detectors_sha}\n`);
   process.stderr.write(`[device-guard] crisis rule ${header.crisis_rule} (${header.crisis_rule_source})`
     + `${header.keep_routes ? ` keep ${header.keep_routes.join(',')}` : ''}`
