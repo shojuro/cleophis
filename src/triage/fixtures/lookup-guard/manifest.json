@@ -1,6 +1,6 @@
 {
-  "_comment": "Pins every dose-cite-v7 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
-  "rule": "dose-cite-v7",
+  "_comment": "Pins every dose-cite-v8 fixture file by the sha256 of its bytes and its case count (verdicts: cases across all groups; sources: source sets; units: rows). A vendored copy proves it is the same set by matching this file. Regenerate only after a reviewed fixture change, by recomputing sha256 and count for each file listed.",
+  "rule": "dose-cite-v8",
   "files": {
     "citations.json": {
       "sha256": "c9388e52b3f8cfec81547b2948e8695ab8d7058495184f97c084b1186c3ee530",
@@ -35,8 +35,8 @@
       "count": 32
     },
     "verdicts.json": {
-      "sha256": "6da9555d1eb933582f9fcb0b28a78d94c02838e6ee6c696d49c4ca9de3901a40",
-      "count": 618
+      "sha256": "e88b8253c7d27e7e13e6f9e795a7ac77f17d84417e521f51568aea50cb71c562",
+      "count": 623
     }
   }
 }

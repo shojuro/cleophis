@@ -1,5 +1,5 @@
 {
-  "_comment": "dose-cite-v7 verdict fixtures, one named group per clause of the rule, a group for what v7 makes quotable (maximum-and-route-quotable), a group for route-bearing sentences (route-bearing), plus every adversarial pair from the five M6 re-reviews (probes-round-1..5; the round-4 and round-5 groups also hold the verbatim quotes the previous rule wrongly withheld, named \"quote\") and the reviewers' benign lists with their actual outcome under the current rule (cost; a v6 -> v7 change is in the case note). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
+  "_comment": "dose-cite-v8 verdict fixtures (v8, whole-branch fix round I6: every cited content sentence must be a quote; the cited-must-quote group holds the review's claims), one named group per clause of the rule, a group for what v7 makes quotable (maximum-and-route-quotable), a group for route-bearing sentences (route-bearing), plus every adversarial pair from the five M6 re-reviews (probes-round-1..5; the round-4 and round-5 groups also hold the verbatim quotes the previous rule wrongly withheld, named \"quote\") and the reviewers' benign lists with their actual outcome under the current rule (cost; a v6 -> v7 change is in the case note). Each case: a reply + a source set (a name from sources.json, or an inline array, in pack order) -> the expected verdict fields. WITHHELD stands for lookup-guard.js WITHHELD_BANNER and a displayText of exactly NO_EVIDENCE for LOOKUP_NO_EVIDENCE_TEXT. A note field says why a case matters or what it costs; a probe case with no withheld sentence carries a note saying KEPT and why. The canonical rule is src/triage/lookup-guard.js; the triage repo vendors it and asserts identity group by group.",
   "groups": {
     "citation-range": [
       {
@@ -7,21 +7,22 @@
         "sources": "paracetamol",
         "replyText": "Paracetamol is a common painkiller [2]. It is safe in pregnancy [7].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [2]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [2]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [2].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "It is safe in pregnancy [7].",
               "reason": "citation-out-of-range"
             }
           ],
-          "citations": [
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "citation [0] is out of range",
@@ -58,21 +59,22 @@
         }
       },
       {
-        "name": "a comma list of in-range citations is kept",
+        "name": "a comma list of in-range citations is kept (v8: withheld)",
         "sources": "paracetamol",
         "replyText": "Paracetamol treats aches and pains [1, 2].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol treats aches and pains [1, 2].",
-          "kept": [
-            "Paracetamol treats aches and pains [1, 2]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol treats aches and pains [1, 2].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1,
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "a citation range form the rule does not parse is malformed",
@@ -375,22 +377,26 @@
         "note": "v6 -> v7: KEPT. \"more than\" left the sentence list (founder decision 2026-09-28): a verbatim maximum-dose sentence is quotable."
       },
       {
-        "name": "v7: emergency wording with no number is kept (route words left the list)",
+        "name": "v7: emergency wording with no number is kept (route words left the list) (v8: withheld)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. In an emergency, call for help.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. In an emergency, call for help.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "In an emergency, call for help."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "In an emergency, call for help.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
         },
-        "note": "v6 -> v7: KEPT. \"emergency\" left the sentence list; the reply shows no dose, so a sentence with no number is kept as it is."
+        "note": "v6 -> v7: KEPT. \"emergency\" left the sentence list; the reply shows no dose, so a sentence with no number is kept as it is. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "harm wording is withheld even as a verbatim quote",
@@ -1440,20 +1446,22 @@
         }
       },
       {
-        "name": "a non-dose sentence with an accented word is kept as today",
+        "name": "a non-dose sentence with an accented word is kept as today (v8: withheld)",
         "sources": "nodoseP",
         "replyText": "It is sold in cafés [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "It is sold in cafés [1].",
-          "kept": [
-            "It is sold in cafés [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It is sold in cafés [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "a non-dose sentence with a Cyrillic letter is unreadable",
@@ -1814,16 +1822,21 @@
         "replyText": "Paracetamol is a painkiller [1]. The µ symbol means micro.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. The µ symbol means micro.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "The µ symbol means micro."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "The µ symbol means micro.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "a Greek letter in a drug name is readable (W4)",
@@ -1913,37 +1926,44 @@
     ],
     "dose-bearing": [
       {
-        "name": "a sentence with no number and no unit is kept without a citation",
+        "name": "a sentence with no number and no unit is kept without a citation (v8: withheld)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. It is safe to take with food.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. It is safe to take with food.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "It is safe to take with food."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "It is safe to take with food.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "first as a plain word is not a number",
         "sources": "nodoseP",
         "replyText": "First, check the label [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "First, check the label [1].",
-          "kept": [
-            "First, check the label [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "First, check the label [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "iv in lower case is a roman-numeral token, so the sentence must be a quote (V5-4)",
@@ -1990,32 +2010,36 @@
         "sources": "nodoseP",
         "replyText": "Mix it well [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Mix it well [1].",
-          "kept": [
-            "Mix it well [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Mix it well [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "civil and mild are not numerals",
         "sources": "nodoseP",
         "replyText": "Mild pain needs no civil action [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Mild pain needs no civil action [1].",
-          "kept": [
-            "Mild pain needs no civil action [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Mild pain needs no civil action [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "IV in capitals is the number 4, and quotes as such",
@@ -2070,16 +2094,18 @@
         "sources": "nodoseP",
         "replyText": "Once you feel better, stop taking it [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Once you feel better, stop taking it [1].",
-          "kept": [
-            "Once you feel better, stop taking it [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Once you feel better, stop taking it [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "e.g. is not the unit g",
@@ -2087,16 +2113,21 @@
         "replyText": "Paracetamol is a painkiller [1]. Take it with food, e.g. toast.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take it with food, e.g. toast.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take it with food, e.g. toast."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take it with food, e.g. toast.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "a drug name holding a unit spelling is not a unit",
@@ -2104,16 +2135,21 @@
         "replyText": "Paracetamol is a painkiller [1]. Ask about other drugs.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Ask about other drugs.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Ask about other drugs."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Ask about other drugs.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "any digit makes a sentence dose-bearing, dose or not",
@@ -2811,42 +2847,44 @@
         "sources": "paracetamol",
         "replyText": "Paracetamol treats aches and pains [2]. The usual dose is one or two 500mg tablets up to 4 times in 24 hours.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol treats aches and pains [2]. WITHHELD",
-          "kept": [
-            "Paracetamol treats aches and pains [2]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol treats aches and pains [2].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours.",
               "reason": "dose-uncited"
             }
           ],
-          "citations": [
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
-        "name": "a dose with no citation is withheld, the rest is kept",
+        "name": "a dose with no citation is withheld, the rest is kept (v8: the rest withheld too)",
         "sources": "paracetamol",
         "replyText": "Paracetamol treats aches and pains [2]. Adults can take 1000 mg at a time.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol treats aches and pains [2]. WITHHELD",
-          "kept": [
-            "Paracetamol treats aches and pains [2]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol treats aches and pains [2].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Adults can take 1000 mg at a time.",
               "reason": "dose-uncited"
             }
           ],
-          "citations": [
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "a bare count with no citation after a cited strength (probe 36)",
@@ -2962,22 +3000,22 @@
         "name": "probe J2b (MA2 review): an uncited route negation in a no-dose reply",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. This is not an emergency, there is no need to go to A&E.",
-        "note": "Kept by v7 at a8b95d1 (the MA2 review's (a)-class pair); v6 withheld it by the list. detectRoute reads it as UNCLEAR, so the direction scan decides it.",
+        "note": "Kept by v7 at a8b95d1 (the MA2 review's (a)-class pair); v6 withheld it by the list. detectRoute reads it as UNCLEAR, so the direction scan decides it. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "This is not an emergency, there is no need to go to A&E.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
@@ -2985,42 +3023,43 @@
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Do not go to A&E, wait and see.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Do not go to A&E, wait and see.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe J5 (MA2 review): \"no need to call an ambulance\"",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. There is no need to call an ambulance.",
-        "note": "Kept by v6 and by v7 at a8b95d1.",
+        "note": "Kept by v6 and by v7 at a8b95d1. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "There is no need to call an ambulance.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
@@ -3028,84 +3067,88 @@
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. In an emergency go to accident and emergency.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "In an emergency go to accident and emergency.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe J8 (MA2 review): a de-escalation with no direction verb",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Taking the whole pack is not an emergency.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Taking the whole pack is not an emergency.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "an uncited clinician referral is withheld",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Speak to a pharmacist if you are unsure.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Speak to a pharmacist if you are unsure.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "a cited route sentence that is not in the source is withheld",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Go to A&E now [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Go to A&E now [1].",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "quote: a verbatim cited route sentence with no number is kept",
@@ -3215,154 +3258,154 @@
         "name": "probe K1 (MA2 re-review): route words read after NFKC, so fullwidth letters do not hide them",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Ｔｈｉｓ ｉｓ ｎｏｔ ａｎ ｅｍｅｒｇｅｎｃｙ, ｎｏ ｎｅｅｄ ｔｏ ｇｏ ｔｏ Ａ＆Ｅ.",
-        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Ｔｈｉｓ ｉｓ ｎｏｔ ａｎ ｅｍｅｒｇｅｎｃｙ, ｎｏ ｎｅｅｄ ｔｏ ｇｏ ｔｏ Ａ＆Ｅ.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K8 (MA2 re-review): a fullwidth emergency direction",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Ｇｏ ｔｏ Ａ＆Ｅ ｎｏｗ.",
-        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Ｇｏ ｔｏ Ａ＆Ｅ ｎｏｗ.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K2 (MA2 re-review): route words read with invisibles out (zero-width space)",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. This is not an emer​gency, no need to go to A​&E.",
-        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "This is not an emer​gency, no need to go to A​&E.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K9 (MA2 re-review): a zero-width joiner inside A&E",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. Do not go to A‍&E.",
-        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Do not go to A‍&E.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K10 (MA2 re-review): a soft hyphen inside emergency",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. This is not an emer­gency.",
-        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list.",
+        "note": "MA2 re-review R1: kept uncited by fix round 1 (the route check read only the raw sentence); v6 withheld it by the list. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "This is not an emer­gency.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K13 (MA2 re-review N2): a combining accent inside emergency is folded for the route read",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. This is not an emérgency.",
-        "note": "Kept by v6 and by v7 up to fix round 1.",
+        "note": "Kept by v6 and by v7 up to fix round 1. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "This is not an emérgency.",
               "reason": "route-uncited"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
         "name": "probe K12 (MA2 re-review): a Cyrillic letter inside a route word is unreadable",
         "sources": "noDose",
         "replyText": "Paracetamol is a common painkiller [1]. This is not an еmergency.",
-        "note": "The script check applies to route sentences as to every sentence.",
+        "note": "The script check applies to route sentences as to every sentence. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a common painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a common painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a common painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "This is not an еmergency.",
               "reason": "unreadable"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       },
       {
@@ -3410,6 +3453,96 @@
           "citations": [
             1
           ]
+        }
+      }
+    ],
+    "cited-must-quote": [
+      {
+        "name": "probe I6a (whole-branch review): an uncited-by-content safety claim with an in-range citation",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is safe to take with ibuprofen and alcohol. [1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is safe to take with ibuprofen and alcohol. [1]",
+              "reason": "not-a-quote"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe I6b (whole-branch review): pregnancy, breastfeeding and an interaction claim with an in-range citation",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is the recommended painkiller in pregnancy and while breastfeeding, and it does not interact with warfarin. [1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is the recommended painkiller in pregnancy and while breastfeeding, and it does not interact with warfarin. [1]",
+              "reason": "not-a-quote"
+            }
+          ],
+          "citations": []
+        }
+      },
+      {
+        "name": "probe I6c: a cited paraphrase after a verbatim quote is withheld; the quote stays",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a common painkiller used to treat aches and pains. [2] It is gentle on the stomach and safe for most people. [2]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller used to treat aches and pains. [2] WITHHELD",
+          "kept": [
+            "Paracetamol is a common painkiller used to treat aches and pains. [2]"
+          ],
+          "withheld": [
+            {
+              "sentence": "It is gentle on the stomach and safe for most people. [2]",
+              "reason": "not-a-quote"
+            }
+          ],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "quote I6d: a verbatim non-dose sentence of the cited source is kept",
+        "sources": "paracetamol",
+        "replyText": "Paracetamol is a common painkiller used to treat aches and pains. [2]",
+        "expected": {
+          "outcome": "grounded",
+          "displayText": "Paracetamol is a common painkiller used to treat aches and pains. [2]",
+          "kept": [
+            "Paracetamol is a common painkiller used to treat aches and pains. [2]"
+          ],
+          "withheld": [],
+          "citations": [
+            2
+          ]
+        }
+      },
+      {
+        "name": "probe I6e: a cited claim naming children with no number is withheld",
+        "sources": "noDose",
+        "replyText": "Paracetamol is suitable for children of all ages. [1]",
+        "expected": {
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Paracetamol is suitable for children of all ages. [1]",
+              "reason": "not-a-quote"
+            }
+          ],
+          "citations": []
         }
       }
     ],
@@ -5061,7 +5194,7 @@
         }
       },
       {
-        "name": "a reply that shows no dose keeps its paraphrases as today",
+        "name": "a reply that shows no dose keeps its paraphrases as today (v8: withheld)",
         "sources": [
           {
             "n": 1,
@@ -5073,16 +5206,21 @@
         "replyText": "It is a painkiller [1]. It works well.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "It is a painkiller [1]. It works well.",
+          "displayText": "It is a painkiller [1]. WITHHELD",
           "kept": [
-            "It is a painkiller [1].",
-            "It works well."
+            "It is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "It works well.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "a reply whose dose sentences are all withheld keeps its paraphrases as today",
@@ -5886,22 +6024,22 @@
           }
         ],
         "replyText": "Take 2 tablets [1]. Never give a child: [1]",
-        "note": "the item is not quoted; the lead-in after the dose quote is out of order",
+        "note": "the item is not quoted; the lead-in after the dose quote is out of order v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept).",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "WITHHELD Never give a child: [1]",
-          "kept": [
-            "Never give a child: [1]"
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
             {
               "sentence": "Take 2 tablets [1].",
               "reason": "dose-not-in-source"
+            },
+            {
+              "sentence": "Never give a child: [1]",
+              "reason": "context-unverified"
             }
           ],
-          "citations": [
-            1
-          ]
+          "citations": []
         }
       }
     ],
@@ -6666,12 +6804,15 @@
         "replyText": "Paracetamol is a painkiller [1]. \n1. Take\n2. tablets at once",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n1. Take\nWITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "1. Take"
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
+            {
+              "sentence": "1. Take",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "2. tablets at once",
               "reason": "dose-uncited"
@@ -6680,7 +6821,8 @@
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "a real 1-2-3 list hiding a count in its marker (J2)",
@@ -6688,12 +6830,15 @@
         "replyText": "Paracetamol is a painkiller [1]. \n1. Eat first.\n2. Drink water.\n3. tablets at once.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n1. Eat first.\nWITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "1. Eat first."
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
+            {
+              "sentence": "1. Eat first.",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "2. Drink water.",
               "reason": "route-uncited"
@@ -6707,7 +6852,7 @@
             1
           ]
         },
-        "note": "v7 fix round 1: \"2. Drink water.\" is now also withheld (route-uncited): a self-care direction is route-bearing and must be a quote."
+        "note": "v7 fix round 1: \"2. Drink water.\" is now also withheld (route-uncited): a self-care direction is route-bearing and must be a quote. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "a lone list marker is stripped, the unit word still makes it dose-bearing (probe A50)",
@@ -6734,15 +6879,19 @@
         "name": "a marker before a plain word is stripped, and the rest carries no dose",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. \n- 8. Take them all.",
-        "note": "kept: \"Take them all\" has no number and no unit (the founder's group)",
+        "note": "kept: \"Take them all\" has no number and no unit (the founder's group) v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n- 8. Take them all.",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "- 8. Take them all."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "- 8. Take them all.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -7061,13 +7210,14 @@
         "sources": "paracetamol",
         "replyText": "Paracetamol is a painkiller [2]. Take 1g. Then take 1g again [9]. It also lowers a high temperature [2].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [2]. WITHHELD It also lowers a high temperature [2].",
-          "kept": [
-            "Paracetamol is a painkiller [2].",
-            "It also lowers a high temperature [2]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [2].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Take 1g.",
               "reason": "dose-uncited"
@@ -7075,37 +7225,41 @@
             {
               "sentence": "Then take 1g again [9].",
               "reason": "citation-out-of-range"
+            },
+            {
+              "sentence": "It also lowers a high temperature [2].",
+              "reason": "not-a-quote"
             }
           ],
-          "citations": [
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "separate withheld sentences get separate banners",
         "sources": "paracetamol",
         "replyText": "Take 1g. Paracetamol is a painkiller [2]. Take 2g.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "WITHHELD Paracetamol is a painkiller [2]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [2]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
             {
               "sentence": "Take 1g.",
               "reason": "dose-uncited"
             },
             {
+              "sentence": "Paracetamol is a painkiller [2].",
+              "reason": "not-a-quote"
+            },
+            {
               "sentence": "Take 2g.",
               "reason": "dose-uncited"
             }
           ],
-          "citations": [
-            2
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "a citation after the full stop belongs to the sentence before it",
@@ -7940,21 +8094,25 @@
         "replyText": "Paracetamol is a painkiller [1]. Take 500 m.g. now.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD now.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "now."
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
             {
               "sentence": "Take 500 m.g.",
               "reason": "dose-uncited"
+            },
+            {
+              "sentence": "now.",
+              "reason": "not-a-quote"
             }
           ],
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "probe 33: a spaced unit",
@@ -8750,21 +8908,22 @@
         ],
         "replyText": "Paracetamol is a painkiller [1]. Take 1[1]6 tablets.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Take 1[1]6 tablets.",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe A5b: a citation inside a number, cited",
@@ -8802,21 +8961,22 @@
         ],
         "replyText": "Paracetamol is a painkiller [1]. Take 5[1]00 mg.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Take 5[1]00 mg.",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe A43: a citation inside a decimal",
@@ -8830,21 +8990,22 @@
         ],
         "replyText": "Paracetamol is a painkiller [1]. Take 2.[1]5 ml.",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Take 2.[1]5 ml.",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe F1: each hour",
@@ -9777,15 +9938,19 @@
         "name": "round 2 founder group: a handful (no unit, no number)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take a handful.",
-        "note": "kept: no number and no unit word; the founder's vague-count group",
+        "note": "kept: no number and no unit word; the founder's vague-count group v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take a handful.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take a handful."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take a handful.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -9795,15 +9960,19 @@
         "name": "round 2 founder group: the whole pack (no unit, no number)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take the whole pack.",
-        "note": "kept: no number and no unit word",
+        "note": "kept: no number and no unit word v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take the whole pack.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take the whole pack."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take the whole pack.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -9813,15 +9982,19 @@
         "name": "round 2 founder group: every few hours (no unit, no number)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take it every few hours.",
-        "note": "kept: a vague interval with no number",
+        "note": "kept: a vague interval with no number v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take it every few hours.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take it every few hours."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take it every few hours.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -9831,15 +10004,19 @@
         "name": "round 2 founder group: with every meal",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take it with every meal.",
-        "note": "kept: an event schedule with no number",
+        "note": "kept: an event schedule with no number v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take it with every meal.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take it with every meal."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take it with every meal.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -10006,42 +10183,44 @@
         "sources": "paraAdultIbu",
         "replyText": "Paracetamol is a painkiller [1]. Adults take 2 tablets [1][2].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Adults take 2 tablets [1][2].",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe C2: no drug named, the other source cited",
         "sources": "paraAdultIbu",
         "replyText": "Paracetamol is a painkiller [1]. Adults take 2 tablets [2].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "Adults take 2 tablets [2].",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe C3: a brand name",
@@ -10082,21 +10261,22 @@
         "sources": "paraAdultIbu",
         "replyText": "Paracetamol is a painkiller [1]. It is taken as 2 tablets [2].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
-          "kept": [
-            "Paracetamol is a painkiller [1]."
-          ],
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
           "withheld": [
+            {
+              "sentence": "Paracetamol is a painkiller [1].",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "It is taken as 2 tablets [2].",
               "reason": "dose-not-in-source"
             }
           ],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "probe C6: an adult dose for children, same-key titles",
@@ -10723,12 +10903,15 @@
         "replyText": "Paracetamol is a painkiller [1]. \n1. Take\n2. tablets at once",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n1. Take\nWITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "1. Take"
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
+            {
+              "sentence": "1. Take",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "2. tablets at once",
               "reason": "dose-uncited"
@@ -10737,7 +10920,8 @@
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "probe J2: a real 1-2-3 list hiding a count in its marker",
@@ -10745,12 +10929,15 @@
         "replyText": "Paracetamol is a painkiller [1]. \n1. Eat first.\n2. Drink water.\n3. tablets at once.",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n1. Eat first.\nWITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "1. Eat first."
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
+            {
+              "sentence": "1. Eat first.",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "2. Drink water.",
               "reason": "route-uncited"
@@ -10764,7 +10951,7 @@
             1
           ]
         },
-        "note": "v7 fix round 1: \"2. Drink water.\" is now also withheld (route-uncited): a self-care direction is route-bearing and must be a quote."
+        "note": "v7 fix round 1: \"2. Drink water.\" is now also withheld (route-uncited): a self-care direction is route-bearing and must be a quote. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "probe L1: Cyrillic е in sixteen",
@@ -11049,12 +11236,15 @@
         "replyText": "Paracetamol is a painkiller [1]. \n- 1) Take\n- 2) tablets",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. \n- 1) Take\nWITHHELD",
+          "displayText": "Paracetamol is a painkiller [1]. \nWITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "- 1) Take"
+            "Paracetamol is a painkiller [1]."
           ],
           "withheld": [
+            {
+              "sentence": "- 1) Take",
+              "reason": "not-a-quote"
+            },
             {
               "sentence": "- 2) tablets",
               "reason": "dose-uncited"
@@ -11063,7 +11253,8 @@
           "citations": [
             1
           ]
-        }
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept)."
       },
       {
         "name": "round 3 sample: a citation inside a source number (K1)",
@@ -12153,16 +12344,18 @@
         ],
         "replyText": "See the leaflet [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "See the leaflet [1].",
-          "kept": [
-            "See the leaflet [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "See the leaflet [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "round 4 sample: a thousands separator",
@@ -12403,15 +12596,19 @@
         "name": "round 4 founder group: a capful every hour",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take a capful every hour.",
-        "note": "kept: no number and no unit word",
+        "note": "kept: no number and no unit word v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take a capful every hour.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take a capful every hour."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take a capful every hour.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -12421,15 +12618,19 @@
         "name": "round 4 founder group: swallow the lot",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Swallow the lot.",
-        "note": "kept: no number and no unit word",
+        "note": "kept: no number and no unit word v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Swallow the lot.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Swallow the lot."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Swallow the lot.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -13069,15 +13270,19 @@
         "name": "round 5 founder group: take it hourly",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take it hourly.",
-        "note": "kept: no number and no unit",
+        "note": "kept: no number and no unit v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take it hourly.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take it hourly."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take it hourly.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -13457,16 +13662,18 @@
         ],
         "replyText": "It works in about an hour [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "It works in about an hour [1].",
-          "kept": [
-            "It works in about an hour [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "It works in about an hour [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
-        }
+          "citations": []
+        },
+        "note": "v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "benign B19: from 3 months against aged 3 months and over",
@@ -13721,17 +13928,18 @@
         ],
         "replyText": "Check the maximum on the label [1].",
         "expected": {
-          "outcome": "grounded",
-          "displayText": "Check the maximum on the label [1].",
-          "kept": [
-            "Check the maximum on the label [1]."
+          "outcome": "noEvidence",
+          "displayText": "NO_EVIDENCE",
+          "kept": [],
+          "withheld": [
+            {
+              "sentence": "Check the maximum on the label [1].",
+              "reason": "not-a-quote"
+            }
           ],
-          "withheld": [],
-          "citations": [
-            1
-          ]
+          "citations": []
         },
-        "note": "v6 -> v7: KEPT (\"maximum\" left the sentence list; no number, no dose shown)."
+        "note": "v6 -> v7: KEPT (\"maximum\" left the sentence list; no number, no dose shown). v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 1 kept; now noEvidence, 0 kept)."
       },
       {
         "name": "benign V10: the sentence before a harm sentence",
@@ -14000,15 +14208,19 @@
         "name": "cost: mix reads as a word, not a roman numeral (v6)",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Mix it well.",
-        "note": "kept: mix is excluded from the lowercase roman-numeral rule",
+        "note": "kept: mix is excluded from the lowercase roman-numeral rule v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Mix it well.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Mix it well."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Mix it well.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]
@@ -14082,15 +14294,19 @@
         "name": "cost: the schedule-only sentence with no number, alone",
         "sources": "nodoseP",
         "replyText": "Paracetamol is a painkiller [1]. Take it every hour.",
-        "note": "kept: no number and no unit; the founder's group. Beside a dose quote it is withheld as not a quote.",
+        "note": "kept: no number and no unit; the founder's group. Beside a dose quote it is withheld as not a quote. v8: whole-branch fix round I6, a cited sentence that is not a quote is withheld as not-a-quote (was grounded, 2 kept; now grounded, 1 kept).",
         "expected": {
           "outcome": "grounded",
-          "displayText": "Paracetamol is a painkiller [1]. Take it every hour.",
+          "displayText": "Paracetamol is a painkiller [1]. WITHHELD",
           "kept": [
-            "Paracetamol is a painkiller [1].",
-            "Take it every hour."
+            "Paracetamol is a painkiller [1]."
           ],
-          "withheld": [],
+          "withheld": [
+            {
+              "sentence": "Take it every hour.",
+              "reason": "not-a-quote"
+            }
+          ],
           "citations": [
             1
           ]

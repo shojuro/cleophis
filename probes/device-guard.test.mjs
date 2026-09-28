@@ -607,7 +607,7 @@ test('the CLI takes --strip-doses and --strip-disclaimers and writes them into t
 test('the header names the lookup guard\'s rule id beside the detectors pin', () => {
   const h = headerRecord({ source: 's', catalogId: 'med-triage', crisisLine, records: 1 });
   assert.strictEqual(h.lookup_rule, LOOKUP_RULE);
-  assert.strictEqual(h.lookup_rule, 'dose-cite-v7', 'pinned literal, so a silent rule bump is loud here too');
+  assert.strictEqual(h.lookup_rule, 'dose-cite-v8', 'pinned literal, so a silent rule bump is loud here too');
   const keys = Object.keys(h);
   assert.strictEqual(keys.indexOf('lookup_rule'), keys.indexOf('detectors_sha') - 1, 'immediately before detectors_sha');
 });

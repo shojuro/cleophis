@@ -573,3 +573,30 @@ test('the withheld note: unchanged under a grounded reply, and under the excerpt
     "The assistant's answer was withheld: the reference pack does not confirm it. The NHS excerpts are shown instead.");
   assert.strictEqual(view.lookup.withheldCount, 2, 'the tally is kept on the verdict');
 });
+
+/* ---------------- whole-branch fix round, I6: dose-cite-v8 ---------------- */
+
+// The review's claims, cited in range but in no source: under v7 each was
+// shown as written ("grounded"). Under v8 every cited content sentence must be
+// a quote, so the turn shows the cited NHS text itself (the excerpt fallback)
+// and never the claim.
+for (const claim of [
+  'Paracetamol is safe to take with ibuprofen and alcohol. [2]',
+  'Paracetamol is the recommended painkiller in pregnancy and while breastfeeding, and it does not interact with warfarin. [2]',
+]) {
+  test(`I6 at the turn: a cited claim that is not a quote shows the excerpts, never the claim — ${claim.slice(0, 40)}…`, async () => {
+    const { r } = await excerptTurn(claim);
+    assert.strictEqual(LOOKUP_RULE, 'dose-cite-v8');
+    assert.strictEqual(r.outcome, 'excerpts');
+    assert.strictEqual(r.displayText, EXPECTED_EXCERPTS);
+    for (const word of ['safe to take', 'alcohol', 'pregnancy', 'warfarin']) assert.ok(!r.displayText.includes(word), word);
+    assert.deepStrictEqual(r.verdict.kept, []);
+    assert.deepStrictEqual(r.verdict.withheld.map((w) => w.reason), ['not-a-quote']);
+  });
+}
+
+test('I6 at the turn: a verbatim non-dose sentence of the cited source is still shown as the reply', async () => {
+  const { r } = await excerptTurn('Swallow the tablets with water. [2]');
+  assert.strictEqual(r.outcome, 'grounded');
+  assert.deepStrictEqual(r.verdict.kept, ['Swallow the tablets with water. [2]']);
+});

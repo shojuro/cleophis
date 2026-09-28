@@ -1,4 +1,4 @@
-// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v7`.
+// src/triage/lookup-guard.js — the LOOKUP guard: rule `dose-cite-v8`.
 //
 // Phase 1h M6. The reference lookup lets the model state a dose only when the
 // dose is CITED from the bundled reference pack. This module is the product's
@@ -29,6 +29,16 @@
 // (`route-uncited`), the sentence list takes the inflections and near-synonyms
 // of its own words, and the section list takes the pack's other overdose
 // headings ("too many", "extra dose").
+// v8 (Phase 1i whole-branch fix round, I6) makes every CITED sentence a
+// quote: a content sentence that cites a source must equal an eligible
+// sentence of a source it cites, whatever it says, or it is withheld
+// (`not-a-quote`). Before v8 a cited sentence with no number, no unit and no
+// care direction was shown as written, so "Paracetamol is safe to take with
+// ibuprofen and alcohol. [1]" reached the screen as "grounded" under the NHS
+// source row. Since v7's excerpt fallback (MA3), a reply that keeps nothing
+// shows the cited NHS text itself, so withholding a paraphrase costs the
+// reader nothing the source does not say better. With v8 a lookup display is
+// verbatim source sentences, the scripted refusal, or the excerpt fallback.
 //
 // The rule (`applyLookupGuard`):
 //   Per sentence of the reply (`sentencesOf`: the splitter, the list-marker
@@ -55,8 +65,11 @@
 //      fullwidth character hides a route word). A route-bearing sentence that equals
 //      no eligible sentence of a source it cites (or cites none) is withheld
 //      (`route-uncited`).
-//   Over the reply, when any sentence passed 5 or 5b as a quote (a dose or a
-//   route is shown):
+//  5c. (v8) a sentence that cites a source and is neither dose- nor
+//      route-bearing must be a quote too (mustQuote), so it passes on to
+//      clause 6 exactly like a dose or route quote.
+//   Over the reply, when any sentence passed 5, 5b or 5c as a quote (a dose, a
+//   route or any cited claim is shown):
 //   6. every other sentence with content must also be such a quote, else it is
 //      withheld (`not-a-quote`);
 //   7. the kept quotes must be ONE CONTIGUOUS RUN of the page's sentences: the
@@ -71,9 +84,10 @@
 //   9. a dose- or route-bearing quote is kept only if every content sentence
 //      before it was kept (`context-unverified` otherwise): no unverified
 //      lead-in can re-target it.
-//   A reply that shows no dose and no route keeps today's behaviour:
-//   sentences with no number, no unit and no care direction are kept as they
-//   are.
+//   A reply that cites nothing and shows no dose and no route keeps its
+//   sentences with no number, no unit and no care direction as they are; it
+//   has no citation, so clause 10 makes it `LOOKUP_NO_EVIDENCE_TEXT` (and the
+//   app shows the excerpt fallback).
 //  10. a run of withheld sentences becomes one `WITHHELD_BANNER`; if no kept
 //      sentence with content of its own carries a valid citation, the reply is
 //      `LOOKUP_NO_EVIDENCE_TEXT`.
@@ -92,7 +106,7 @@
 import pin from './detectors.pin.js';
 import { UNCLEAR, detectRoute } from './detectors.mjs';
 
-export const LOOKUP_RULE = 'dose-cite-v7';
+export const LOOKUP_RULE = 'dose-cite-v8';
 
 /**
  * The scripted refusal for a lookup with no evidence. Defined ONCE, here, and
@@ -758,7 +772,8 @@ function judgeSentence({ text, normalised }, { sources, sentencesOfSource }) {
   if (dose && !positions.length) return withhold(WITHHELD_REASONS.DOSE_NOT_IN_SOURCE);
   const route = !dose && isRouteBearing(text);
   if (route && !positions.length) return withhold(WITHHELD_REASONS.ROUTE_UNCITED);
-  return { keep: true, cites, dose, route, mustQuote: dose || route, positions };
+  // v8 (I6): a cited sentence must be a quote, whatever it says.
+  return { keep: true, cites, dose, route, mustQuote: dose || route || cites.length > 0, positions };
 }
 
 /**
@@ -784,7 +799,7 @@ function contiguous(l, p, page) {
  * `attach_guard`, replayed by `replayMessage`):
  *
  *   kind          'lookup' — what tells a lookup verdict from a triage one
- *   rule          'dose-cite-v7'
+ *   rule          'dose-cite-v8'
  *   outcome       'grounded', or 'noEvidence' when nothing citable was left
  *   displayText   what is shown and what `attach_guard` writes as the row text
  *   rawReply      the reply as the model wrote it

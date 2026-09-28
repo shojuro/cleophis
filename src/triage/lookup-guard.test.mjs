@@ -1,6 +1,6 @@
 // src/triage/lookup-guard.test.mjs — node --test src/
 //
-// The dose-cite-v7 rule, driven ENTIRELY by the JSON fixtures in
+// The dose-cite-v8 rule (LOOKUP_RULE), driven ENTIRELY by the JSON fixtures in
 // fixtures/lookup-guard/ — the files the triage repo's probes/dose-cite.mjs
 // vendors and asserts identity against. Nothing about the rule's behaviour is
 // pinned only here: every vector a second implementation must reproduce is in
@@ -50,6 +50,7 @@ test('manifest.json pins every fixture file by sha256 and case count', () => {
 test('the verdict fixtures have one named group per clause plus the probe sets, and every reason is exercised', () => {
   assert.deepStrictEqual(Object.keys(GROUPS), [
     'citation-range', 'overdose-section', 'overdose-sentence', 'maximum-and-route-quotable', 'script-check', 'dose-bearing', 'dose-uncited', 'route-bearing',
+    'cited-must-quote',
     'extractive-equality', 'extractive-context', 'ordered', 'lead-in-binding', 'source-splitting', 'neighbours',
     'list-markers-and-brackets', 'withholding-and-banner', 'no-evidence-fallback', ...PROBE_GROUPS, 'cost',
   ]);
@@ -64,7 +65,7 @@ test('the verdict fixtures have one named group per clause plus the probe sets, 
 
 for (const [group, cases] of Object.entries(GROUPS)) {
   for (const c of cases) {
-    test(`dose-cite-v7 [${group}]: ${c.name}`, () => {
+    test(`${LOOKUP_RULE} [${group}]: ${c.name}`, () => {
       const sources = sourcesOf(c);
       assert.ok(sources, `unknown source set ${c.sources}`);
       const v = applyLookupGuard({ replyText: c.replyText, sources });
@@ -252,7 +253,7 @@ test('the verdict shape is stable JSON with kind lookup', () => {
     'kind', 'rule', 'outcome', 'displayText', 'rawReply', 'kept', 'withheld', 'citations', 'detectorsSha',
   ]);
   assert.strictEqual(v.kind, 'lookup');
-  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v7');
+  assert.strictEqual(LOOKUP_RULE, 'dose-cite-v8');
   assert.strictEqual(v.detectorsSha, pin.sha256);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(v)), v);
 });
