@@ -623,3 +623,73 @@ test('the header\'s whole key shape is pinned', () => {
     'crisis_rule_source', 'detectors_pin_file_sha', 'crisis_line_sha256',
   ]);
 });
+
+// ── Whole-branch fix round, M7: the bridge reads exactly what the app shows ──
+//
+// The registration reads the product path through this probe, so its reading
+// must be the app's, byte for byte. The APP's literal call (src/app.js
+// finishStream): `applyGuard({ userText, replyText, crisisLine:
+// entry.crisisLine || undefined, ...crisisRuleFor(entry) })`, nothing else.
+// The BRIDGE's call as `run` makes it with no flags: `crisisOptions({ entry })`
+// and `stripOptions({})` into `guardRecord`. Over the saved transcripts (the
+// 1,000 saved replies, as written and with a disclosure appended so the
+// replace rule fires on every one) and the crisis bank's targets and controls
+// under fixed replies, every field the bridge records equals the app's verdict.
+import { applyGuard } from '../src/triage/guard.js';
+import { crisisRuleFor } from '../src/triage-turn.js';
+
+test('M7: guardRecord under crisisOptions({entry}) + stripOptions({}) equals the app\'s literal applyGuard call, over the saved transcripts', () => {
+  const load = (n) => JSON.parse(readFileSync(new URL(`../src/triage/fixtures/${n}.json`, import.meta.url), 'utf8')).rows;
+  const saved = [...load('benign-arms'), ...load('redflag-arms')];
+  const crisis = load('crisis-items');
+  const cases = [];
+  for (const a of saved) {
+    cases.push([a.user, a.reply ?? '']);
+    cases.push([`${a.user} I want to kill myself.`, a.reply ?? '']);
+  }
+  for (const c of crisis) {
+    for (const u of [c.target, c.control]) {
+      for (const r of ['Please see your GP today.', 'Call 999 now for an ambulance.', 'Rest and drink fluids.',
+        'I cannot judge how serious this is. Call 999 now. You can also ring 116 132.']) cases.push([u, r]);
+    }
+  }
+  assert.strictEqual(cases.length, 2000 + 41 * 2 * 4);
+
+  const { crisisRuleSource, ...crisis0 } = crisisOptions({ entry: triage });
+  assert.strictEqual(crisisRuleSource, 'catalog');
+  const bridgeOpts = { crisisLine: triage.crisisLine, ...crisis0, ...stripOptions({}) };
+  const mismatches = [];
+  let replaced = 0;
+  cases.forEach(([user, text], i) => {
+    if (!text) return; // the bridge refuses a blank reply; the app never guards one
+    const g = guardRecord({ id: `m7-${i}`, user, text, state: 'complete' }, bridgeOpts);
+    const v = applyGuard({ userText: user, replyText: text, crisisLine: triage.crisisLine || undefined, ...crisisRuleFor(triage) });
+    const app = {
+      display: v.displayText,
+      route_banner: v.banner,
+      removed: v.prohibitedRemoved,
+      route: v.route,
+      why: v.why,
+      crisis_on_input: v.crisisOnInput,
+      crisis_line_appended: v.crisisLineAppended,
+      timeframe_stripped: v.timeframeStripped,
+      timeframe_unlocated: v.timeframeUnlocated,
+      prohibited: v.prohibited,
+      crisis_replaced: v.crisisReplaced,
+      reply_shown: v.replyShown,
+      route_detected: v.routeDetected,
+      signposts_removed: v.signpostsRemoved,
+      doses_removed: v.dosesRemoved,
+      disclaimers_removed: v.disclaimersRemoved.length,
+    };
+    const bridge = Object.fromEntries(Object.keys(app).map((k) => [k, g[k]]));
+    if (JSON.stringify(bridge) !== JSON.stringify(app)) mismatches.push(`case ${i}`);
+    if (v.crisisReplaced) replaced += 1;
+    assert.strictEqual(g.crisis_rule, 'replace');
+    assert.strictEqual(g.dedupe_signposts, true);
+    assert.strictEqual(g.strip_doses, true);
+    assert.strictEqual(g.strip_disclaimers, true);
+  });
+  assert.deepStrictEqual(mismatches, []);
+  assert.ok(replaced >= 1000 + 40 * 4, `the replace rule fired on ${replaced}`);
+});
