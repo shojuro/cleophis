@@ -33,7 +33,10 @@
 //   (MA6, Phase 1i) between 3 and 4, on a KEPT reply only: every sentence
 //      carrying a medicine dose token is removed — or, when the sentence is
 //      route-bearing, has the dose redacted in place — with PROHIBITED_NOTE
-//      once (`stripDoses`); and when the reply, with its scope-disclaimer
+//      once (`stripDoses`). The redaction reaches only the dose sentences step
+//      2 left: a sentence the detectors read as a dose ("Give 2 puffs of the
+//      blue inhaler and call 999.") is cut whole by step 2 first, and the
+//      banner carries its route (whole-branch fix round, I1); and when the reply, with its scope-disclaimer
 //      sentences set aside, routes EMERGENCY or CLINICIAN, every disclaimer
 //      sentence that is not itself route-bearing is removed
 //      (`stripScopeDisclaimers`). The VERDICT'S route and banner are untouched:
@@ -220,7 +223,7 @@ const MAX_FILTER_PASSES = 4;
  * the 1,000-reply sweep, where a dosage form in one sentence was un-excused by
  * "2-3 times a day" in another.
  */
-export function filterProhibited(text, patientText = '') {
+export function filterProhibited(text, patientText = '', { splice = false } = {}) {
   const med = detectMedication(text, { patientText });
   const dx = detectNamedDiagnosis(text, { patientText });
   const reason = {
@@ -228,6 +231,7 @@ export function filterProhibited(text, patientText = '') {
     diagnosis: dx.names,
   };
   if (!med.found && !dx.found) return { text: String(text), removed: [], ...reason };
+  if (splice) return filterProhibitedSpliced(String(text), patientText, reason);
 
   const trips = (s) => detectMedication(s, { patientText }).found
     || detectNamedDiagnosis(s, { patientText }).found;
@@ -267,6 +271,68 @@ export function filterProhibited(text, patientText = '') {
 
   cut.fill(true);
   return { text: tidy(PROHIBITED_NOTE), removed: receipt(), ...reason };
+}
+
+// ── Whole-branch fix round, I2: the prohibited filter on the product path ──
+//
+// `applyGuard` asks for this form whenever its dose strip is on (the shipped
+// default); with `stripDoses: false` the filter above runs byte for byte as it
+// always has, so the historical append digest (switches off) cannot move.
+//
+// Sentences come from the lookup guard's `splitSentences` (via
+// `sentenceSpans`), which knows "2.5 ml" is not a full stop and that "1." at
+// the start of a line is a list marker, and the display is SPLICED like
+// `stripDoses`: kept sentences keep their bytes and line breaks, a cut list
+// item takes its marker with it, a heading whose whole section went goes too.
+// The old splitter cut "Take 2.5 ml." into "Take 2." + "5 ml." and left the
+// first half, a count instruction, on screen; and it left "1. 2. Call 999".
+// The rule is otherwise the one above: the same passes, the same pair rule,
+// the same whole-string test, the same note-alone fallback.
+//
+// NOT HERE (I1, option (b)): a route-bearing sentence that trips the detectors
+// is cut whole, not redacted. Redaction was tried and rescues nothing under
+// the frozen detector: "Give [dose removed] of the blue inhaler and call 999."
+// still trips `detectMedication` (a drug class in an administration frame,
+// and "give [dose removed]" reads as a dose), and so does every administration
+// frame tried ("call 999 now and give 2 puffs", "take 2 tablets and go to
+// A&E"). MA6's in-place redaction (`stripDoses`) therefore reaches only the
+// dose-bearing route sentences the detectors do not already cut ("Go to A&E
+// now and take no more than 2 tablets.").
+function filterProhibitedSpliced(src, patientText, reason) {
+  const trips = (s) => detectMedication(s, { patientText }).found
+    || detectNamedDiagnosis(s, { patientText }).found;
+  const spans = sentenceSpans(src);
+  const cut = spans.map(() => false);
+  const liveIdx = () => spans.map((_, i) => i).filter((i) => !cut[i]);
+  const cutCount = () => cut.filter(Boolean).length;
+  const receipt = () => spans.filter((_, i) => cut[i]).map((sp) => sp.text);
+  const assemble = () => {
+    if (!cutCount()) return src;
+    const out = spliceOut(src, orphanHeadings(spans, spans.filter((_, i) => cut[i])));
+    return out ? `${out}${PROHIBITED_NOTE}` : PROHIBITED_NOTE.trim();
+  };
+
+  for (let pass = 0; pass < MAX_FILTER_PASSES; pass += 1) {
+    const before = cutCount();
+    for (const i of liveIdx()) if (trips(spans[i].text)) cut[i] = true;
+
+    const idx = liveIdx();
+    if (idx.length > 1 && trips(idx.map((i) => spans[i].text).join(' '))) {
+      for (const a of idx) {
+        for (const b of idx) {
+          if (a === b) continue;
+          if (trips(`${spans[a].text} ${spans[b].text}`)) { cut[a] = true; cut[b] = true; }
+        }
+      }
+    }
+
+    const out = assemble();
+    if (!trips(out)) return { text: out, removed: receipt(), ...reason };
+    if (cutCount() === before) break;
+  }
+
+  cut.fill(true);
+  return { text: PROHIBITED_NOTE.trim(), removed: receipt(), ...reason };
 }
 
 /** The route the streamed prefix resolves to, for the provisional banner. */
@@ -767,7 +833,9 @@ export function applyGuard({
   const routing = detectRoute(raw);
   const banner = ROUTE_TO_BANNER[routing.route];
 
-  const prohibited = filterProhibited(raw, userText);
+  // The product-path form of the filter (whole-branch fix round, I2) rides
+  // on the dose switch, so switches-off stays the historical path byte for byte.
+  const prohibited = filterProhibited(raw, userText, { splice: dosesOn });
   let display = prohibited.text;
 
   let timeframeStripped = [];
