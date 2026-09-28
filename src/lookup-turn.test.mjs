@@ -341,9 +341,12 @@ test('lookupForPersistence records no pack when none answered (crisis first, una
 
 import { LOOKUP_SOURCE_FOOTER, lookupCitationRow, lookupFooterFor } from './lookup-turn.js';
 
-test('the reuse footer is one constant with the ruled wording', () => {
+test('the reuse footer is one constant with the ruled wording, true of a v8 display', () => {
+  // TC1 fix round 1: under dose-cite-v8 every cited content sentence is a
+  // verbatim quote, so a grounded display is the NHS's wording, chosen by the
+  // assistant. The licence sentence is unchanged.
   assert.strictEqual(LOOKUP_SOURCE_FOOTER,
-    "Reference pages: NHS website, Open Government Licence v3.0. The wording above is the assistant's, not the NHS's.");
+    "Reference pages: NHS website, Open Government Licence v3.0. The sentences above are the NHS's own wording, chosen by the assistant.");
 });
 
 test('the footer goes under a grounded reply only, never under a scripted refusal or the crisis block', () => {

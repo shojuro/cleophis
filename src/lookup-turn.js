@@ -179,14 +179,17 @@ const sourceRecord = (c) => ({
  * The fixed footer under every GROUNDED lookup reply. One constant: the
  * founder may reword it here and nowhere else. Never under the scripted
  * refusal, the did-you-mean list, the unavailable message or the crisis block.
+ * Under dose-cite-v8 every cited content sentence a grounded display keeps is
+ * a verbatim source sentence, so the second sentence says the wording is the
+ * NHS's (Phase 1i TC1 fix round 1; it said "the assistant's" before v8).
  */
 export const LOOKUP_SOURCE_FOOTER =
-  "Reference pages: NHS website, Open Government Licence v3.0. The wording above is the assistant's, not the NHS's.";
+  "Reference pages: NHS website, Open Government Licence v3.0. The sentences above are the NHS's own wording, chosen by the assistant.";
 
 /**
- * The footer under the EXCERPT fallback (Phase 1i MA3). The grounded footer's
- * second sentence ("the wording above is the assistant's") is false for
- * verbatim NHS text, so the excerpts carry their own. Founder-rewordable here.
+ * The footer under the EXCERPT fallback (Phase 1i MA3). The excerpts are
+ * whole runs of the source, with left-out text marked, so they carry their
+ * own footer saying so. Founder-rewordable here.
  */
 export const LOOKUP_EXCERPT_FOOTER =
   "Reference pages: NHS website, Open Government Licence v3.0. The excerpts above are the NHS's own wording; […] marks text left out.";
