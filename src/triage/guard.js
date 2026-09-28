@@ -536,15 +536,26 @@ function spliceOut(src, cut) {
 // future row cannot quietly make them doses here. `units`/`iu` stay doses
 // (insulin). The accepted cost: "hydrocortisone 1% cream" is no longer cut by
 // this step (a strength written as a percentage).
+//
+// Whole-branch fix round, I7: `mmol` is NO LONGER excluded as a token. The
+// tokeniser writes the same token for "4 mmol/L" (a blood-sugar threshold)
+// and "20 mmol" (an electrolyte dose: "Give 20 mmol of potassium chloride"),
+// and the exclusion let the dose through. A CONCENTRATION — `mmol` followed by
+// "/l", "/dl", "per litre" or "l-1" in the normalised text — is unglued before
+// tokenising instead (`CONCENTRATION`), so the threshold stays and the dose is
+// a dose. `'mmol/l'` stays listed as documentation of what is excluded.
 export const TRIAGE_VITALS_EXCLUSIONS = Object.freeze([
-  '%', 'mmol', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg',
+  '%', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg',
 ]);
 
 const TOKEN_NUMBER = /^\d+(?:[./]\d+)?/;
+// "4mmol/l", "4mmol / l", "4mmol per litres", "4mmol/litres", "4mmol/dl",
+// "4mmol l-1" — as `normaliseDoseText` writes them.
+const CONCENTRATION = /(\d)mmol(?=\s*(?:\/|per\b)\s*(?:l|litres|dl)(?![a-z])|\s+l-1(?![0-9]))/g;
 
 /** The medicine dose tokens in normalised text: the lookup guard's tokens minus the vitals exclusions. */
 function triageDoseTokens(normalised) {
-  return doseTokensIn(normalised)
+  return doseTokensIn(String(normalised ?? '').replace(CONCENTRATION, '$1 mmol'))
     .filter((t) => !TRIAGE_VITALS_EXCLUSIONS.includes(t.replace(TOKEN_NUMBER, '')));
 }
 

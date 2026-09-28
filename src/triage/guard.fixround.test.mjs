@@ -109,6 +109,26 @@ test('I3: with no disclosure, a phone-like number is untouched (the cut is only 
   assert.strictEqual(v.displayText, 'Call 999 now. You can also ring 116 132 any time to talk to someone.');
 });
 
+// ── I7: mmol as a dose, mmol/L as a threshold ───────────────────────────────
+
+test('I7: "20 mmol of potassium chloride" is a dose; "4 mmol/L" stays a threshold', () => {
+  const v = appGuard(CHEST, 'Give 20 mmol of potassium chloride. Go to A&E now.');
+  assert.strictEqual(v.displayText, `Go to A&E now. ${NOTE}`);
+  assert.strictEqual(v.dosesRemoved, 1);
+  assert.strictEqual(carriesDose('Give 20 mmol of potassium chloride.'), true);
+  assert.strictEqual(carriesDose('Give 20 millimoles of potassium.'), true);
+  assert.strictEqual(carriesDose('If blood sugar is below 4 mmol/L, go to A&E now.'), false);
+  assert.strictEqual(carriesDose('If blood sugar is below 4 mmol / L, go to A&E now.'), false);
+  assert.strictEqual(carriesDose('If blood sugar is below 4 mmol per litre, go to A&E now.'), false);
+  for (const threshold of ['4 mmol/L', '4.0 mmol/L', '4 millimoles per litre', '4 mmol/litre', '4 mmol l-1', '4 mmol/dL']) {
+    assert.strictEqual(carriesDose(`If blood sugar is below ${threshold}, go to A&E now.`), false, threshold);
+  }
+  assert.strictEqual(carriesDose('Give 20mmol potassium.'), true);
+  const t = appGuard(CHEST, 'If blood sugar is below 4 mmol/L, go to A&E now.');
+  assert.strictEqual(t.dosesRemoved, 0);
+  assert.ok(t.displayText.startsWith('If blood sugar is below 4 mmol/L, go to A&E now.'), t.displayText);
+});
+
 // ── M1: the de-duplication splitter and "e.g." ──────────────────────────────
 
 test('M1: de-duplication does not split at "e.g." — no "landline.g. tonight"', () => {

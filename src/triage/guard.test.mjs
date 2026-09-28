@@ -1575,13 +1575,15 @@ test('MA6 F2: a disclaimer sentence that is itself route-bearing is never cut (P
 });
 
 test('MA6 F4: the vitals exclusions are the ruled list, frozen', () => {
-  assert.deepStrictEqual([...TRIAGE_VITALS_EXCLUSIONS], ['%', 'mmol', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg']);
+  // 'mmol' left the list in the whole-branch fix round (I7): a concentration
+  // is unglued before tokenising instead, so "20 mmol" is a dose again.
+  assert.deepStrictEqual([...TRIAGE_VITALS_EXCLUSIONS], ['%', 'mmol/l', 'l', 'litres', '°c', 'degrees', 'bpm', 'mmhg']);
   assert.ok(Object.isFrozen(TRIAGE_VITALS_EXCLUSIONS));
   assert.ok(!TRIAGE_VITALS_EXCLUSIONS.includes('units') && !TRIAGE_VITALS_EXCLUSIONS.includes('iu'), 'insulin is a dose');
 });
 
 test('MA6 F4: carriesDose — medicine doses yes, vitals, fluids, numbers and bare units no (M1)', () => {
-  for (const yes of ['Take 500mg paracetamol.', 'Give 2 puffs.', 'Take half a tablet.', '2.5 ml', '20 units of insulin', '400 IU', 'Keep under 14 units a week.', '4 g in a day']) {
+  for (const yes of ['Take 500mg paracetamol.', 'Give 2 puffs.', 'Take half a tablet.', '2.5 ml', '20 units of insulin', '400 IU', 'Keep under 14 units a week.', '4 g in a day', 'Give 20 mmol of potassium chloride.']) {
     assert.strictEqual(carriesDose(yes), true, yes);
   }
   for (const no of ['oxygen below 92%', 'blood sugar below 4 mmol/L', 'Drink 2 litres of water.', 'I am 100% sure', 'call 999', 'within 3 days', 'take a tablet', 'a temperature above 38.5 degrees', 'hydrocortisone 1% cream']) {
@@ -1595,6 +1597,8 @@ const F4_KEPT = [
   ['UNCLEAR', 'If blood sugar is below 4 mmol/L give sugar. Call 999 now if they become unresponsive.'],
   ['EMERGENCY', 'Call 999 now, I am 100% sure this is an emergency.'],
   ['EMERGENCY', 'Drink at least 2 litres of water. Go to A&E now.'],
+  // whole-branch fix round, I7: a concentration in every spelling stays
+  ['UNCLEAR', 'Go to A&E now if their blood sugar stays below 4 millimoles per litre.'],
 ];
 test('MA6 F4: vital-sign, fluid and certainty figures are KEPT whole', () => {
   for (const [route, replyText] of F4_KEPT) {
