@@ -111,6 +111,7 @@ H2 gap. To re-run the script (expect exactly the A1 and A5 FAIL lines):
 cd "$B"
 ANDROID_NDK_ROOT=$HOME/android-ndk-r27c LIBCLANG_PATH=$HOME/.local/lib/python3.10/site-packages/clang/native \
   CARGO_TARGET_DIR=$HOME/cleophis-mobile-target bash docs/superpowers/mobile-tools/check-mobile-build.sh
+git checkout -- docs/superpowers/mobile-tools/aarch64-align-probe/Cargo.lock   # the probe build rewrites it
 ```
 
 ## (iii) Sign and publish catalog v11, then verify it (FOUNDER)
