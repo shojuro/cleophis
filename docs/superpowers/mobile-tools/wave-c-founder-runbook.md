@@ -385,11 +385,9 @@ Then tell the controller where `device-journey-r0.zip` is.
    sets the catalog dist v11 sha, which TC2 left `null` as "FILLED BY
    AMENDMENT AFTER PUBLISH". It adds the APK sha as provenance.
 3. Run the reader, the last block of `phone-journey.md`, from the triage
-   checkout. It uses the reader's default registration, the registration of
-   record (currently amendment 2), whose `device_journey.reading` it follows.
-   The reader defaults to the registration of record (an amendment file the
-   triage repo names); pass `--registration` only if the controller tells you
-   to:
+   checkout. It uses the reader's default (the registration of record), whose
+   `device_journey.reading` it follows. Pass `--registration` only if the
+   controller tells you to:
 
 ```bash
 cd "$T" && python3 -m pipeline.analysis.device_journey \
