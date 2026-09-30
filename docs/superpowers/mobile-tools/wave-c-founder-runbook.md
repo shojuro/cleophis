@@ -41,7 +41,7 @@ expands to nothing.
 ```bash
 W=/home/penguinzyue/cleophis-wt/p6-final-fix        # mobile/triage-p6: this page, the pipeline, the kit
 B=/home/penguinzyue/cleophis-wt/mc1-build-a07d8b7   # detached at a07d8b7: the build and the probe guard
-T=/home/penguinzyue/cleophas-triage-wt/p1i-TC2      # the triage checkout holding the release registration (a1)
+T=/home/penguinzyue/cleophas-triage-wt/p1i-TC2      # the triage checkout holding the release registration (the registration of record)
 DESK="/mnt/c/Users/JM505 Computers/dev/cleophis"    # the desktop checkout: holds tools/pipeline/.env
 PUBKEY=158cb99e9756e2e4d01d88b7ecfeb99a76547821ffe9f9f1985316c5451cd0c0   # kpack_core::sign::CURATOR_PUBLIC_KEY
 DIST=https://cleophis-dist.s3.us-east-005.backblazeb2.com
@@ -300,6 +300,14 @@ Anything else reads as NOT RECORDED. The airplane-mode harness for S4:
 cd "$B" && bash docs/superpowers/mobile-tools/airplane-mode.sh --interactive 1800
 ```
 
+Right after E1, before R1, pull the first exports into `exports/`. Doing
+this later would also pull R1's re-export into `exports/`, and R1 would then
+compare the post-restart log with itself:
+
+```bash
+bash "$W/docs/superpowers/mobile-tools/phone-run-kit.sh" pull "$J"   # E1: every *-triage-log.jsonl
+```
+
 For R1, pull the re-export by the T6 chat's title, as shown on the phone.
 Leave the first copy on the phone: Android either replaces it or saves the
 new one with " (1)" in its name, and the kit takes the newest match either
@@ -360,13 +368,14 @@ cd "$B" && node probes/device-guard.mjs --in "$J/probe/release-r0.<serial>.json"
 
 ## (viii) Export and hand back
 
+The E1 exports were pulled in step (vii), right after E1. Delete any pulled
+log in `exports/` that is not from this journey, then:
+
 ```bash
-bash "$W/docs/superpowers/mobile-tools/phone-run-kit.sh" pull "$J"   # E1: every *-triage-log.jsonl
 bash "$W/docs/superpowers/mobile-tools/phone-run-kit.sh" pack "$J"
 ```
 
-Delete any pulled log that is not from this journey before `pack`. Then tell
-the controller where `device-journey-r0.zip` is.
+Then tell the controller where `device-journey-r0.zip` is.
 
 ## What the controller does next
 
@@ -376,9 +385,11 @@ the controller where `device-journey-r0.zip` is.
    sets the catalog dist v11 sha, which TC2 left `null` as "FILLED BY
    AMENDMENT AFTER PUBLISH". It adds the APK sha as provenance.
 3. Run the reader, the last block of `phone-journey.md`, from the triage
-   checkout. It names the registration of record,
-   `artifacts/mvp-release-gate-prereg-a1.json`, whose `device_journey.reading`
-   it follows:
+   checkout. It uses the reader's default registration, the registration of
+   record (currently amendment 2), whose `device_journey.reading` it follows.
+   The reader defaults to the registration of record (an amendment file the
+   triage repo names); pass `--registration` only if the controller tells you
+   to:
 
 ```bash
 cd "$T" && python3 -m pipeline.analysis.device_journey \
@@ -387,7 +398,7 @@ cd "$T" && python3 -m pipeline.analysis.device_journey \
   --prompt-set "$J/probe/release-r0.jsonl" --device-json "$J/probe/release-r0.<serial>.json" \
   --device-guard-json "$J/probe/release-r0.guard.jsonl" \
   --served-dir work/gate-17b-m11/results-served --stack Qwen3-1.7B-armb-v3.pB \
-  --registration artifacts/mvp-release-gate-prereg-a1.json --out artifacts/device-journey-r0.json
+  --out artifacts/device-journey-r0.json
 ```
 
 4. Then run the release gate, Task TC2b, with

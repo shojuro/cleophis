@@ -653,7 +653,9 @@ from the registration.
    route's banner and the reply under it.
 3. Export that chat again and save it to Downloads. Leave the first copy on
    the phone: Android either replaces it or saves the new one with " (1)" in
-   its name. Pull the newest one by the chat's title:
+   its name. Pull the newest one by the chat's title, from the
+   `mobile/triage-p6` checkout (the kit is not in the a07d8b7 build checkout;
+   the runbook's step (vii) gives the command with its absolute path):
    `bash docs/superpowers/mobile-tools/phone-run-kit.sh pull-replay device-journey-r0 '<the T6 chat title>'`
    It lands in `device-journey-r0/exports-after-restart/` under a name ending
    `-after-restart.jsonl`, so it never replaces the first copy in `exports/`.
@@ -732,7 +734,9 @@ this with the phone on the laptop, radios on or off:
 ## Handing it back
 
 Zip `device-journey-r0/` and put it where the triage repository can read it.
-The reader is, in the triage repository:
+The reader is, in the triage repository, below. The reader defaults to the
+registration of record (an amendment file the triage repo names); pass
+`--registration` only if the controller tells you to.
 
 <!-- literal -->
 ```text
@@ -744,6 +748,5 @@ python3 -m pipeline.analysis.device_journey \
   --device-json device-journey-r0/probe/release-r0.<serial>.json \
   --device-guard-json device-journey-r0/probe/release-r0.guard.jsonl \
   --served-dir work/gate-17b-m11/results-served --stack Qwen3-1.7B-armb-v3.pB \
-  --registration artifacts/mvp-release-gate-prereg-a1.json \
   --out artifacts/device-journey-r0.json
 ```
