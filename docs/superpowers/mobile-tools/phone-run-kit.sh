@@ -10,9 +10,12 @@
 #                    checklist; check the phone is attached and com.cleophis.app
 #                    is installed; push phone-journey-inputs.txt to
 #                    /sdcard/Download/; print the keyboard settings to turn off.
-#   pull [DIR]       pull every *-triage-log.jsonl in the phone's Downloads into
-#                    DIR/exports/ (E1).
-#   pull-replay [DIR]  the same into DIR/exports-after-restart/ (R1).
+#   pull [DIR]       pull every *-triage-log.jsonl (and "* (N).jsonl") in the
+#                    phone's Downloads into DIR/exports/ (E1).
+#   pull-replay DIR TITLE
+#                    pull the newest export of ONE chat, named by its title or
+#                    exact file name, into DIR/exports-after-restart/ as
+#                    <stem>-triage-log-after-restart.jsonl (R1).
 #   pack [DIR]       zip DIR for hand-back, after checking the layout.
 #
 # The skeleton's results are empty strings. The triage reader
@@ -77,7 +80,7 @@ PY
   one_device
   adb_s shell pm path "$PKG" >/dev/null 2>&1 \
     || die "$PKG is not installed on the phone: run the runbook's install step first."
-  echo "== $PKG is installed: $(adb_s shell pm path "$PKG" | tr -d '\r' | head -1) =="
+  echo "== $PKG is installed: $(adb_s shell pm path "$PKG" | tr -d '\r' | sed -n 1p) =="
   adb_s push "$INPUTS" /sdcard/Download/phone-journey-inputs.txt
   echo "== pushed the inputs to /sdcard/Download/phone-journey-inputs.txt =="
 
@@ -93,25 +96,75 @@ Then paste every input from the Files app, never type it.
 EOF
 }
 
+# The app saves each export as `<stem>-triage-log.jsonl`, where <stem> is the
+# chat title through `safe_file_stem` (src-tauri/src/mobile_native/pure.rs:
+# anything but ASCII letters, digits, space, - and _ becomes _, cut to 60
+# characters, trimmed, "chat" when nothing is left). Saving a second file of
+# the same name to Downloads either overwrites it or gets " (1)" appended, so
+# both forms are matched.
+LOG_RE='-triage-log( \([0-9]+\))?\.jsonl$'
+
+# Newest first; -1 because `adb shell` allocates a pty from a terminal and a
+# bare `ls` would then print columns.
+phone_logs() {
+  adb_s shell ls -1t /sdcard/Download/ | tr -d '\r' | grep -E -- "$LOG_RE" || true
+}
+
+safe_stem() {
+  python3 - "$1" <<'PY2'
+import sys
+t = "".join(c if (c.isascii() and c.isalnum()) or c in "-_ " else "_" for c in sys.argv[1])[:60].strip()
+print(t if any(c.isascii() and c.isalnum() for c in t) else "chat")
+PY2
+}
+
 pull_logs() {
-  local dir="$1" sub="$2"
-  [ -d "$dir/$sub" ] || die "$dir/$sub does not exist: run 'prepare' first."
+  local dir="$1"
+  [ -d "$dir/exports" ] || die "$dir/exports does not exist: run 'prepare' first."
   one_device
   local files
-  files="$(adb_s shell ls /sdcard/Download/ | tr -d '\r' | grep -E 'triage-log\.jsonl$' || true)"
+  files="$(phone_logs)"
   [ -n "$files" ] || die "no *-triage-log.jsonl in /sdcard/Download/: save each export there first (E1)."
-  if [ "$sub" = exports-after-restart ]; then
-    # R1's re-export is a NEW file; the first exports are already in exports/.
-    files="$(while IFS= read -r f; do [ -e "$dir/exports/$f" ] || echo "$f"; done <<< "$files")"
-    [ -n "$files" ] || die "every triage log on the phone is already in $dir/exports/: re-export the T6 chat first (R1)."
-  fi
   local n=0
   while IFS= read -r f; do
-    adb_s pull "/sdcard/Download/$f" "$dir/$sub/" >/dev/null
+    adb_s pull "/sdcard/Download/$f" "$dir/exports/$f" >/dev/null || die "could not pull $f"
     echo "   pulled $f"
     n=$((n + 1))
   done <<< "$files"
-  echo "== pulled $n log(s) into $dir/$sub/. Delete any that are not from this journey. =="
+  echo "== pulled $n log(s) into $dir/exports/. Delete any that are not from this journey. =="
+}
+
+# R1: the re-export of ONE chat after a restart. Its file name is the same as
+# its E1 copy's (or that name plus " (1)"), so it is found by name or chat
+# title, never by "not already pulled", and the NEWEST match is taken. It is
+# saved under a distinct local name so it can never be mistaken for, or
+# overwrite, the E1 copy in exports/.
+pull_replay() {
+  local dir="$1" want="${2:-}"
+  [ -d "$dir/exports-after-restart" ] || die "$dir/exports-after-restart does not exist: run 'prepare' first."
+  [ -n "$want" ] || die "name the re-exported chat: pull-replay DIR '<chat title>' (or its exact file name)."
+  one_device
+  local stem pick="" logs f
+  if [[ "$want" =~ \.jsonl$ ]]; then
+    stem="${want%.jsonl}"; stem="${stem% (*)}"; stem="${stem%-triage-log}"
+  else
+    stem="$(safe_stem "$want")"
+  fi
+  # A loop that stops at the first (newest) match, not `| head -1`: under
+  # pipefail and set -e, head closing the pipe early kills the script silently
+  # as soon as there are two matches, which is exactly the " (1)" case.
+  logs="$(phone_logs)"
+  while IFS= read -r f; do
+    if [[ "$want" =~ \.jsonl$ ]]; then
+      [ "$f" = "$want" ] && { pick="$f"; break; }
+    else
+      case "$f" in "$stem-triage-log.jsonl"|"$stem-triage-log ("*").jsonl") pick="$f"; break;; esac
+    fi
+  done <<< "$logs"
+  [ -n "$pick" ] || die "no triage log for '$want' in /sdcard/Download/ (looked for $stem-triage-log[ (N)].jsonl): re-export that chat and save it to Downloads first (R1)."
+  local local_name="$stem-triage-log-after-restart.jsonl"
+  adb_s pull "/sdcard/Download/$pick" "$dir/exports-after-restart/$local_name" >/dev/null || die "could not pull $pick"
+  echo "== pulled the newest match, $pick, as $dir/exports-after-restart/$local_name =="
 }
 
 pack() {
@@ -133,8 +186,8 @@ pack() {
 cmd="${1:-}"; dir="${2:-./device-journey-r0}"
 case "$cmd" in
   prepare)     prepare "$dir" ;;
-  pull)        pull_logs "$dir" exports ;;
-  pull-replay) pull_logs "$dir" exports-after-restart ;;
+  pull)        pull_logs "$dir" ;;
+  pull-replay) pull_replay "$dir" "${3:-}" ;;
   pack)        pack "$dir" ;;
-  *) echo "usage: $0 prepare|pull|pull-replay|pack [DIR]" >&2; exit 2 ;;
+  *) echo "usage: $0 prepare|pull|pack [DIR]   or   $0 pull-replay DIR '<chat title or file name>'" >&2; exit 2 ;;
 esac
