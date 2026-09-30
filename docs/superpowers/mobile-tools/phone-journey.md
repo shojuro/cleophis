@@ -651,7 +651,12 @@ from the registration.
 1. Force-stop the app (Settings, Apps, Cleophis, Force stop) and open it again.
 2. Open the T6 chat. The reply shows exactly as before: the block, the kept
    route's banner and the reply under it.
-3. Export that chat again and pull it into `device-journey-r0/exports-after-restart/`.
+3. Export that chat again and save it to Downloads. Leave the first copy on
+   the phone: Android either replaces it or saves the new one with " (1)" in
+   its name. Pull the newest one by the chat's title:
+   `bash docs/superpowers/mobile-tools/phone-run-kit.sh pull-replay device-journey-r0 '<the T6 chat title>'`
+   It lands in `device-journey-r0/exports-after-restart/` under a name ending
+   `-after-restart.jsonl`, so it never replaces the first copy in `exports/`.
 
 **Evidence:** the re-shared log's rows equal the first log's rows for that chat
 (same `message_id`, `created_at` and `display_text`). Screenshot
@@ -711,10 +716,11 @@ registered prompt set run on the phone, which no one can type by hand. Run
 this with the phone on the laptop, radios on or off:
 
 1. In the triage repository, build the prompt set from the served cells of the
-   shipped rung:
-   `python3 -m pipeline.analysis.device_probes --gate-dir <gate>/results-served --stack <shipped stack> --label release-r0 --out-dir device-journey-r0/probe`
-2. In this repository:
-   `docs/superpowers/mobile-tools/run-device-probes.sh --prompts device-journey-r0/probe/release-r0.jsonl --out device-journey-r0/probe`
+   shipped rung (the registration's gate and stack):
+   `python3 -m pipeline.analysis.device_probes --gate-dir work/gate-17b-m11/results-served --stack Qwen3-1.7B-armb-v3.pB --label release-r0 --out-dir device-journey-r0/probe`
+2. In this repository, with the Q6_K base and the triage v3 adapter in one
+   folder (`wave-c-founder-runbook.md` step (vii) links them there):
+   `bash docs/superpowers/mobile-tools/run-device-probes.sh --prompts device-journey-r0/probe/release-r0.jsonl --artifacts ~/cleophis-artifacts --out device-journey-r0/probe`
 3. Guard the replies as the phone would, from this checkout at the build's
    commit with no local changes under `src/triage/`:
    `node probes/device-guard.mjs --in device-journey-r0/probe/release-r0.<serial>.json --out device-journey-r0/probe/release-r0.guard.jsonl`
@@ -737,7 +743,7 @@ python3 -m pipeline.analysis.device_journey \
   --prompt-set device-journey-r0/probe/release-r0.jsonl \
   --device-json device-journey-r0/probe/release-r0.<serial>.json \
   --device-guard-json device-journey-r0/probe/release-r0.guard.jsonl \
-  --served-dir <gate>/results-served --stack <shipped stack> \
-  --registration artifacts/mvp-release-gate-prereg.json \
+  --served-dir work/gate-17b-m11/results-served --stack Qwen3-1.7B-armb-v3.pB \
+  --registration artifacts/mvp-release-gate-prereg-a1.json \
   --out artifacts/device-journey-r0.json
 ```
