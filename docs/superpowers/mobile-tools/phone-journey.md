@@ -19,15 +19,21 @@ the export row is what the reader scores.
 
 ## Build record (Task MC1 fills this in)
 
+Rows marked **FILLED AFTER THE FOUNDER'S BUILD** or **FILLED AFTER PUBLISH**
+are left empty on purpose: they are measured from the artefact once it exists,
+never written in advance. The other rows are fixed by the release registration.
+The order of work is `wave-c-founder-runbook.md`.
+
 | field | value |
 |---|---|
-| mobile commit (`app_build`) | |
-| APK file | |
-| APK sha256 | |
-| APK size (bytes) | |
-| embedded pack share of the APK | |
-| `catalog.triage.json` sha256 (`catalog_sha256`) | |
-| signed catalog version published | |
+| mobile commit (`app_build`) | `a07d8b7cea8f5bb86633447056df65080c4dd4db` (the registration pins it: build from exactly this commit, never a later one) |
+| APK file | FILLED AFTER THE FOUNDER'S BUILD |
+| APK sha256 | FILLED AFTER THE FOUNDER'S BUILD |
+| APK size (bytes) | FILLED AFTER THE FOUNDER'S BUILD |
+| embedded pack share of the APK | FILLED AFTER THE FOUNDER'S BUILD (16,773,120 pack bytes over the APK size) |
+| embedded pack | `reference-uk-v1.kpack` 2026.09.1, sha256 `5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853`, content sha256 `df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5` |
+| `catalog.triage.json` sha256 (`catalog_sha256`) | `a46b7a140c72687e8fa8c2ca88de24ce86552fb7093ce49f737a4ff2e5b77af9` |
+| signed catalog version published | FILLED AFTER PUBLISH (11 expected) |
 
 ## Before you start
 
