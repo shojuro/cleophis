@@ -360,11 +360,21 @@ cd "$B" && ANDROID_NDK_ROOT=$HOME/android-ndk-r27c ANDROID_NDK_HOME=$HOME/androi
 ```bash
 cd "$T" && python3 -m pipeline.analysis.device_probes --gate-dir work/gate-17b-m11/results-served \
   --stack Qwen3-1.7B-armb-v3.pB --label release-r0 --out-dir "$J/probe"
-cd "$B" && bash docs/superpowers/mobile-tools/run-device-probes.sh \
+cd "$B" && bash docs/superpowers/mobile-tools/run-device-probes.sh --no-airplane \
   --prompts "$J/probe/release-r0.jsonl" --artifacts "$HOME/cleophis-artifacts" --out "$J/probe"
 cd "$B" && node probes/device-guard.mjs --in "$J/probe/release-r0.<serial>.json" \
   --out "$J/probe/release-r0.guard.jsonl"
 ```
+
+`--no-airplane` is required when the phone is attached over wireless debugging:
+without it the script enables airplane mode to prove offline inference, which
+switches wifi off, drops its own adb link one second into the run, and leaves
+the phone in airplane mode with wireless debugging off (seen on the first wave-C
+run, 2026-10-01). The offline proof is step S4's `airplane-mode.sh` harness, a
+separate registered step; the device bars read the probe replies and do not
+depend on the radios. Over USB the flag may be omitted. If the link drops anyway,
+re-run the same command: the pushed files and finished items persist on the
+phone and the script skips the push.
 
 ## (viii) Export and hand back
 
