@@ -268,6 +268,31 @@ adb install -r "$APK"
 adb shell pm path com.cleophis.app
 ```
 
+### The account must already own the pilot model
+
+The triage hero is `real` with price `Pilot`. The app offers the signed-catalog
+download (`heroDownload`, the public dist path) only when the signed-in
+account holds an `entitlements` row for `med-triage`; otherwise the tile's
+button reads `Get · Pilot` and tapping it starts the checkout flow, whose
+backend function knows only the paid models and answers 404
+(`unknown_model`), shown as "Server error (404): request failed". Found on
+the first phone run, 2026-10-01. Before S3, in the app's backend project (the
+host `src-tauri/src/cloud/config.rs` names; the session's connectors cannot
+reach it, so the founder does this in the dashboard's SQL editor):
+
+```sql
+insert into public.entitlements (user_id, model_id, source, expires_at)
+select id, 'med-triage', 'library', null
+from auth.users
+where email = '<the account signed in on the phone>'
+on conflict (user_id, model_id) do nothing;
+```
+
+Then force-stop and reopen the app (the entitlements are read at sign-in);
+the tile's button changes from `Get · Pilot` to the download. `library` is
+the free-model source the RLS policy permits with no expiry; nothing on the
+phone, in the catalog or in the pack changes.
+
 ## (v) Keep the laptop checkout clean at the build commit
 
 The probe guard reads the checkout it runs from. It must be `$B`, at
