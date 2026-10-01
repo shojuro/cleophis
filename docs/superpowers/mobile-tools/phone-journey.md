@@ -28,9 +28,9 @@ The order of work is `wave-c-founder-runbook.md`.
 |---|---|
 | mobile commit (`app_build`) | `a07d8b7cea8f5bb86633447056df65080c4dd4db` (the registration pins it: build from exactly this commit, never a later one) |
 | APK file | FILLED AFTER THE FOUNDER'S BUILD |
-| APK sha256 | FILLED AFTER THE FOUNDER'S BUILD |
-| APK size (bytes) | FILLED AFTER THE FOUNDER'S BUILD |
-| embedded pack share of the APK | FILLED AFTER THE FOUNDER'S BUILD (16,773,120 pack bytes over the APK size) |
+| APK sha256 | `311e5e37b4b4e27ee708d06b71f908a1c335c140a208c8785340218f2653b799` (`cleophis-triage-r0-debug-a07d8b7.apk`, built 2026-10-01 at a07d8b7; `verify-apk.py` VERDICT: PASS) |
+| APK size (bytes) | 380,721,858 |
+| embedded pack share of the APK | 4.41% (16,773,120 pack bytes over 380,721,858; the pack bytes are present in `lib/arm64-v8a/libcleophis_lib.so`) |
 | embedded pack | `reference-uk-v1.kpack` 2026.09.1, sha256 `5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853`, content sha256 `df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5` |
 | `catalog.triage.json` sha256 (`catalog_sha256`) | `a46b7a140c72687e8fa8c2ca88de24ce86552fb7093ce49f737a4ff2e5b77af9` |
 | signed catalog version published | FILLED AFTER PUBLISH (11 expected) |
