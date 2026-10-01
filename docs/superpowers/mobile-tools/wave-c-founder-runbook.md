@@ -300,6 +300,18 @@ Anything else reads as NOT RECORDED. The airplane-mode harness for S4:
 cd "$B" && bash docs/superpowers/mobile-tools/airplane-mode.sh --interactive 1800
 ```
 
+Not over wireless debugging: the harness turns the radios off itself and
+then verifies them over adb, so a wifi adb link dies under it, exactly as the
+default probe run did. For S4, plug the phone in over USB and point the
+harness at an adb that sees the USB device. On this laptop WSL has no USB
+bus, but the Windows adb runs through interop, so prefix the command with
+`ADB="/mnt/c/Users/JM505 Computers/AppData/Local/Android/Sdk/platform-tools/adb.exe"`
+(the kit's `pull` and `pull-replay` take the same override, or stay on the
+WSL adb over wireless once the radios are back). Confirm with
+`"$ADB" devices` that the USB serial shows as `device` before starting the
+window. After S4, airplane mode off, wireless debugging back on, and
+`adb connect` again if the port changed.
+
 Right after E1, before R1, pull the first exports into `exports/`. Doing
 this later would also pull R1's re-export into `exports/`, and R1 would then
 compare the post-restart log with itself:
