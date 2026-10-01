@@ -391,9 +391,12 @@ Then tell the controller where `device-journey-r0.zip` is.
 
 1. Fill the build record in `phone-journey.md` from the values sent in (ii)
    and (iii), and commit it on `mobile/triage-p6`.
-2. Commit the post-publish fill amendment to the release registration. It
-   sets the catalog dist v11 sha, which TC2 left `null` as "FILLED BY
-   AMENDMENT AFTER PUBLISH". It adds the APK sha as provenance.
+2. Commit the post-publish fill amendment to the release registration,
+   alone (done 2026-10-01: amendment 3, `artifacts/mvp-release-gate-prereg-a3.json`).
+   It fills the catalog dist v11 sha, which the earlier amendments left `null`
+   as "FILLED BY AMENDMENT AFTER PUBLISH", and renames every registered
+   command to the new file. It does not record the APK sha: that lives in the
+   build record of `phone-journey.md` and in the APK's provenance file.
 3. Run the reader, the last block of `phone-journey.md`, from the triage
    checkout. It uses the reader's default (the registration of record), whose
    `device_journey.reading` it follows. Pass `--registration` only if the
