@@ -27,18 +27,24 @@ The order of work is `wave-c-founder-runbook.md`.
 | field | value |
 |---|---|
 | mobile commit (`app_build`) | `a07d8b7cea8f5bb86633447056df65080c4dd4db` (the registration pins it: build from exactly this commit, never a later one) |
-| APK file | FILLED AFTER THE FOUNDER'S BUILD |
+| APK file | `cleophis-triage-r0-debug-a07d8b7.apk` (archived in `~/cleophis-artifacts/`; provenance `~/cleophis-mobile-logs/apk-debug-20261001-152927.provenance`) |
 | APK sha256 | `311e5e37b4b4e27ee708d06b71f908a1c335c140a208c8785340218f2653b799` (`cleophis-triage-r0-debug-a07d8b7.apk`, built 2026-10-01 at a07d8b7; `verify-apk.py` VERDICT: PASS) |
 | APK size (bytes) | 380,721,858 |
 | embedded pack share of the APK | 4.41% (16,773,120 pack bytes over 380,721,858; the pack bytes are present in `lib/arm64-v8a/libcleophis_lib.so`) |
 | embedded pack | `reference-uk-v1.kpack` 2026.09.1, sha256 `5c7b2c98337118ecd8a6fbd07887a639be81371b4e325504997768b41cff1853`, content sha256 `df9429a1c3e687758013bc71bb836c8137a5ce0df08e9a1e0b4ec3097c2b8fe5` |
 | `catalog.triage.json` sha256 (`catalog_sha256`) | `a46b7a140c72687e8fa8c2ca88de24ce86552fb7093ce49f737a4ff2e5b77af9` |
-| signed catalog version published | FILLED AFTER PUBLISH (11 expected) |
+| signed catalog version published | 11 (`catalog.json` sha256 `9d727643b7e1938a1fe00db7e20c4f2da64b7716804a4383a3b546fbf1cae789`, 4,125 B, 13 artifacts; published 2026-10-01, `verify_published.py` OK) |
 
 ## Before you start
 
 You need the phone, the laptop with `adb`, this repository checked out at the
 build's commit, and about ninety minutes.
+
+**Paste every input, with auto-capitalisation off, and start each T step in a
+NEW chat.** The reader matches each row on the exact bytes of the input, and the
+model sees every earlier turn of a chat. A typed input ("myface", "endingit") or
+a second presentation in the same chat leaves a row that cannot evidence its
+step (Phase 1i's record run, 2026-10-03, had to redo T1 to T8 for this reason).
 
 - Build with `CLEOPHIS_APP_BUILD` set to the commit, so every export row names
   it: `docs/superpowers/mobile-tools/build-android-apk.sh --variant=triage`
@@ -678,20 +684,22 @@ remembers, then fetch. The Android package is:
 "identifier": "com.cleophis.app"
 ```
 
-1. Find the state file. It sits in the app's data directory, which on Android
-   is usually `files/`, but check:
-   `adb shell run-as ${PKG:-com.cleophis.app} sh -c 'ls files/ 2>/dev/null; ls'`
+1. Find the state file. It sits at the root of the app's data directory (not
+   under `files/`; seen on the SM-A226B, 2026-10-03), where `run-as` starts:
+   `adb shell run-as ${PKG:-com.cleophis.app} ls`
    If `run-as` refuses, the APK is a release build: tick FAIL, note "release
    build, rollback not exercised", and move on.
-2. Read it (use the directory the listing showed; `files/` below):
-   `adb shell run-as ${PKG:-com.cleophis.app} cat files/dist_catalog_state.json`
+2. Read it:
+   `adb shell run-as ${PKG:-com.cleophis.app} cat dist_catalog_state.json`
    It shows the highest version seen.
 3. Write a higher number back, for example the published version plus one:
-   `adb shell run-as ${PKG:-com.cleophis.app} sh -c 'echo {\"highest_catalog_version\": 99} > files/dist_catalog_state.json'`
-   If the path is awkward, skip this step with a note; it proves the rollback
-   refusal and nothing else depends on it.
-4. Trigger a catalog fetch (Remove from device, then download again). The
-   error line under the button contains:
+   `adb shell run-as ${PKG:-com.cleophis.app} sh -c 'echo {\"highest_catalog_version\": 99} > dist_catalog_state.json'`
+4. Trigger a catalog fetch. The build at a07d8b7 has no "Remove from device"
+   button for a model, so move the downloaded model folder aside, force-stop the
+   app, open it and tap the download on the tile:
+   `adb shell run-as ${PKG:-com.cleophis.app} mv models models.aside`
+   `adb shell am force-stop ${PKG:-com.cleophis.app}`
+   The error line under the button contains:
 
 <!-- expect-source: src-tauri/src/catalog_dist.rs -->
 ```text
@@ -703,7 +711,12 @@ is older than the highest previously verified version
 refusing a downgrade
 ```
 
-5. Restore the file to the published version so the next download works.
+5. Put everything back so the next download is not needed: the folder, then the
+   state file at the published version, then force-stop the app again.
+   `adb shell run-as ${PKG:-com.cleophis.app} mv models.aside models`
+   `adb shell run-as ${PKG:-com.cleophis.app} sh -c 'echo {\"highest_catalog_version\": 11} > dist_catalog_state.json'`
+   `adb shell am force-stop ${PKG:-com.cleophis.app}`
+   The tile reads Open chat again.
 
 **Evidence:** screenshot `screenshots/C1.png` of the refusal.
 
