@@ -698,6 +698,7 @@ remembers, then fetch. The Android package is:
    button for a model, so move the downloaded model folder aside, force-stop the
    app, open it and tap the download on the tile:
    `adb shell run-as ${PKG:-com.cleophis.app} mv models models.aside`
+   (Any name works for the aside folder; the record run used `models.c1-aside`.)
    `adb shell am force-stop ${PKG:-com.cleophis.app}`
    The error line under the button contains:
 

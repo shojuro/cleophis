@@ -163,8 +163,9 @@ product facts.
   on the model routing SELF_CARE against CLINICIAN, and L6 on a title-only retrieval miss.
 - **The release gate: NOTHING SHIPS, on five disqualifying floors.** v3's three registered model floors fail, and so
   do the two device route bars: 9 of 200 post-guard disagreements and 1 of 100 red-flag. Both device bars are ruled
-  model/serving margin, guard-caused 0. On the same bytes at temperature 0, the phone moved six routes less safe than
-  the pod and three safer, and the red-flag hit is the phone being right.
+  model/serving margin, guard-caused 0. On the controller's reading (the triage repo's `pipeline.analysis.device_direction`,
+  not a registered bar), the phone moved six routes less safe than the pod and three safer on the same bytes at
+  temperature 0, and the red-flag hit is the phone being right.
 
 **The spend.** $1.22 of the $2.50 ceiling (SFT $0.40, gate $0.82), all in wave B. Wave C cost $0. The estimate was
 about $1.7.
