@@ -197,6 +197,12 @@ app_uid() {
 # `read_uid_bytes` below.
 uid_bytes_raw() {
   local serial="$1" uid="$2"
+  # The detail dump reflects the LAST POLL, not live counters: on Android 13
+  # (netstats in apexdata) a uid with traffic since boot but no poll since has
+  # no row at all, and the read fails "no parsable rows" with the phone online
+  # and the app plainly running (found 2026-10-03 after a reboot). Force a poll
+  # before every read so before/after both see the current counters.
+  adbs "$serial" shell "dumpsys netstats poll" >/dev/null 2>&1 || true
   adbs "$serial" shell "dumpsys netstats detail" 2>/dev/null | tr -d '\r' \
     | grep -a "uid=$uid" \
     | awk -F'[= ]' '{for(i=1;i<=NF;i++){if($i=="rb"||$i=="tb"){s+=$(i+1);seen=1}}}
