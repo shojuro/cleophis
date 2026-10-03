@@ -93,7 +93,10 @@ note() { echo "  $*"; }
 # that silently drops out of the run is how a three-device gate reports two
 # passes and no failures.
 discover_devices() {
-  "$ADB" devices | awk 'NR>1 && $2=="device" {print $1}'
+  # `tr -d '\r'`: a Windows adb reached from WSL ends every line with a
+  # carriage return, and `$2=="device"` never matches `device\r` — the run then
+  # fails "no attached devices" with the phone plainly listed (found 2026-10-03).
+  "$ADB" devices | tr -d '\r' | awk 'NR>1 && $2=="device" {print $1}'
 }
 
 adbs() { "$ADB" -s "$1" "${@:2}"; }
