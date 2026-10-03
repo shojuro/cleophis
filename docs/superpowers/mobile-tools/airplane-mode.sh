@@ -203,10 +203,19 @@ uid_bytes_raw() {
   # and the app plainly running (found 2026-10-03 after a reboot). Force a poll
   # before every read so before/after both see the current counters.
   adbs "$serial" shell "dumpsys netstats poll" >/dev/null 2>&1 || true
+  # Two dump shapes: the older one puts `uid=N … rb=… tb=…` on ONE line; Android
+  # 13 prints an `ident=[…] uid=N set=… tag=…` line and the `st=… rb=… tb=…`
+  # bucket lines UNDER it, so a same-line parse finds no counters at all (the
+  # 2026-10-03 record run). Sum rb+tb on the uid line itself and on every
+  # bucket line until the next ident line.
   adbs "$serial" shell "dumpsys netstats detail" 2>/dev/null | tr -d '\r' \
-    | grep -a "uid=$uid" \
-    | awk -F'[= ]' '{for(i=1;i<=NF;i++){if($i=="rb"||$i=="tb"){s+=$(i+1);seen=1}}}
-                    END{if(seen) print s; else print ""}'
+    | awk -v uid="$uid" '
+        /^ *ident=/ { inblock = ($0 ~ ("uid=" uid "( |$)")) }
+        /uid=/ && !/^ *ident=/ { inblock = ($0 ~ ("uid=" uid "( |$)")) }
+        inblock && /(^|[ =])(rb|tb)=/ {
+          for (i = 1; i <= NF; i++) { split($i, kv, "="); if (kv[1] == "rb" || kv[1] == "tb") { s += kv[2]; seen = 1 } }
+        }
+        END { if (seen) print s; else print "" }'
 }
 
 # Same measurement, with "could not measure" separated from "measured zero".
