@@ -132,3 +132,62 @@ The draft's Task T6 verbatim (DRY_RUN → token check → SFT pod → spend chec
 - `v12a` clears every model-side floor under (B): the draft's about 1%, raised to perhaps 5% if the census moves `no_dose` and `crisis_harm` to the product path. The lever this arm tests is `reference_target` (0 → measured); masking makes the rows' answers the whole of their gradient.
 - The phone journey green with the shipped v3 in the slot and the product controls on: about 70%. The risks are the APK toolchain, Q6_K on the founder's phones, and the lookup screens that no device has run.
 - The green light for this level is the product path and the journey. A model that clears the floor-tier model floors remains the ladder's open problem, and R85 says so.
+
+## Outcome (2026-10-04, Task TC3)
+
+The record is the triage repo's `docs/debriefs/2026-10-04-phase1i.md` and R85. The MVP spec's A34 carries the
+product facts.
+
+**What was built.**
+- **Wave A, both repos:** the replace-mode crisis rule as the catalog default; signpost de-duplication; lookup
+  guard v7, then v8 after the whole-branch fix round; the excerpt fallback; the product owning doses and disclaimers
+  in triage mode; detector r4 through R75; response-only masking behind the pre-flight; the product-path census.
+- **Wave B:** v12a assembled by bytes, the M11 registration committed alone, and one SFT pod and one gate pod at
+  Q6_K.
+- **Wave C:**
+  - the triage APK at a07d8b7 with the signed pack embedded: sha 311e5e37…, 380,721,858 B, the pack 4.41% of the
+    APK, `verify-apk` PASS;
+  - signed catalog v11, published and verified: 9d727643…, 4,125 B, 13 artifacts;
+  - the device journey checklist and readers;
+  - the release registration chain to a3 (c5b10f4);
+  - the 260-prompt device probe run, 260 of 260 in 9,793 s;
+  - the founder's phone run, read by the registered reader and the release gate.
+- **Tools only, after the build commit:** three airplane-harness fixes (39595b4, 2311293, 884d2f8).
+
+**The readings.**
+- **M11 (R84): no candidate.** v12a fails 8 floors under pB and is worse than v11a. The reference cells never ran,
+  because of a Node module-type harness fault. The phone shipped v3.
+- **The product path: 20/0/0/0 PASS at a07d8b7.** The device lookup bars are clean: uncited dose 0/24, disposition
+  leak 0/24, citations 13/13, crisis block 3/3.
+- **The journey: 21 steps, 18 PASS and 3 FAIL.** S4 failed on the harness after-counter (the USB link dropped), T2
+  on the model routing SELF_CARE against CLINICIAN, and L6 on a title-only retrieval miss.
+- **The release gate: NOTHING SHIPS, on five disqualifying floors.** v3's three registered model floors fail, and so
+  do the two device route bars: 9 of 200 post-guard disagreements and 1 of 100 red-flag. Both device bars are ruled
+  model/serving margin, guard-caused 0. On the same bytes at temperature 0, the phone moved six routes less safe than
+  the pod and three safer, and the red-flag hit is the phone being right.
+
+**The spend.** $1.22 of the $2.50 ceiling (SFT $0.40, gate $0.82), all in wave B. Wave C cost $0. The estimate was
+about $1.7.
+
+**The odds as stated, against what happened.**
+
+| stated | happened |
+|---|---|
+| product-path floors pass on every served cell, except kept-reply contradictions: about 90% | held: 20/0/0/0, `post_guard_contradicted` 0 |
+| v12a clears every model-side floor under (B): about 1%, perhaps 5% | no: v12a fails 8 and is worse than its parent |
+| the phone journey green with v3 and the product controls on: about 70% | 18 of 21. Every product-control step passed; the three FAILs are a harness cable, a model route and lookup retrieval. The named risks (the APK toolchain, Q6_K on the phone, lookup screens no device had run) cost one retrieval design gap and three harness fixes |
+| the green light is the product path and the journey; the model floors stay the ladder's open problem | as stated. R85 adds that release route bars must be read on the device class, because route margin is a property the arm must be trained for |
+
+**Left for the next round:**
+- R84's three reference-harness fixes;
+- a route-margin bar read on the device class;
+- question-shaped lookup;
+- crisis typo tolerance via R75;
+- one presentation per model call;
+- a harm-to-others rule;
+- keeping the emergency direction for an embedded crisis after a red flag;
+- desktop pack bundling;
+- a shared llama backend;
+- the menu clamp;
+- a catalog-fetch retry;
+- the "Cleophis" rename, which needs a new registration.
