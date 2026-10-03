@@ -319,23 +319,43 @@ names were not checked on the A22. Paste every input.
 
 Follow `$W/docs/superpowers/mobile-tools/phone-journey.md` from S1 to C1.
 Record each step in `$J/founder-steps.json` as `"PASS"` or `"FAIL"`.
-Anything else reads as NOT RECORDED. The airplane-mode harness for S4:
+Anything else reads as NOT RECORDED. The airplane-mode harness for S4 is the
+FIXED one in this docs worktree (`$W`, `mobile/triage-p6` at 884d2f8 or later),
+run with `ADB` set to a wrapper that strips Windows line endings:
 
 ```bash
-cd "$B" && bash docs/superpowers/mobile-tools/airplane-mode.sh --interactive 1800
+cd "$W" && ADB=$HOME/bin/adb-win bash docs/superpowers/mobile-tools/airplane-mode.sh --interactive 1800
 ```
+
+**The pinned a07d8b7 harness in `$B` cannot read an Android 13 phone's
+counters at all**, so do not run it from there. The record run (2026-10-03)
+needed three fixes, all in `$W`: 39595b4 strips the Windows adb's `\r` from
+`adb devices`; 2311293 forces a `dumpsys netstats poll` before each per-uid
+counter read (after a reboot the app's uid has no row until a poll runs); and
+884d2f8 reads Android 13's block-shaped netstats dump (the uid on one line,
+the `rb=… tb=…` buckets under it). The app under test is unchanged by these:
+S4's note records the harness commit as a deviation.
 
 Not over wireless debugging: the harness turns the radios off itself and
 then verifies them over adb, so a wifi adb link dies under it, exactly as the
 default probe run did. For S4, plug the phone in over USB and point the
 harness at an adb that sees the USB device. On this laptop WSL has no USB
-bus, but the Windows adb runs through interop, so prefix the command with
-`ADB="/mnt/c/Users/JM505 Computers/AppData/Local/Android/Sdk/platform-tools/adb.exe"`
-(the kit's `pull` and `pull-replay` take the same override, or stay on the
-WSL adb over wireless once the radios are back). Confirm with
+bus, but the Windows adb runs through interop. `~/bin/adb-win` is that adb
+with `\r` stripped from its output, for text commands:
+
+```bash
+#!/usr/bin/env bash
+set -o pipefail
+"/mnt/c/Users/JM505 Computers/AppData/Local/Android/Sdk/platform-tools/adb.exe" "$@" | tr -d '\r'
+```
+
+(The kit's `pull` and `pull-replay` take the same `ADB` override, or stay on
+the WSL adb over wireless once the radios are back.) Confirm with
 `"$ADB" devices` that the USB serial shows as `device` before starting the
-window. After S4, airplane mode off, wireless debugging back on, and
-`adb connect` again if the port changed.
+window, and keep the cable seated for the whole window: on the record run the
+USB link dropped at the end, the after-counter could not be read, and S4 read
+FAIL by the harness's own rule. After S4, airplane mode off, wireless
+debugging back on, and `adb connect` again if the port changed.
 
 Right after E1, before R1, pull the first exports into `exports/`. Doing
 this later would also pull R1's re-export into `exports/`, and R1 would then
