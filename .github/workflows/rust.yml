@@ -73,8 +73,10 @@ jobs:
           matches=$(printf '%s\n' "$files" | grep -E "$RE" || true)
           if [ -n "$matches" ]; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "rust=true; matching paths (max 20):"
-            printf '%s\n' "$matches" | head -n 20
+            # no `| head` under pipefail: SIGPIPE fails the step on large diffs
+            n=$(printf '%s\n' "$matches" | wc -l)
+            echo "rust=true; ${n} matching path(s), first 20:"
+            awk 'NR<=20' <<< "$matches"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
             echo "rust=false: no Rust inputs changed"
