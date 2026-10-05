@@ -48,3 +48,18 @@ tools/reference/build/*.kpack.sig
 tools/reference/build/*.part
 src-tauri/resources/packs/*.kpack
 src-tauri/resources/packs/*.kpack.sig
+
+# secrets and phone exports (security review 2026-10-04 P06): a `git add -A` must not
+# publish signing keys or on-device journey dumps. `node_modules` has no trailing slash
+# on purpose: the root node_modules here is a symlink, which `node_modules/` does not match.
+node_modules
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+device-journey-*/
+device-journey-*.zip
+*.apk
+*.aab
