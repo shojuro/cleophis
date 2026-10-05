@@ -40,6 +40,7 @@ paths = [
 description = "cfg(test) fixture passwords in session.rs (local mock-server tests, line 1304+): allowlisted by exact value, not by file"
 targetRules = ["generic-api-key"]
 paths = ['''^src-tauri/src/cloud/session\.rs$''']
+condition = "AND"
 regexTarget = "secret"
 regexes = [
   '''^wintergreen-diesel-canyon-42$''',
@@ -49,6 +50,12 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "synthetic B2/DeepSeek-shaped test strings quoted in the ci-basic plan (they are the Step 4 positives for the custom rules): this one file, these three rules"
+description = "synthetic B2/DeepSeek-shaped test strings quoted in the ci-basic plan (Step 4 positives for the custom rules): this one file, these exact values"
 targetRules = ["backblaze-b2-application-key", "deepseek-api-key", "generic-api-key"]
 paths = ['''^docs/superpowers/plans/2026-10-05-ci-basic\.md$''']
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+  '''^K0011AbCdEfGhIjKlMnOpQrStUvWx/\+$''',
+  '''^sk-0123456789abcdef0123456789abcdef$''',
+]
