@@ -47,7 +47,10 @@
 //! XHTML," so `epub::document_from_epub` reuses `html::html_to_document`
 //! per chapter rather than re-parsing HTML itself) — both pure Rust, both
 //! BINARY formats that skip `parse::parse` and go straight to
-//! `SourceContent::Prebuilt`, same as PDF.
+//! `SourceContent::Prebuilt`, same as PDF. Phase 1h M5 adds `lookup` — the
+//! lexical-only reference lookup over schema v2's `titles` index (exact /
+//! normalised title match, deterministic did-you-mean, no embedder), for
+//! the phone, which ships no embedder.
 
 pub mod build;
 pub mod chunk;
@@ -57,32 +60,47 @@ pub mod embed;
 pub mod epub;
 pub mod format;
 pub mod html;
+pub mod lexical_build;
+pub mod lookup;
 pub mod manifest;
 pub mod parse;
 pub mod retrieve;
 pub mod sign;
 pub mod tree;
+pub mod wordpiece;
+mod wordpiece_tables;
 
 pub use build::{
     build_pack, build_pack_with_progress, document_from_pages, passage_input, sha256_hex,
     BuildMeta, BuildProgress, Error as BuildError, SourceContent, SourceInput,
 };
-pub use chunk::{chunk_document, ChunkConfig, ChunkDraft};
+pub use chunk::{chunk_document, chunk_document_merged, chunk_document_with, ChunkConfig, ChunkDraft, MergeConfig, TokenCounter};
 pub use contract::{
-    contract_version, no_evidence_marker, refusal_with_offer, render_sources, system_contract,
-    PromptContract, RenderChunk,
+    assemble_system, contract_by_id, contract_for, contract_version, doc_context_for,
+    doc_context_line, no_evidence_marker, refusal_with_offer, render_sources, render_sources_with,
+    system_contract, AssembleError, ContractId, PromptContract, RenderChunk,
 };
 pub use docx::{document_from_docx, Error as DocxError};
 pub use embed::{dot_int8, l2_normalize, query_input, quantize_int8, EmbedError, Embedder, BGE_QUERY_INSTRUCTION};
 #[cfg(any(test, feature = "test-util"))]
 pub use embed::MockEmbedder;
 pub use epub::{document_from_epub, Error as EpubError};
-pub use format::{Chunk, Doc, Error, Pack, SCHEMA_VERSION};
+pub use format::{Chunk, Doc, Error, Pack, TitleEntry, MIN_SCHEMA_VERSION, SCHEMA_VERSION, SOURCE_TYPE_NHS_WEB};
 pub use html::html_to_document;
-pub use manifest::{check_load, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
+pub use lookup::{
+    assemble_lexical, damerau_levenshtein, lookup_contract, max_edits, normalise_title,
+    retrieve_lexical, slugify,
+    LexicalOutcome, DID_YOU_MEAN_MAX, LEXICAL_MAX_K,
+};
+pub use manifest::{check_load, check_load_lexical, LoadContext, Manifest, PackTier, VEC_FORMAT_VERSION};
 pub use parse::{extraction_quality, parse, parse_markdown, parse_txt};
 pub use retrieve::{
-    retrieve_pack, rrf, safe_fts5_query, Candidate, Error as RetrieveError, DEFAULT_K_RRF,
+    retrieve_pack, rrf, safe_fts5_query, Candidate, CitationSource, Error as RetrieveError, DEFAULT_K_RRF,
 };
 pub use sign::{curator_verifying_key, verify_detached, CURATOR_PUBLIC_KEY};
 pub use tree::{Block, Document, Section};
+pub use wordpiece::{WordPieceTokenizer, BGE_MAX_INPUT_TOKENS};
+pub use lexical_build::{
+    build_lexical_pack, chunk_content_sha256, pack_content_sha256, LexicalBuildMeta, LexicalBuildReport,
+    LexicalSource,
+};

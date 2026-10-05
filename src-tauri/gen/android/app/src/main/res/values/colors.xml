@@ -7,4 +7,20 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- The four palette values the pre-load CPU gate's screen needs, copied
+         from the web app's custom properties in src/styles.css so the two "not
+         yet" screens look like the same product. Kept to the four actually
+         used: an unused colour is a claim that this file mirrors that one,
+         which it does not.
+
+           ink   is the page background, text the heading,
+           amber the reason line, muted the explanatory paragraph.
+
+         They live here rather than in the webview because that screen renders
+         WITHOUT the native library and therefore without any webview at all. -->
+    <color name="cleo_ink">#FF0E1218</color>
+    <color name="cleo_text">#FFEEF2F6</color>
+    <color name="cleo_amber">#FFE8A33D</color>
+    <color name="cleo_muted">#FF93A0AD</color>
 </resources>

@@ -1,15 +1,43 @@
+//! Engine lifecycle and model resolution.
+//!
+//! Desktop runs llama.cpp as a `llama-server` sidecar; Android cannot spawn one
+//! and runs inference in-process instead. That divergence is confined to a cfg
+//! seam at the bottom of this file: the sidecar machinery (`spawn_server`, the
+//! health poll, the watchdog `start`, and the child-process reaping in
+//! `restart`/`shutdown`) is `#[cfg(desktop)]`, and under `#[cfg(mobile)]` the
+//! same four public entry points are re-exported from
+//! [`crate::engine_inproc`]. Everything above the seam — `Engine`,
+//! `EngineStatus`, `EngineInfo`, catalog/tier resolution, and the fail-closed
+//! sha256 integrity gate — is shared by both platforms verbatim.
+
+#[cfg(desktop)]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+#[cfg(desktop)]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(desktop)]
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(desktop)]
+use std::sync::Arc;
+use std::sync::Mutex;
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+#[cfg(desktop)]
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
+// `Restarting` is a desktop-only state: it reports the sidecar's GPU→CPU
+// fallback and its watchdog respawn, neither of which the in-process engine has
+// (Android is CPU-first by policy, and a failed load is terminal rather than
+// retried). It stays in the shared enum because `EngineInfo` is one serialized
+// shape for both platforms.
+#[cfg_attr(mobile, allow(dead_code))]
 pub enum EngineStatus {
     Starting,
     Ready,
@@ -18,26 +46,67 @@ pub enum EngineStatus {
     NoModel,
 }
 
+/// The sidecar's context window. Desktop has exactly one, so it lives here and
+/// `build_server_args` reads it rather than repeating the literal.
+///
+/// The two `build_server_args` unit tests deliberately keep the literal `4096`
+/// in their expected arg vectors: a test that derived its expectation from this
+/// constant would pass for any value the constant took, which is no test at
+/// all. The constant is the single source; the test is the independent check.
+pub const DESKTOP_N_CTX: u32 = 4096;
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineInfo {
     pub port: u16,
     pub status: EngineStatus,
     pub gpu_offload: bool,
+    /// The context window the loaded engine is actually running with, so the
+    /// frontend can size its request to the real limit instead of assuming one.
+    ///
+    /// This field exists because assuming was wrong (decision D-4). `app.js`
+    /// hard-coded `N_CTX = 4096` under a comment reading "must match
+    /// inference.rs `-c`" — true when written, since desktop has one context
+    /// size. Phase 1.2 then gave mobile a *per-tier* window (2048 on the floor
+    /// tier), and nothing propagated that to the frontend, which had no way to
+    /// discover it: `EngineInfo` reported port, status and gpu_offload and
+    /// nothing about the window. So on the reference device the frontend
+    /// budgeted ~3456 tokens of history against an engine holding 2048, and
+    /// the decode failed instead of the history being trimmed.
+    ///
+    /// Reporting it here removes the second copy of the number rather than
+    /// correcting it. Correcting `4096` to a tier-aware expression in the
+    /// frontend would have left the tier→window rule written in two languages,
+    /// which is the mechanism that produced the bug in the first place.
+    pub n_ctx: u32,
 }
 
 pub struct Engine {
     pub port: u16,
     pub status: Mutex<EngineStatus>,
+    /// The sidecar process. Desktop-only: mobile runs the model in-process, so
+    /// there is no child to reap (see [`crate::engine_inproc`]).
+    #[cfg(desktop)]
     pub child: Mutex<Option<Child>>,
+    /// The mobile counterpart of `child`: the in-process inference thread that
+    /// owns the `!Send` engine handle.
+    #[cfg(mobile)]
+    pub(crate) inproc: crate::engine_inproc::ThreadSlot,
     pub shutting_down: AtomicBool,
     pub gpu_offload: AtomicBool,
+    /// The context window of whatever is currently loaded, surfaced through
+    /// [`EngineInfo::n_ctx`]. Desktop's sidecar always runs [`DESKTOP_N_CTX`];
+    /// mobile stamps the tier's window here when a load succeeds, so the
+    /// `engine-ready` event that follows a tier switch carries the new value
+    /// without the frontend having to ask for it.
+    pub(crate) n_ctx: AtomicU32,
     /// True while a `start` watchdog thread is alive. A tier switch waits on
     /// this (via [`restart`]) so the old thread fully exits before a new one
     /// spawns — otherwise the two would fight over `child`/VRAM. Set
     /// SYNCHRONOUSLY in `start` (before the thread is spawned, so the wait can
     /// never miss an about-to-run thread) and cleared by the thread's own
-    /// drop-guard on every exit path.
+    /// drop-guard on every exit path. The mobile inference thread keeps the
+    /// same handshake via its own exit guard.
     pub thread_alive: AtomicBool,
     /// Set once the app is tearing down (window Destroyed → [`shutdown`]). A
     /// [`restart`] in flight checks this after stopping the old thread and
@@ -50,15 +119,18 @@ pub struct Engine {
     /// respawns of the SAME ~2GB file don't re-hash it every time — only
     /// the first successful verification per process pays the hashing
     /// cost.
+    #[cfg(desktop)]
     verified_model: Mutex<Option<PathBuf>>,
     /// The adapter counterpart of `verified_model` (B4): the LoRA adapter is
     /// hashed against the catalog's `adapter_sha256` at load time with the
     /// same first-time-only session caching, so a watchdog respawn of the
     /// same base+adapter pair doesn't re-hash either file.
+    #[cfg(desktop)]
     verified_adapter: Mutex<Option<PathBuf>>,
     /// The contract adapter's (adapter v2) counterpart, checked against
     /// `contract_adapter_sha256` — its own cache slot so both composed
     /// adapters can be verified-once independently.
+    #[cfg(desktop)]
     verified_contract_adapter: Mutex<Option<PathBuf>>,
     /// Serializes [`restart`] across all callers (tier switch, and now
     /// `load_model`'s Failed→restart recovery). `restart`'s own `thread_alive`
@@ -67,8 +139,10 @@ pub struct Engine {
     /// false` before either calls `start` would each spawn a watchdog thread,
     /// and the two llama-servers would fight over the fixed port + `child`
     /// (orphaning one, holding VRAM). Holding this for the whole restart makes
-    /// concurrent restarts run one-at-a-time instead.
-    restart_lock: Mutex<()>,
+    /// concurrent restarts run one-at-a-time instead. Mobile serializes on the
+    /// same lock, where the resource two concurrent loads would fight over is
+    /// RAM rather than a port.
+    pub(crate) restart_lock: Mutex<()>,
 }
 
 impl Engine {
@@ -76,13 +150,27 @@ impl Engine {
         Engine {
             port,
             status: Mutex::new(EngineStatus::Starting),
+            #[cfg(desktop)]
             child: Mutex::new(None),
+            #[cfg(mobile)]
+            inproc: Default::default(),
             shutting_down: AtomicBool::new(false),
             gpu_offload: AtomicBool::new(false),
+            // Desktop's value. On mobile this is momentarily too LARGE (the
+            // floor tier is 2048), and that is safe for one specific reason
+            // rather than by luck: the window is only ever consulted while
+            // rendering a turn, a turn requires a loaded engine, and a
+            // successful load stamps the real value below before it emits
+            // `engine-ready`. There is no interval in which a turn can be sized
+            // against this initial value.
+            n_ctx: AtomicU32::new(DESKTOP_N_CTX),
             thread_alive: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            #[cfg(desktop)]
             verified_model: Mutex::new(None),
+            #[cfg(desktop)]
             verified_adapter: Mutex::new(None),
+            #[cfg(desktop)]
             verified_contract_adapter: Mutex::new(None),
             restart_lock: Mutex::new(()),
         }
@@ -93,11 +181,29 @@ impl Engine {
             port: self.port,
             status: self.status.lock().unwrap().clone(),
             gpu_offload: self.gpu_offload.load(Ordering::Relaxed),
+            n_ctx: self.n_ctx.load(Ordering::Relaxed),
         }
     }
 
-    fn set_status(&self, s: EngineStatus) {
+    pub(crate) fn set_status(&self, s: EngineStatus) {
         *self.status.lock().unwrap() = s;
+    }
+
+    /// Drops the per-path "already verified this session" caches so the next
+    /// launch re-hashes whatever [`resolve_launch`] now resolves. Called by
+    /// `restart` after a tier switch, where the base+adapter set has changed and
+    /// inheriting the previous selection's verdict would let an unverified file
+    /// through the integrity gate.
+    ///
+    /// Desktop-only, like the caches themselves. The mobile engine's gate is
+    /// `kpack-engine`'s `VerifyCache`, which is keyed by path — a tier switch
+    /// resolves different files, so they re-verify without anything being
+    /// cleared.
+    #[cfg(desktop)]
+    pub(crate) fn clear_verify_caches(&self) {
+        *self.verified_model.lock().unwrap() = None;
+        *self.verified_adapter.lock().unwrap() = None;
+        *self.verified_contract_adapter.lock().unwrap() = None;
     }
 
     /// Marks the engine as having no model on disk yet (thin install, not
@@ -113,18 +219,30 @@ pub fn free_port() -> std::io::Result<u16> {
 }
 
 /// In dev, resources live in src-tauri/resources; in prod, under the install's resource dir.
+///
+/// On Android neither exists — the APK bundles no resources — so this resolves
+/// to the tree [`crate::resources_embed`] materializes out of the binary at
+/// setup. Every consumer (catalog reads, `get_catalog`'s `coverAbs`,
+/// `tier_select`) is unchanged by that substitution.
 pub fn resources_root(app: &AppHandle) -> PathBuf {
-    #[cfg(debug_assertions)]
+    #[cfg(mobile)]
     {
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
-        if dev.exists() {
-            return dev;
-        }
+        return crate::resources_embed::materialized_root(app);
     }
-    app.path()
-        .resource_dir()
-        .expect("no resource dir")
-        .join("resources")
+    #[cfg(desktop)]
+    {
+        #[cfg(debug_assertions)]
+        {
+            let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+            if dev.exists() {
+                return dev;
+            }
+        }
+        app.path()
+            .resource_dir()
+            .expect("no resource dir")
+            .join("resources")
+    }
 }
 
 /// The resolved on-disk paths a launch needs: the base model, plus the LoRA
@@ -142,6 +260,11 @@ impl LaunchPaths {
     /// The adapters to hand llama.cpp, in composition order (behavioral first,
     /// then contract), skipping any the hero doesn't declare. Emitted by
     /// `build_server_args` as a single comma-separated `--lora`.
+    ///
+    /// Desktop-only: it exists to build a `llama-server` command line. The
+    /// mobile engine composes the same adapters through `EngineBackend`, which
+    /// takes them individually rather than as one CLI argument.
+    #[cfg(desktop)]
     pub fn loras(&self) -> Vec<&Path> {
         [self.behavioral_lora.as_deref(), self.contract_lora.as_deref()]
             .into_iter()
@@ -244,6 +367,7 @@ fn resolve_model(app_data: Option<PathBuf>, resources: PathBuf, model_file: &str
 /// `cloud::download::rehash_existing`'s pattern — rather than reading the
 /// whole ~2GB model file into memory at once. Returns the lowercase hex
 /// digest.
+#[cfg(desktop)]
 fn model_sha256(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -273,6 +397,34 @@ fn model_sha256(path: &Path) -> std::io::Result<String> {
 /// treated as "nothing to check" rather than a hard failure — the download
 /// path already gates real models, so this only affects dev/fixture
 /// catalogs missing integrity data.
+/// The load-time integrity gate over a whole resolved launch: the base model,
+/// then each LoRA adapter the hero declares. Every file that will be handed to
+/// llama.cpp is hashed against the catalog's pinned value before a byte of it
+/// is parsed, and the first mismatch fails the launch.
+///
+/// Desktop-only. The mobile engine gates through `kpack-engine`'s own
+/// `prepare_stack`, fed the same pinned hashes via [`launch_hashes`]: that gate
+/// runs inside the backend immediately before anything native is touched, and
+/// routing mobile through this function as well would mean hashing a
+/// multi-gigabyte model twice on the device least able to afford it.
+#[cfg(desktop)]
+pub(crate) fn verify_launch(
+    engine: &Engine,
+    app: &AppHandle,
+    launch: &LaunchPaths,
+) -> Result<(), String> {
+    verify_model_once(engine, app, &launch.model)
+        .and_then(|()| match &launch.behavioral_lora {
+            Some(lora) => verify_adapter_once(engine, app, lora),
+            None => Ok(()),
+        })
+        .and_then(|()| match &launch.contract_lora {
+            Some(lora) => verify_contract_adapter_once(engine, app, lora),
+            None => Ok(()),
+        })
+}
+
+#[cfg(desktop)]
 fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(), String> {
     // Cache-first, exactly as before the B4 refactor: a watchdog respawn of an
     // already-verified path returns without even reading the catalog.
@@ -290,6 +442,7 @@ fn verify_model_once(engine: &Engine, app: &AppHandle, model: &Path) -> Result<(
 /// that doesn't match is a hard error; a catalog that pins none skips the
 /// check. Only ever called when [`resolve_launch`] produced a `lora` path,
 /// which itself only happens when the hero declares an `adapter_file`.
+#[cfg(desktop)]
 fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
     if engine.verified_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
@@ -302,6 +455,7 @@ fn verify_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Resu
 /// re-hashes it against the catalog's `contract_adapter_sha256` with its own
 /// session cache. Only called when [`resolve_launch`] produced a
 /// `contract_lora` path (i.e. the tier declares a `contract_adapter_file`).
+#[cfg(desktop)]
 fn verify_contract_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path) -> Result<(), String> {
     if engine.verified_contract_adapter.lock().unwrap().as_deref() == Some(adapter) {
         return Ok(());
@@ -318,6 +472,101 @@ fn verify_contract_adapter_once(engine: &Engine, app: &AppHandle, adapter: &Path
 /// Reads the hero entry and projects one of its pinned hashes out of it —
 /// the shared catalog read behind `verify_model_once`/`verify_adapter_once`.
 /// Returns the (owned) hash string, or `None` when the catalog pins none.
+/// The catalog's pinned hashes for the launch [`resolve_launch`] would produce,
+/// in the same order it composes them.
+///
+/// Mobile-only: it exists to feed `kpack-engine`'s `prepare_stack`, which is
+/// where the in-process engine's fail-closed gate lives. `None` in a slot means
+/// the catalog pins nothing for that artifact, which `prepare_stack` treats as
+/// "nothing to check" — identical to `verify_hash_once`'s behaviour on desktop,
+/// so a dev/fixture catalog without integrity data behaves the same on both.
+#[cfg(mobile)]
+pub(crate) struct LaunchHashes {
+    pub model: Option<String>,
+    pub behavioral: Option<String>,
+    pub contract: Option<String>,
+}
+
+#[cfg(mobile)]
+pub(crate) fn launch_hashes(app: &AppHandle) -> Result<LaunchHashes, String> {
+    Ok(LaunchHashes {
+        model: hero_hash(app, |v| v.sha256.clone())?,
+        behavioral: hero_hash(app, |v| v.adapter_sha256.clone())?,
+        contract: hero_hash(app, |v| v.contract_adapter_sha256.clone())?,
+    })
+}
+
+/// The hero catalog entry, parsed fresh. Small file, read on every call — the
+/// same read `resolve_launch` and `hero_chat_template` each already do, kept
+/// uncached deliberately: the catalog is swapped at BUILD time
+/// (`build-android-apk.sh --variant=triage`), so a process-lifetime cache
+/// would only obscure which file a running app actually loaded.
+pub fn hero_entry(app: &AppHandle) -> Option<crate::catalog::CatalogEntry> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    crate::catalog::hero(&entries).cloned()
+}
+
+/// The loaded catalog's hero id — the id the entitlement and tier-switch
+/// bookkeeping key off. Derived, never assumed: the triage build ships a
+/// catalog whose hero is `med-triage`, not `tier_select::HERO_MODEL_ID`.
+pub fn hero_id(app: &AppHandle) -> Option<String> {
+    hero_entry(app).map(|e| e.id)
+}
+
+/// The sampling the hero pins, if any. The triage entry pins greedy decode
+/// (every number it was gated on is greedy); the tutor pins nothing and gets
+/// the engine default, so its behaviour is unchanged.
+#[cfg(mobile)]
+pub(crate) fn hero_sampling(app: &AppHandle) -> Option<crate::catalog::SamplingOverride> {
+    hero_entry(app).and_then(|e| e.sampling)
+}
+
+/// Whether the calc tool preamble rides on the system turn. Unset means yes,
+/// the historical behaviour — the supervised triage entry is the only thing
+/// that says `false`, because it was never gated with the preamble in its
+/// context.
+#[cfg(mobile)]
+pub(crate) fn hero_tools_enabled(app: &AppHandle) -> bool {
+    hero_entry(app).and_then(|e| e.tools).unwrap_or(true)
+}
+
+/// The hero's declared chat-template family for the effective tier, if the
+/// catalog names one. `None` leaves the engine on `ChatTemplate::Auto`, which
+/// reads the template embedded in the GGUF — the sidecar's `--jinja` behaviour.
+#[cfg(mobile)]
+pub(crate) fn hero_chat_template(app: &AppHandle) -> Option<String> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    hero.chat_template.clone()
+}
+
+/// The hero's catalog `systemPrompt` — what a real chat turn is prefixed with,
+/// and therefore what the A3 Stage-5 probes must be prefixed with too.
+///
+/// The behavioural adapter is trained to answer to this prompt; probing the
+/// stack without it measures a configuration no user ever runs. Read from the
+/// catalog rather than passed in by the caller for the same reason
+/// [`hero_chat_template`] is: a system prompt supplied by the probe harness is
+/// a second home for a fact that already has one, which is the D-4 trap.
+///
+/// `cfg`-gated to its only caller (`chat_cmds::chat_stage5_probe`, a debug-only
+/// mobile command) rather than carrying a dead-code allow, so it is compiled
+/// out of the profile that ships — the call D-3's amendment makes for an
+/// affordance rather than for logic. The cost is that the desktop suite never
+/// executes it; it is five lines and a clone of the function above it.
+#[cfg(all(mobile, debug_assertions))]
+pub(crate) fn hero_system_prompt(app: &AppHandle) -> Option<String> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json")).ok()?;
+    let entries = crate::catalog::parse_catalog(&raw).ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    hero.system_prompt.clone()
+}
+
 fn hero_hash(
     app: &AppHandle,
     pick: impl Fn(&crate::catalog::ResolvedHero) -> Option<String>,
@@ -340,6 +589,7 @@ fn hero_hash(
 /// is `None` the catalog pins nothing, so there's nothing to check; otherwise
 /// re-hash `path` and compare case-insensitively, recording success in
 /// `cache`. `what` ("model" / "adapter") only shapes the log + error text.
+#[cfg(desktop)]
 fn verify_hash_once(
     cache: &Mutex<Option<PathBuf>>,
     path: &Path,
@@ -371,6 +621,7 @@ fn verify_hash_once(
 /// the exact PID we spawned, instead of by image name (which would kill
 /// every llama-server.exe on the box, including ones from other apps or
 /// another Cleophis instance).
+#[cfg(desktop)]
 fn pid_file_path() -> PathBuf {
     std::env::temp_dir().join("cleophis-llama.pid")
 }
@@ -381,6 +632,7 @@ fn pid_file_path() -> PathBuf {
 /// comma-separated adapters and COMPOSES them on the base at load (never
 /// merged), verified against the bundled binary's `--help`. Pure — no
 /// `AppHandle`, no process — so every branch is covered by the unit tests below.
+#[cfg(desktop)]
 fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
@@ -392,7 +644,7 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<
         "-ngl".to_string(),
         ngl.to_string(),
         "-c".to_string(),
-        "4096".to_string(),
+        DESKTOP_N_CTX.to_string(),
         "--no-webui".to_string(),
         "--jinja".to_string(),
     ];
@@ -409,6 +661,7 @@ fn build_server_args(model: &Path, port: u16, ngl: u32, loras: &[&Path]) -> Vec<
     args
 }
 
+#[cfg(desktop)]
 fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> {
     let root = resources_root(app);
     let launch = resolve_launch(app)
@@ -449,6 +702,7 @@ fn spawn_server(app: &AppHandle, port: u16, ngl: u32) -> std::io::Result<Child> 
     Ok(child)
 }
 
+#[cfg(desktop)]
 fn healthy(port: u16) -> bool {
     ureq::get(&format!("http://127.0.0.1:{port}/health"))
         .timeout(Duration::from_millis(800))
@@ -457,6 +711,7 @@ fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(desktop)]
 fn child_exited(engine: &Engine) -> bool {
     let mut guard = engine.child.lock().unwrap();
     match guard.as_mut() {
@@ -465,6 +720,7 @@ fn child_exited(engine: &Engine) -> bool {
     }
 }
 
+#[cfg(desktop)]
 fn kill_child(engine: &Engine) {
     let child = engine.child.lock().unwrap().take();
     if let Some(mut c) = child {
@@ -474,6 +730,7 @@ fn kill_child(engine: &Engine) {
     let _ = std::fs::remove_file(pid_file_path());
 }
 
+#[cfg(desktop)]
 pub fn shutdown(engine: &Engine) {
     engine.closing.store(true, Ordering::Relaxed);
     engine.shutting_down.store(true, Ordering::Relaxed);
@@ -521,10 +778,11 @@ fn sweep_stray_servers() {
 
     let _ = std::fs::remove_file(pid_file_path());
 }
-#[cfg(not(windows))]
+#[cfg(all(desktop, not(windows)))]
 fn sweep_stray_servers() {}
 
 /// Spawns the engine thread: GPU first, CPU fallback, watchdog respawn.
+#[cfg(desktop)]
 pub fn start(app: AppHandle, engine: Arc<Engine>) {
     // Mark the watchdog thread alive SYNCHRONOUSLY, before the spawn — so a
     // concurrent [`restart`] waiting on this flag can never observe `false` for
@@ -550,22 +808,7 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
                 break;
             }
             if let Some(launch) = resolve_launch(&app) {
-                // Verify the base, then (when declared) the adapter — both are
-                // fed to llama.cpp, so both get the same load-time integrity
-                // gate before a single byte is parsed.
-                // Verify the base, the behavioral adapter, and (when declared)
-                // the contract adapter — every file fed to `--lora` gets its
-                // load-time integrity gate before a byte is parsed.
-                let integrity = verify_model_once(&engine, &app, &launch.model)
-                    .and_then(|()| match &launch.behavioral_lora {
-                        Some(lora) => verify_adapter_once(&engine, &app, lora),
-                        None => Ok(()),
-                    })
-                    .and_then(|()| match &launch.contract_lora {
-                        Some(lora) => verify_contract_adapter_once(&engine, &app, lora),
-                        None => Ok(()),
-                    });
-                if let Err(e) = integrity {
+                if let Err(e) = verify_launch(&engine, &app, &launch) {
                     eprintln!("start: integrity check failed: {e}");
                     engine.set_status(EngineStatus::Failed);
                     let _ = app.emit(
@@ -656,7 +899,7 @@ pub fn start(app: AppHandle, engine: Arc<Engine>) {
 /// Check-and-set: NoModel -> Starting under the status lock. Returns whether
 /// the transition happened (true) or the engine was in some other state
 /// (false) — the double-start guard for `start_if_no_model`.
-fn try_begin_start(engine: &Engine) -> bool {
+pub(crate) fn try_begin_start(engine: &Engine) -> bool {
     let mut status = engine.status.lock().unwrap();
     if *status == EngineStatus::NoModel {
         *status = EngineStatus::Starting;
@@ -670,6 +913,7 @@ fn try_begin_start(engine: &Engine) -> bool {
 /// NoModel (atomic check-and-set under the status lock — double-start guard).
 /// Called by `cloud::download::download_model`'s worker thread once a
 /// download finishes and the file lands at its final path.
+#[cfg(desktop)]
 pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
     if try_begin_start(&engine) {
         start(app, engine);
@@ -687,6 +931,7 @@ pub fn start_if_no_model(app: AppHandle, engine: Arc<Engine>) {
 /// the killed child guarantee the old thread returns within ~1s, and a cap
 /// could expire mid-load and spawn a second thread (the race this prevents).
 /// Blocking — call it off the async runtime (`spawn_blocking`).
+#[cfg(desktop)]
 pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     // Serialize with any other restart in flight (a concurrent tier switch, or a
     // rapid double of load_model's Failed→restart recovery). Without this, two
@@ -717,9 +962,7 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
         return;
     }
     engine.shutting_down.store(false, Ordering::Relaxed);
-    *engine.verified_model.lock().unwrap() = None;
-    *engine.verified_adapter.lock().unwrap() = None;
-    *engine.verified_contract_adapter.lock().unwrap() = None;
+    engine.clear_verify_caches();
     engine.set_status(EngineStatus::Starting);
     // Clone so `engine` (and thus `_restart_guard`, which borrows it) stays
     // alive through `start`: the lock must be held until `start` has set
@@ -728,7 +971,18 @@ pub fn restart(app: AppHandle, engine: Arc<Engine>) {
     start(app, engine.clone());
 }
 
-#[cfg(test)]
+// ── The mobile half of the seam ──────────────────────────────────────────────
+//
+// Android has no sidecar to spawn, poll or reap, so the four lifecycle entry
+// points above are `#[cfg(desktop)]` and these take their place. Callers
+// (`lib.rs` setup, `load_model`, the window `Destroyed` handler, and
+// `cloud::download`'s completion path) name `inference::start` and friends on
+// both platforms and are compiled unchanged — which is the whole point of
+// putting the seam here rather than at every call site.
+#[cfg(mobile)]
+pub use crate::engine_inproc::{restart, shutdown, start, start_if_no_model};
+
+#[cfg(all(test, desktop))]
 mod tests {
     use super::*;
 
@@ -745,6 +999,30 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The frontend sizes every request from `EngineInfo::n_ctx` (decision
+    /// D-4), so a desktop engine that under-reports its window would silently
+    /// shrink every conversation, and one that over-reports would fail decodes
+    /// — the exact bug D-4 fixed, reintroduced from the other side.
+    ///
+    /// This pins the reported value to the sidecar's actual `-c`. Note it
+    /// compares against the *arg vector* rather than against `DESKTOP_N_CTX`:
+    /// asserting the constant equals itself would pass for any value.
+    #[test]
+    fn engine_reports_the_window_the_sidecar_is_launched_with() {
+        let reported = Engine::new(8080).info().n_ctx;
+        let args = build_server_args(&PathBuf::from("/models/base.gguf"), 8080, 0, &[]);
+        let c_flag = args
+            .iter()
+            .position(|a| a == "-c")
+            .map(|i| args[i + 1].clone())
+            .expect("the sidecar is always launched with -c");
+        assert_eq!(
+            c_flag,
+            reported.to_string(),
+            "EngineInfo.n_ctx must equal the sidecar's -c, or the frontend budgets against a window the engine does not have",
+        );
     }
 
     #[test]

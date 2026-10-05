@@ -80,6 +80,18 @@ pub trait EngineSession {
         messages: &[ChatMessage],
         sink: &mut dyn TokenSink,
     ) -> Result<GenStats, EngineError>;
+
+    /// sha256 (hex) of the **exact prompt bytes** this session would tokenise
+    /// for `messages` — without generating anything.
+    ///
+    /// The device/pod rendering-parity handle (Phase 1c, A2). The pod computes
+    /// the same digest over its own rendered prompt, and equal digests are the
+    /// only evidence that the phone and the gate served the same string. The
+    /// catalog's `promptFingerprint` cannot stand in for it: that pins the
+    /// system prompt's TEXT and says nothing about the template around it —
+    /// including whether the assistant prefix carries the pre-closed think
+    /// block the gate has always served under.
+    fn rendered_prompt_sha256(&self, messages: &[ChatMessage]) -> Result<String, EngineError>;
 }
 
 /// Where streamed token text goes. Returning [`ControlFlow::Break`] cancels
@@ -154,6 +166,20 @@ pub struct SessionConfig {
     /// Context window. Per-tier cap: 2048 on the floor (1B), 4096 above (§2).
     pub n_ctx: u32,
     pub sampling: Sampling,
+    /// Whether the backend applies the start-of-turn `<think>` strip before
+    /// the sink sees a token. `None` — the shipping default — derives it from
+    /// the template family, which is what every product caller wants.
+    ///
+    /// `Some(false)` exists for ONE caller: the device-probe harness, which
+    /// has to record the engine's output *before* any stripping as well as
+    /// after it. The release bar describes what the patient reads and the
+    /// model bar describes what the model said; the think block sits between
+    /// them, and a harness that can only see one side cannot tell a reply that
+    /// was never generated from one the stripper ate (`ThinkStripper` returns
+    /// the empty string when a run dies inside a block). The harness then
+    /// applies the SAME `ThinkStripper` itself, so nothing is re-implemented —
+    /// only observed at both points.
+    pub strip_think: Option<bool>,
 }
 
 impl Default for SessionConfig {
@@ -161,6 +187,7 @@ impl Default for SessionConfig {
         SessionConfig {
             n_ctx: 2048,
             sampling: Sampling::default(),
+            strip_think: None,
         }
     }
 }
@@ -199,6 +226,36 @@ pub enum StopReason {
     MaxTokens,
     /// The sink returned `ControlFlow::Break` — cooperative cancel.
     Cancelled,
+    /// The stream ended INSIDE an unclosed `<think>` block, so every byte the
+    /// model produced was suppressed and the sink saw nothing (Phase 1c, A2).
+    ///
+    /// Its own variant rather than a flavour of `MaxTokens` because the product
+    /// has to say something different: an empty turn that stopped mid-thought
+    /// is "the reply was cut short", and rendering it as a blank bubble is the
+    /// device-only failure this variant exists to make impossible to miss.
+    ///
+    /// With the pre-closed think block now in the rendered prompt
+    /// ([`crate::template::ThinkPolicy::PreClosed`]) the model cannot open a
+    /// block at all, so this should never fire on the Qwen3 triage hero. That
+    /// is the point: if it does, the prompt is not the one the gate served.
+    TruncatedInThink,
+}
+
+impl StopReason {
+    /// Fold the stripper's verdict into the generation loop's own stop reason.
+    ///
+    /// The loop and the stripper each know half of why a turn ended, and the
+    /// precedence between them is a judgement rather than an obvious fact — so
+    /// it is written down once, here, instead of twice in two backends. See the
+    /// test below for the reasoning on each arm.
+    pub fn with_think_truncation(self, truncated: bool) -> StopReason {
+        match (truncated, self) {
+            (false, _) => self,
+            // The user stopped it; that is their fact, not the budget's.
+            (true, StopReason::Cancelled) => StopReason::Cancelled,
+            (true, _) => StopReason::TruncatedInThink,
+        }
+    }
 }
 
 /// What a completed (or cancelled) `stream` produced.
@@ -207,4 +264,40 @@ pub struct GenStats {
     pub prompt_tokens: usize,
     pub generated_tokens: usize,
     pub stop: StopReason,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The precedence rule, stated once and tested here because its two
+    /// production callers (`llama.rs` and `mock.rs`) are a native backend and a
+    /// fake, and neither is the right place to decide it.
+    #[test]
+    fn truncation_outranks_the_budget_that_caused_it_but_never_a_cancel() {
+        // A turn that died inside `<think>` has nothing to show, and saying
+        // "max tokens" about it invites the product to render an empty bubble.
+        assert_eq!(
+            StopReason::MaxTokens.with_think_truncation(true),
+            StopReason::TruncatedInThink
+        );
+        assert_eq!(
+            StopReason::Eos.with_think_truncation(true),
+            StopReason::TruncatedInThink
+        );
+        // A cancel is the USER's action. Reporting it as a truncation would
+        // tell them the model was cut short by the budget when in fact they
+        // stopped it, and the UI already has a story for a cancelled turn.
+        assert_eq!(
+            StopReason::Cancelled.with_think_truncation(true),
+            StopReason::Cancelled
+        );
+        for s in [
+            StopReason::Eos,
+            StopReason::MaxTokens,
+            StopReason::Cancelled,
+        ] {
+            assert_eq!(s.with_think_truncation(false), s, "{s:?} must be untouched");
+        }
+    }
 }

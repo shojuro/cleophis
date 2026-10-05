@@ -36,9 +36,20 @@ use crate::cloud::session::Cloud;
 use crate::cloud::store::Entitlement;
 use crate::inference::Engine;
 
-/// The hero catalog id every tier variant belongs to — the entitlement the
-/// switch limit is keyed off, and the only `real` entry `catalog::hero`
-/// returns.
+/// The TUTOR catalog's hero id.
+///
+/// P2.9 stopped reading this for behaviour. The app ships more than one
+/// catalog now — `build-android-apk.sh --variant=triage` swaps
+/// `catalog.triage.json` in, whose hero is `med-triage` — so a constant is no
+/// longer a true statement about the running build, and keying the
+/// entitlement lookup off it would silently report "no entitlement" on every
+/// triage install. The hero id is derived from the LOADED catalog instead
+/// ([`crate::inference::hero_id`]).
+///
+/// It survives as the expected value in the tutor catalog's tests, and as the
+/// fallback for a catalog that cannot be read at all — a state in which
+/// nothing launches anyway, and in which falling back reproduces pre-P2.9
+/// behaviour exactly rather than inventing a new failure.
 pub const HERO_MODEL_ID: &str = "socratic-tutor";
 
 /// Perpetual-grant fallback cooldown: when the active entitlement has no
@@ -298,24 +309,44 @@ fn variant_on_disk(app: &AppHandle, variant: &crate::catalog::ResolvedHero) -> b
 /// The active hero entitlement, resolved from the LOCALLY-CACHED entitlements
 /// (`Cloud::entitlements` returns the cache when offline), for the switch
 /// limit. See [`resolve_hero_entitlement`].
-fn current_entitlement(cloud: &Cloud) -> HeroEntitlement {
+///
+/// The product id is the LOADED catalog's hero, not [`HERO_MODEL_ID`]: the
+/// triage variant ships a different hero and would otherwise never match an
+/// entitlement.
+fn current_entitlement(app: &AppHandle, cloud: &Cloud) -> HeroEntitlement {
     // A transient online lookup failure must NOT read as "no entitlement" (it
     // would wrongly show the limit) — fall back to the locally-cached list.
     let ents = cloud
         .entitlements()
         .unwrap_or_else(|_| cloud.cached_entitlements());
-    resolve_hero_entitlement(&ents, Utc::now())
+    resolve_hero_entitlement(&ents, Utc::now(), &hero_model_id(app))
+}
+
+/// The running build's hero catalog id, read from the catalog the app
+/// actually loaded. Falls back to [`HERO_MODEL_ID`] only when the catalog is
+/// unreadable or heroless — see that constant's doc for why that is the safe
+/// direction to fail in.
+fn hero_model_id(app: &AppHandle) -> String {
+    crate::inference::hero_id(app).unwrap_or_else(|| HERO_MODEL_ID.to_string())
 }
 
 /// Classify the hero product's current access for the switch limit: a live
 /// billing period (`expires_at` in the future) wins, else a perpetual grant
-/// (no `expires_at`), else none. Only `model_id == HERO_MODEL_ID`
-/// entitlements are considered; expired periods are ignored.
-pub fn resolve_hero_entitlement(entitlements: &[Entitlement], now: DateTime<Utc>) -> HeroEntitlement {
+/// (no `expires_at`), else none. Only entitlements whose `model_id` equals
+/// `hero_id` are considered; expired periods are ignored.
+///
+/// `hero_id` is a parameter rather than a read of [`HERO_MODEL_ID`] so the
+/// function stays pure AND so the caller supplies the id of the catalog this
+/// build actually shipped (P2.9).
+pub fn resolve_hero_entitlement(
+    entitlements: &[Entitlement],
+    now: DateTime<Utc>,
+    hero_id: &str,
+) -> HeroEntitlement {
     let mut best_period: Option<(DateTime<Utc>, String)> = None;
     let mut has_perpetual = false;
     for e in entitlements {
-        if e.model_id != HERO_MODEL_ID {
+        if e.model_id != hero_id {
             continue;
         }
         match e.expires_at.as_deref() {
@@ -429,7 +460,7 @@ pub async fn get_tier_selection(
         let sel = read_app_selection(&app);
         let detected = crate::hardware::detect().tier;
         let effective = effective_tier_from(&sel, &detected);
-        let ent = current_entitlement(&cloud);
+        let ent = current_entitlement(&app, &cloud);
         let now = Utc::now().timestamp();
         let (switch_available, next_change_at) = match switch_allowed(
             sel.committed,
@@ -501,7 +532,7 @@ pub async fn begin_tier_switch(
         // A real change → enforce the switch limit (a no-op before the first
         // chat; see `switch_allowed`).
         let now = Utc::now().timestamp();
-        let ent = current_entitlement(&cloud);
+        let ent = current_entitlement(&app, &cloud);
         if let Err(d) = switch_allowed(sel.committed, &ent, sel.period_key.as_deref(), sel.switched_at, now) {
             return Err(denial_message(&d));
         }
@@ -540,7 +571,7 @@ pub async fn complete_tier_switch(
         let target = mode_effective_tier(&mode, &sel, &detected);
         let changed = target != current_active_tier(&sel, &detected);
 
-        let ent = current_entitlement(&cloud);
+        let ent = current_entitlement(&app, &cloud);
         let now = Utc::now().timestamp();
 
         // Re-enforce the limit for a committed, real change (authoritative —
@@ -853,7 +884,7 @@ mod tests {
     fn entitlement_period_when_active_purchase() {
         let ents = vec![ent(HERO_MODEL_ID, Some("2026-08-21T00:00:00Z"))];
         assert_eq!(
-            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
             HeroEntitlement::Period("2026-08-21T00:00:00Z".to_string())
         );
     }
@@ -862,7 +893,7 @@ mod tests {
     fn entitlement_none_when_expired() {
         let ents = vec![ent(HERO_MODEL_ID, Some("2026-07-01T00:00:00Z"))];
         assert_eq!(
-            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
             HeroEntitlement::None
         );
     }
@@ -871,7 +902,7 @@ mod tests {
     fn entitlement_perpetual_when_no_expiry() {
         let ents = vec![ent(HERO_MODEL_ID, None)];
         assert_eq!(
-            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
             HeroEntitlement::Perpetual
         );
     }
@@ -886,7 +917,7 @@ mod tests {
             ent(HERO_MODEL_ID, Some("2026-06-01T00:00:00Z")), // expired → ignored
         ];
         assert_eq!(
-            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
             HeroEntitlement::Period("2026-09-21T00:00:00Z".to_string())
         );
     }
@@ -895,8 +926,52 @@ mod tests {
     fn entitlement_none_for_other_model_only() {
         let ents = vec![ent("other", Some("2027-01-01T00:00:00Z"))];
         assert_eq!(
-            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z")),
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
             HeroEntitlement::None
         );
+    }
+
+    // --- P2.9: the hero id is the catalog's, not the constant ---------------
+
+    /// The bug this guards: keying the lookup off `HERO_MODEL_ID` on a triage
+    /// build reads every triage entitlement as "not the hero" and reports no
+    /// access at all.
+    #[test]
+    fn entitlement_is_keyed_off_the_supplied_hero_id_not_the_tutor_constant() {
+        let ents = vec![
+            ent(HERO_MODEL_ID, Some("2027-01-01T00:00:00Z")),
+            ent("med-triage", Some("2026-08-21T00:00:00Z")),
+        ];
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), "med-triage"),
+            HeroEntitlement::Period("2026-08-21T00:00:00Z".to_string())
+        );
+        assert_eq!(
+            resolve_hero_entitlement(&ents, now_at("2026-07-21T00:00:00Z"), HERO_MODEL_ID),
+            HeroEntitlement::Period("2027-01-01T00:00:00Z".to_string())
+        );
+    }
+
+    /// `HERO_MODEL_ID` is now only a claim about the TUTOR catalog. This is
+    /// what keeps that claim honest, and the triage half is what proves the
+    /// constant could not have stayed the behavioural source.
+    #[test]
+    fn the_constant_names_the_tutor_catalogs_hero_and_the_triage_catalogs_differs() {
+        let tutor = crate::catalog::parse_catalog(include_str!("../resources/catalog.json"))
+            .expect("tutor catalog parses");
+        assert_eq!(
+            crate::catalog::hero(&tutor).expect("tutor hero").id,
+            HERO_MODEL_ID
+        );
+
+        let triage =
+            crate::catalog::parse_catalog(include_str!("../resources/catalog.triage.json"))
+                .expect("triage catalog parses");
+        let h = crate::catalog::hero(&triage).expect("triage hero");
+        assert_eq!(h.id, "med-triage");
+        assert_ne!(h.id, HERO_MODEL_ID);
+        // A15: base + LoRA, the same shape the tutor hero ships in.
+        assert!(h.model_file.is_some());
+        assert!(h.adapter_file.is_some());
     }
 }

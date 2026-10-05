@@ -1,0 +1,51 @@
+{
+ "clusters": [
+  {
+   "entries": [
+    "conditions/chronic-obstructive-pulmonary-disease-copd"
+   ],
+   "id": "conditions/chronic-obstructive-pulmonary-disease-copd",
+   "names": [
+    "COPD",
+    "Chronic obstructive pulmonary disease (COPD)",
+    "chronic obstructive pulmonary disease copd"
+   ]
+  },
+  {
+   "entries": [
+    "conditions/gout"
+   ],
+   "id": "conditions/gout",
+   "names": [
+    "Gout",
+    "Gouty arthritis",
+    "gout"
+   ]
+  },
+  {
+   "entries": [
+    "medicines/paracetamol-for-adults"
+   ],
+   "id": "medicines/paracetamol-for-adults",
+   "names": [
+    "Calpol",
+    "Panadol",
+    "Paracetamol for adults",
+    "paracetamol for adults"
+   ]
+  }
+ ],
+ "entry_to_cluster": {
+  "conditions/chronic-obstructive-pulmonary-disease-copd": "conditions/chronic-obstructive-pulmonary-disease-copd",
+  "conditions/gout": "conditions/gout",
+  "medicines/paracetamol-for-adults": "medicines/paracetamol-for-adults"
+ },
+ "fabrication": {
+  "fakes_checked": [
+   "Zeltrofen",
+   "Marsten's syndrome",
+   "Quorvalex"
+  ]
+ },
+ "schema": "fixture"
+}

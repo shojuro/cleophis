@@ -4,15 +4,158 @@
 // binary that calls `run()`. All modules, commands, and the builder live
 // here unchanged — the split moves code, it does not alter behavior.
 
+/// The JNI bridge to our own Kotlin (`NativeBridge.kt`). Android-only, and
+/// deliberately proven on its own before the `ConnectivityManager`,
+/// `ACTION_SEND` and SAF shims are built on top of it. `target_os = "android"`
+/// rather than `mobile`, which would also mean iOS.
+#[cfg(target_os = "android")]
+mod android_bridge;
+// Whole-branch review I1/I2: build.rs's triage-catalog check, compiled here
+// only so `cargo test` runs its tests.
+#[cfg(test)]
+#[path = "../build_checks.rs"]
+mod build_checks;
 mod calc;
 mod catalog;
 mod catalog_dist;
+/// The mobile chat transport (`chat_stream` / `chat_complete` / `chat_cancel`).
+/// Compiled on every platform so one `generate_handler!` list serves both —
+/// the command bodies are cfg-gated and the desktop ones refuse; see the
+/// module doc for why that beats maintaining two lists.
+mod chat_cmds;
 mod cloud;
 mod convstore;
+/// The in-process engine backing `inference`'s mobile lifecycle. Android-only:
+/// desktop keeps its `llama-server` sidecar.
+#[cfg(mobile)]
+mod engine_inproc;
+/// The inference thread's serve loop — which consecutive turns may share one
+/// live `EngineSession` (task 1.5), and every way that session's life ends.
+/// Declared here, and so compiled everywhere, for the same reason as
+/// `engine_tools`: the routing is pure, its failure modes are dropped turns and
+/// a thread that stops accepting work, and the desktop suite is the only place
+/// tests run. Only the half that holds the session's borrow stays behind the
+/// `cfg`.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/serve.rs"]
+mod engine_serve;
+/// Tool-call parsing, the closed tool registry, and the per-family prompt
+/// contract for the in-process engine. Lives under `engine_inproc/` because
+/// that is what owns it, but is declared here — and so compiled on every
+/// platform — because it is pure logic and the desktop suite is the only place
+/// tests actually run. Gating it to Android would mean the closed-registry
+/// security property is asserted nowhere.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/tools.rs"]
+mod engine_tools;
+/// The calc tool-loop, transcribed from `src/calc-loop.js`. Declared here for
+/// the same reason as `engine_tools`: it is written against a `TurnSource`
+/// trait rather than `EngineSession` precisely so it compiles and is tested off
+/// Android.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/tool_loop.rs"]
+mod engine_tool_loop;
+/// Thermal-throttle detection (spec §8, hazard H6, acceptance A7) — the
+/// decision half. Declared here for the same reason as its three neighbours,
+/// and more sharply than any of them: EVERY failure mode of a throttle
+/// detector is silent. One that never fires is indistinguishable from a phone
+/// that never got hot, and one that fires on the wrong thing produces a
+/// reassuring sentence at the wrong moment. Neither raises an error, so a
+/// cross-compile `check` says nothing about either. The clock and the `emit`
+/// stay in `engine_inproc`; the arithmetic is here, where the desktop suite
+/// executes it.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile, which is what the 5.3 `mobile-check`
+/// CI job exists to police.
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/thermal.rs"]
+mod engine_thermal;
+/// The A3 Stage-5 probe adjudicator (spec §11 A3) — the decision half.
+/// Declared here for the same reason as its four neighbours: `probe_verdict`
+/// is a pure `&[Transcript] -> Verdict`, its failure modes are a `4/4` on a
+/// broken adapter and a false red on a good one, and **neither raises an
+/// error**. The running of the probes stays in `chat_cmds`, where the engine
+/// is; the judgement is here, where the fixtures execute it.
+///
+/// GATED, NOT ALLOWED, for the release half — and the gate is on the whole
+/// module because **release measured it that way**. The first attempt kept the
+/// reported shapes (`Verdict`, `Outcome`, `ProbeId`, …) compiled everywhere on
+/// the theory that the command's signature and their `Serialize` derives would
+/// keep them alive. `cargo ndk check --release` disagreed, in writing:
+/// *"variants `FakeEntity`, `Arithmetic`, `Concession` and `Medical` are never
+/// constructed"*, plus two more, with the explicit note that **derived impls
+/// are intentionally ignored during dead-code analysis**. A signature names a
+/// type; it does not construct one. The command therefore hands the frontend a
+/// `serde_json::Value`, which exists in every configuration, and this whole
+/// module is absent from the profile that ships — which is also the stronger
+/// property: a release APK cannot contain the probe prompts at all.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `chat_cmds::chat_stage5_probe`'s body is
+/// `cfg(all(mobile, debug_assertions))`, so the code is live where it runs and
+/// dead only on desktop, where the fixtures are its only callers.
+///
+/// `test` sits beside `debug_assertions` so the desktop suite still runs the
+/// fixtures under `cargo test --release`.
+#[cfg(any(debug_assertions, test))]
+#[cfg_attr(desktop, allow(dead_code))]
+#[path = "engine_inproc/probes.rs"]
+mod engine_probes;
 mod hardware;
 mod inference;
 mod kpack;
+/// The 2.2 native completions: the download policy's fact source and
+/// share-sheet export. Compiled on every platform (decision D-1 — mobile-only
+/// commands live on the shared invoke surface); the bodies are cfg-gated and
+/// desktop refuses.
+mod mobile_native;
+/// Parses the network/battery snapshot Android reports. Compiled everywhere
+/// because the parse is pure and its failure mode is silent and expensive —
+/// a field misread as `metered=0` starts a multi-gigabyte download on someone's
+/// cellular plan and nothing reports an error (decision D-3).
+///
+/// The `allow` states a **permanent platform fact, not a symptom**: desktop has
+/// no metered-network concept and no `ConnectivityManager`, so `parse`'s only
+/// production caller is — and will remain — the `cfg(target_os = "android")`
+/// branch of `mobile_native::network_state`. On desktop the function is
+/// therefore reachable *only* from its own tests, which is precisely the state
+/// D-3 asks for and precisely what `dead_code` reports. Narrowly scoped and
+/// cfg'd rather than bare, so the check stays **live on Android**, where the
+/// function does ship — the distinction `engine_serve` already draws and the
+/// one the 5.3 `mobile-check` CI job exists to exercise.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod net_state;
 mod ocr;
+/// Compiled on every platform so its consistency tests run in the desktop
+/// suite; the `include_bytes!` payload inside it is `cfg(mobile)`, so the
+/// desktop binary carries none of it.
+mod resources_embed;
 mod tier_select;
 
 use std::sync::Arc;
@@ -26,6 +169,9 @@ fn get_catalog(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> 
     let root = inference::resources_root(&app);
     let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
     let entries = catalog::parse_catalog(&raw)?;
+    // Phase 1i TC1: every entry names the catalog file and the build it came
+    // from; the front end stamps both onto each persisted verdict.
+    let catalog_sha = catalog::catalog_sha256(&raw);
     Ok(entries
         .into_iter()
         .map(|e| {
@@ -33,6 +179,7 @@ fn get_catalog(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> 
             let mut v = serde_json::to_value(&e).unwrap();
             v["coverAbs"] =
                 serde_json::Value::String(cover_abs.to_string_lossy().into_owned());
+            catalog::stamp_provenance(&mut v, &catalog_sha, catalog::APP_BUILD);
             v
         })
         .collect())
@@ -114,6 +261,33 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Android bundles no resources, so the catalog and covers have to be
+            // written out of the binary before ANYTHING reads
+            // `inference::resources_root` — `model_path` on the next line
+            // already does. A failure here is not fatal: the app then behaves
+            // exactly as it does with an absent catalog (no hero resolves, the
+            // NoModel banner shows), which is the honest fail-closed outcome and
+            // far better than aborting startup. It is logged loudly because in
+            // that state nothing else will explain the empty library.
+            #[cfg(mobile)]
+            if let Err(e) = resources_embed::materialize(app.handle()) {
+                eprintln!("setup: failed to materialize embedded resources: {e}");
+            }
+
+            // The JNI bridge smoke probe. Prints `[bridge] ...` exactly once,
+            // in the mould of the `[kernels]` line, so a device transcript
+            // carries its own proof that Rust → Kotlin → Rust works. It runs
+            // here, before any feature needs the bridge, because three shim
+            // surfaces are queued behind it and discovering its failure modes
+            // inside whichever one goes first is compound debugging.
+            //
+            // Non-fatal by construction: nothing depends on the bridge yet, so
+            // a failure must be loud rather than terminal. `main_android_context()`
+            // is already populated at this point — tao inserts it before
+            // calling the setup path that reaches `run()`.
+            #[cfg(target_os = "android")]
+            android_bridge::log_smoke_probe();
+
             let port = inference::free_port()?;
             let engine = Arc::new(Engine::new(port));
             app.manage(engine.clone());
@@ -160,6 +334,17 @@ pub fn run() {
             app.manage(kpack::EmbedderCache::default());
             app.manage(kpack::Builds::default());
 
+            // In-flight chat turns, so `chat_cancel` can reach one by request
+            // id. Managed on both platforms so the command surface is uniform;
+            // desktop never populates it.
+            app.manage(chat_cmds::ChatCancels::default());
+
+            // The last thermal verdict, so a webview that reloaded can re-ask
+            // rather than wait for a transition that can never come again
+            // (H6/A7). Managed on both platforms for the same uniformity
+            // reason as ChatCancels; desktop never populates it.
+            app.manage(chat_cmds::ThermalState::default());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -177,6 +362,7 @@ pub fn run() {
             kpack::build_personal_pack,
             kpack::cancel_build,
             kpack::rag_query,
+            kpack::rag_lookup,
             kpack::list_packs,
             kpack::delete_pack,
             cloud::commands::check_password_strength,
@@ -210,7 +396,20 @@ pub fn run() {
             convstore::set_chat_packs,
             convstore::append_message,
             convstore::search_chats,
-            convstore::export_chat_to_file
+            convstore::export_chat_to_file,
+            convstore::confirm_route,
+            convstore::attach_guard,
+            convstore::export_triage_log_to_file,
+            chat_cmds::chat_stream,
+            chat_cmds::chat_complete,
+            chat_cmds::chat_cancel,
+            chat_cmds::chat_thermal_state,
+            chat_cmds::chat_thermal_selftest,
+            chat_cmds::chat_stage5_probe,
+            mobile_native::network_state,
+            mobile_native::share_chat,
+            mobile_native::share_triage_log,
+            mobile_native::set_screen_privacy
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

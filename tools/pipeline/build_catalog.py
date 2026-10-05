@@ -88,17 +88,32 @@ license resolution, per manifest (first match wins):
      was checked, rather than emitting a catalog entry with a
      guessed/blank/empty license string.
 
-path derivation, per manifest "kind" (v0 hardcodes the two artifact
-layouts the spec defines — see README.md's "Binding cross-track values"
-table; any other kind, or a manifest "name" that doesn't match the exact
-basename that table pins, is a refusal rather than a guessed path shape):
-    kind == "base":    path = f"models/{base_model}/v1/{name}"
-                        requires name == "Qwen3-4B-Instruct-Q4_K_M.gguf"
-    kind == "adapter": path = f"adapters/behavioral/v1/{base_model}/{name}"
-                        requires name == "behavioral-v1-Qwen3-4B.gguf"
-The catalog artifact "version" field is a fixed "v1" for every artifact in
-this v0 catalog format — it is NOT read from the manifest (neither
-manifest shape carries a field with that meaning today).
+path derivation, per manifest "kind" (Phase 1g M3 — derived from the
+manifest's identity fields, refusing any manifest "name" that is not the
+exact derived basename):
+    kind == "base":
+        name = f"{base_model}-Instruct-{quant}.gguf"   (quant from the manifest)
+        path = f"models/{base_model}/v1/{name}"
+    kind == "adapter" | "contract-adapter":
+        name = f"{adapter_name}-{version}-{base_model}.gguf"
+        path = f"adapters/{adapter_name}/{version}/{base_model}/{name}"
+      adapter_name/version come from the manifest's "adapter_name"/"version"
+      fields. Defaults (back-compat): kind "adapter" -> behavioral + v1
+      (today's behavioral-v1-<base> paths, byte for byte); kind
+      "contract-adapter" -> contract + the legacy "dist_version" (or v1).
+      adapter_name must match [a-z][a-z0-9]*(-[a-z0-9]+)*, version
+      v<N>(.<N>)*, quant [A-Za-z0-9_]+ — each becomes a bucket path segment.
+The catalog entry "version" wire field is "v1" for base and kind "adapter"
+entries (as every live adapter entry carries, tutor-v1.3 included) and the
+path version for a contract-adapter (live: "v3.1").
+
+--carry-forward <catalog.json> --carry-forward-pubkey <hex> (M3): carry a
+previously published catalog's artifacts into this one, verbatim and first.
+The file's detached `<file>.sig` must verify under the given curator PUBLIC
+key, every carried entry must re-derive unchanged through the rules above,
+no bucket path may repeat, the new catalog_version must exceed the carried
+one, and with --base-url the carried catalog_version must equal the live one
+(a stale copy would silently drop later artifacts).
 
 Wire format (fixed by the Rust consumer,
 `src-tauri/src/catalog_dist.rs::DistCatalog`/`Artifact` — plain `derive`,
@@ -112,9 +127,9 @@ no `rename`, so field names must match byte-for-byte):
           "path": "<relative to the bucket root>",
           "sha256": "<64 lowercase hex chars>",
           "size": <int, bytes>,
-          "kind": "base" | "adapter",
-          "base_model": "Qwen3-4B",
-          "version": "v1",
+          "kind": "base" | "adapter" | "contract-adapter",
+          "base_model": "<one of KNOWN_BASE_MODELS>",
+          "version": "v1" (contract-adapter: its path version),
           "license": "<license identifier>"
         }
       ]
@@ -130,11 +145,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 PIPELINE_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUT = PIPELINE_ROOT / "work" / "catalog" / "catalog.json"
@@ -156,22 +173,80 @@ VALID_KINDS = ("base", "adapter", "contract-adapter")
 CATALOG_ARTIFACT_VERSION = "v1"
 
 
-def expected_basename(kind: str, base_model: str, quant: str | None, version: str = "v1") -> str | None:
-    """Artifact basename DERIVED from base_model — matching build_base.py's
-    ``{model_name}-Instruct-{quant}.gguf`` and build_adapter.py's
-    ``behavioral-v1-{base_model}.gguf``. A derivation, not a per-tier table,
-    so adding a tier needs no edit here — only the KNOWN_BASE_MODELS allowlist.
-    Returns None for an unknown kind, or a base with no quant to derive from.
+# Adapter identity (Phase 1g M3): an adapter manifest names itself with
+# `adapter_name` (e.g. "behavioral", "triage", "tutor", "voice-adult") and
+# `version` (e.g. "v1", "v3", "v1.3"); both default for back-compat (a kind
+# "adapter" manifest without them is behavioral + v1, today's only shape; a
+# "contract-adapter" is always "contract" and may still carry the legacy
+# `dist_version` field build_adapter.py writes). Both segments land verbatim
+# in a bucket path, so both are allowlisted by regex — no "/", no "..".
+ADAPTER_NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+ADAPTER_VERSION_RE = re.compile(r"^v[0-9]+(?:\.[0-9]+)*$")
+# A base's quant ("Q4_K_M", "Q6_K", "Q5_K_M", "F16", ...) lands in its
+# basename and in publish.py's local subdir name.
+BASE_QUANT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+DEFAULT_ADAPTER_NAME = "behavioral"
+CONTRACT_ADAPTER_NAME = "contract"
 
-    `version` applies only to the contract adapter — its retrains are published
-    as distinct, immutable artifacts (contract-v1, contract-v2, …) at
-    version-scoped paths, so the same base can carry more than one over time."""
+
+def adapter_identity(kind: str, manifest: dict, manifest_path: Path) -> tuple[str, str]:
+    """(adapter_name, version) for an adapter-kind manifest — see the
+    ADAPTER_NAME_RE comment above for the defaults. Refuses a name/version
+    that fails the allowlist, a kind "adapter" claiming the reserved
+    "contract" name, a "contract-adapter" claiming any other name, and a
+    contract manifest whose `version` and legacy `dist_version` disagree."""
+    if kind == "adapter":
+        name = manifest.get("adapter_name", DEFAULT_ADAPTER_NAME)
+        version = manifest.get("version", CATALOG_ARTIFACT_VERSION)
+        if name == CONTRACT_ADAPTER_NAME:
+            raise CatalogAssemblyError(
+                f'{manifest_path}: adapter_name="contract" is reserved for kind "contract-adapter"'
+            )
+    elif kind == "contract-adapter":
+        name = manifest.get("adapter_name", CONTRACT_ADAPTER_NAME)
+        if name != CONTRACT_ADAPTER_NAME:
+            raise CatalogAssemblyError(
+                f'{manifest_path}: kind "contract-adapter" must have adapter_name "contract", got {name!r}'
+            )
+        version = manifest.get("version")
+        legacy = manifest.get("dist_version")
+        if version is not None and legacy is not None and version != legacy:
+            raise CatalogAssemblyError(
+                f"{manifest_path}: version={version!r} and dist_version={legacy!r} disagree"
+            )
+        version = version if version is not None else (legacy if legacy is not None else CATALOG_ARTIFACT_VERSION)
+    else:
+        raise AssertionError(f"adapter_identity called for non-adapter kind {kind!r}")
+    if not (isinstance(name, str) and ADAPTER_NAME_RE.match(name)):
+        raise CatalogAssemblyError(
+            f"{manifest_path}: adapter_name={name!r} must match {ADAPTER_NAME_RE.pattern} (it becomes a bucket path segment)"
+        )
+    if not (isinstance(version, str) and ADAPTER_VERSION_RE.match(version)):
+        raise CatalogAssemblyError(
+            f"{manifest_path}: version={version!r} must match {ADAPTER_VERSION_RE.pattern} (it becomes a bucket path segment)"
+        )
+    return name, version
+
+
+def expected_basename(
+    kind: str,
+    base_model: str,
+    quant: str | None = None,
+    adapter_name: str | None = None,
+    version: str | None = None,
+) -> str | None:
+    """Artifact basename DERIVED from the manifest's identity fields — a
+    derivation, not a per-tier table, so a new tier/adapter needs no edit
+    here (only KNOWN_BASE_MODELS for a new tier):
+        base:              <base_model>-Instruct-<quant>.gguf   (build_base.py's shape)
+        adapter / contract-adapter:
+                           <adapter_name>-<version>-<base_model>.gguf
+    behavioral + v1 is exactly build_adapter.py's behavioral-v1-<base>.gguf.
+    Returns None for an unknown kind, or a base with no quant to derive from."""
     if kind == "base":
         return f"{base_model}-Instruct-{quant}.gguf" if quant else None
-    if kind == "adapter":
-        return f"behavioral-v1-{base_model}.gguf"
-    if kind == "contract-adapter":
-        return f"contract-{version}-{base_model}.gguf"
+    if kind in ("adapter", "contract-adapter"):
+        return f"{adapter_name}-{version}-{base_model}.gguf"
     return None
 
 REQUIRED_MANIFEST_FIELDS = ("kind", "base_model", "sha256", "size", "name")
@@ -187,6 +262,11 @@ MAX_FETCH_BYTES = 1024 * 1024  # 1 MiB
 # `--base-url` response or computed as that value + 1 — see
 # `check_version_in_bounds`'s docstring for why this exists.
 MAX_SANE_CATALOG_VERSION = 1_000_000
+
+# The production curator PUBLIC key (crates/kpack-core/src/sign.rs
+# CURATOR_PUBLIC_KEY, hex) — used ONLY by --self-test to verify the pinned
+# live-catalog fixture. The CLI never defaults --carry-forward-pubkey to it.
+PROD_CURATOR_PUBKEY_HEX = "158cb99e9756e2e4d01d88b7ecfeb99a76547821ffe9f9f1985316c5451cd0c0"
 
 
 class CatalogAssemblyError(RuntimeError):
@@ -240,6 +320,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         metavar="KIND=VALUE",
         help='fallback license for manifests of the given kind ("base" or "adapter") that carry none; repeatable',
+    )
+    parser.add_argument(
+        "--carry-forward",
+        type=Path,
+        default=None,
+        metavar="CATALOG_JSON",
+        help="a previously published catalog.json (its .sig beside it) whose artifacts are carried into this "
+        "catalog verbatim, first; requires --carry-forward-pubkey",
+    )
+    parser.add_argument(
+        "--carry-forward-pubkey",
+        default=None,
+        metavar="HEX",
+        help="64-hex-char ed25519 curator PUBLIC key the carried catalog's .sig must verify under",
     )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output path (default: {DEFAULT_OUT})")
     parser.add_argument(
@@ -305,8 +399,23 @@ def resolve_license(manifest: dict, overrides: dict[str, str], manifest_path: Pa
     )
 
 
-def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, manifest_path: Path, version: str = "v1") -> str:
-    expected_name = expected_basename(kind, base_model, quant, version)
+def artifact_path_for(
+    kind: str,
+    base_model: str,
+    name: str,
+    quant: str | None,
+    manifest_path: Path,
+    adapter_name: str | None = None,
+    version: str | None = None,
+) -> str:
+    """Bucket path for one artifact; refuses unless `name` is exactly the
+    derived basename (see expected_basename).
+        base:     models/<base_model>/v1/<name>
+        adapters: adapters/<adapter_name>/<version>/<base_model>/<name>
+    behavioral + v1 and contract + <v> reproduce the pre-M3 paths byte-for-byte."""
+    if kind == "base" and quant is not None and not (isinstance(quant, str) and BASE_QUANT_RE.match(quant)):
+        raise CatalogAssemblyError(f"{manifest_path}: quant={quant!r} must match {BASE_QUANT_RE.pattern}")
+    expected_name = expected_basename(kind, base_model, quant, adapter_name, version)
     if expected_name is None:
         detail = (
             'a base manifest needs a "quant" field to derive its basename'
@@ -321,10 +430,8 @@ def artifact_path_for(kind: str, base_model: str, name: str, quant: str | None, 
         )
     if kind == "base":
         return f"models/{base_model}/v1/{name}"
-    if kind == "adapter":
-        return f"adapters/behavioral/v1/{base_model}/{name}"
-    if kind == "contract-adapter":
-        return f"adapters/contract/{version}/{base_model}/{name}"
+    if kind in ("adapter", "contract-adapter"):
+        return f"adapters/{adapter_name}/{version}/{base_model}/{name}"
     raise AssertionError(f"unreachable: kind {kind!r} passed the expected_basename check above")
 
 
@@ -360,21 +467,18 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise CatalogAssemblyError(f"{manifest_path}: size={size!r} is not a positive integer")
 
-    # The contract adapter is the one artifact that gets retrained and
-    # re-published under a bumped, version-scoped path (contract-v1 → v2 → …);
-    # every other kind stays "v1". `dist_version` selects which (default v1 for
-    # back-compat with existing contract-v1 manifests).
-    if kind == "contract-adapter":
-        dist_version = manifest.get("dist_version", "v1")
-        if dist_version not in ("v1", "v2"):
-            raise CatalogAssemblyError(
-                f"{manifest_path}: dist_version={dist_version!r} must be 'v1' or 'v2'"
-            )
-    else:
-        dist_version = CATALOG_ARTIFACT_VERSION
-
+    # Catalog entry "version" (wire field; the app reads nothing from it):
+    # base and kind "adapter" entries carry the fixed "v1" — as every live
+    # kind "adapter" entry does, including tutor-v1.3 — while a
+    # contract-adapter's entry carries its path version (live: "v3.1").
     license_id = resolve_license(manifest, overrides, manifest_path)
-    path = artifact_path_for(kind, base_model, name, manifest.get("quant"), manifest_path, dist_version)
+    if kind == "base":
+        path = artifact_path_for(kind, base_model, name, manifest.get("quant"), manifest_path)
+        entry_version = CATALOG_ARTIFACT_VERSION
+    else:
+        adapter_name, adapter_version = adapter_identity(kind, manifest, manifest_path)
+        path = artifact_path_for(kind, base_model, name, None, manifest_path, adapter_name, adapter_version)
+        entry_version = adapter_version if kind == "contract-adapter" else CATALOG_ARTIFACT_VERSION
 
     return {
         "path": path,
@@ -382,7 +486,7 @@ def manifest_to_artifact(manifest: dict, manifest_path: Path, overrides: dict[st
         "size": size,
         "kind": kind,
         "base_model": base_model,
-        "version": dist_version,
+        "version": entry_version,
         "license": license_id,
     }
 
@@ -447,8 +551,127 @@ def fetch_published_version(base_url: str, timeout: float = 15.0) -> int:
     return version
 
 
-def build_catalog(manifest_paths: list[Path], catalog_version: int, overrides: dict[str, str]) -> dict:
-    artifacts = [manifest_to_artifact(load_manifest(p), p, overrides) for p in manifest_paths]
+WIRE_FIELDS = ("path", "sha256", "size", "kind", "base_model", "version", "license")
+BASE_PATH_RE = re.compile(r"^models/(?P<base>[^/]+)/v1/(?P=base)-Instruct-(?P<quant>[^/]+)\.gguf$")
+ADAPTER_PATH_RE = re.compile(r"^adapters/(?P<name>[^/]+)/(?P<version>[^/]+)/(?P<base>[^/]+)/(?P<file>[^/]+)$")
+SIG_LEN = 64
+
+
+class CarriedCatalog(NamedTuple):
+    catalog_version: int
+    artifacts: list[dict]
+
+
+def entry_to_manifest(entry: dict) -> dict:
+    """Invert a catalog entry's path into the manifest that would produce
+    it — used only to prove a carried-forward entry is one this builder
+    could itself have derived (see check_carried_entries)."""
+    m = {k: entry[k] for k in ("kind", "base_model", "sha256", "size", "license")}
+    path = entry["path"]
+    m["name"] = path.rsplit("/", 1)[-1]
+    if entry["kind"] == "base":
+        match = BASE_PATH_RE.match(path)
+        if match:
+            m["quant"] = match["quant"]
+    else:
+        match = ADAPTER_PATH_RE.match(path)
+        if match:
+            m["adapter_name"] = match["name"]
+            m["version"] = match["version"]
+    return m
+
+
+def check_carried_entries(entries: object, source: Path) -> list[dict]:
+    """Every carried entry must have exactly the seven wire fields and must
+    re-derive, field for field, through this builder's own manifest path
+    (the same refusals a fresh manifest gets: known kind/tier, hex sha,
+    positive size, allowlisted segments, derived basename). An entry that
+    doesn't round-trip is refused rather than passed through blind."""
+    if not isinstance(entries, list) or not entries:
+        raise CatalogAssemblyError(f"{source}: carried catalog has no non-empty artifacts list")
+    out = []
+    for i, entry in enumerate(entries):
+        where = Path(f"{source}#artifacts[{i}]")
+        if not isinstance(entry, dict) or set(entry) != set(WIRE_FIELDS):
+            raise CatalogAssemblyError(f"{where}: carried entry must have exactly the fields {list(WIRE_FIELDS)}")
+        rederived = manifest_to_artifact(entry_to_manifest(entry), where, {})
+        if rederived != entry:
+            raise CatalogAssemblyError(
+                f"{where}: carried entry does not re-derive unchanged (got {rederived}) — refusing to carry it forward"
+            )
+        out.append(dict(entry))
+    return out
+
+
+def load_carry_forward(path: Path, pubkey_hex: str) -> CarriedCatalog:
+    """Read a previously published catalog.json and its detached
+    `<path>.sig`, verify the signature over the exact bytes under
+    `pubkey_hex` (the production curator PUBLIC key), then return its
+    catalog_version and its artifacts (checked by check_carried_entries).
+    The file normally comes from an unauthenticated public GET, and its
+    entries end up inside a catalog the founder signs — so an unverified
+    carry-forward is refused outright."""
+    from sign_catalog import verify_bytes  # lazy: keeps the no-carry path stdlib-only
+
+    sig_path = path.with_name(path.name + ".sig")
+    if not path.is_file() or not sig_path.is_file():
+        raise CatalogAssemblyError(f"--carry-forward needs both {path} and {sig_path}")
+    if path.stat().st_size > MAX_FETCH_BYTES:
+        raise CatalogAssemblyError(f"{path} exceeds the {MAX_FETCH_BYTES}-byte sanity cap")
+    data = path.read_bytes()
+    sig = sig_path.read_bytes()
+    if len(sig) != SIG_LEN:
+        raise CatalogAssemblyError(f"{sig_path} is {len(sig)} bytes, expected exactly {SIG_LEN}")
+    try:
+        verified = verify_bytes(pubkey_hex, data, sig)
+    except Exception as exc:  # malformed pubkey hex etc.
+        raise CatalogAssemblyError(f"could not verify {sig_path}: {exc}") from exc
+    if not verified:
+        raise CatalogAssemblyError(f"{sig_path} does NOT verify against {path} under the given public key — refusing to carry it forward")
+    try:
+        catalog = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise CatalogAssemblyError(f"{path}: not valid JSON: {exc}") from exc
+    version = catalog.get("catalog_version") if isinstance(catalog, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise CatalogAssemblyError(f"{path}: no integer catalog_version")
+    check_version_in_bounds(version)
+    return CarriedCatalog(version, check_carried_entries(catalog.get("artifacts"), path))
+
+
+def check_version_after_carried(new_version: int, carried_version: int) -> None:
+    if new_version <= carried_version:
+        raise CatalogAssemblyError(
+            f"catalog_version {new_version} is not newer than the carried-forward catalog's {carried_version}"
+        )
+
+
+def check_carried_is_published(*, carried_version: int, published_version: int) -> None:
+    """With --base-url, the carried file must BE the live catalog: a stale
+    copy would silently drop whatever was published after it."""
+    if carried_version != published_version:
+        raise CatalogAssemblyError(
+            f"--carry-forward file is catalog_version {carried_version} but {published_version} is live — "
+            "re-fetch the live catalog.json + .sig and carry that forward"
+        )
+
+
+def build_catalog(
+    manifest_paths: list[Path],
+    catalog_version: int,
+    overrides: dict[str, str],
+    carried: list[dict] | None = None,
+) -> dict:
+    """Carried entries (verbatim, in their published order) first, then one
+    entry per manifest. Any repeated bucket path is refused — paths are
+    immutable, so a duplicate is either a no-op or a conflict, never intended."""
+    artifacts = [dict(a) for a in (carried or [])]
+    artifacts += [manifest_to_artifact(load_manifest(p), p, overrides) for p in manifest_paths]
+    seen: set[str] = set()
+    for a in artifacts:
+        if a["path"] in seen:
+            raise CatalogAssemblyError(f"duplicate artifact path {a['path']!r} — refusing to assemble the catalog")
+        seen.add(a["path"])
     return {
         "catalog_version": catalog_version,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -508,6 +731,47 @@ def self_test() -> bool:
     check("manual --catalog-version 999_999 (one below the ceiling) is allowed", not refuses(999_999))
     check("manual --catalog-version 1 (a normal first-publish value) is allowed", not refuses(1))
 
+    # Phase 1g M3 — the live signed v10 catalog (fixtures/, fetched verbatim)
+    # verifies, and every one of its entries re-derives unchanged through
+    # this builder's own manifest path; the served-form pair derives as pinned.
+    fixture = PIPELINE_ROOT / "fixtures" / "catalog-v10.json"
+    try:
+        carried_v10 = load_carry_forward(fixture, PROD_CURATOR_PUBKEY_HEX)
+        check(f"live v10 fixture verifies and all {len(carried_v10.artifacts)} entries re-derive unchanged",
+              carried_v10.catalog_version == 10 and len(carried_v10.artifacts) == 11)
+        for a in carried_v10.artifacts:
+            check(f"re-derives: {a['path']}", manifest_to_artifact(entry_to_manifest(a), fixture, {}) == a)
+    except CatalogAssemblyError as exc:
+        check(f"live v10 fixture carry-forward ({exc})", False)
+    except ImportError as exc:
+        check(f"live v10 fixture carry-forward needs the venv's cryptography ({exc})", False)
+
+    def derived_path(manifest: dict) -> str | None:
+        try:
+            return manifest_to_artifact(manifest, Path("self-test"), {})["path"]
+        except CatalogAssemblyError:
+            return None
+
+    sha = "0" * 64
+    check("Q6_K served base -> models/Qwen3-1.7B/v1/Qwen3-1.7B-Instruct-Q6_K.gguf",
+          derived_path({"kind": "base", "base_model": "Qwen3-1.7B", "name": "Qwen3-1.7B-Instruct-Q6_K.gguf",
+                        "quant": "Q6_K", "sha256": sha, "size": 1, "license": "Apache-2.0"})
+          == "models/Qwen3-1.7B/v1/Qwen3-1.7B-Instruct-Q6_K.gguf")
+    check("triage v3 adapter -> adapters/triage/v3/Qwen3-1.7B/triage-v3-Qwen3-1.7B.gguf",
+          derived_path({"kind": "adapter", "base_model": "Qwen3-1.7B", "name": "triage-v3-Qwen3-1.7B.gguf",
+                        "adapter_name": "triage", "version": "v3", "sha256": sha, "size": 1, "license": "Apache-2.0"})
+          == "adapters/triage/v3/Qwen3-1.7B/triage-v3-Qwen3-1.7B.gguf")
+    check("a manifest with no adapter_name/version is behavioral + v1",
+          derived_path({"kind": "adapter", "base_model": "Qwen3-1.7B", "name": "behavioral-v1-Qwen3-1.7B.gguf",
+                        "sha256": sha, "size": 1, "license": "Apache-2.0"})
+          == "adapters/behavioral/v1/Qwen3-1.7B/behavioral-v1-Qwen3-1.7B.gguf")
+    check("a path-traversal adapter_name is refused",
+          derived_path({"kind": "adapter", "base_model": "Qwen3-1.7B", "name": "..-v3-Qwen3-1.7B.gguf",
+                        "adapter_name": "..", "version": "v3", "sha256": sha, "size": 1, "license": "Apache-2.0"}) is None)
+    check("the old triage basename (triage-armb-v3-...) is refused against adapter_name triage",
+          derived_path({"kind": "adapter", "base_model": "Qwen3-1.7B", "name": "triage-armb-v3-Qwen3-1.7B.gguf",
+                        "adapter_name": "triage", "version": "v3", "sha256": sha, "size": 1, "license": "Apache-2.0"}) is None)
+
     return ok
 
 
@@ -530,6 +794,22 @@ def main(argv: list[str] | None = None) -> int:
     except CatalogAssemblyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    carried: CarriedCatalog | None = None
+    if args.carry_forward is not None or args.carry_forward_pubkey is not None:
+        if args.carry_forward is None or not args.carry_forward_pubkey:
+            print("error: --carry-forward and --carry-forward-pubkey must be given together", file=sys.stderr)
+            return 1
+        try:
+            carried = load_carry_forward(args.carry_forward, args.carry_forward_pubkey)
+        except CatalogAssemblyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"[carry-forward] {args.carry_forward} verifies; carrying {len(carried.artifacts)} artifact(s) "
+            f"from catalog_version={carried.catalog_version}",
+            flush=True,
+        )
 
     if args.catalog_version is not None:
         try:
@@ -558,9 +838,22 @@ def main(argv: list[str] | None = None) -> int:
             f"[version] currently published catalog_version={published} at {args.base_url} -> using {catalog_version}",
             flush=True,
         )
+        if carried is not None:
+            try:
+                check_carried_is_published(carried_version=carried.catalog_version, published_version=published)
+            except CatalogAssemblyError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+
+    if carried is not None:
+        try:
+            check_version_after_carried(catalog_version, carried.catalog_version)
+        except CatalogAssemblyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     try:
-        catalog = build_catalog(args.manifests, catalog_version, overrides)
+        catalog = build_catalog(args.manifests, catalog_version, overrides, carried=carried.artifacts if carried else None)
     except CatalogAssemblyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

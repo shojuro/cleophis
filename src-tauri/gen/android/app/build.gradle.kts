@@ -15,10 +15,10 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
-    namespace = "com.cleophis.desktop"
+    namespace = "com.cleophis.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.cleophis.desktop"
+        applicationId = "com.cleophis.app"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
@@ -38,6 +38,14 @@ android {
         }
         getByName("release") {
             isMinifyEnabled = true
+            // Ship arm64-v8a only (spec §3: every reference device is arm64;
+            // emulators lie, H1). debuggable defaults to false for release;
+            // minify stays on (above). Release-only — the CP0 debug build keeps
+            // all flavors. Validated by the Phase 5.2 release-config audit.
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+            }
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

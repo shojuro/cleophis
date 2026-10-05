@@ -1,0 +1,87 @@
+---
+title: "Bronchitis"
+url: "https://www.nhs.uk/conditions/bronchitis/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "bronchitis"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "18 August 2026", "retrieved": "2026-09-26", "title": "Bronchitis", "url": "https://www.nhs.uk/conditions/bronchitis/"}]
+---
+# Bronchitis
+
+Bronchitis is inflammation of the airways in the lungs that is usually caused by an infection. It often gets better without treatment in around 3 weeks.
+
+Some people have long-term inflammation of the airways in the lungs called chronic bronchitis. This is known as chronic obstructive pulmonary disease (COPD).
+
+## Symptoms of bronchitis
+
+The symptoms of bronchitis can be similar to a cold or flu.
+
+Symptoms include:
+
+- a cough – you may cough up mucus
+- chest pain when coughing
+- shortness of breath
+- a sore throat
+- a runny nose
+- a high temperature
+
+## Things you can do to help with bronchitis
+
+Bronchitis is often caused by infections that can be easily spread through coughing and sneezing.
+
+There are some things you can do to ease the symptoms of bronchitis and reduce the risk of spreading infections to other people.
+
+### Do
+
+- get plenty of rest – try to stay at home and avoid contact with other people if you have a high temperature or do not feel well enough to do your normal activities
+- drink plenty of fluids
+- take painkillers like paracetamol or ibuprofen to help with pain and bring down a high temperature
+- try adding honey to a warm drink to help soothe your throat (do not give honey to babies under 1)
+- cover your mouth and nose with a tissue when you cough or sneeze – put used tissues in the bin as quickly as possible
+- wash your hands regularly with water and soap
+
+### Don’t
+
+- do not smoke
+
+## When and where to get medical help
+
+Bronchitis usually gets better on its own, but you may need medical advice if your symptoms do not get any better.
+
+You should also get advice if you have a health issue that makes you more vulnerable to bronchitis, like having diabetes.
+
+## Urgent advice: Ask for an urgent GP appointment or get help from NHS 111 if:
+
+- you've had a cough for more than 3 weeks and it is not getting better
+- you cough up blood or blood-stained mucus
+- you have chest pain that comes and goes, or when breathing or coughing
+- you're over 65
+- you're pregnant
+- you have a long-term condition, such as diabetes, or a heart, lung or kidney condition
+- you have a weakened immune system – for example, you have a condition that affects the immune system, or you're having chemotherapy
+- you feel too unwell to do usual daily activities
+- you're feeling short of breath
+
+You can call 111 or get help from 111 online. Call 111 if you need advice for a child aged 4 years or under.
+
+## Immediate action required: Call 999 if:
+
+- you are struggling to breathe – you are choking, gasping and unable to speak
+- your lips or skin are turning very pale, blue or grey – on brown or black skin this may be easier to see on the palms of the hands, on the lips, tongue or gums, under the nails or around the eyes
+- you suddenly feel confused – for example, you do not know where you are
+- you're unable to wake your baby or they feel floppy
+
+Do not drive yourself to A&E.
+
+The person you speak to at 999 will give you advice about what to do.
+
+## Treatments for bronchitis
+
+Bronchitis usually clears up without treatment in around 3 weeks. See a GP if your symptoms last longer than 3 weeks.
+
+Antibiotics may be offered if your bronchitis is caused by a more serious infection.
