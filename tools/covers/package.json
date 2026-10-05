@@ -2,5 +2,5 @@
   "name": "cleophis-tools-covers",
   "private": true,
   "type": "module",
-  "dependencies": { "sharp": "^0.33" }
+  "dependencies": { "sharp": "^0.35" }
 }
