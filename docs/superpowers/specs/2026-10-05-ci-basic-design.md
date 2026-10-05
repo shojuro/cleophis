@@ -129,7 +129,7 @@ From a CI simulation on 2026-10-05: fresh clones of both PR heads, no `work/`, a
 
 **`.gitleaks.toml`** (per repo):
 - `[extend] useDefault = true`, plus custom rules for:
-  - Backblaze B2 application key IDs and keys;
+  - Backblaze B2 application keys (key IDs are identifiers, not secrets, and a 25-hex rule would be noisy);
   - RunPod API keys;
   - DeepSeek keys.
 - Narrow allowlists, by path and exact regex, for the false positives the 2026-10-04 full-history scan classified. Cleophis:
@@ -177,7 +177,7 @@ These are the three causes of the 13 simulated failures. Each mirrors a conventi
 - **PR #34 (mobile):**
   - `ci / node`, `rust / desktop-tests` and `rust / crates-tests` are green.
   - `security` runs and reports.
-  - The hardened `mobile-check.yml` still passes on its next `mobile/**` push.
+  - The hardened `mobile-check.yml` passes actionlint and the §3 checker. On the push its `audits` job is expected to stay red at D-6 (A1 is red by design; pre-existing, 8/8 recent runs) and the cross-compile job is skipped, so the hardened cross-compile steps are verified statically only until the founder decides whether A1 should report NOT-CHECKED instead of failing, or whether `mobile-check` should stop needing `audits` (a founder decision outside this branch).
 - **Static rules:** every workflow passes actionlint and the §3 static check.
 - **Local suites unchanged:** triage pytest 3779 passed / 0 failed with `work/` present (`pytest.ini` deselects the one `slow` test by default), triage node 632/0, mobile node 1211/0.
 
@@ -198,4 +198,5 @@ These are the three causes of the 13 simulated failures. Each mirrors a conventi
 - **GitHub security settings.** Turn on Dependabot alerts and security updates, and code scanning on the public repo.
 - **More CI coverage.** Make the hard-coded worktree roots in triage tests honour `CLEOPHIS_MOBILE_ROOT`, so that CI runs them.
 - **An optional real-artifact job.** Fetch the embedder and pdfium, then run the `#[ignore]` tests with `--ignored`. This first needs the founder's decision on hosting a 118 MB file in CI.
+- **`mobile-check.yml` audits gate.** Its `audits` job fails at D-6 on every run because acceptance item A1 is red by design, so the cross-compile job never runs (`needs: audits`). The founder decides whether A1 should report NOT-CHECKED instead of failing, or whether `mobile-check` should stop needing `audits`.
 - **Promote the audits to blocking** once they are green: the rustls bump, sharp, and pinned requirements.

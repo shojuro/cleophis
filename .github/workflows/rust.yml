@@ -43,6 +43,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # incremental artifacts roughly double target/, and the Windows cache save runs inside the 90-minute job timeout
+  CARGO_INCREMENTAL: 0
 
 jobs:
   desktop-tests:
@@ -57,9 +59,17 @@ jobs:
       - name: Rust 1.97.1 and the native toolchain llama.cpp needs
         shell: pwsh
         run: |
+          # pwsh only propagates the last native command's exit code, so check each one
           rustup toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default 1.97.1
-          rustc --version; cargo --version; cmake --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { throw "libclang.dll not found under $env:LIBCLANG_PATH" }
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
