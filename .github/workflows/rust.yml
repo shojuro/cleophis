@@ -1,0 +1,102 @@
+# Rust suites, only when Rust inputs change. Spec:
+# docs/superpowers/specs/2026-10-05-ci-basic-design.md §6.2.
+#
+# desktop-tests mirrors the founder's Windows gate: `cargo test -p cleophis`,
+# one test thread. No fetched resource is needed: every test that reads a
+# model, DLL, pack or the OCR runtime is #[ignore]d. tauri-build does require
+# the four bundle-resource directories in tauri.conf.json to EXIST (git does
+# not track empty dirs), so the job creates them empty. CLEOPHIS_VARIANT stays
+# unset, so build.rs skips the triage reference-pack check.
+name: rust
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'crates/**'
+      - 'third_party/**'
+      - 'contracts/**'
+      - 'tools/reference/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'crates/**'
+      - 'third_party/**'
+      - 'contracts/**'
+      - 'tools/reference/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  desktop-tests:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      LIBCLANG_PATH: 'C:\Program Files\LLVM\bin'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust 1.97.1 and the native toolchain llama.cpp needs
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          rustc --version; cargo --version; cmake --version
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { throw "libclang.dll not found under $env:LIBCLANG_PATH" }
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-1.97.1-
+      - name: Bundle-resource directories (git-ignored; tauri-build needs them to exist)
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path src-tauri/resources/llama, src-tauri/resources/embedders, src-tauri/resources/pdfium, src-tauri/resources/ocr | Out-Null
+      - name: cargo test -p cleophis
+        run: cargo test --locked -p cleophis -- --test-threads=1
+
+  crates-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-1.97.1-
+      - name: cargo test (kpack crates)
+        run: cargo test --locked -p kpack-core -p kpack-calc -p kpack-cli -p kpack-pdf -p kpack-engine -p kpack-embed
