@@ -72,9 +72,9 @@ From a CI simulation on 2026-10-05: fresh clones of both PR heads, no `work/`, a
 ### 6.1 cleophas-triage (private)
 
 **`.github/workflows/ci.yml`**
-- **Job `node`** (ubuntu): checkout, set up Node, `node --test probes/`.
+- **Job `node`** (ubuntu): checkout with `fetch-depth: 0` (the probes read pinned commits), set up Node, `node --test probes/`.
 - **Job `pytest`** (ubuntu):
-  - Check out this repo to `triage/`.
+  - Check out this repo to `triage/` with `fetch-depth: 0`: the tests `git show`/`git log` this repo's own pinned registration commits (a depth-1 clone fails them).
   - Read `.github/mobile-pin`, a single line holding a full 40-hex SHA. Validate it against `^[0-9a-f]{40}$` and fail loudly otherwise.
   - Check out the **public** `shojuro/cleophis` at that SHA to `mobile/`. Use `fetch-depth: 0`, because tests read pinned historical commits through `git show`. No token is needed.
   - Set up Python and run `pip install -r requirements.txt -r requirements-test.txt`.
