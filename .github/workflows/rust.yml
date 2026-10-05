@@ -1,5 +1,11 @@
-# Rust suites, only when Rust inputs change. Spec:
-# docs/superpowers/specs/2026-10-05-ci-basic-design.md §6.2.
+# Rust suites, run only when Rust inputs change, behind an always-running gate.
+# Spec: docs/superpowers/specs/2026-10-05-ci-basic-design.md §6.2.
+#
+# GATE PATTERN: GitHub cannot require a path-filtered workflow (when it never
+# starts, the required check stays Pending forever). So this workflow runs on
+# every PR and push to main; the `changes` job decides whether Rust inputs
+# changed; the heavy jobs are skipped by `if:` (a skipped job reports success);
+# `rust-gate` (if: always()) aggregates them and is the one check to require.
 #
 # desktop-tests mirrors the founder's Windows gate: `cargo test -p cleophis`,
 # one test thread. No fetched resource is needed: every test that reads a
@@ -12,26 +18,8 @@ name: rust
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'src-tauri/**'
-      - 'crates/**'
-      - 'third_party/**'
-      - 'contracts/**'
-      - 'tools/reference/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/rust.yml'
   push:
     branches: [main]
-    paths:
-      - 'src-tauri/**'
-      - 'crates/**'
-      - 'third_party/**'
-      - 'contracts/**'
-      - 'tools/reference/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/rust.yml'
   workflow_dispatch:
 
 permissions:
@@ -47,7 +35,54 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Did any Rust input change?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          RE='^(src-tauri/|crates/|third_party/|contracts/|tools/reference/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/rust\.yml$)'
+          if [ "$EVENT" = "pull_request" ]; then
+            files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          elif [ "$EVENT" = "push" ]; then
+            if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              echo "push with no usable BEFORE ($BEFORE): failing safe, rust=true"
+              echo "rust=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            files=$(git diff --name-only "$BEFORE" "$AFTER")
+          else
+            echo "event $EVENT: rust=true"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          matches=$(printf '%s\n' "$files" | grep -E "$RE" || true)
+          if [ -n "$matches" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true; matching paths (max 20):"
+            printf '%s\n' "$matches" | head -n 20
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+            echo "rust=false: no Rust inputs changed"
+          fi
+
   desktop-tests:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -88,6 +123,8 @@ jobs:
         run: cargo test --locked -p cleophis -- --test-threads=1
 
   crates-tests:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -110,3 +147,38 @@ jobs:
             rust-${{ runner.os }}-1.97.1-
       - name: cargo test (kpack crates)
         run: cargo test --locked -p kpack-core -p kpack-calc -p kpack-cli -p kpack-pdf -p kpack-engine -p kpack-embed
+
+  rust-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, desktop-tests, crates-tests]
+    if: always()
+    steps:
+      - name: Aggregate
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
+          DESKTOP: ${{ needs.desktop-tests.result }}
+          CRATES: ${{ needs.crates-tests.result }}
+        run: |
+          fail=1
+          if [ "$CHANGES" != "success" ]; then
+            msg="FAIL: changes job result is $CHANGES"
+          elif [ "$RUST" = "true" ]; then
+            if [ "$DESKTOP" = "success" ] && [ "$CRATES" = "success" ]; then
+              msg="OK: Rust inputs changed; desktop-tests and crates-tests passed"; fail=0
+            else
+              msg="FAIL: Rust inputs changed; desktop-tests=$DESKTOP crates-tests=$CRATES"
+            fi
+          elif [ "$RUST" = "false" ]; then
+            if [ "$DESKTOP" = "skipped" ] && [ "$CRATES" = "skipped" ]; then
+              msg="OK: no Rust inputs changed; suites skipped"; fail=0
+            else
+              msg="FAIL: no Rust inputs changed but desktop-tests=$DESKTOP crates-tests=$CRATES"
+            fi
+          else
+            msg="FAIL: unexpected changes output rust=$RUST"
+          fi
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
