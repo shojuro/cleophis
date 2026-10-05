@@ -311,6 +311,24 @@ NOT_CHECKABLE = {
           'flow can exist until the release channel does',
 }
 
+# Items that are KNOWN to be unbuilt and are tracked rather than failed, so the
+# build can stay green without the gap going quiet. Each value is the reason AND
+# what closes the gap.
+#
+# The tracking is STRICT, the same idea as pytest's `xfail(strict=True)`: the
+# patterns are still evaluated exactly as for any other item. Unmatched prints
+# `KNOWN-GAP` every run and does not fail; matched prints `GAP-CLOSED` and DOES
+# fail, because a gap that closes silently is a list that rots. The fix for
+# GAP-CLOSED is to delete the entry here so the item is checked like the rest.
+KNOWN_GAPS = {
+    'A1': 'determinism CI is waiting on the founder\'s A1 scope/hosting decision '
+          '(docs/ops/phase5-founder-status.md "The one decision we need"); '
+          'closes when a workflow runs the determinism suite as A1 specifies',
+    'A5': 'the backup-leak check needs an on-device Android backup cycle (bmgr) '
+          'with a Google account; closes when that check is implemented in a '
+          'runner the script searches',
+}
+
 # Implementation and runners ONLY. Prose is deliberately excluded -- see below.
 SEARCH = ['src-tauri/src', 'src', 'src-tauri/gen/android/app/src/main',
           'docs/superpowers/mobile-tools', '.github/workflows']
@@ -522,42 +540,85 @@ def unmatched(patterns, by_root: dict, hay: str) -> list:
     return missing
 
 
+class ConfigError(Exception):
+    """The status tables contradict each other or the manifest."""
+
+
+def evaluate(acceptance, not_checkable, known_gaps, by_root, hay) -> dict:
+    """Classify every item. Pure: no printing, no filesystem.
+
+    Misconfiguration raises before anything is evaluated, so a bad table can
+    never produce a verdict -- fail closed.
+    """
+    both = sorted(set(not_checkable) & set(known_gaps))
+    if both:
+        raise ConfigError(f'in BOTH NOT_CHECKABLE and KNOWN_GAPS: {both}')
+    orphan = sorted(set(known_gaps) - set(acceptance))
+    if orphan:
+        raise ConfigError(f'KNOWN_GAPS ids not in ACCEPTANCE: {orphan}')
+
+    res = {'satisfied': [], 'skipped': [], 'gaps': [], 'closed': [],
+           'unbuilt': []}
+    # Non-short-circuiting on purpose: report EVERY unbuilt item in one run.
+    # A guard that stops at the first failure turns one review pass into N.
+    for aid, (patterns, consequence) in sorted(acceptance.items()):
+        if aid in not_checkable:
+            res['skipped'].append((aid, not_checkable[aid]))
+            continue
+        missing = unmatched(patterns, by_root, hay)
+        if aid in known_gaps:
+            if missing:
+                res['gaps'].append((aid, known_gaps[aid], missing))
+            else:
+                res['closed'].append((aid, known_gaps[aid]))
+        elif missing:
+            res['unbuilt'].append((aid, missing, consequence))
+        else:
+            res['satisfied'].append(aid)
+    return res
+
+
 def main() -> int:
     by_root = files_by_root()
     hay = haystack(by_root)
-    unbuilt, satisfied, skipped = [], [], []
-
-    # Non-short-circuiting on purpose: report EVERY unbuilt item in one run.
-    # A guard that stops at the first failure turns one review pass into N.
-    for aid, (patterns, consequence) in sorted(ACCEPTANCE.items()):
-        if aid in NOT_CHECKABLE:
-            skipped.append((aid, NOT_CHECKABLE[aid]))
-            continue
-        missing = unmatched(patterns, by_root, hay)
-        if missing:
-            unbuilt.append((aid, missing, consequence))
-        else:
-            satisfied.append(aid)
+    try:
+        res = evaluate(ACCEPTANCE, NOT_CHECKABLE, KNOWN_GAPS, by_root, hay)
+    except ConfigError as e:
+        print(f"CONFIG ERROR: {e}")
+        return 2
 
     print("== acceptance coverage (spec §11 A1-A7) ==")
-    for aid in satisfied:
+    for aid in res['satisfied']:
         print(f"ok            {aid} implemented")
-    for aid, why in skipped:
+    for aid, why in res['skipped']:
         # Deliberately its own token: this is NOT a pass, and it must not be
         # mistaken for one by a human skimming or a grep for 'ok'.
         print(f"NOT-CHECKED   {aid} -- {why}")
-    for aid, missing, consequence in unbuilt:
+    for aid, why, missing in res['gaps']:
+        # Its own token too: tracked, visible on every run, never `ok`.
+        print(f"KNOWN-GAP     {aid} -- {why}")
+        print(f"                 (no match: {missing})")
+    for aid, why in res['closed']:
+        print(f"GAP-CLOSED    {aid} -- every pattern now matches; remove {aid} "
+              f"from KNOWN_GAPS so it is checked like any other item (was: {why})")
+    for aid, missing, consequence in res['unbuilt']:
         print(f"FAIL          {aid} ASSERTED-BUT-UNBUILT (no match: {missing})")
         print(f"                 -> {consequence}")
 
-    print(f"\n{len(satisfied)} implemented, {len(skipped)} not checked, "
-          f"{len(unbuilt)} asserted-but-unbuilt")
-    if unbuilt:
-        print("VERDICT: FAIL -- an acceptance item names no implementation.")
+    print(f"\n{len(res['satisfied'])} implemented, {len(res['gaps'])} known "
+          f"gaps, {len(res['skipped'])} not checked, "
+          f"{len(res['unbuilt'])} asserted-but-unbuilt")
+    if res['closed']:
+        print(f"{len(res['closed'])} gap(s) closed -- see GAP-CLOSED above.")
+    if res['unbuilt'] or res['closed']:
+        print("VERDICT: FAIL -- an acceptance item names no implementation, or "
+              "a known gap closed without being removed from KNOWN_GAPS.")
         print("Build it, or amend §11 so the spec stops asserting it.")
         return 1
+    note = " Known gaps are listed above." if res['gaps'] else ""
     print("VERDICT: PASS (existence only -- see the blind spot in this file's "
-          "docstring; the phase-entry inventory is what catches inert presence)")
+          "docstring; the phase-entry inventory is what catches inert presence)"
+          + note)
     return 0
 
 

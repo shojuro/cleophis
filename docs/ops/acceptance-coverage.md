@@ -69,13 +69,15 @@ review pass into N), with the **consequence named at the point of failure**,
 because none of these present as "an acceptance item is unimplemented". They
 present as a suite that passes while asserting nothing.
 
-Three states, **distinguishable in the output**:
+Five states, **distinguishable in the output**:
 
 | state | verdict |
 |---|---|
 | **ASSERTED-BUT-UNBUILT** | `FAIL`, blocking, exit 1 |
 | implemented | `ok` |
 | **NOT-CHECKED** | reported under its own token, never as a pass |
+| **KNOWN-GAP** | unbuilt and tracked; printed every run, does not fail |
+| **GAP-CLOSED** | a KNOWN-GAP whose patterns now all match; `FAIL`, exit 1 |
 
 The third is load-bearing, per `release-config-audit.md`'s closing rule: *an
 item that could not be checked is recorded as not checked — this project's
