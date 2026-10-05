@@ -85,11 +85,23 @@ jobs:
         with:
           node-version: '20.19.2'
       - name: npm audit (root)
-        run: npm audit --package-lock-only --audit-level=high
+        run: |
+          set +e
+          npm audit --package-lock-only --audit-level=high > "$RUNNER_TEMP/npm-root.txt" 2>&1
+          rc=$?
+          { echo "## npm audit (root) (exit ${rc})"; echo '```'; cat "$RUNNER_TEMP/npm-root.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/npm-root.txt"
+          exit "${rc}"
       - name: npm audit (tools/covers)
         if: always()
         working-directory: tools/covers
-        run: npm audit --package-lock-only --audit-level=high
+        run: |
+          set +e
+          npm audit --package-lock-only --audit-level=high > "$RUNNER_TEMP/npm-covers.txt" 2>&1
+          rc=$?
+          { echo "## npm audit (tools/covers) (exit ${rc})"; echo '```'; cat "$RUNNER_TEMP/npm-covers.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/npm-covers.txt"
+          exit "${rc}"
 
   pip-audit:
     runs-on: ubuntu-latest
@@ -105,7 +117,13 @@ jobs:
       - name: Install pip-audit 2.10.1
         run: python -m pip install pip-audit==2.10.1
       - name: pip-audit (tools/pipeline)
-        run: pip-audit -r tools/pipeline/requirements.txt
+        run: |
+          set +e
+          pip-audit -r tools/pipeline/requirements.txt > "$RUNNER_TEMP/pip-audit.txt" 2>&1
+          rc=$?
+          { echo "## pip-audit (tools/pipeline) (exit ${rc})"; echo '```'; cat "$RUNNER_TEMP/pip-audit.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/pip-audit.txt"
+          exit "${rc}"
 
   cargo-audit:
     runs-on: ubuntu-latest
@@ -122,8 +140,18 @@ jobs:
           tar -xzf "$RUNNER_TEMP/cargo-audit.tgz" -C "$RUNNER_TEMP" --strip-components=1 cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit
       - name: cargo audit (workspace lock)
         run: |
-          "$RUNNER_TEMP/cargo-audit" audit -f Cargo.lock
+          set +e
+          "$RUNNER_TEMP/cargo-audit" audit -f Cargo.lock > "$RUNNER_TEMP/cargo-ws.txt" 2>&1
+          rc=$?
+          { echo "## cargo audit (workspace lock) (exit ${rc})"; echo '```'; cat "$RUNNER_TEMP/cargo-ws.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/cargo-ws.txt"
+          exit "${rc}"
       - name: cargo audit (crates/kpack-engine lock)
         if: always()
         run: |
-          "$RUNNER_TEMP/cargo-audit" audit -f crates/kpack-engine/Cargo.lock
+          set +e
+          "$RUNNER_TEMP/cargo-audit" audit -f crates/kpack-engine/Cargo.lock > "$RUNNER_TEMP/cargo-kpack.txt" 2>&1
+          rc=$?
+          { echo "## cargo audit (crates/kpack-engine lock) (exit ${rc})"; echo '```'; cat "$RUNNER_TEMP/cargo-kpack.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/cargo-kpack.txt"
+          exit "${rc}"
