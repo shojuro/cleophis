@@ -91,8 +91,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Rust toolchain + aarch64-linux-android target
-        run: rustup target add aarch64-linux-android
+      # Pinned to match rust.yml/determinism.yml so new warn-by-default lints
+      # in a newer stable cannot fail this -D warnings job.
+      - name: Rust 1.97.1 + aarch64-linux-android target
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          rustup target add aarch64-linux-android
 
       - name: cargo-ndk
         run: cargo install cargo-ndk --locked --version 4.1.2

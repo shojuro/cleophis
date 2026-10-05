@@ -104,7 +104,7 @@ jobs:
       - name: Run determinism suite
         run: |
           set -o pipefail
-          cargo test -p kpack-embed --features real --test build_determinism -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/determinism.out"
+          cargo test -p kpack-embed --locked --features real --test build_determinism -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/determinism.out"
 
       # Why this guard exists: both tests are #[ignore]d and early-return with
       # `SKIPPED:` when the model is missing, so even `--ignored` passes while

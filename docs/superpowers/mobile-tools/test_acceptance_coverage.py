@@ -8,6 +8,7 @@ happens to be committed.
 import contextlib
 import importlib.util
 import io
+import re
 import unittest
 from pathlib import Path
 
@@ -121,6 +122,16 @@ class ShippedConfigTests(unittest.TestCase):
         self.assertTrue(set(ac.KNOWN_GAPS) <= set(ac.ACCEPTANCE))
         for reason in ac.KNOWN_GAPS.values():
             self.assertTrue(reason.strip())
+
+    def test_this_file_matches_no_acceptance_pattern(self):
+        # This file lives in a SEARCH root and is not self-excluded by the
+        # guard, so quoting a real pattern here could flip an item green.
+        text = Path(__file__).read_text(errors='ignore')
+        for item, (clauses, _why) in ac.ACCEPTANCE.items():
+            for clause in clauses:
+                pattern = clause[1] if isinstance(clause, tuple) else clause
+                self.assertIsNone(re.search(pattern, text),
+                                  f'{item}: {pattern!r} matches this file')
 
 
 if __name__ == '__main__':
