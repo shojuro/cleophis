@@ -119,6 +119,12 @@ ACCEPTANCE = {
     # TRUE reason -- CI does not run the suite, pending the founder's
     # model-hosting decision, which the red keeps live rather than foreclosing.
     #
+    # RESOLVED 2026-10-05: founder ruling "host + arm64 is enough".
+    # `.github/workflows/determinism.yml` is the runner (weekly, x86_64 + arm64
+    # Linux; embedder fetched with an enforced sha and cached in Actions). Its
+    # guard step rejects `SKIPPED:` and a zero test count, closing the gap
+    # described below. The patterns are unchanged.
+    #
     # The rejected alternative was a committed result artifact (sha + date +
     # pass/fail) that only a real execution can write, with A1 requiring the
     # runner AND the artifact. Steering rejected it, and the caveat that made
@@ -321,9 +327,9 @@ NOT_CHECKABLE = {
 # fail, because a gap that closes silently is a list that rots. The fix for
 # GAP-CLOSED is to delete the entry here so the item is checked like the rest.
 KNOWN_GAPS = {
-    'A1': 'determinism CI is waiting on the founder\'s A1 scope/hosting decision '
-          '(docs/ops/phase5-founder-status.md "The one decision we need"); '
-          'closes when a workflow runs the determinism suite as A1 specifies',
+    # A1 was a known gap until 2026-10-05: the founder ruled "host + arm64 is
+    # enough" and .github/workflows/determinism.yml now runs the suite weekly
+    # on x86_64 + arm64 Linux, so A1 is checked like any other item.
     'A5': 'the backup-leak check needs an on-device Android backup cycle (bmgr) '
           'with a Google account; closes when that check is implemented in a '
           'runner the script searches',
@@ -615,7 +621,7 @@ def main() -> int:
               "a known gap closed without being removed from KNOWN_GAPS.")
         print("Build it, or amend §11 so the spec stops asserting it.")
         return 1
-    note = " Known gaps are listed above." if res['gaps'] else ""
+    note = "; known gaps are listed above" if res['gaps'] else ""
     print("VERDICT: PASS (existence only -- see the blind spot in this file's "
           "docstring; the phase-entry inventory is what catches inert presence)"
           + note)

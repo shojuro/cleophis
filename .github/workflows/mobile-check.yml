@@ -52,8 +52,8 @@ jobs:
           fi
           echo "PASS (D-3)"
 
-      # The KNOWN-GAP status logic is what keeps this job green while A1 and A5
-      # are unbuilt, so it is tested before it is trusted. Stdlib unittest only.
+      # The KNOWN-GAP status logic is what keeps this job green while A5
+      # is unbuilt, so it is tested before it is trusted. Stdlib unittest only.
       - name: D-6 self-test
         run: python3 -m unittest discover -s docs/superpowers/mobile-tools -p 'test_acceptance_coverage.py' -v
 
@@ -164,17 +164,7 @@ jobs:
 #   * It does not link, package, sign, or run anything on a device. The
 #     alignment probe (H2) and the APK checks live in check-mobile-build.sh and
 #     verify-apk.py, which need artifacts this job does not produce.
-#   * IT DOES NOT RUN THE EMBEDDER DETERMINISM SUITE. Acceptance items A1 and
-#     A5 are KNOWN-GAPs in acceptance-coverage.py: printed on every run, and
-#     failing only when one closes (GAP-CLOSED), so the list cannot rot. A1
-#     waits on the founder's decision about hosting a 118 MB GGUF in CI; its
-#     clauses are scoped to this directory so it reports "CI does not run it"
-#     rather than "no script exists" -- see A1's note in the script. Closing it
-#     means adding a step here, then deleting A1 from KNOWN_GAPS.
-#
-#     (Deliberately worded WITHOUT the literal strings A1 matches on. A guard
-#     clause is satisfiable by a comment quoting it -- measured: A3 reported
-#     `ok` against a file containing three lines of doc comment and no
-#     implementation at all -- so a well-meaning explanation here would have
-#     turned A1 into GAP-CLOSED while nothing ran. The scoping makes this file
-#     the one place where that mistake is possible.)
+#   * It does not run the embedder determinism suite; the separate determinism
+#     workflow does, weekly on x86_64 + arm64 Linux. Acceptance item A5 is the
+#     one remaining KNOWN-GAP in acceptance-coverage.py: printed on every run,
+#     and failing only when it closes (GAP-CLOSED), so the list cannot rot.

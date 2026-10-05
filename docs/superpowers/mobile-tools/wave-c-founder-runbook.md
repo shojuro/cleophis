@@ -117,14 +117,15 @@ controller, who fills the build record in `phone-journey.md`.
 **A known gap that is not a build failure.** At a07d8b7 `check-mobile-build.sh`
 failed before it compiled anything, because its acceptance-coverage step
 reported A1 (no CI workflow) and A5 (no `bmgr` backup test) as asserted but
-unbuilt. Both are now tracked as KNOWN-GAPs, so the step passes. That says
+unbuilt. A5 is now a tracked KNOWN-GAP, so the step passes (A1 was closed on
+2026-10-05 by the weekly determinism workflow). That says
 nothing about this APK, so do not stop for them.
 MC1 ran the script's remaining steps on their own: the engine cross-compiles,
 and the alignment probe library is 16 KB aligned (`0x4000`). The shipped
 `libcleophis_lib.so` is linked 4 KB aligned (`0x1000`), which the probe does
 not catch. That cannot affect a phone with 4 KB pages, such as the A22 on
 Android 13. It is recorded for the controller as a spec H2 gap. To re-run
-the script, expect KNOWN-GAP lines for A1 and A5, A6 NOT-CHECKED, and
+the script, expect `ok A1`, a KNOWN-GAP line for A5, A6 NOT-CHECKED, and
 `VERDICT: PASS`:
 
 ```bash

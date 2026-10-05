@@ -57,6 +57,10 @@ the requirement.
 **We have deliberately left this showing RED until you choose.** A green would
 claim the gate is running when it is not. Nothing else is blocked by it.
 
+**Decided 2026-10-05:** scheduled CI, host + arm64 is enough. The check runs
+weekly on x86_64 and arm64 Linux; the embedder is fetched from Hugging Face with
+an enforced sha256 and cached in Actions, not committed.
+
 ---
 
 ## What needs your phone — one session, about 35 minutes

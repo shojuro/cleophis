@@ -1,0 +1,126 @@
+# Weekly determinism CI: builds the knowledge-pack embedder twice and checks the
+# output is byte-identical, on x86_64 and arm64 Linux. Closes acceptance item A1
+# (founder ruling 2026-10-05: "host + arm64 is enough"; on-device and iOS runs
+# are out of scope). Spec: docs/superpowers/specs/2026-07-24-mobile-app-spec-v1.1.md §11 A1.
+# Public repo: no secrets, read-only token, SHA-pinned actions.
+name: determinism
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # weekly, Monday 05:00 UTC
+  workflow_dispatch:
+  # workflow_dispatch cannot run a workflow that is not yet on the default
+  # branch, so the PR trigger (path-filtered) is what lets the PR that adds this
+  # job prove it. It also re-runs the suite when the embedder/pack code changes.
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/determinism.yml'
+      - 'crates/kpack-embed/**'
+      - 'crates/kpack-core/**'
+      - 'third_party/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/determinism.yml'
+      - 'crates/kpack-embed/**'
+      - 'crates/kpack-core/**'
+      - 'third_party/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  determinism:
+    name: determinism (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    env:
+      # Cached target dir across runs: incremental artifacts bloat it for no gain.
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: determinism-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            determinism-${{ runner.os }}-${{ runner.arch }}-1.97.1-
+
+      # The embedder GGUF (118 MB) is not committed. Values mirror
+      # tools/fetch-embedder.mjs; the sha is enforced below on hit AND miss.
+      - name: Cache embedder GGUF
+        id: embedder-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: src-tauri/resources/embedders/bge-base-en-v1.5-q8_0.gguf
+          key: embedder-bge-base-q8_0-ad1afe72cd6654a558667a3db10878b049a75bfd72912e1dabb91310d671173c
+
+      - name: Fetch embedder GGUF (cache miss)
+        if: steps.embedder-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/resources/embedders
+          F=src-tauri/resources/embedders/bge-base-en-v1.5-q8_0.gguf
+          curl -fL --retry 3 -o "$F" \
+            https://huggingface.co/CompendiumLabs/bge-base-en-v1.5-gguf/resolve/main/bge-base-en-v1.5-q8_0.gguf \
+          || curl -fL --retry 3 -o "$F" \
+            https://huggingface.co/ChristianAzinn/bge-base-en-v1.5-gguf/resolve/main/bge-base-en-v1.5.Q8_0.gguf
+
+      # Always verified, cache hit or not: the suite must never start without
+      # the exact model, because the tests skip (and pass) when it is missing.
+      - name: Verify embedder GGUF sha256
+        run: |
+          set -euo pipefail
+          echo "ad1afe72cd6654a558667a3db10878b049a75bfd72912e1dabb91310d671173c  src-tauri/resources/embedders/bge-base-en-v1.5-q8_0.gguf" | sha256sum -c -
+
+      - name: Run determinism suite
+        run: |
+          set -o pipefail
+          cargo test -p kpack-embed --features real --test build_determinism -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/determinism.out"
+
+      # Why this guard exists: both tests are #[ignore]d and early-return with
+      # `SKIPPED:` when the model is missing, so even `--ignored` passes while
+      # asserting nothing (see acceptance-coverage.py's A1 note). Require that
+      # nothing skipped and that both tests (exactly two) actually ran.
+      - name: Guard against skipped or empty runs
+        env:
+          ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/determinism.out"
+          if grep -q 'SKIPPED:' "$OUT"; then
+            echo "FAIL: a determinism test skipped (SKIPPED: in output)"; exit 1
+          fi
+          if ! grep -q 'test result: ok. 2 passed;' "$OUT"; then
+            echo "FAIL: expected 'test result: ok. 2 passed;'"; exit 1
+          fi
+          RESULT=$(grep 'test result: ok. 2 passed;' "$OUT" | head -n 1)
+          echo "determinism ($ARCH): $RESULT" >> "$GITHUB_STEP_SUMMARY"

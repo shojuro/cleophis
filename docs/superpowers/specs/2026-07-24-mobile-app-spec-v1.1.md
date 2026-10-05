@@ -170,7 +170,7 @@ all four were caught by human review. The IDs are what let
 load-bearing: they make an unbuilt requirement traceable to the hazard it was
 meant to mitigate.
 
-- **A1 — Golden-pack + cross-build determinism CI** extended to both mobile targets (the existing suite, cross-compiled).
+- **A1 — Golden-pack + cross-build determinism CI**: determinism CI runs the existing suite weekly (and on changes to the embedder/pack code) on x86_64 and arm64 Linux runners; on-device and iOS runs are out of scope by founder ruling 2026-10-05.
 - **A2 — Airplane-mode suite on device:** full download→verify→chat cycle with radios off after artifact fetch; any socket attempt post-setup = fail.
 - **A3 — Behavioral probes in-app** (the Stage-5 four: fake-entity refusal, 5+5=9 pushback, concession, medical boundary) on floor + workhorse devices — the same "did the adapter survive" gate as the desktop slice. `[v1.1]` Run against the full composed stack (§0); a probe run against a reduced stack is a different gate and is labeled as such.
 - **A4 — Kill-and-restore:** force-stop mid-generation → relaunch → transcript intact, no corruption (**H4/H5** gate).
