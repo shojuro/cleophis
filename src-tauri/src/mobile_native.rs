@@ -14,8 +14,9 @@
 //! The 5.1 addition is deliberately **not** a command. Nothing in the frontend
 //! decides when a turn is running, so exposing it to the invoke surface would
 //! create a second, wrong source of truth for a lifetime `chat_stream` already
-//! owns. It is called from there and nowhere else, which is why the D-1
-//! discussion below covers only the two commands.
+//! owns. It is called from there and from `transcribe_image` (Vision Input),
+//! counted so neither can stop the service under the other, and nowhere else,
+//! which is why the D-1 discussion below covers only the two commands.
 //!
 //! # Both commands live on the SHARED invoke surface (decision D-1)
 //!
@@ -376,12 +377,45 @@ mod imp {
     // desktop suite executes it.
 }
 
-/// Promote or demote the inference foreground service around a turn (spec §8,
-/// hazards H4/H5).
+/// The counted service's transition rule, compiled and tested on every
+/// platform (decision D-3).
 ///
-/// Called only from `chat_stream`, whose lifetime *is* the condition being
-/// signalled. `true` on the way in, `false` on the way out, on every exit path
-/// including cancel and error.
+/// Two lifetimes hold the service: a chat turn (`chat_stream`) and a
+/// transcription (`transcribe_image`), and either may end while the other
+/// runs, for example a transcription queued behind a reply. A plain start/stop
+/// let whichever ended first stop the service under the other (final review
+/// I4). Given the holders before a call and whether it begins (`true`) or ends
+/// (`false`) a hold, this returns the holders after and the `InferenceService`
+/// method to call: `start` only on 0 to 1, `stop` only on 1 to 0. An end with
+/// no holder is a pairing bug; it stays at 0 and calls nothing, so it can never
+/// stop a service another caller holds.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))] // only production caller is the Android `inference_service`
+fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static str>) {
+    match (begin, holders) {
+        (true, 0) => (1, Some("start")),
+        (true, n) => (n.saturating_add(1), None),
+        (false, 0) => (0, None),
+        (false, 1) => (0, Some("stop")),
+        (false, n) => (n - 1, None),
+    }
+}
+
+/// Promote or demote the inference foreground service around a turn or a
+/// transcription (spec §8, hazards H4/H5).
+///
+/// Called from `chat_stream` and `transcribe_image`, whose lifetimes *are* the
+/// condition being signalled. `true` on the way in, `false` on the way out, on
+/// every exit path including cancel and error. The calls are counted
+/// ([`service_transition`]): the service starts with the first holder and stops
+/// with the last.
+///
+/// # A lock, not a bare atomic
+///
+/// The count and the Kotlin call it decides change together, under one mutex.
+/// With an atomic counter alone, a hold ending (1 to 0, `stop`) and a new one
+/// beginning (0 to 1, `start`) on two threads could reach Kotlin as `start`
+/// then `stop`, leaving the new holder unprotected. Each call is a quick
+/// static method that posts or removes a notification, so the lock is short.
 ///
 /// # Failure is logged and swallowed, deliberately
 ///
@@ -393,10 +427,17 @@ mod imp {
 /// housekeeping detail. So this reports and continues, and the log line names
 /// the method so a device log distinguishes "never promoted" from "promoted and
 /// then killed anyway" — two very different bugs that look identical from the
-/// transcript.
+/// transcript. A failed `start` still counts its holder, so the next attempt
+/// is the next 0 to 1, after every current holder has ended.
 #[cfg(all(mobile, target_os = "android"))]
 pub(crate) fn inference_service(running: bool) {
-    let method = if running { "start" } else { "stop" };
+    static USERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+    let mut users = USERS.lock().unwrap_or_else(|p| p.into_inner());
+    let (after, method) = service_transition(*users, running);
+    *users = after;
+    let Some(method) = method else {
+        return;
+    };
     let outcome = crate::android_bridge::with_app_class(
         "com.cleophis.app.InferenceService",
         |env, class, activity| {
@@ -421,3 +462,37 @@ pub(crate) fn inference_service(running: bool) {
 /// matched pair.
 #[cfg(all(mobile, not(target_os = "android")))]
 pub(crate) fn inference_service(_running: bool) {}
+
+#[cfg(test)]
+mod service_tests {
+    use super::service_transition;
+
+    #[test]
+    fn the_service_starts_with_the_first_holder_and_stops_with_the_last() {
+        assert_eq!(service_transition(0, true), (1, Some("start")));
+        assert_eq!(service_transition(1, true), (2, None), "a second holder does not restart it");
+        assert_eq!(service_transition(2, false), (1, None), "the first to end does not stop it");
+        assert_eq!(service_transition(1, false), (0, Some("stop")));
+    }
+
+    #[test]
+    fn a_chat_turn_and_a_transcription_overlapping_keep_the_service_up() {
+        // Transcription queued behind a reply: chat begins, transcription
+        // begins, chat ends (transcription still waiting), transcription ends.
+        let mut users = 0usize;
+        let mut calls = Vec::new();
+        for begin in [true, true, false, false] {
+            let (after, method) = service_transition(users, begin);
+            users = after;
+            calls.extend(method);
+        }
+        assert_eq!(calls, ["start", "stop"]);
+        assert_eq!(users, 0);
+    }
+
+    #[test]
+    fn an_unpaired_end_never_stops_a_service_and_never_underflows() {
+        assert_eq!(service_transition(0, false), (0, None));
+        assert_eq!(service_transition(usize::MAX, true), (usize::MAX, None));
+    }
+}

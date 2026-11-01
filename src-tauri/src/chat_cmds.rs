@@ -364,18 +364,21 @@ mod imp {
             }) as Box<dyn FnMut(&str) + Send>;
             run_turn(&app_for_turn, chat_id, messages, cancel, on_delta)
         })
-        .await
-        .map_err(|_| "The generation task failed to run.".to_string())?;
+        .await;
 
-        // Always deregister, whether the turn succeeded, errored, or was
-        // cancelled — a stale entry would let a later `chat_cancel` with a
-        // recycled id flip a flag nobody is watching.
+        // Always deregister, whether the turn succeeded, errored, was
+        // cancelled, or its task failed to run — a stale entry would let a
+        // later `chat_cancel` with a recycled id flip a flag nobody is watching.
         app.state::<ChatCancels>().end(&id);
         // Same "always" argument, which is why the demotion lives here rather
         // than in the success arm: a foreground service left running after a
         // cancelled or failed turn is a permanent notification for work that
-        // stopped, and the user has no way to clear it.
+        // stopped, and the user has no way to clear it. The service is counted
+        // (`mobile_native::service_transition`), so an unpaired `true` would
+        // hold it for the life of the process: hence the join error is only
+        // turned into an early return BELOW this line.
         crate::mobile_native::inference_service(false);
+        let result = result.map_err(|_| "The generation task failed to run.".to_string())?;
 
         match result {
             Ok(outcome) => {
