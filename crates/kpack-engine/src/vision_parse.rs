@@ -5,18 +5,29 @@
 //! element, optional `<doctag>…</doctag>` / `<formula>…</formula>` wrappers,
 //! labels as `\text{…}\colon` or a plain line ending in `:`. Everything after a
 //! closing `</doctag>` is dropped — that is where "transcriber, never a
-//! teacher" is enforced in code rather than in a prompt.
+//! teacher" is enforced in code rather than in a prompt. A `<loc_N>` tag anywhere
+//! in a line starts a new element, and every other tag-shaped run is removed, so
+//! no tag bytes reach a block.
 //!
-//! Confidence is `exp(mean log-probability)` over the block's tracked tokens;
-//! operator tokens (`+ - = \times \frac ^ _ \le \ge <`) also report their
-//! minimum probability, because a flipped sign is the error that teaches the
-//! wrong problem with a straight face.
+//! Confidence is `exp(mean log-probability)` over the block's tracked tokens
+//! (a logprob that is not finite or is positive counts as untracked; a block
+//! with no tracked token has confidence 0.0). Operator tokens (`+ - = < > ^ _`
+//! and the words `frac times le ge leq geq ne neq div cdot pm`, with or without
+//! their backslash, whole piece only) also report their minimum probability,
+//! because a flipped sign is the error that teaches the wrong problem with a
+//! straight face.
+//!
+//! Input is hostile: brace nesting deeper than [`MAX_GROUP_DEPTH`] is never
+//! tokenised (it would recurse once per level) and is reported as invalid.
 
 use std::ops::Range;
 
 pub const ACCEPT_MIN_CONFIDENCE: f32 = 0.90;
 pub const REVIEW_MIN_CONFIDENCE: f32 = 0.70;
 pub const OPERATOR_MIN_PROB: f32 = 0.97;
+/// Deepest `{` nesting `normalise_display` will tokenise. Real maths stays in
+/// single digits; a repetition loop of `{ { {` can reach tens of thousands.
+pub const MAX_GROUP_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenToken {
@@ -65,8 +76,73 @@ pub struct Assessment {
     pub verdict: Verdict,
 }
 
+type RawBlock = (BlockKind, String, Range<usize>);
+
+/// Maximum `{` nesting depth of `s` (a stray `}` never goes below zero).
+pub fn nesting_depth(s: &str) -> usize {
+    let (mut depth, mut max) = (0usize, 0usize);
+    for c in s.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
+}
+
+/// One DocTags element being accumulated: its tag-free text and, for every
+/// byte of that text, the byte offset it came from in the raw string.
+#[derive(Default)]
+struct Element {
+    buf: String,
+    map: Vec<usize>,
+}
+
+impl Element {
+    fn push(&mut self, c: char, raw_at: usize) {
+        self.buf.push(c);
+        for k in 0..c.len_utf8() {
+            self.map.push(raw_at + k);
+        }
+    }
+
+    fn flush(&mut self, out: &mut Vec<RawBlock>) {
+        let buf = std::mem::take(&mut self.buf);
+        let map = std::mem::take(&mut self.map);
+        let a = buf.len() - buf.trim_start().len();
+        let b = buf.trim_end().len();
+        if a >= b {
+            return;
+        }
+        let s = &buf[a..b];
+        // Raw byte range of s[x..y], first content byte to last content byte.
+        let span = |x: usize, y: usize| map[a + x]..map[a + y - 1] + 1;
+        if let Some((label, rest, rest_off)) = split_label(s) {
+            if !label.is_empty() {
+                let head = s[..rest_off].trim_end();
+                out.push((BlockKind::Text, label.to_string(), span(0, head.len())));
+            }
+            let rt = rest.trim();
+            if !rt.is_empty() {
+                let off = rest_off + (rest.len() - rest.trim_start().len());
+                out.push((classify(rt), rt.to_string(), span(off, off + rt.len())));
+            }
+            return;
+        }
+        out.push((classify(s), s.to_string(), span(0, s.len())));
+    }
+}
+
+fn is_tag_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '/'
+}
+
 /// Strip DocTags markup and split into (kind, content, span-in-raw) blocks.
-pub fn parse_doctags(raw: &str) -> Vec<(BlockKind, String, Range<usize>)> {
+pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
     // Everything after the document end is not transcription.
     let end = raw.find("</doctag>").unwrap_or(raw.len());
     let doc = &raw[..end];
@@ -75,50 +151,29 @@ pub fn parse_doctags(raw: &str) -> Vec<(BlockKind, String, Range<usize>)> {
     for line in doc.split_inclusive('\n') {
         let base = line_start;
         line_start += line.len();
-        let mut s = line.trim_end_matches('\n');
-        // Drop every <tag> / </tag> at the front (doctag, formula, text, loc_N…).
-        let mut off = 0usize;
-        loop {
-            let t = s.trim_start();
-            off += s.len() - t.len();
-            s = t;
-            if let Some(close) = s.strip_prefix('<').and_then(|_| s.find('>')) {
-                let tag = &s[1..close];
-                if tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/') {
-                    off += close + 1;
-                    s = &s[close + 1..];
-                    continue;
+        let line = line.trim_end_matches(['\n', '\r']);
+        let mut el = Element::default();
+        let mut i = 0usize;
+        while i < line.len() {
+            let Some(c) = line[i..].chars().next() else { break };
+            if c == '<' {
+                // A tag is short; do not scan the rest of a long line for '>'.
+                let close = line.as_bytes()[i..].iter().take(48).position(|&b| b == b'>');
+                if let Some(rel) = close {
+                    let tag = &line[i + 1..i + rel];
+                    if !tag.is_empty() && tag.chars().all(is_tag_char) {
+                        if tag.starts_with("loc_") {
+                            el.flush(&mut out);
+                        }
+                        i += rel + 1;
+                        continue;
+                    }
                 }
             }
-            break;
+            el.push(c, base + i);
+            i += c.len_utf8();
         }
-        // Drop a trailing </formula> / </text> etc.
-        let mut content_end = s.len();
-        while let Some(open) = s[..content_end].rfind("</") {
-            if s[open..content_end].ends_with('>') && s[open + 2..content_end - 1].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                content_end = s[..open].trim_end().len();
-            } else {
-                break;
-            }
-        }
-        let s = s[..content_end].trim();
-        if s.is_empty() {
-            continue;
-        }
-        let span_start = base + off;
-        // A label: `\text{Label} \colon` or a leading run of letters ending in ':'.
-        if let Some((label, rest, rest_off)) = split_label(s) {
-            if !label.is_empty() {
-                out.push((BlockKind::Text, label.to_string(), span_start..span_start + rest_off));
-            }
-            let rest_t = rest.trim();
-            if !rest_t.is_empty() {
-                let rs = span_start + rest_off + (rest.len() - rest.trim_start().len());
-                out.push((classify(rest_t), rest_t.to_string(), rs..rs + rest_t.len()));
-            }
-            continue;
-        }
-        out.push((classify(s), s.to_string(), span_start..span_start + s.len()));
+        el.flush(&mut out);
     }
     out
 }
@@ -154,18 +209,46 @@ fn split_label(s: &str) -> Option<(&str, &str, usize)> {
     None
 }
 
+/// Alphabetic runs of three or more letters that are not a command name
+/// (not immediately preceded by a backslash), including inside `\text{…}`.
+fn count_words(s: &str) -> usize {
+    let (mut n, mut run, mut after_backslash, mut before) = (0usize, 0usize, false, ' ');
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            if run == 0 {
+                after_backslash = before == '\\';
+            }
+            run += 1;
+        } else {
+            if run >= 3 && !after_backslash {
+                n += 1;
+            }
+            run = 0;
+        }
+        before = c;
+    }
+    if run >= 3 && !after_backslash {
+        n += 1;
+    }
+    n
+}
+
 fn classify(s: &str) -> BlockKind {
-    let mathy = s.contains('\\') || s.contains('=') || s.contains('^') || s.contains('_')
-        || s.chars().any(|c| c.is_ascii_digit()) && s.chars().any(|c| "+-*/".contains(c));
-    let words = s.split_whitespace().filter(|w| w.len() > 2 && w.chars().all(|c| c.is_ascii_alphabetic())).count();
-    if mathy && words <= 2 { BlockKind::Latex } else { BlockKind::Text }
+    let strong = s.contains(['\\', '=', '^', '_']);
+    let weak = s.chars().any(|c| c.is_ascii_digit()) && s.contains(['+', '-', '*', '/']);
+    let words = count_words(s);
+    if (strong && words <= 2) || (weak && words == 0) { BlockKind::Latex } else { BlockKind::Text }
 }
 
 /// Display form of a LaTeX block: `\begin{array}{..}…\end{array}` unwrapped
-/// (rows kept as ` \\ `), grouping braces that are not an argument of `^`, `_`,
-/// `\frac`, `\sqrt`, `\text` removed, whitespace collapsed, a space kept
-/// after a command when a letter or digit follows.
+/// (rows kept as ` \\ `), grouping braces that are not a command or `^`/`_`
+/// argument removed, whitespace collapsed (kept, once, inside `\text`), a space
+/// kept after a command when a letter or digit follows. Nesting deeper than
+/// [`MAX_GROUP_DEPTH`] is not tokenised: the whitespace-collapsed input comes back.
 pub fn normalise_display(latex: &str) -> String {
+    if nesting_depth(latex) > MAX_GROUP_DEPTH {
+        return latex.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
     let mut s = latex.to_string();
     // Array wrapper.
     if let Some(b) = s.find("\\begin{array}") {
@@ -178,8 +261,8 @@ pub fn normalise_display(latex: &str) -> String {
         let body = s[body_start..body_end.max(body_start)].to_string();
         s = body;
     }
-    let tokens = tokenize(&s);
-    let tokens = strip_ws(tokens);
+    let chars: Vec<char> = s.chars().collect();
+    let tokens = strip_ws(tokenize(&chars));
     render(&tokens)
 }
 
@@ -190,8 +273,8 @@ enum Tok {
     Ch(char),
 }
 
-fn tokenize(s: &str) -> Vec<Tok> {
-    let chars: Vec<char> = s.chars().collect();
+/// Recursion depth is bounded by the caller's `nesting_depth` check.
+fn tokenize(chars: &[char]) -> Vec<Tok> {
     let mut i = 0;
     let mut out = Vec::new();
     while i < chars.len() {
@@ -213,8 +296,9 @@ fn tokenize(s: &str) -> Vec<Tok> {
                     match chars[j] { '{' => depth += 1, '}' => depth -= 1, _ => {} }
                     j += 1;
                 }
-                let inner: String = chars[i + 1..j.saturating_sub(1).max(i + 1)].iter().collect();
-                out.push(Tok::Group(tokenize(&inner)));
+                // An unclosed group (a truncated output) keeps its last character.
+                let inner_end = if depth == 0 { j - 1 } else { j };
+                out.push(Tok::Group(tokenize(&chars[i + 1..inner_end])));
                 i = j;
             }
             '}' => i += 1, // stray closer (a truncated output)
@@ -224,50 +308,134 @@ fn tokenize(s: &str) -> Vec<Tok> {
     out
 }
 
+/// Commands whose argument is prose: whitespace inside it is collapsed, not removed.
+const TEXT_CMDS: &[&str] = &["\\text", "\\mathrm"];
+const ARG_CMDS_TWO: &[&str] = &["\\frac", "\\dfrac", "\\tfrac", "\\binom"];
+/// Commands that take no argument: a group after one is plain grouping.
+const SYMBOL_CMDS: &[&str] = &[
+    "\\times", "\\cdot", "\\div", "\\pm", "\\mp", "\\le", "\\ge", "\\leq", "\\geq", "\\ne", "\\neq",
+    "\\approx", "\\equiv", "\\sim", "\\to", "\\in", "\\notin", "\\cup", "\\cap", "\\ldots", "\\cdots",
+];
+
 fn strip_ws(tokens: Vec<Tok>) -> Vec<Tok> {
-    tokens.into_iter().filter_map(|t| match t {
-        Tok::Ch(c) if c.is_whitespace() => None,
-        Tok::Group(g) => Some(Tok::Group(strip_ws(g))),
-        t => Some(t),
-    }).collect()
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut after_text_cmd = false;
+    for t in tokens {
+        match t {
+            Tok::Ch(c) if c.is_whitespace() => {}
+            Tok::Group(g) => {
+                out.push(Tok::Group(if after_text_cmd { collapse_ws(g) } else { strip_ws(g) }));
+                after_text_cmd = false;
+            }
+            Tok::Cmd(c) => {
+                after_text_cmd = TEXT_CMDS.contains(&c.as_str());
+                out.push(Tok::Cmd(c));
+            }
+            t => {
+                after_text_cmd = false;
+                out.push(t);
+            }
+        }
+    }
+    out
 }
 
-const ARG_CMDS_ONE: &[&str] = &["\\sqrt", "\\text", "\\mathrm", "\\overline", "\\hat", "\\vec", "\\bar"];
-const ARG_CMDS_TWO: &[&str] = &["\\frac", "\\dfrac", "\\tfrac", "\\binom"];
+/// Whitespace runs become one space; leading and trailing space is dropped.
+fn collapse_ws(tokens: Vec<Tok>) -> Vec<Tok> {
+    let mut out: Vec<Tok> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        match t {
+            Tok::Ch(c) if c.is_whitespace() => {
+                if matches!(out.last(), Some(t) if !matches!(t, Tok::Ch(' '))) {
+                    out.push(Tok::Ch(' '));
+                }
+            }
+            Tok::Group(g) => out.push(Tok::Group(strip_ws(g))),
+            t => out.push(t),
+        }
+    }
+    if matches!(out.last(), Some(Tok::Ch(' '))) {
+        out.pop();
+    }
+    out
+}
+
+/// True when `out` ends in an alphabetic command name (`\times`), where a
+/// following letter or digit would fuse into it. Command names are short, so
+/// the scan is bounded.
+fn ends_with_alpha_cmd(out: &str) -> bool {
+    let bytes = out.as_bytes();
+    let mut n = 0;
+    while n < bytes.len() && n <= 40 && bytes[bytes.len() - 1 - n].is_ascii_alphabetic() {
+        n += 1;
+    }
+    n > 0 && n <= 40 && n < bytes.len() && bytes[bytes.len() - 1 - n] == b'\\'
+}
+
+fn push_text(out: &mut String, text: &str, after_text: &mut bool) {
+    let Some(first) = text.chars().next() else { return };
+    if first.is_ascii_alphanumeric() && (*after_text || ends_with_alpha_cmd(out)) {
+        out.push(' ');
+    }
+    out.push_str(text);
+    *after_text = false;
+}
 
 fn render(tokens: &[Tok]) -> String {
     let mut out = String::new();
-    let mut want = 0usize; // argument groups the previous token still expects
-    let mut prev_cmd = false;
+    let mut want = 0usize;          // argument groups the previous token still expects
+    let mut opt_ok = false;         // the previous token was an argument-taking command
+    let mut in_opt = false;         // inside a `[...]` optional argument
+    let mut pending_text = false;   // the next group is a \text / \mathrm argument
+    let mut after_text = false;     // the last thing emitted was a \text argument
     for t in tokens {
         match t {
             Tok::Group(g) => {
                 let inner = render(g);
-                if want > 0 {
-                    out.push('{'); out.push_str(&inner); out.push('}');
-                    want -= 1;
-                } else {
-                    out.push_str(&inner);
-                }
-                prev_cmd = false;
+                let braced = want > 0;
+                let text = if braced { format!("{{{inner}}}") } else { inner };
+                want = want.saturating_sub(1);
+                push_text(&mut out, &text, &mut after_text);
+                after_text = braced && pending_text;
+                pending_text = false;
+                opt_ok = false;
             }
             Tok::Cmd(c) => {
                 if c == "\\\\" {
                     out.push_str(" \\\\ ");
-                    want = 0; prev_cmd = false;
+                    want = 0; opt_ok = false; pending_text = false; after_text = false;
                     continue;
                 }
-                out.push_str(c);
-                want = if ARG_CMDS_TWO.contains(&c.as_str()) { 2 } else if ARG_CMDS_ONE.contains(&c.as_str()) { 1 } else { 0 };
-                prev_cmd = c.chars().nth(1).is_some_and(|ch| ch.is_ascii_alphabetic());
+                push_text(&mut out, c, &mut after_text);
+                let alpha = c.chars().nth(1).is_some_and(|ch| ch.is_ascii_alphabetic());
+                want = if !alpha || SYMBOL_CMDS.contains(&c.as_str()) {
+                    0
+                } else if ARG_CMDS_TWO.contains(&c.as_str()) {
+                    2
+                } else {
+                    1
+                };
+                opt_ok = want > 0;
+                pending_text = TEXT_CMDS.contains(&c.as_str());
             }
             Tok::Ch(ch) => {
-                if prev_cmd && ch.is_ascii_alphanumeric() {
-                    out.push(' ');
+                let mut buf = [0u8; 4];
+                let s: &str = ch.encode_utf8(&mut buf);
+                if in_opt {
+                    push_text(&mut out, s, &mut after_text);
+                    if *ch == ']' { in_opt = false; }
+                    continue;
                 }
-                out.push(*ch);
+                if opt_ok && want > 0 && *ch == '[' {
+                    push_text(&mut out, s, &mut after_text);
+                    in_opt = true;
+                    opt_ok = false;
+                    continue;
+                }
+                push_text(&mut out, s, &mut after_text);
                 want = if *ch == '^' || *ch == '_' { 1 } else { 0 };
-                prev_cmd = false;
+                opt_ok = false;
+                pending_text = false;
             }
         }
     }
@@ -284,8 +452,10 @@ fn braces_balanced(s: &str) -> bool {
 
 fn is_operator_piece(piece: &str) -> bool {
     let p = piece.trim();
-    matches!(p, "+" | "-" | "=" | "<" | ">" | "^" | "_") || p.starts_with("\\times") || p.starts_with("\\frac")
-        || p.starts_with("\\le") || p.starts_with("\\ge") || p.starts_with("\\div") || p.starts_with("\\cdot") || p.starts_with("\\pm")
+    // Subword tokenisers split `\frac` into `\` + `frac`, so the backslash is optional.
+    let w = p.strip_prefix('\\').unwrap_or(p);
+    matches!(p, "+" | "-" | "=" | "<" | ">" | "^" | "_")
+        || matches!(w, "frac" | "times" | "le" | "ge" | "leq" | "geq" | "ne" | "neq" | "div" | "cdot" | "pm")
 }
 
 /// Blocks, warnings and the verdict for one transcription.
@@ -303,7 +473,7 @@ pub fn assess(tokens: &[GenToken], truncated: bool) -> Assessment {
     // truncation this warning exists for.
     let mut invalid = false;
     for (kind, content, span) in parse_doctags(&raw) {
-        if kind == BlockKind::Latex && !braces_balanced(&content) {
+        if nesting_depth(&content) > MAX_GROUP_DEPTH || (kind == BlockKind::Latex && !braces_balanced(&content)) {
             invalid = true;
         }
         let mut sum = 0f32; let mut n = 0usize; let mut n_tokens = 0usize;
@@ -312,7 +482,8 @@ pub fn assess(tokens: &[GenToken], truncated: bool) -> Assessment {
             let ts = starts[i]; let te = ts + t.piece.len();
             if te <= span.start || ts >= span.end { continue; }
             n_tokens += 1;
-            if let Some(lp) = t.logprob {
+            // A log-probability is finite and <= 0; anything else is untracked.
+            if let Some(lp) = t.logprob.filter(|lp| lp.is_finite() && *lp <= 0.0) {
                 sum += lp; n += 1;
                 if is_operator_piece(&t.piece) {
                     let p = lp.exp();
@@ -502,5 +673,145 @@ mod tests {
         let a = assess(&t, false);
         assert_eq!(a.blocks[0].confidence, 0.0);
         assert_eq!(a.verdict, Verdict::Refuse);
+    }
+
+    // ---- fix round 1 ----
+
+    const LOC: &str = "<loc_0><loc_0><loc_500><loc_500>";
+
+    fn kinds_of(body: &str) -> Vec<BlockKind> {
+        parse_doctags(&format!("{LOC}{body}")).iter().map(|b| b.0).collect()
+    }
+
+    #[test]
+    fn c1_twenty_thousand_open_braces_do_not_overflow_the_stack() {
+        let raw = format!("{LOC}{}", "{".repeat(20_000));
+        let a = assess(&toks(&raw, -0.01), false);
+        assert_ne!(a.verdict, Verdict::Accept, "{:?}", a.verdict);
+        assert!(a.warnings.contains(&Warning::InvalidLatex), "{:?}", a.warnings);
+        // The same pathology on a block that classifies as LaTeX.
+        let raw = format!("{LOC}x = {}", "{".repeat(20_000));
+        let a = assess(&toks(&raw, -0.01), false);
+        assert_ne!(a.verdict, Verdict::Accept);
+        assert!(a.warnings.contains(&Warning::InvalidLatex));
+        assert!(nesting_depth(&"{".repeat(20_000)) > MAX_GROUP_DEPTH);
+        assert!(normalise_display(&"{".repeat(20_000)).len() <= 20_000);
+    }
+
+    #[test]
+    fn c1_a_long_run_of_flat_groups_is_linear() {
+        let line = "{ x } ".repeat(100_000 / 6);
+        let t0 = std::time::Instant::now();
+        let shown = normalise_display(&line);
+        let a = assess(&toks(&format!("{LOC}{line}"), -0.01), false);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
+        assert!(shown.starts_with('x'));
+        assert_ne!(a.verdict, Verdict::Accept);
+        // A long letter run must not make separator checks quadratic either.
+        let t0 = std::time::Instant::now();
+        let _ = normalise_display(&"a ".repeat(50_000));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn i1_non_finite_logprobs_fail_closed() {
+        let raw = format!("{LOC}3 x - 7 = 2 x + 5");
+        let mut t = toks(&raw, f32::NAN);
+        t[0].logprob = None;
+        let a = assess(&t, false);
+        assert_eq!(a.blocks[0].confidence, 0.0);
+        assert_eq!(a.verdict, Verdict::Refuse);
+        // A positive logprob is not a probability either.
+        let mut t = toks(&raw, 0.5);
+        t[0].logprob = None;
+        assert_eq!(assess(&t, false).verdict, Verdict::Refuse);
+    }
+
+    #[test]
+    fn i1_an_infinite_logprob_does_not_raise_confidence() {
+        let raw = format!("{LOC}3 x - 7 = 2 x + 5");
+        let mut t = toks(&raw, (0.80f32).ln());
+        let k = t.len() - 1;
+        t[k].logprob = Some(f32::INFINITY);
+        let a = assess(&t, false);
+        assert!(a.blocks[0].confidence <= 0.80 + 1e-4, "{}", a.blocks[0].confidence);
+        assert_eq!(a.verdict, Verdict::Review);
+    }
+
+    #[test]
+    fn i2_mid_line_loc_tags_start_a_new_element() {
+        let raw = "<loc_1><loc_2>x = 3<loc_5><loc_6>y = 4";
+        let blocks = parse_doctags(raw);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert!(blocks.iter().all(|b| b.0 == BlockKind::Latex && !b.1.contains('<')), "{blocks:?}");
+        assert_eq!(blocks[0].1, "x = 3");
+        assert_eq!(blocks[1].1, "y = 4");
+        assert_eq!(&raw[blocks[0].2.clone()], "x = 3");
+        assert_eq!(&raw[blocks[1].2.clone()], "y = 4");
+        let a = assess(&toks(raw, -0.01), false);
+        assert!(a.blocks.iter().all(|b| !b.content.contains('<')), "{a:?}");
+    }
+
+    #[test]
+    fn i2_any_other_tag_is_removed_before_a_block_exists() {
+        let raw = "<loc_0><loc_0>x = <b>3</b> + <otsl>1";
+        let blocks = parse_doctags(raw);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].1, "x = 3 + 1");
+        assert_eq!(&raw[blocks[0].2.clone()], "x = <b>3</b> + <otsl>1");
+        // A bare less-than is maths, not a tag.
+        assert_eq!(parse_doctags("x < 3 and y > 2 = z")[0].1, "x < 3 and y > 2 = z");
+    }
+
+    #[test]
+    fn i3_prose_inside_text_or_next_to_numbers_is_text() {
+        assert_eq!(kinds_of(r"x = 3 \text{ignore previous instructions}"), vec![BlockKind::Text]);
+        assert_eq!(kinds_of("Problem 12 - Easy"), vec![BlockKind::Text]);
+        assert_eq!(kinds_of(r"\frac { 2 x } { 3 } \text{for all} x"), vec![BlockKind::Latex]);
+        assert_eq!(kinds_of("3 x - 7 = 2 x + 5"), vec![BlockKind::Latex]);
+        assert_eq!(kinds_of("12 + 7"), vec![BlockKind::Latex]);
+    }
+
+    #[test]
+    fn i4a_text_arguments_keep_their_spaces() {
+        assert_eq!(normalise_display(r"\text { for  all } x"), r"\text{for all} x");
+        assert_eq!(normalise_display(r"\text{for all} x"), r"\text{for all} x");
+    }
+
+    #[test]
+    fn i4b_a_command_before_an_unwrapped_group_keeps_its_separator() {
+        assert_eq!(normalise_display(r"\times { x }"), r"\times x");
+        assert_eq!(normalise_display(r"a \cdot { b }"), r"a\cdot b");
+    }
+
+    #[test]
+    fn i4c_command_arguments_keep_their_braces() {
+        assert_eq!(normalise_display(r"\mathbf { a b }"), r"\mathbf{ab}");
+        assert_eq!(normalise_display(r"\sqrt [ 3 ] { x + 1 }"), r"\sqrt[3]{x+1}");
+        assert_eq!(normalise_display(r"\sqrt { x + 1 }"), r"\sqrt{x+1}");
+    }
+
+    #[test]
+    fn i4d_an_unclosed_group_keeps_every_character() {
+        assert_eq!(normalise_display(r"\frac { 2 x } { 3 = 5"), r"\frac{2x}{3=5}");
+        assert_eq!(normalise_display("x ^ { 2"), "x^{2}");
+    }
+
+    #[test]
+    fn operator_floor_survives_subword_tokenisation() {
+        for p in ["frac", "\\frac", " times", "\\times ", "le", "\\ge", "div", "cdot", "\\pm", "pm", "+", "="] {
+            assert!(is_operator_piece(p), "{p:?}");
+        }
+        for p in ["\\left", "left", "\\right", "fraction", "x", "3"] {
+            assert!(!is_operator_piece(p), "{p:?}");
+        }
+        let mk = |p: &str, lp: Option<f32>| GenToken { piece: p.to_string(), logprob: lp };
+        let t = vec![
+            mk(LOC, None), mk("x", Some(-0.01)), mk(" =", Some(-0.01)), mk(" 3", Some(-0.01)),
+            mk(" \\", Some(-0.01)), mk("times", Some((0.5f32).ln())), mk(" 2", Some(-0.01)),
+        ];
+        let a = assess(&t, false);
+        assert!(a.warnings.contains(&Warning::OperatorUncertain), "{a:?}");
+        assert!(a.blocks[0].min_operator_prob.unwrap() < OPERATOR_MIN_PROB);
     }
 }
