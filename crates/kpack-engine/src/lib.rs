@@ -50,6 +50,9 @@ pub mod template;
 /// Photo bytes to upright, capped, downscaled RGB8 for the image encoder. Outside
 /// the `real` gate: the caps and the EXIF table are pure and tested by the desktop suite.
 pub mod vision_prep;
+/// DocTags to blocks, exp-mean confidence and the accept/review/refuse verdict. Outside
+/// the `real` gate: pure string and arithmetic logic, tested by the desktop suite.
+pub mod vision_parse;
 
 /// The prefix-reuse arithmetic (task 1.5). Deliberately *outside* the `real`
 /// gate so its tests run in a build with no llama.cpp — the module docs explain
@@ -85,6 +88,7 @@ pub use template::{
     ThinkStripper, QWEN3_THINK_BLOCK,
 };
 pub use vision_prep::{prepare_image, PreparedImage, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS};
+pub use vision_parse::{assess, normalise_display, parse_doctags, Assessment, Block, BlockKind, GenToken, Verdict, Warning, ACCEPT_MIN_CONFIDENCE, OPERATOR_MIN_PROB, REVIEW_MIN_CONFIDENCE};
 
 #[cfg(feature = "real")]
 pub use llama::{backend_system_info, print_kernel_report, shared_backend, LlamaEngine};
