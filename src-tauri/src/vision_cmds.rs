@@ -211,15 +211,28 @@ mod imp {
         on_event: Channel<VisionEvent>,
         app: AppHandle,
     ) -> Result<(), String> {
-        let image = decode_image_base64(&image_base64)?;
-        drop(image_base64);
+        // Claim the slot BEFORE decoding (final review M9): otherwise every
+        // concurrent caller allocates its decoded image, up to 20 MiB, only to
+        // be refused. (The base64 string itself is already allocated by the IPC
+        // layer before this body runs.) The length check still runs before the
+        // decode, inside `decode_image_base64`.
         let in_flight = app.state::<VisionInFlight>();
         if !in_flight.try_begin() {
             return Err("A transcription is already in progress.".to_string());
         }
-        // From here every exit path runs `in_flight.end()`: there is no `?` or
-        // early return between the claim and the teardown below, the same
-        // "always" argument `chat_stream` makes for the cancel registry.
+        // From here every exit path runs `in_flight.end()`. The decode refusal
+        // is the one early return, and nothing else has begun when it runs;
+        // after it there is no `?` or early return before the teardown below,
+        // the same "always" argument `chat_stream` makes for the cancel
+        // registry.
+        let image = match decode_image_base64(&image_base64) {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                in_flight.end();
+                return Err(message);
+            }
+        };
+        drop(image_base64);
         let cancel = app.state::<crate::chat_cmds::ChatCancels>().begin(&request_id);
         // Foreground service for the duration, as for a chat turn, so Android
         // does not kill a multi-second transcription under memory pressure.
