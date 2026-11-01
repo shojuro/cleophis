@@ -125,10 +125,8 @@ pub(crate) struct TranscribeOutcome {
     pub decode_ms: u64,
     pub prep_ms: u64,
     /// `Some` only on the sequential path: how long reloading the tutor took.
+    /// (Truncation travels as [`OutcomeWarning::Truncated`] in `warnings`.)
     pub reload_ms: Option<u64>,
-    // The wire carries truncation as the `Truncated` warning, so no command reads this flag.
-    #[cfg_attr(mobile, allow(dead_code))]
-    pub truncated: bool,
     pub peak_rss_kb: u64,
     pub coresident: bool,
 }

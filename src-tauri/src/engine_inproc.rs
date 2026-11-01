@@ -589,7 +589,6 @@ fn transcribe_one(
         decode_ms: tr.timings.decode_ms,
         prep_ms,
         reload_ms: None,
-        truncated,
         peak_rss_kb: vm_hwm_kb(),
         coresident,
     })

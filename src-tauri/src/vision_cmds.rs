@@ -92,7 +92,10 @@ pub struct TranscribeResult {
     pub coresident: bool,
 }
 
-/// What `transcribe_image` emits on its channel: exactly one event per call.
+/// What `transcribe_image` emits on its channel: exactly one event per call
+/// that reaches the engine's command path. The early refusals (a body that is
+/// not valid base64, one over the size cap, a transcription already in flight)
+/// reject the promise without sending an event.
 #[cfg_attr(desktop, allow(dead_code))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
@@ -295,8 +298,10 @@ mod imp {
     }
 }
 
-/// Transcribe one image (base64 body), emitting exactly one [`VisionEvent`].
-/// Cancel through the existing `chat_cancel` with the same `request_id`.
+/// Transcribe one image (base64 body), emitting exactly one [`VisionEvent`] per
+/// call that reaches the engine's command path; the early refusals reject
+/// without an event (see [`VisionEvent`]). Cancel through the existing
+/// `chat_cancel` with the same `request_id`.
 #[tauri::command]
 pub async fn transcribe_image(
     request_id: String,
@@ -360,7 +365,7 @@ mod tests {
             blocks: vec![OutcomeBlock { kind: OutcomeKind::Latex, content: "3x-7=2x+5".into(), confidence: 0.99, min_operator_prob: Some(0.995) }],
             warnings: vec![OutcomeWarning::LowConfidence],
             verdict: OutcomeVerdict::Review,
-            n_image_tokens: 64, prefill_ms: 7600, decode_ms: 1000, prep_ms: 12, reload_ms: None, truncated: false, peak_rss_kb: 389_000, coresident: true,
+            n_image_tokens: 64, prefill_ms: 7600, decode_ms: 1000, prep_ms: 12, reload_ms: None, peak_rss_kb: 389_000, coresident: true,
         };
         let v = serde_json::to_value(to_wire(outcome, "granite-docling-258M", "docling")).unwrap();
         assert_eq!(v["verdict"], "review");
