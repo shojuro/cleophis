@@ -4,9 +4,10 @@
 //! granite-docling speaks DocTags: `<loc_x><loc_y><loc_x2><loc_y2>` before each
 //! element, `<doctag>…</doctag>` / `<formula>…</formula>` wrappers (CONTROL
 //! tokens in its vocabulary, which `vision.rs` renders so that they reach this
-//! parser), labels as `\text{…}\colon` or a plain line ending in `:`. A
-//! `<loc_N>` tag anywhere in a line starts a new element, and every other
-//! tag-shaped run is removed, so no tag bytes reach a block.
+//! parser), and labels: `\text{…}` followed by `\colon` or `:`, or a plain
+//! head of letters holding a word (two or more letters) before a `:` or
+//! `\colon`. A `<loc_N>` tag anywhere in a line starts a new element, and every
+//! other tag-shaped run is removed, so no tag bytes reach a block.
 //!
 //! The document end is guarded twice. `vision.rs` stops generation when the
 //! model samples the `</doctag>` token, so a model that would keep talking after
@@ -219,15 +220,26 @@ pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
 }
 
 /// `(label, rest, byte offset of rest within the input)` when the line starts with a label.
+///
+/// Every byte of the line lands in the label or the rest, so a split can lose
+/// nothing; the danger is a split that moves maths into the `text` label, which
+/// never reaches the tutor. Hence both forms are narrow:
+///
+/// - `\text{…}` is a label only when `\colon` or `:` follows it. `\text{cost} = 5`
+///   is one line of maths whose left-hand side happens to be words.
+/// - A plain head is letters, spaces and commas only (so no relation or
+///   operator: `a + b : c` is not a label), and must hold a word: a
+///   comma-separated part with two or more letters once spaces are removed.
+///   `a : b = 2 : 3` and `x : y` are ratios, not labels; `Solve for x :` and
+///   the letter-spaced `S o l v e \colon` are labels.
 fn split_label(s: &str) -> Option<(&str, &str, usize)> {
     if let Some(after) = s.strip_prefix("\\text") {
         let after_t = after.trim_start();
         if let Some(inner) = after_t.strip_prefix('{') {
             if let Some(close) = inner.find('}') {
                 let label = inner[..close].trim();
-                let mut rest = &inner[close + 1..];
-                let rest_t = rest.trim_start();
-                rest = rest_t.strip_prefix("\\colon").or_else(|| rest_t.strip_prefix(':')).unwrap_or(rest_t);
+                let rest_t = inner[close + 1..].trim_start();
+                let rest = rest_t.strip_prefix("\\colon").or_else(|| rest_t.strip_prefix(':'))?;
                 let off = s.len() - rest.len();
                 return Some((label, rest, off));
             }
@@ -236,7 +248,7 @@ fn split_label(s: &str) -> Option<(&str, &str, usize)> {
     // "Solve for x :" / "S o l v e \colon" — letters, spaces and a lone x, then a colon.
     let colon = s.find(':').or_else(|| s.find("\\colon"))?;
     let head = &s[..colon];
-    if !head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == ',') {
+    if !head.is_empty() && head.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == ',') && holds_a_word(head) {
         let skip = if s[colon..].starts_with("\\colon") { 6 } else { 1 };
         let rest = &s[colon + skip..];
         let label = head.trim();
@@ -247,6 +259,13 @@ fn split_label(s: &str) -> Option<(&str, &str, usize)> {
         return Some((label, rest, colon + skip));
     }
     None
+}
+
+/// A label head (letters, spaces, commas) holds a word when some comma-separated
+/// part has at least two letters once its spaces are removed: `Solve for x`,
+/// the letter-spaced `S o l v e`. A lone letter (`a`, `x`) is a variable.
+fn holds_a_word(head: &str) -> bool {
+    head.split(',').any(|part| part.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 2)
 }
 
 /// Alphabetic runs of three or more letters that are not a command name
@@ -281,7 +300,8 @@ fn classify(s: &str) -> BlockKind {
 }
 
 /// Display form of a LaTeX block: `\begin{array}{..}…\end{array}` unwrapped
-/// (rows kept as ` \\ `), grouping braces that are not a command or `^`/`_`
+/// (rows kept as ` \\ `, and whatever surrounds the array kept: `A = \left(` …
+/// `\right)` stays), grouping braces that are not a command or `^`/`_`
 /// argument removed, whitespace collapsed (kept, once, inside `\text`), a space
 /// kept after a command when a letter or digit follows. Nesting deeper than
 /// [`MAX_GROUP_DEPTH`] is not tokenised: the whitespace-collapsed input comes back.
@@ -289,21 +309,44 @@ pub fn normalise_display(latex: &str) -> String {
     if nesting_depth(latex) > MAX_GROUP_DEPTH {
         return latex.split_whitespace().collect::<Vec<_>>().join(" ");
     }
-    let mut s = latex.to_string();
-    // Array wrapper.
-    if let Some(b) = s.find("\\begin{array}") {
-        let after = &s[b + "\\begin{array}".len()..];
-        let after = after.trim_start();
-        let body_start = if let Some(rest) = after.strip_prefix('{') {
-            rest.find('}').map(|i| s.len() - rest.len() + i + 1).unwrap_or(0)
-        } else { s.len() - after.len() };
-        let body_end = s.find("\\end{array}").unwrap_or(s.len());
-        let body = s[body_start..body_end.max(body_start)].to_string();
-        s = body;
-    }
+    let s = unwrap_array(latex);
     let chars: Vec<char> = s.chars().collect();
     let tokens = strip_ws(tokenize(&chars));
     render(&tokens)
+}
+
+const ARRAY_BEGIN: &str = "\\begin{array}";
+const ARRAY_END: &str = "\\end{array}";
+
+/// The first `\begin{array}{spec} … \end{array}` replaced by its body, keeping
+/// the text before and after it: only the environment's own markup (the two
+/// commands and a closed column spec) is removed. The parts are joined with a
+/// space so a command before the array cannot fuse with the body's first
+/// letter (`\cdot` + `x`); whitespace is not significant to the tokeniser.
+/// An array that never ends (a truncated output) keeps everything after the
+/// spec as its body.
+fn unwrap_array(latex: &str) -> std::borrow::Cow<'_, str> {
+    let Some(b) = latex.find(ARRAY_BEGIN) else {
+        return std::borrow::Cow::Borrowed(latex);
+    };
+    let after_begin = b + ARRAY_BEGIN.len();
+    let after = &latex[after_begin..];
+    let spec = after.trim_start();
+    let body_start = match spec.strip_prefix('{').and_then(|r| r.find('}')) {
+        // `{` + the spec + `}`, measured from where the spec starts.
+        Some(close) => after_begin + (after.len() - spec.len()) + 1 + close + 1,
+        None => after_begin,
+    };
+    let (body_end, suffix_start) = match latex[body_start..].find(ARRAY_END) {
+        Some(i) => (body_start + i, body_start + i + ARRAY_END.len()),
+        None => (latex.len(), latex.len()),
+    };
+    std::borrow::Cow::Owned(format!(
+        "{} {} {}",
+        &latex[..b],
+        &latex[body_start..body_end],
+        &latex[suffix_start..]
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -934,6 +977,59 @@ mod tests {
     fn h1_a_comparison_is_not_a_tag_and_survives() {
         assert_eq!(parse_doctags("<loc_0>x < 3")[0].1, "x < 3");
         assert_eq!(parse_doctags("<loc_0>2 < x > 1")[0].1, "2 < x > 1");
+    }
+
+    // ---- final-review fix wave (I2): no maths leaves the tutor-bound block ----
+
+    /// `(kind, content)` of every block `assess` produces, display form.
+    fn shown(body: &str) -> Vec<(BlockKind, String)> {
+        assess(&toks(&format!("{LOC}{body}"), -0.01), false).blocks.into_iter().map(|b| (b.kind, b.content)).collect()
+    }
+
+    #[test]
+    fn a_ratio_is_maths_not_a_label() {
+        assert_eq!(shown("a : b = 2 : 3"), vec![(BlockKind::Latex, "a:b=2:3".to_string())]);
+        assert_eq!(assess(&toks(&format!("{LOC}a : b = 2 : 3"), -0.01), false).verdict, Verdict::Accept);
+        // A bare ratio of letters stays one block. It still classifies as text
+        // (nothing marks it as maths), so it refuses: safe, not lossy.
+        assert_eq!(shown("x : y"), vec![(BlockKind::Text, "x : y".to_string())]);
+        // A head with an operator is not a label either.
+        assert_eq!(kinds_of("a + b : c = 4").len(), 1);
+    }
+
+    #[test]
+    fn a_text_head_is_a_label_only_before_a_colon() {
+        assert_eq!(shown(r"\text{cost} = 5"), vec![(BlockKind::Latex, r"\text{cost}=5".to_string())]);
+        assert_eq!(
+            shown(r"\text{Total}: 5 + 3"),
+            vec![(BlockKind::Text, "Total".to_string()), (BlockKind::Latex, "5+3".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_existing_label_forms_still_split() {
+        assert_eq!(
+            shown("Solve for x : 3x - 7 = 2x + 5"),
+            vec![(BlockKind::Text, "Solve for x".to_string()), (BlockKind::Latex, "3x-7=2x+5".to_string())]
+        );
+        assert_eq!(
+            shown(r"S o l v e \colon x ^ { 2 } - 5 x + 6 = 0"),
+            vec![(BlockKind::Text, "S o l v e".to_string()), (BlockKind::Latex, "x^{2}-5x+6=0".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_array_keeps_what_surrounds_it() {
+        // `\left` / `\right` are kept: the normalisation keeps every command
+        // and removes only whitespace and plain grouping braces.
+        let m = r"A = \left( \begin{array}{cc} 1 & 2 \\ 3 & 4 \end{array} \right)";
+        assert_eq!(normalise_display(m), r"A=\left(1&2 \\ 3&4\right)");
+        assert_eq!(shown(m), vec![(BlockKind::Latex, r"A=\left(1&2 \\ 3&4\right)".to_string())]);
+        // A command before the array does not fuse with the body's first letter.
+        assert_eq!(normalise_display(r"2 \cdot\begin{array}{c}x\end{array}"), r"2\cdot x");
+        // Stage 0's truncated 2-pass p02: the lone wrapping `{` is plain grouping.
+        let p02 = r"{ \begin{array} { r l } { { \frac { 2 x } { 3 } } + { \frac { x } { 6 } } = 5 } \end{";
+        assert_eq!(normalise_display(p02), r"\frac{2x}{3}+\frac{x}{6}=5\end{}");
     }
 
     #[test]
