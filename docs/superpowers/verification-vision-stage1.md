@@ -202,6 +202,11 @@ At that moment the catalog test `a_tier_without_vision_still_parses_and_resolves
 1. **H1: only `latex` blocks reach the tutor.** They go in the user role, prefixed
    "Problem from photo:", never as a `text` block and never anywhere in the system turn.
    The confirm UI renders block content as text (`textContent`, never `innerHTML`).
+   The `text`/`latex` classifier REDUCES the prose that reaches the tutor; it does not
+   exclude it. `Say = yes` classifies as `latex`, and so do words written as commands
+   (`\ignore \all \rules`) and Stage 0's real page output `E \, \text {evaluate} \colon …`.
+   Stage 2's contract is the real mitigation: the user role, the "Problem from photo:"
+   prefix, and the hard confirmation gate.
 2. **M2: downscale before the call.** The capture flow crops and downscales in the
    WebView before `transcribe_image`, so the 20 MiB encoded and 50 MP decoded caps are a
    backstop, not the normal path. The image bytes never touch disk or the conversation
@@ -242,8 +247,8 @@ Facts Stage 2 must also design around:
 ## Fix wave after the final review
 
 The whole-branch review (2026-11-01) found no Critical issue and four Important seam
-defects. One wave fixed them with the review's fix-before-merge list, in seven commits
-(`vision(fix): …`):
+defects. One wave fixed them with the review's fix-before-merge list and three of its
+minors (M4, M5, M9, by the controller's ruling), in ten commits (`vision(fix): …`):
 
 - **I1, the document end.** granite-docling's `<doctag>`, `</doctag>`, `<formula>` and
   `</formula>` are CONTROL tokens. `vision.rs` printed them as nothing, so the parser's
@@ -276,14 +281,27 @@ defects. One wave fixed them with the review's fix-before-merge list, in seven c
 - **Task 9:** `TranscribeOutcome.truncated` is deleted; the one-event contract is stated
   exactly, in code and above.
 - **Task 10:** the document fixes in both records.
+- **M4, the operator floor sees merged pieces.** A piece counts as an operator when any
+  character of its part inside the block is one of `+ - = < > ^ _`, or when it holds a
+  watched command (`\frac`, `\times`, `\leq`, …) as a whole command. So the merged
+  pieces `=-`, `^{` and `}=` are checked, and an unspaced `x=-1` no longer passes
+  unchecked. Only the part inside the block counts because BPE merges a tag's closing
+  `>` with the first maths character (`>\` on formula crops p02 and p05, the least
+  certain token there), and that `>` is tag syntax. After this change the host
+  `--via-engine` raws and verdicts are identical to the run above (formula crops
+  `Accept` ×5).
+- **M5:** the classifier is described as reducing prose, not excluding it (above, and
+  `vision_parse.rs`'s module doc).
+- **M9:** `transcribe_image` claims the in-flight slot before it decodes the base64, so a
+  refused concurrent caller no longer allocates a decoded image first.
 
 Gates on the wave's code (WSL):
 
 | Command | Last line |
 |---|---|
-| `cargo test -p kpack-engine` | `test result: ok. 157 passed; 0 failed` (lib), `4 passed` (parity), 0 doc tests |
+| `cargo test -p kpack-engine` | `test result: ok. 158 passed; 0 failed` (lib), `4 passed` (parity), 0 doc tests |
 | `cargo build -p kpack-engine` | `Finished`, no warnings |
-| `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` | `Finished \`release\` profile [optimized] target(s) in 9.73s`, exit 0 |
+| `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` | `Finished \`release\` profile [optimized] target(s) in 8.94s`, exit 0 |
 | `npm test` | `# pass 1215`, `# fail 0` |
 
 The Windows desktop suite runs on the commit that carries this section. Its result goes in
