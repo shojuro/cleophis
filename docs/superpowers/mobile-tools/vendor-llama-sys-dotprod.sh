@@ -32,8 +32,10 @@
 #   cargo clean -p llama-cpp-sys-2 --release --target aarch64-linux-android
 # after any change here, and confirm against the ARTIFACT's own [kernels] line.
 #
-# The floor string has three homes (here, build.rs, and the Kotlin pre-load
-# gate). `mobile-tools/check-cpu-floor.py` fails if they disagree.
+# The floor string has four homes (here, build.rs's cmake define, build.rs's
+# `-march` flag on the separate cc build of llama.cpp's multimodal tool (mtmd,
+# added 2026-11-01 for the vision spike), and the Kotlin pre-load gate).
+# `mobile-tools/check-cpu-floor.py` fails if they disagree.
 #
 # This is a TEMPORARY vendored patch. The permanent fix is an upstream
 # llama-cpp-rs PR exposing a GGML cmake-define passthrough; moving [patch] to

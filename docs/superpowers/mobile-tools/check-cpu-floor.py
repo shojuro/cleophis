@@ -66,6 +66,10 @@ BUILD_RS_RE = re.compile(
 # arch string is the correct state, so this check must not demand one.
 VENDOR_DEFINE_RE = re.compile(r'GGML_CPU_ARM_ARCH\\?",\s*\\?"([^"\\]+)')
 KOTLIN_RE = re.compile(r'NATIVE_ARM_ARCH\s*:\s*String\s*=\s*"([^"]+)"')
+# 4. The multimodal tool (mtmd) is compiled by a separate cc::Build in the same
+#    build.rs, which never sees the cmake define; it carries the floor as a
+#    -march flag instead (added 2026-11-01 with the vision spike). A fourth home.
+MTMD_FLAG_RE = re.compile(r'mtmd_build\.flag\("-march=([^"]+)"\)')
 
 # Mirrors CpuSupport.v8MinorLevel. If this cannot parse the value, the Kotlin
 # gate cannot either -- and its documented behaviour on an unparseable string is
@@ -92,6 +96,7 @@ def main() -> int:
         "build.rs (truth)": find(BUILD_RS, BUILD_RS_RE, "build.rs define"),
         "vendor script (define)": find(VENDOR_SH, VENDOR_DEFINE_RE, "vendor injected define"),
         "CpuSupport.kt (gate)": find(KOTLIN, KOTLIN_RE, "Kotlin gate constant"),
+        "build.rs (mtmd cc flag)": find(BUILD_RS, MTMD_FLAG_RE, "mtmd -march flag"),
     }
     if any(v is None for v in found.values()):
         return 1

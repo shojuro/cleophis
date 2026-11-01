@@ -1053,6 +1053,19 @@ fn main() {
             mtmd_build.cpp_link_stdlib(None);
         }
 
+        // CLEOPHIS ARM ARCH FLOOR (mtmd home): the cmake build above pins
+        // GGML_CPU_ARM_ARCH for ggml; this cc build of the multimodal tool is
+        // separate and would otherwise take the NDK compiler's default. Keep the
+        // two in step (docs/superpowers/mobile-tools/check-cpu-floor.py checks
+        // both) so the image encoder cannot emit instructions the floor phone
+        // class lacks — the A51 SIGILL of 2026-07-31 was exactly that.
+        {
+            let arch_target = env::var("TARGET").unwrap_or_default();
+            if arch_target.starts_with("aarch64") && arch_target.contains("android") {
+                mtmd_build.flag("-march=armv8-a");
+            }
+        }
+
         // Collect all .cpp files in tools/mtmd and its subdirectories
         for entry in glob(mtmd_src.join("**/*.cpp").to_str().unwrap()).unwrap() {
             match entry {
