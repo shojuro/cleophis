@@ -46,6 +46,20 @@ mod engine_inproc;
 #[cfg_attr(desktop, allow(dead_code))]
 #[path = "engine_inproc/serve.rs"]
 mod engine_serve;
+/// Vision co-residency and idle-lifetime policy: the one pure decision that is
+/// a memory-safety question on the floor phone (does the transcriber stay
+/// loaded beside the tutor, or do they take turns). Declared here, and so
+/// compiled everywhere, so the desktop suite is where it is tested.
+///
+/// Dead-code allow in CANONICAL PLACEMENT (D-3 amendment): on the `mod`
+/// declaration, beside the rationale, and **cfg'd to mirror this module's
+/// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
+/// where it ships and dead only on desktop. Cfg'd rather than bare so the
+/// dead-code check stays LIVE on mobile.
+// TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
+#[cfg_attr(mobile, allow(dead_code))]
+#[cfg_attr(desktop, allow(dead_code))]
+mod vision_policy;
 /// Tool-call parsing, the closed tool registry, and the per-family prompt
 /// contract for the in-process engine. Lives under `engine_inproc/` because
 /// that is what owns it, but is declared here — and so compiled on every
