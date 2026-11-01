@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { pickHeroArtifacts, heroVariantFor } from './dist-pick.js';
+import { pickHeroArtifacts, heroVariantFor, pickVisionArtifacts, visionVariantFor } from './dist-pick.js';
 
 // 64-hex shas, distinct per artifact.
 const sha = (c) => c.repeat(64);
@@ -148,4 +148,32 @@ test('an empty, unknown or undeclared baseModel resolves to nothing', () => {
   assert.equal(heroVariantFor(TIERED_HERO, 'Qwen3-1.7B'), null);
   assert.equal(heroVariantFor({ ...FLAT_HERO, baseModel: undefined }, 'Qwen3-1.7B'), null);
   assert.equal(heroVariantFor(null, 'Qwen3-1.7B'), null);
+});
+
+// ------------------------------------------------------------------- vision
+
+const VBASE = { path: 'models/granite-docling-258M-Q8_0.gguf', sha256: sha('1'), size: 177918144, kind: 'vision_base', base_model: 'granite-docling-258M' };
+const VPROJ = { path: 'models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf', sha256: sha('2'), size: 103769792, kind: 'mmproj', base_model: 'granite-docling-258M' };
+const VISION_VARIANT = { baseModel: 'granite-docling-258M', sha256: sha('1'), mmprojSha256: sha('2') };
+
+test('vision picks the pinned base and projector by sha', () => {
+  const got = pickVisionArtifacts([...AMBIGUOUS, VBASE, VPROJ], VISION_VARIANT);
+  assert.equal(got.base, VBASE);
+  assert.equal(got.mmproj, VPROJ);
+});
+
+test('a projector listed under the wrong kind is refused by name', () => {
+  const wrong = { ...VPROJ, kind: 'adapter' };
+  assert.throws(() => pickVisionArtifacts([...AMBIGUOUS, VBASE, wrong], VISION_VARIANT), /kind 'adapter', not 'mmproj'/);
+});
+
+test('a missing projector refuses as not published and names the projector', () => {
+  assert.throws(() => pickVisionArtifacts([...AMBIGUOUS, VBASE], VISION_VARIANT), /projector/);
+});
+
+test('visionVariantFor reads the tier block and is null when the tier declares none', () => {
+  const hero = { tiers: { low: { baseModel: 'Qwen3-1.7B', vision: { baseModel: 'granite-docling-258M', sha256: sha('1'), mmprojSha256: sha('2') } }, mid: { baseModel: 'Qwen3-4B' } } };
+  assert.deepEqual(visionVariantFor(hero, 'low'), VISION_VARIANT);
+  assert.equal(visionVariantFor(hero, 'mid'), null);
+  assert.equal(visionVariantFor({ baseModel: 'Qwen3-1.7B' }, 'low'), null);
 });
