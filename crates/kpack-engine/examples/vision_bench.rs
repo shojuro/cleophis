@@ -16,7 +16,11 @@
 //!       --items items.json | --image <path> [--image <path> ...] \
 //!       [--prompt TEXT] [--max-side 512] [--threads 4] [--n-ctx 2048] \
 //!       [--n-batch 1024] [--max-tokens 256] [--repeat 1] [--json out.jsonl] \
-//!       [--raw-stb] [--one-pass]
+//!       [--raw-stb] [--one-pass] [--via-engine]
+//!
+//! `--via-engine` skips the bench's own loop and drives the product path
+//! (`LlamaVision` + `assess`) over the same items, to prove the module reproduces
+//! the spike's raw outputs.
 //!
 //! `--items` is the spike's items.json: {"items":[{"id","file",...}]}, paths
 //! relative to the file. `--raw-stb` loads the image through mtmd's own stb
@@ -105,6 +109,9 @@ fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
         // SAFETY: a plain C function over a std::atomic<int>; no pointers cross.
         unsafe { cleophis_mtmd_idefics3_overview_only(1) };
     }
+    if a.via_engine {
+        return run_via_engine(&a);
+    }
     let items = a.items()?;
     eprintln!(
         "== vision_bench: family={} model={} mmproj={} items={} max_side={} threads={} n_ctx={} n_batch={} repeat={} ==",
@@ -172,6 +179,40 @@ fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!("== done; {} ==", rss());
+    Ok(())
+}
+
+/// `--via-engine`: the product path (`LlamaVision` -> `prepare_image` -> `transcribe` -> `assess`)
+/// over the same items, printing the raw text, the verdict and the warnings.
+fn run_via_engine(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
+    use kpack_engine::{
+        assess, prepare_image as prepare_product_image, ModelSpec, ProjectorSpec, StopReason,
+        VisionBackend, VisionConfig, VisionLoadRequest,
+    };
+    let items = a.items()?;
+    let prompt = a.prompt.clone().unwrap_or_else(|| a.family.default_prompt().to_string());
+    let req = VisionLoadRequest {
+        base: ModelSpec::new(&a.model),
+        mmproj: ProjectorSpec::new(&a.mmproj),
+        config: VisionConfig {
+            n_threads: a.threads,
+            max_tokens: a.max_tokens,
+            one_pass: a.one_pass,
+            prompt,
+            ..Default::default()
+        },
+        n_gpu_layers: 0,
+    };
+    let mut handle = kpack_engine::LlamaVision::new().load(req)?;
+    for item in &items {
+        let bytes = std::fs::read(&item.path)?;
+        let img = prepare_product_image(&bytes, a.max_side)?;
+        let tr = handle.transcribe(&img, &mut || false)?;
+        let assessment = assess(&tr.tokens, tr.stop == StopReason::MaxTokens);
+        eprintln!("[{}] img_tok {} stop {:?}", item.id, tr.n_image_tokens, tr.stop);
+        eprintln!("    raw: {}", tr.raw.replace('\n', "\\n"));
+        eprintln!("    verdict: {:?} warnings {:?}", assessment.verdict, assessment.warnings);
+    }
     Ok(())
 }
 
@@ -271,7 +312,7 @@ fn run_item(
     loop {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
-        logprobs.push(if logits_tracked { Some(logprob_of(ctx.get_logits_ith(0), token.0 as usize, n_vocab)) } else { None });
+        logprobs.push(if logits_tracked { Some(kpack_engine::vision::logprob_of(ctx.get_logits_ith(0), token.0 as usize, n_vocab)) } else { None });
         if model.is_eog_token(token) {
             break;
         }
@@ -317,16 +358,6 @@ fn run_item(
         "raw": raw, "token_logprobs": logprobs,
         "vmrss_kb": vmrss_kb, "vmhwm_kb": vmhwm_kb,
     }))
-}
-
-fn logprob_of(logits: &[f32], token: usize, n_vocab: usize) -> f32 {
-    let n = logits.len().min(n_vocab);
-    if token >= n {
-        return f32::NEG_INFINITY;
-    }
-    let max = logits[..n].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let sum: f64 = logits[..n].iter().map(|&l| ((l - max) as f64).exp()).sum();
-    (logits[token] - max) as f32 - (sum.ln() as f32)
 }
 
 struct Prep {
@@ -418,6 +449,7 @@ struct Args {
     raw_stb: bool,
     one_pass: bool,
     time_encode: bool,
+    via_engine: bool,
 }
 
 impl Args {
@@ -439,6 +471,7 @@ impl Args {
             raw_stb: false,
             one_pass: false,
             time_encode: false,
+            via_engine: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(f) = it.next() {
@@ -459,6 +492,7 @@ impl Args {
                 "--json" => a.json_out = Some(v()?),
                 "--raw-stb" => a.raw_stb = true,
                 "--one-pass" => a.one_pass = true,
+                "--via-engine" => a.via_engine = true,
                 "--no-time-encode" => a.time_encode = false,
                 "--time-encode" => a.time_encode = true,
                 o => return Err(format!("unknown flag {o}")),

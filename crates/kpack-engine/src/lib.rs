@@ -74,6 +74,9 @@ pub mod probe_io;
 #[cfg(feature = "real")]
 pub mod llama;
 
+#[cfg(feature = "vision")]
+pub mod vision;
+
 pub use adapter::{
     file_sha256, prepare_stack, prepare_vision_stack, AdapterRole, AdapterSpec, ModelSpec,
     PreparedStack, PreparedVisionStack, ProjectorSpec, VerifyCache,
@@ -94,3 +97,6 @@ pub use vision_parse::{assess, normalise_display, parse_doctags, Assessment, Blo
 
 #[cfg(feature = "real")]
 pub use llama::{backend_system_info, print_kernel_report, shared_backend, LlamaEngine};
+
+#[cfg(feature = "vision")]
+pub use vision::LlamaVision;
