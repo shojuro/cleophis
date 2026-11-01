@@ -104,10 +104,11 @@ fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
         a.family.name(), a.model, a.mmproj, items.len(), a.max_side, a.threads, a.n_ctx, a.n_batch, a.repeat
     );
 
-    let backend = LlamaBackend::init()?;
+    // One backend per process: reuse the engine's (print_kernel_report above already initialised it).
+    let backend = kpack_engine::shared_backend()?;
     let t = Instant::now();
     let model_params = LlamaModelParams::default().with_n_gpu_layers(0);
-    let model = LlamaModel::load_from_file(&backend, &a.model, &model_params)?;
+    let model = LlamaModel::load_from_file(backend, &a.model, &model_params)?;
     let load_model_ms = t.elapsed().as_millis();
     eprintln!("== model loaded in {load_model_ms} ms; {} ==", rss());
 
@@ -139,7 +140,7 @@ fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     for rep in 0..a.repeat {
         for item in &items {
-            let rec = match run_item(&a, &backend, &model, &mtmd, &template, &prompt, item, rep) {
+            let rec = match run_item(&a, backend, &model, &mtmd, &template, &prompt, item, rep) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("[{}] rep {} ERROR {e}", item.id, rep);

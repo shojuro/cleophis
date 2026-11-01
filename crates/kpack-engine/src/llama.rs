@@ -58,7 +58,13 @@ use crate::template::{role_name, ChatMessage, ChatTemplate, ThinkStripper};
 static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 static BACKEND_INIT_LOCK: Mutex<()> = Mutex::new(());
 
-fn shared_backend() -> Result<&'static LlamaBackend, EngineError> {
+/// The process-wide llama backend. Public since the vision spike (2026-11-01):
+/// llama.cpp allows exactly one `llama_backend_init` per process, so every
+/// in-process user — the chat engine, a vision transcriber, a bench — must
+/// share this one rather than call `LlamaBackend::init()` itself (the second
+/// caller gets `BackendAlreadyInitialized`; A34(g) records the same clash
+/// between this crate and kpack-embed).
+pub fn shared_backend() -> Result<&'static LlamaBackend, EngineError> {
     if let Some(b) = BACKEND.get() {
         return Ok(b);
     }

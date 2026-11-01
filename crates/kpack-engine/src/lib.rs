@@ -83,4 +83,4 @@ pub use template::{
 };
 
 #[cfg(feature = "real")]
-pub use llama::{backend_system_info, print_kernel_report, LlamaEngine};
+pub use llama::{backend_system_info, print_kernel_report, shared_backend, LlamaEngine};
