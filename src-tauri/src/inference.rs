@@ -82,6 +82,12 @@ pub struct EngineInfo {
     /// The document transcriber's state, present only once the tier declares a
     /// vision variant or its files are installed, so a build without vision
     /// serialises exactly the fields it always did.
+    ///
+    /// `declared` and `installed` here are STAMPED by the last successful tutor
+    /// load, for the `engine-ready` payload; they go stale when the vision files
+    /// are downloaded later, and stay unset while no tutor has loaded. The live
+    /// answer is the `vision_state` command (`vision_cmds`), which computes the
+    /// same three flags at call time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vision: Option<VisionInfo>,
 }
@@ -100,6 +106,23 @@ pub struct VisionInfo {
     /// The device may keep the transcriber loaded beside the tutor
     /// (see `vision_policy::coresident`).
     pub coresident: bool,
+}
+
+impl VisionInfo {
+    /// `None` ("this tier has no vision") unless the tier declares a
+    /// transcriber or its files are on disk. The one home of that rule, shared
+    /// by the stamped [`EngineInfo::vision`] and the live `vision_state`.
+    pub(crate) fn from_flags(declared: bool, installed: bool, coresident: bool) -> Option<Self> {
+        (declared || installed).then_some(VisionInfo { declared, installed, coresident })
+    }
+
+    /// Whether a prewarm can keep anything resident: the files are on disk AND
+    /// the device keeps the transcriber beside the tutor. Anything else would
+    /// only end an open chat session (and its KV cache) for nothing.
+    #[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile) `prewarm_vision`
+    pub(crate) fn can_prewarm(&self) -> bool {
+        self.installed && self.coresident
+    }
 }
 
 pub struct Engine {
@@ -164,12 +187,14 @@ pub struct Engine {
     /// same lock, where the resource two concurrent loads would fight over is
     /// RAM rather than a port.
     pub(crate) restart_lock: Mutex<()>,
-    /// The effective tier declares a vision variant. Written by the engine
-    /// thread; read by [`Engine::info`].
+    /// The effective tier declares a vision variant. Stamped by the engine
+    /// thread at each successful tutor load; read by [`Engine::info`] for the
+    /// `engine-ready` payload only (`vision_state` computes it live).
     pub(crate) vision_declared: AtomicBool,
-    /// Both vision files resolve on disk.
+    /// Both vision files resolve on disk. Stamped like `vision_declared`.
     pub(crate) vision_installed: AtomicBool,
     /// The transcriber may stay loaded beside the tutor on this device.
+    /// Written once when the engine thread starts.
     pub(crate) vision_coresident: AtomicBool,
 }
 
@@ -213,15 +238,11 @@ impl Engine {
             status: self.status.lock().unwrap().clone(),
             gpu_offload: self.gpu_offload.load(Ordering::Relaxed),
             n_ctx: self.n_ctx.load(Ordering::Relaxed),
-            vision: {
-                let declared = self.vision_declared.load(Ordering::Relaxed);
-                let installed = self.vision_installed.load(Ordering::Relaxed);
-                (declared || installed).then(|| VisionInfo {
-                    declared,
-                    installed,
-                    coresident: self.vision_coresident.load(Ordering::Relaxed),
-                })
-            },
+            vision: VisionInfo::from_flags(
+                self.vision_declared.load(Ordering::Relaxed),
+                self.vision_installed.load(Ordering::Relaxed),
+                self.vision_coresident.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -1122,6 +1143,29 @@ mod tests {
         let v = serde_json::to_value(e.info()).unwrap();
         assert_eq!(v["vision"]["declared"], true);
         assert_eq!(v["vision"]["installed"], false);
+        assert_eq!(v["vision"]["coresident"], false);
+        // Installed without a declaration (a tier switch away from vision
+        // before the sweep) is still reported, not hidden.
+        let e = Engine::new(1);
+        e.vision_installed.store(true, std::sync::atomic::Ordering::Relaxed);
+        e.vision_coresident.store(true, std::sync::atomic::Ordering::Relaxed);
+        let v = serde_json::to_value(e.info()).unwrap();
+        assert_eq!(v["vision"]["declared"], false);
+        assert_eq!(v["vision"]["installed"], true);
+        assert_eq!(v["vision"]["coresident"], true);
+    }
+
+    #[test]
+    fn vision_info_exists_once_declared_or_installed_and_prewarms_only_when_both_hold() {
+        // The rule `vision_state` applies to its LIVE flags (final review I3);
+        // the flags themselves need an AppHandle, so only the rule runs here.
+        assert!(VisionInfo::from_flags(false, false, true).is_none());
+        let declared_only = VisionInfo::from_flags(true, false, true).unwrap();
+        assert!((declared_only.declared, declared_only.installed) == (true, false));
+        assert!(!declared_only.can_prewarm(), "nothing to load: a prewarm would only end the chat session");
+        assert!(!VisionInfo::from_flags(true, true, false).unwrap().can_prewarm(), "sequential device");
+        assert!(VisionInfo::from_flags(true, true, true).unwrap().can_prewarm());
+        assert!(VisionInfo::from_flags(false, true, true).unwrap().can_prewarm());
     }
 
     fn unique_dir(name: &str) -> PathBuf {

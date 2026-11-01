@@ -259,19 +259,39 @@ mod imp {
         }
     }
 
+    /// The transcriber's state NOW, not as stamped at the last tutor load
+    /// (`EngineInfo.vision`), which misses a later download and is unset while
+    /// no tutor has loaded (final review I3). Each flag is cheap: a catalog
+    /// read, two `exists()` calls, and a memory-size read.
+    ///
+    /// `coresident` is recomputed from the device's RAM rather than read from
+    /// `Engine::vision_coresident`, because that atomic is written only when the
+    /// engine thread starts and is still `false` before then (no model yet). It
+    /// is the same expression the thread evaluates, over a total that does not
+    /// change while the process lives, so the two agree once the thread runs;
+    /// the thread's own value stays authoritative for what it loads.
+    fn live_vision_info(app: &AppHandle) -> Option<VisionInfo> {
+        VisionInfo::from_flags(
+            crate::inference::hero_vision(app).is_some(),
+            crate::inference::resolve_vision(app).is_some(),
+            crate::vision_policy::coresident(crate::hardware::detect().ram_gb),
+        )
+    }
+
     pub(super) fn prewarm_vision(app: AppHandle) -> Result<(), String> {
-        let engine = app.state::<Arc<Engine>>().inner().clone();
         // A prewarm that cannot keep anything resident would only end an open
-        // chat session and drop its KV cache, so send it only when the device
-        // is co-resident. Advisory either way: never an error.
-        if matches!(engine.info().vision, Some(VisionInfo { coresident: true, .. })) {
+        // chat session and drop its KV cache, so send it only when the files
+        // are installed AND the device is co-resident. Advisory either way:
+        // never an error.
+        if live_vision_info(&app).is_some_and(|v| v.can_prewarm()) {
+            let engine = app.state::<Arc<Engine>>().inner().clone();
             let _ = crate::engine_inproc::send_command(&engine, Command::PrewarmVision);
         }
         Ok(())
     }
 
     pub(super) fn vision_state(app: AppHandle) -> Result<Option<VisionInfo>, String> {
-        Ok(app.state::<Arc<Engine>>().info().vision)
+        Ok(live_vision_info(&app))
     }
 }
 
@@ -296,8 +316,9 @@ pub async fn transcribe_image(
 }
 
 /// Load the transcriber ahead of the first image (the camera just opened).
-/// Advisory: `Ok(())` even when nothing is running or nothing can be kept
-/// resident.
+/// Sent to the engine only when the transcriber is installed and may stay
+/// resident beside the tutor. Advisory: `Ok(())` even when nothing is running
+/// or nothing can be kept resident.
 #[tauri::command]
 pub fn prewarm_vision(app: AppHandle) -> Result<(), String> {
     #[cfg(mobile)]
@@ -311,8 +332,10 @@ pub fn prewarm_vision(app: AppHandle) -> Result<(), String> {
     }
 }
 
-/// What the frontend may know about the transcriber on this tier, or `None`
-/// when the tier has no vision.
+/// What the frontend may know about the transcriber on this tier, computed at
+/// call time (unlike `EngineInfo.vision`, which is stamped at the last tutor
+/// load), or `None` when the tier neither declares a transcriber nor has its
+/// files on disk. Independent of the engine's status.
 #[tauri::command]
 pub fn vision_state(app: AppHandle) -> Result<Option<VisionInfo>, String> {
     #[cfg(mobile)]
