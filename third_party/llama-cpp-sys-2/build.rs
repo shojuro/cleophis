@@ -1075,6 +1075,10 @@ fn main() {
                     if filename == "mtmd-cli.cpp" || filename == "deprecation-warning.cpp" {
                         continue;
                     }
+                    // CLEOPHIS: the vendored mtmd sources are patched in-tree; cargo must
+                    // recompile when they change (found 2026-11-01: a patch was silently
+                    // not built).
+                    println!("cargo:rerun-if-changed={}", path.display());
                     mtmd_build.file(&path);
                 }
                 Err(e) => println!("cargo:warning=mtmd glob error: {}", e),

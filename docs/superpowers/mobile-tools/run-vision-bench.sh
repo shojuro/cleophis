@@ -114,7 +114,8 @@ echo "== running on the device (log $LOG) =="
 # multi-word --prompt survives (an unquoted expansion split it into "flags" once).
 EXTRA_Q=""
 for arg in "${EXTRA[@]+"${EXTRA[@]}"}"; do EXTRA_Q+=" '${arg//\'/\'\\\'\'}'"; done
-adbs shell "cd $DEV && LD_LIBRARY_PATH=$DEV ${NICE:-nice -n 0} ./vision_bench \
+# BENCH_ENV: extra environment for the bench on the device, e.g. "MTMD_IDEFICS3_NO_TILE=1".
+adbs shell "cd $DEV && LD_LIBRARY_PATH=$DEV ${BENCH_ENV:-} ${NICE:-nice -n 0} ./vision_bench \
   --model $DEV/$(basename "$MODEL") --mmproj $DEV/$(basename "$MMPROJ") --family $FAMILY \
   --items $DEV/images/items.json --json $DEVJSON$EXTRA_Q" 2>&1 | tee "$LOG"
 if grep -q "INCOMPATIBLE" "$LOG"; then

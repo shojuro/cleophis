@@ -1,4 +1,5 @@
 #include "mtmd-image.h"
+#include <cstdlib>
 
 #include <algorithm>
 #include <cmath>
@@ -1062,7 +1063,15 @@ bool mtmd_image_preprocessor_idefics3::preprocess(const clip_image_u8 & img, cli
         static_cast<int>(std::ceil(static_cast<float>(refined_size.width) / hparams.image_size)),
         static_cast<int>(std::ceil(static_cast<float>(refined_size.height) / hparams.image_size)),
     };
-    for (int y = 0; y < refined_size.height; y += hparams.image_size) {
+    // CLEOPHIS (vision spike, 2026-11-01): HF's idefics3 processor with
+    // do_image_splitting=false emits ONLY the global image; upstream mtmd always
+    // adds the tile grid, so an image that fits one tile still costs two encoder
+    // passes. With MTMD_IDEFICS3_NO_TILE=1 and a 1x1 grid, emit the overview only.
+    // Opt-in by environment for the spike; a product build would make this a
+    // context parameter. Default behaviour is unchanged.
+    const bool no_tile_single = instructions.grid_size.width == 1 && instructions.grid_size.height == 1
+        && std::getenv("MTMD_IDEFICS3_NO_TILE") != nullptr;
+    for (int y = 0; y < refined_size.height && !no_tile_single; y += hparams.image_size) {
         for (int x = 0; x < refined_size.width; x += hparams.image_size) {
             // LOG_INF("%s: adding slice at x=%d, y=%d\n", __func__, x, y);
             instructions.slices.push_back(mtmd_image_preprocessor_llava_uhd::slice_coordinates{
