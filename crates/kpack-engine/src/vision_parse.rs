@@ -2,12 +2,20 @@
 //! can show and a verdict it must obey. Pure and outside the `vision` gate.
 //!
 //! granite-docling speaks DocTags: `<loc_x><loc_y><loc_x2><loc_y2>` before each
-//! element, optional `<doctag>…</doctag>` / `<formula>…</formula>` wrappers,
-//! labels as `\text{…}\colon` or a plain line ending in `:`. Everything after a
-//! closing `</doctag>` is dropped — that is where "transcriber, never a
-//! teacher" is enforced in code rather than in a prompt. A `<loc_N>` tag anywhere
-//! in a line starts a new element, and every other tag-shaped run is removed, so
-//! no tag bytes reach a block.
+//! element, `<doctag>…</doctag>` / `<formula>…</formula>` wrappers (CONTROL
+//! tokens in its vocabulary, which `vision.rs` renders so that they reach this
+//! parser), labels as `\text{…}\colon` or a plain line ending in `:`. A
+//! `<loc_N>` tag anywhere in a line starts a new element, and every other
+//! tag-shaped run is removed, so no tag bytes reach a block.
+//!
+//! The document end is guarded twice. `vision.rs` stops generation when the
+//! model samples the `</doctag>` token, so a model that would keep talking after
+//! its document never writes the words; and [`parse_doctags`] drops everything
+//! after a [`DOC_END_TAG`] in the text, the backstop for a vocabulary without
+//! that token or a caller that renders pieces without control tokens. Neither
+//! guard looks INSIDE the document: prose there is kept out of `latex` blocks by
+//! `classify`'s word count, which reduces prose in the tutor-bound blocks but
+//! cannot exclude it. The confirmation gate is the check on top.
 //!
 //! Confidence is `exp(mean log-probability)` over the block's tracked tokens
 //! (a logprob that is not finite or is positive counts as untracked; a block
@@ -25,6 +33,9 @@ use std::ops::Range;
 pub const ACCEPT_MIN_CONFIDENCE: f32 = 0.90;
 pub const REVIEW_MIN_CONFIDENCE: f32 = 0.70;
 pub const OPERATOR_MIN_PROB: f32 = 0.97;
+/// The DocTags document end. `vision.rs` stops generation on this token and
+/// [`parse_doctags`] cuts the text here.
+pub const DOC_END_TAG: &str = "</doctag>";
 /// Deepest `{` nesting `normalise_display` will tokenise. Real maths stays in
 /// single digits; a repetition loop of `{ { {` can reach tens of thousands.
 pub const MAX_GROUP_DEPTH: usize = 32;
@@ -187,7 +198,7 @@ fn strip_tags(line: &str, base: usize) -> Vec<Item> {
 /// Strip DocTags markup and split into (kind, content, span-in-raw) blocks.
 pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
     // Everything after the document end is not transcription.
-    let end = raw.find("</doctag>").unwrap_or(raw.len());
+    let end = raw.find(DOC_END_TAG).unwrap_or(raw.len());
     let doc = &raw[..end];
     let mut out = Vec::new();
     let mut line_start = 0usize;
@@ -617,12 +628,61 @@ mod tests {
 
     #[test]
     fn anything_after_a_closing_doctag_is_discarded() {
-        // "Never a teacher": a model that keeps talking after the document end
-        // does not reach the tutor.
-        let raw = "<doctag><formula><loc_0><loc_0><loc_500><loc_500>x ^ { 2 } = 4</formula></doctag>\nThe solutions are x = 2 and x = -2.";
+        // The parser's backstop for the document end. The prefix is the shape
+        // `vision.rs` really produces now that it renders control tokens (host
+        // `--via-engine`, page set: `…</formula>\n</doctag>`); the product also
+        // STOPS at the `</doctag>` token, so the continuation here can only come
+        // from a caller without that stop.
+        let raw = "<doctag><formula><loc_0><loc_0><loc_500><loc_500>x ^ { 2 } = 4</formula>\n</doctag>The solutions are x = 2 and x = -2.";
         let blocks = parse_doctags(raw);
         assert_eq!(blocks.len(), 1, "{blocks:?}");
         assert_eq!(blocks[0].1, "x ^ { 2 } = 4");
+    }
+
+    #[test]
+    fn a_real_page_output_with_its_control_tokens_parses_into_label_and_maths() {
+        // Verbatim host `--via-engine` raw (page set, p05, two-pass): every
+        // DocTags wrapper is present, and generation ended on `</doctag>`.
+        let raw = "<doctag><text><loc_30><loc_75><loc_271><loc_102>Solve the system:</text>\n<formula><loc_30><loc_104><loc_168><loc_130>x + y = 7</formula>\n<formula><loc_30><loc_132><loc_169><loc_161>x - y = - 1</formula>\n</doctag>";
+        let blocks: Vec<(BlockKind, String)> = parse_doctags(raw).into_iter().map(|b| (b.0, b.1)).collect();
+        assert_eq!(
+            blocks,
+            vec![
+                (BlockKind::Text, "Solve the system:".to_string()),
+                (BlockKind::Latex, "x + y = 7".to_string()),
+                (BlockKind::Latex, "x - y = - 1".to_string()),
+            ]
+        );
+        // And the formula crops' shape (p01): the wrapper costs nothing.
+        let raw = "<formula><loc_0><loc_0><loc_500><loc_500>3 x - 7 = 2 x + 5</formula>";
+        let blocks = parse_doctags(raw);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(&raw[blocks[0].2.clone()], "3 x - 7 = 2 x + 5");
+    }
+
+    #[test]
+    fn a_continuation_rendered_without_control_tokens_fuses_into_the_maths() {
+        // The final review's probe: with `special = false` the `</formula>` and
+        // `</doctag>` tokens print as nothing, so prose the model writes after
+        // its document lands in the same element as the maths. No parse rule
+        // can see a boundary that is not in the text: it is one LATEX block and
+        // the verdict is Accept. That is why `vision.rs` renders control tokens
+        // and stops at the `</doctag>` token, which makes this input
+        // unreachable from the product path. (If `classify` ever learns to
+        // catch it, flip these two assertions.)
+        let fused = "<loc_0><loc_0><loc_500><loc_500>x = 2The answer is x = 2";
+        let blocks = parse_doctags(fused);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].0, BlockKind::Latex, "{blocks:?}");
+        assert_eq!(assess(&toks(fused, -0.01), false).verdict, Verdict::Accept);
+        // The same generation as `vision.rs` now renders it: the cut drops the prose.
+        let rendered = "<formula><loc_0><loc_0><loc_500><loc_500>x = 2</formula></doctag>The answer is x = 2";
+        let blocks = parse_doctags(rendered);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].1, "x = 2");
+        let a = assess(&toks(rendered, -0.01), false);
+        assert_eq!(a.blocks.len(), 1);
+        assert_eq!(a.blocks[0].content, "x=2");
     }
 
     #[test]
