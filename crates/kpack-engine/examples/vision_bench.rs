@@ -16,7 +16,7 @@
 //!       --items items.json | --image <path> [--image <path> ...] \
 //!       [--prompt TEXT] [--max-side 512] [--threads 4] [--n-ctx 2048] \
 //!       [--n-batch 1024] [--max-tokens 256] [--repeat 1] [--json out.jsonl] \
-//!       [--raw-stb]
+//!       [--raw-stb] [--one-pass]
 //!
 //! `--items` is the spike's items.json: {"items":[{"id","file",...}]}, paths
 //! relative to the file. `--raw-stb` loads the image through mtmd's own stb
@@ -98,6 +98,13 @@ struct Item {
 
 fn run(a: Args) -> Result<(), Box<dyn std::error::Error>> {
     kpack_engine::print_kernel_report();
+    extern "C" {
+        fn cleophis_mtmd_idefics3_overview_only(enable: std::os::raw::c_int) -> std::os::raw::c_int;
+    }
+    if a.one_pass {
+        // SAFETY: a plain C function over a std::atomic<int>; no pointers cross.
+        unsafe { cleophis_mtmd_idefics3_overview_only(1) };
+    }
     let items = a.items()?;
     eprintln!(
         "== vision_bench: family={} model={} mmproj={} items={} max_side={} threads={} n_ctx={} n_batch={} repeat={} ==",
@@ -409,6 +416,7 @@ struct Args {
     repeat: u32,
     json_out: Option<String>,
     raw_stb: bool,
+    one_pass: bool,
     time_encode: bool,
 }
 
@@ -429,6 +437,7 @@ impl Args {
             repeat: 1,
             json_out: None,
             raw_stb: false,
+            one_pass: false,
             time_encode: false,
         };
         let mut it = std::env::args().skip(1);
@@ -449,6 +458,7 @@ impl Args {
                 "--repeat" => a.repeat = v()?.parse().map_err(|e| format!("--repeat: {e}"))?,
                 "--json" => a.json_out = Some(v()?),
                 "--raw-stb" => a.raw_stb = true,
+                "--one-pass" => a.one_pass = true,
                 "--no-time-encode" => a.time_encode = false,
                 "--time-encode" => a.time_encode = true,
                 o => return Err(format!("unknown flag {o}")),

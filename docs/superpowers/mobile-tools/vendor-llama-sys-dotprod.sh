@@ -45,13 +45,13 @@
 #      fourth floor home; the cc build does not see the cmake define).
 #   2. build.rs, mtmd glob loop: `cargo:rerun-if-changed` per mtmd source, or a
 #      source patch under tools/mtmd is silently not recompiled (measured).
-#   3. llama.cpp/tools/mtmd/mtmd-image.cpp, idefics3 preprocessor: with the
-#      environment variable MTMD_IDEFICS3_NO_TILE set and a 1x1 tile grid,
-#      emit only the global (overview) image — HF's do_image_splitting=false.
+#   3. llama.cpp/tools/mtmd/mtmd-image.cpp, idefics3 preprocessor: a C-linkage
+#      setter cleophis_mtmd_idefics3_overview_only(int) over a process-global
+#      atomic; when on and the tile grid is 1x1, emit only the global (overview)
+#      image — HF's do_image_splitting=false.
 #      Upstream always adds the tile grid, so a 512-px input costs two encoder
 #      passes; on the A22 that is the difference between ~16 s and ~9 s per
-#      image. Opt-in; default behaviour unchanged. A product build should make
-#      it a context parameter (Stage 1 of the vision plan).
+#      image. Default behaviour unchanged (switch off).
 # Verify after rebuild with mobile-tools/audit-arch-floor.sh on the artifact.
 #
 # This is a TEMPORARY vendored patch. The permanent fix is an upstream
@@ -144,26 +144,37 @@ python3 - "$DEST/llama.cpp/tools/mtmd/mtmd-image.cpp" <<'PY'
 import sys
 path = sys.argv[1]
 src = open(path).read()
-if "MTMD_IDEFICS3_NO_TILE" in src:
+if "cleophis_mtmd_idefics3_overview_only" in src:
     print("mtmd-image.cpp already patched"); raise SystemExit(0)
 inc = '#include "mtmd-image.h"\n'
 assert src.startswith(inc), "mtmd-image.cpp no longer starts with its own header — re-inspect"
-src = src.replace(inc, inc + "#include <cstdlib>\n", 1)
+setter = (
+    "#include <atomic>\n"
+    "\n"
+    "// CLEOPHIS (vision, 2026-11-01): process-global switch for the idefics3\n"
+    "// preprocessor below. Set from Rust (kpack-engine/src/vision.rs) through the\n"
+    "// C-linkage setter; 0 = upstream behaviour (global image + tile grid).\n"
+    "static std::atomic<int> g_cleophis_idefics3_overview_only{0};\n"
+    "extern \"C\" int cleophis_mtmd_idefics3_overview_only(int enable) {\n"
+    "    return g_cleophis_idefics3_overview_only.exchange(enable);\n"
+    "}\n"
+)
+src = src.replace(inc, inc + setter, 1)
 loop = "    for (int y = 0; y < refined_size.height; y += hparams.image_size) {\n"
 assert src.count(loop) == 1, "idefics3 tile loop anchor not unique — re-inspect"
 patch = (
-    "    // CLEOPHIS (vision spike, 2026-11-01): HF's idefics3 processor with\n"
+    "    // CLEOPHIS (vision, 2026-11-01): HF's idefics3 processor with\n"
     "    // do_image_splitting=false emits ONLY the global image; upstream mtmd always\n"
     "    // adds the tile grid, so an image that fits one tile still costs two encoder\n"
-    "    // passes. With MTMD_IDEFICS3_NO_TILE=1 and a 1x1 grid, emit the overview only.\n"
-    "    // Opt-in by environment for the spike; a product build would make this a\n"
-    "    // context parameter. Default behaviour is unchanged.\n"
+    "    // passes (measured on the A22: 16 s vs 9 s per formula crop). When the\n"
+    "    // process-global switch is on and the grid is 1x1, emit the overview only.\n"
+    "    // Default behaviour is unchanged.\n"
     "    const bool no_tile_single = instructions.grid_size.width == 1 && instructions.grid_size.height == 1\n"
-    "        && std::getenv(\"MTMD_IDEFICS3_NO_TILE\") != nullptr;\n"
+    "        && g_cleophis_idefics3_overview_only.load() != 0;\n"
     "    for (int y = 0; y < refined_size.height && !no_tile_single; y += hparams.image_size) {\n"
 )
 open(path, "w").write(src.replace(loop, patch, 1))
-print("patched mtmd-image.cpp (MTMD_IDEFICS3_NO_TILE opt-in, idefics3 overview-only)")
+print("patched mtmd-image.cpp (cleophis_mtmd_idefics3_overview_only setter, idefics3 overview-only)")
 PY
 
 cat <<EOF
