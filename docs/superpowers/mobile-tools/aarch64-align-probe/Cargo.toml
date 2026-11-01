@@ -16,4 +16,4 @@ crate-type = ["cdylib"]
 [dependencies]
 # Relative path to the engine crate (repo-root/crates/kpack-engine), so the
 # probe is portable across checkouts.
-kpack-engine = { path = "../../../../crates/kpack-engine", features = ["real"] }
+kpack-engine = { path = "../../../../crates/kpack-engine", features = ["real", "vision"] }

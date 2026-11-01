@@ -1711,10 +1711,17 @@ git commit -m "vision(7): resolve_vision + vision_hashes (fail-closed), EngineIn
 - Produces (serve.rs):
   ```rust
   pub(crate) struct TranscribeJob { pub image: Vec<u8>, pub cancel: Arc<AtomicBool>, pub reply: mpsc::Sender<Result<TranscribeOutcome, String>> }
-  pub(crate) struct TranscribeOutcome { pub assessment: kpack_engine::Assessment, pub n_image_tokens: usize, pub prefill_ms: u64, pub decode_ms: u64, pub prep_ms: u64, pub reload_ms: Option<u64>, pub truncated: bool, pub peak_rss_kb: u64, pub coresident: bool }
+  // Crate-local mirrors of kpack_engine's vision_parse types. serve.rs and vision_cmds.rs are
+  // compiled on DESKTOP too, where `kpack_engine` is not a dependency at all (src-tauri/Cargo.toml
+  // pulls it only under cfg(target_os = "android")), so nothing here may name a kpack type.
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub(crate) enum OutcomeKind { Latex, Text }
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub(crate) enum OutcomeWarning { LowConfidence, OperatorUncertain, NoMathFound, InvalidLatex, Truncated }
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub(crate) enum OutcomeVerdict { Accept, Review, Refuse }
+  #[derive(Debug, Clone, PartialEq)] pub(crate) struct OutcomeBlock { pub kind: OutcomeKind, pub content: String, pub confidence: f32, pub min_operator_prob: Option<f32> }
+  pub(crate) struct TranscribeOutcome { pub blocks: Vec<OutcomeBlock>, pub warnings: Vec<OutcomeWarning>, pub verdict: OutcomeVerdict, pub n_image_tokens: usize, pub prefill_ms: u64, pub decode_ms: u64, pub prep_ms: u64, pub reload_ms: Option<u64>, pub truncated: bool, pub peak_rss_kb: u64, pub coresident: bool }
   // Command gains: Transcribe(TranscribeJob), PrewarmVision
   ```
-  `TranscribeOutcome` is `cfg`-free and lives in `serve.rs` (compiled everywhere) so Task 9's wire mapping and the desktop suite can see it.
+  `TranscribeOutcome` and its mirror enums are `cfg`-free and live in `serve.rs` (compiled everywhere) so Task 9's wire mapping and the desktop suite can see them. The mapping from `kpack_engine::Assessment` to these mirrors is `fn outcome_parts(a: kpack_engine::Assessment) -> (Vec<OutcomeBlock>, Vec<OutcomeWarning>, OutcomeVerdict)` in `engine_inproc.rs` (mobile-only; a three-`match` function).
 - Consumes: `kpack_engine::{LlamaVision, VisionBackend, VisionHandle, VisionLoadRequest, VisionConfig, ProjectorSpec, prepare_image, assess}`, `crate::inference::{resolve_vision, vision_hashes, hero_vision}`, `crate::vision_policy`.
 
 - [ ] **Step 1: RED (routing)** — in `serve.rs` tests:
@@ -1748,7 +1755,7 @@ Add the two variants and the two structs (with doc comments: why they yield — 
 
 - [ ] **Step 2: The outer loop** in `engine_inproc.rs`:
 
-Add imports `kpack_engine::{assess, prepare_image, LlamaVision, ProjectorSpec, VisionBackend, VisionConfig, VisionHandle, VisionLoadRequest}` and `crate::engine_serve::{TranscribeJob, TranscribeOutcome}`.
+Add imports `kpack_engine::{assess, prepare_image, LlamaVision, ProjectorSpec, VisionBackend, VisionConfig, VisionHandle, VisionLoadRequest}` and `crate::engine_serve::{OutcomeBlock, OutcomeKind, OutcomeVerdict, OutcomeWarning, TranscribeJob, TranscribeOutcome}`.
 
 In `run()`: after `let backend = LlamaEngine::new();` add `let vision_backend = LlamaVision::new(); let mut vision: Option<Box<dyn VisionHandle>> = None; let ram_gb = crate::hardware::detect().ram_gb; let coresident = crate::vision_policy::coresident(ram_gb); engine.vision_coresident.store(coresident, Ordering::Relaxed);`.
 
@@ -1863,8 +1870,11 @@ fn transcribe_one(
     let truncated = tr.stop == kpack_engine::StopReason::MaxTokens;
     let assessment = assess(&tr.tokens, truncated);
     eprintln!("[vision] verdict {:?} warnings {:?} blocks {}", assessment.verdict, assessment.warnings, assessment.blocks.len());
+    let (blocks, warnings, verdict) = outcome_parts(assessment);
     Ok(TranscribeOutcome {
-        assessment,
+        blocks,
+        warnings,
+        verdict,
         n_image_tokens: tr.n_image_tokens,
         prefill_ms: tr.timings.prefill_ms,
         decode_ms: tr.timings.decode_ms,
@@ -1874,6 +1884,26 @@ fn transcribe_one(
         peak_rss_kb: vm_hwm_kb(),
         coresident,
     })
+}
+
+/// kpack's assessment, as the crate-local mirrors `serve.rs` carries everywhere.
+fn outcome_parts(a: kpack_engine::Assessment) -> (Vec<OutcomeBlock>, Vec<OutcomeWarning>, OutcomeVerdict) {
+    use kpack_engine::{BlockKind, Verdict, Warning};
+    let blocks = a.blocks.into_iter().map(|b| OutcomeBlock {
+        kind: match b.kind { BlockKind::Latex => OutcomeKind::Latex, BlockKind::Text => OutcomeKind::Text },
+        content: b.content,
+        confidence: b.confidence,
+        min_operator_prob: b.min_operator_prob,
+    }).collect();
+    let warnings = a.warnings.into_iter().map(|w| match w {
+        Warning::LowConfidence => OutcomeWarning::LowConfidence,
+        Warning::OperatorUncertain => OutcomeWarning::OperatorUncertain,
+        Warning::NoMathFound => OutcomeWarning::NoMathFound,
+        Warning::InvalidLatex => OutcomeWarning::InvalidLatex,
+        Warning::Truncated => OutcomeWarning::Truncated,
+    }).collect();
+    let verdict = match a.verdict { Verdict::Accept => OutcomeVerdict::Accept, Verdict::Review => OutcomeVerdict::Review, Verdict::Refuse => OutcomeVerdict::Refuse };
+    (blocks, warnings, verdict)
 }
 
 fn vm_hwm_kb() -> u64 {
@@ -1931,13 +1961,11 @@ git commit -m "vision(8): the inference thread serves Transcribe and PrewarmVisi
 ```rust
     #[test]
     fn the_wire_shape_is_camel_case_and_names_the_verdict_in_lower_case() {
-        use kpack_engine::{Assessment, Block, BlockKind, Verdict, Warning};
+        use crate::engine_serve::{OutcomeBlock, OutcomeKind, OutcomeVerdict, OutcomeWarning};
         let outcome = crate::engine_serve::TranscribeOutcome {
-            assessment: Assessment {
-                blocks: vec![Block { kind: BlockKind::Latex, content: "3x-7=2x+5".into(), confidence: 0.99, min_operator_prob: Some(0.995), n_tokens: 12 }],
-                warnings: vec![Warning::LowConfidence],
-                verdict: Verdict::Review,
-            },
+            blocks: vec![OutcomeBlock { kind: OutcomeKind::Latex, content: "3x-7=2x+5".into(), confidence: 0.99, min_operator_prob: Some(0.995) }],
+            warnings: vec![OutcomeWarning::LowConfidence],
+            verdict: OutcomeVerdict::Review,
             n_image_tokens: 64, prefill_ms: 7600, decode_ms: 1000, prep_ms: 12, reload_ms: None, truncated: false, peak_rss_kb: 389_000, coresident: true,
         };
         let v = serde_json::to_value(to_wire(outcome, "granite-docling-258M", "docling")).unwrap();
@@ -1968,7 +1996,7 @@ git commit -m "vision(8): the inference thread serves Transcribe and PrewarmVisi
     }
 ```
 
-- [ ] **Step 2: Implement** — module doc mirrors `chat_cmds` ("compiled on desktop too; bodies cfg-gated"). Wire types with `#[cfg_attr(desktop, allow(dead_code))]` only where a field is never read on desktop; `to_wire` and `decode_image_base64` are plain functions (tested on both). `decode_image_base64` uses `base64::engine::general_purpose::STANDARD.decode(s)` and refuses inputs longer than `kpack_engine::MAX_IMAGE_BYTES * 4 / 3 + 4` chars before decoding.
+- [ ] **Step 2: Implement** — module doc mirrors `chat_cmds` ("compiled on desktop too; bodies cfg-gated"). Wire types with `#[cfg_attr(desktop, allow(dead_code))]` only where a field is never read on desktop; `to_wire` and `decode_image_base64` are plain functions (tested on both). `decode_image_base64` uses `base64::engine::general_purpose::STANDARD.decode(s)` and refuses inputs longer than `MAX_IMAGE_BYTES * 4 / 3 + 4` chars before decoding, where `const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;` is a crate-local constant (comment: mirrors `kpack_engine::MAX_IMAGE_BYTES`, which the engine re-checks; `kpack_engine` is not a desktop dependency, so the value cannot be imported here).
 
 `transcribe_image` (mobile body), modelled on `chat_stream`:
 

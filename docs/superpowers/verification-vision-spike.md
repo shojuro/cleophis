@@ -43,7 +43,7 @@ capture path and the catalog plumbing are Stages 1–2 of the plan.
   that never received the cmake arch floor. It now carries `-march=armv8-a` (the fourth
   floor home; `check-cpu-floor.py` reads it: `PASS: aarch64-android CPU floor is armv8-a in all 4 homes`),
   and `audit-arch-floor.sh` disassembles the artifact:
-  `PASS: …/vision_bench — nothing above the floor outside 4 outline-atomics helper(s)`,
+  `PASS: …/vision_bench — nothing above the floor outside 4 outline-atomics helper(s)`, (From Task 1 on the expected count is 5; see verification-vision-stage1.md.)
   the same four helpers the shipped probe binary carries.
 - `build.rs` did not track the vendored mtmd sources, so a source patch was once silently
   not compiled (cargo relinked the old objects). It now emits `rerun-if-changed` for each.
