@@ -47,6 +47,9 @@ pub mod cpu;
 pub mod error;
 pub mod mock;
 pub mod template;
+/// Photo bytes to upright, capped, downscaled RGB8 for the image encoder. Outside
+/// the `real` gate: the caps and the EXIF table are pure and tested by the desktop suite.
+pub mod vision_prep;
 
 /// The prefix-reuse arithmetic (task 1.5). Deliberately *outside* the `real`
 /// gate so its tests run in a build with no llama.cpp — the module docs explain
@@ -81,6 +84,7 @@ pub use template::{
     prompt_sha256, role_name, ChatMessage, ChatTemplate, Role, StripFinish, ThinkPolicy,
     ThinkStripper, QWEN3_THINK_BLOCK,
 };
+pub use vision_prep::{prepare_image, PreparedImage, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS};
 
 #[cfg(feature = "real")]
 pub use llama::{backend_system_info, print_kernel_report, shared_backend, LlamaEngine};
