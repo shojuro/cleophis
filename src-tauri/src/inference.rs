@@ -389,7 +389,7 @@ fn resolve_launch_paths(
 
 /// The resolved files of the document transcriber: its model and the
 /// multimodal projector that must load with it.
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
+#[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile)
 pub struct VisionPaths {
     pub model: PathBuf,
     pub mmproj: PathBuf,
@@ -399,7 +399,7 @@ pub struct VisionPaths {
 /// the tutor's. `None` when the tier declares no vision OR when either file is
 /// missing: a transcriber without its projector cannot run, so it is reported
 /// as not installed rather than half-resolved.
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
+#[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile)
 pub fn resolve_vision(app: &AppHandle) -> Option<VisionPaths> {
     let root = resources_root(app);
     let raw = std::fs::read_to_string(root.join("catalog.json"))
@@ -419,7 +419,6 @@ pub fn resolve_vision(app: &AppHandle) -> Option<VisionPaths> {
 /// as `resolve_model` resolves the tutor's (app-data copy wins, else bundled),
 /// and either one missing collapses the result to `None` (fail-closed via `?`).
 /// No `AppHandle`, so it is directly unit-testable.
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
 fn resolve_vision_paths(
     app_data: Option<PathBuf>,
     resources: PathBuf,
@@ -584,7 +583,6 @@ pub(crate) fn launch_hashes(app: &AppHandle) -> Result<LaunchHashes, String> {
 /// produce. Both `None` when the effective tier declares no vision, which is
 /// not an error: there is simply nothing to verify.
 #[cfg(mobile)]
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
 pub(crate) struct VisionHashes {
     pub model: Option<String>,
     pub mmproj: Option<String>,
@@ -593,7 +591,6 @@ pub(crate) struct VisionHashes {
 /// Reads [`VisionHashes`] from the same effective-tier variant
 /// [`resolve_vision`] resolved, so the hash and the file always agree.
 #[cfg(mobile)]
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
 pub(crate) fn vision_hashes(app: &AppHandle) -> Result<VisionHashes, String> {
     Ok(match hero_vision(app) {
         Some(v) => VisionHashes { model: Some(v.sha256), mmproj: Some(v.mmproj_sha256) },
@@ -603,7 +600,6 @@ pub(crate) fn vision_hashes(app: &AppHandle) -> Result<VisionHashes, String> {
 
 /// The vision block of the effective tier's hero variant, if it declares one.
 #[cfg(mobile)]
-#[cfg_attr(mobile, allow(dead_code))] // TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
 pub(crate) fn hero_vision(app: &AppHandle) -> Option<crate::catalog::VisionVariant> {
     let hero = hero_entry(app)?;
     let tier = crate::tier_select::effective_tier(app);

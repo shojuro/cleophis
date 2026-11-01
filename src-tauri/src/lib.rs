@@ -56,8 +56,6 @@ mod engine_serve;
 /// production caller** — `engine_inproc` is `cfg(mobile)`, so the code is live
 /// where it ships and dead only on desktop. Cfg'd rather than bare so the
 /// dead-code check stays LIVE on mobile.
-// TEMPORARY (vision Task 7 -> 8): no production caller until Task 8 wires the inference thread; Task 8 deletes this allow.
-#[cfg_attr(mobile, allow(dead_code))]
 #[cfg_attr(desktop, allow(dead_code))]
 mod vision_policy;
 /// Tool-call parsing, the closed tool registry, and the per-family prompt

@@ -62,6 +62,77 @@ pub(crate) struct ChatTurn {
     pub reply: mpsc::Sender<Result<LoopOutcome, String>>,
 }
 
+/// One image to transcribe, as it crosses onto the inference thread.
+///
+/// It is a [`Command`] (and so ends any open chat session) rather than work
+/// done beside the session, for the same reason `Load` is: the outer loop owns
+/// BOTH the tutor handle and the transcriber handle, and the sequential path
+/// (below 6 GB) must `unload()` the tutor before the transcriber loads. That is
+/// impossible while a chat session borrows the tutor, so the session closes and
+/// hands this command back.
+pub(crate) struct TranscribeJob {
+    /// The encoded image bytes (PNG/JPEG/...) exactly as the picker produced
+    /// them; the inference thread decodes and downscales them.
+    pub image: Vec<u8>,
+    pub cancel: Arc<AtomicBool>,
+    /// Always answered, on every path including errors: a dropped reply is a
+    /// caller blocked forever on `recv`.
+    pub reply: mpsc::Sender<Result<TranscribeOutcome, String>>,
+}
+
+// Crate-local mirrors of kpack_engine's vision_parse types. serve.rs and
+// vision_cmds.rs are compiled on DESKTOP too, where `kpack_engine` is not a
+// dependency at all (src-tauri/Cargo.toml pulls it only under
+// cfg(target_os = "android")), so nothing here may name a kpack type.
+// `engine_inproc::outcome_parts` maps the real types onto these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeKind {
+    Latex,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeWarning {
+    LowConfidence,
+    OperatorUncertain,
+    NoMathFound,
+    InvalidLatex,
+    Truncated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeVerdict {
+    Accept,
+    Review,
+    Refuse,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OutcomeBlock {
+    pub kind: OutcomeKind,
+    pub content: String,
+    pub confidence: f32,
+    pub min_operator_prob: Option<f32>,
+}
+
+/// What one transcription produced, plus the costs worth reporting.
+// TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
+#[cfg_attr(mobile, allow(dead_code))]
+pub(crate) struct TranscribeOutcome {
+    pub blocks: Vec<OutcomeBlock>,
+    pub warnings: Vec<OutcomeWarning>,
+    pub verdict: OutcomeVerdict,
+    pub n_image_tokens: usize,
+    pub prefill_ms: u64,
+    pub decode_ms: u64,
+    pub prep_ms: u64,
+    /// `Some` only on the sequential path: how long reloading the tutor took.
+    pub reload_ms: Option<u64>,
+    pub truncated: bool,
+    pub peak_rss_kb: u64,
+    pub coresident: bool,
+}
+
 /// Commands accepted by the inference thread.
 pub(crate) enum Command {
     /// (Re)resolve the hero and load it, replacing whatever is loaded now.
@@ -72,6 +143,15 @@ pub(crate) enum Command {
     /// session, and the session borrows the `!Send` handle. Only the streamed
     /// text and the final outcome cross back.
     Chat(ChatTurn),
+    /// Transcribe one image. Yields like `Load`: see [`TranscribeJob`].
+    // TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
+    #[cfg_attr(mobile, allow(dead_code))]
+    Transcribe(TranscribeJob),
+    /// Load the transcriber ahead of the first image (co-resident tiers only).
+    /// Yields for the same reason: the outer loop owns the transcriber handle.
+    // TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
+    #[cfg_attr(mobile, allow(dead_code))]
+    PrewarmVision,
     /// Unload and exit the thread.
     Shutdown,
 }
@@ -320,6 +400,30 @@ mod tests {
         // Load must reach the outer loop: it has to `unload()` the handle, which
         // is impossible while a session borrows it.
         assert!(matches!(end, SessionEnd::Yield(Command::Load)));
+    }
+
+    fn transcribe_job() -> (TranscribeJob, Receiver<Result<TranscribeOutcome, String>>) {
+        let (tx, rx) = mpsc::channel();
+        (TranscribeJob { image: vec![1, 2, 3], cancel: Arc::new(AtomicBool::new(false)), reply: tx }, rx)
+    }
+
+    #[test]
+    fn a_transcription_ends_the_chat_session_and_is_handed_back_intact() {
+        let (first, _r) = turn(Some(7), "a");
+        let (job, _jr) = transcribe_job();
+        let (end, ran) = drive(first, vec![Command::Transcribe(job)]);
+        assert_eq!(ran, vec!["a"]);
+        match end {
+            SessionEnd::Yield(Command::Transcribe(j)) => assert_eq!(j.image, vec![1, 2, 3]),
+            _ => panic!("the transcription must reach the outer loop, which owns the handles"),
+        }
+    }
+
+    #[test]
+    fn a_prewarm_ends_the_chat_session_too() {
+        let (first, _r) = turn(Some(7), "a");
+        let (end, _ran) = drive(first, vec![Command::PrewarmVision]);
+        assert!(matches!(end, SessionEnd::Yield(Command::PrewarmVision)));
     }
 
     #[test]

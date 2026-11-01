@@ -114,7 +114,8 @@ keyring = { version = "3", features = ["windows-native", "linux-native"] }
 # the Kotlin AndroidKeyStore SecureStore (Phase 3); declared here so it never
 # enters the desktop dependency graph.
 [target.'cfg(target_os = "android")'.dependencies]
-kpack-engine = { path = "../crates/kpack-engine", features = ["real"] }
+# "vision": the transcriber (Vision Input v0.1). Adds llama.cpp's mtmd to the Android build only.
+kpack-engine = { path = "../crates/kpack-engine", features = ["real", "vision"] }
 jni = "0.21"
 
 [dev-dependencies]
