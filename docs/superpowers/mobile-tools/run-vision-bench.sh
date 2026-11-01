@@ -72,7 +72,9 @@ host_path_for_push() {  # <wsl path> -> the path adb may read
   local src="$1"
   if [ -z "$WINSTAGE" ]; then printf '%s' "$src"; return; fi
   local name; name="$(basename "$src")"
-  if [ ! -f "$WINSTAGE/$name" ] || [ "$(stat -c %s "$WINSTAGE/$name")" != "$(stat -c %s "$src")" ]; then cp "$src" "$WINSTAGE/$name"; fi
+  # Byte-compare, not size-compare: two PNGs of different shape matched in size once
+  # and a stale staged copy reached the phone.
+  if [ ! -f "$WINSTAGE/$name" ] || ! cmp -s "$WINSTAGE/$name" "$src"; then cp "$src" "$WINSTAGE/$name"; fi
   printf '%s\\%s' "$WINSTAGE_WIN" "$name"
 }
 
@@ -95,10 +97,13 @@ push_verified "$MODEL" "$DEV/$(basename "$MODEL")"
 push_verified "$MMPROJ" "$DEV/$(basename "$MMPROJ")"
 ITEMS_DIR="$(cd "$(dirname "$ITEMS")" && pwd)"
 push_verified "$ITEMS" "$DEV/images/items.json"
-python3 - "$ITEMS" <<'EOF' | while read -r f; do push_verified "$ITEMS_DIR/$f" "$DEV/images/$f"; done
-import json,sys
-for it in json.load(open(sys.argv[1]))["items"]: print(it["file"])
-EOF
+# An array, not a pipe into `while read`: adb inside the loop reads stdin and swallowed
+# the rest of the file list, so only the first image was ever pushed (2026-11-01).
+mapfile -t ITEM_FILES < <(python3 -c 'import json,sys
+for it in json.load(open(sys.argv[1]))["items"]: print(it["file"])' "$ITEMS")
+[ "${#ITEM_FILES[@]}" -gt 0 ] || { echo "FATAL: no items in $ITEMS" >&2; exit 1; }
+echo "  ${#ITEM_FILES[@]} image(s) listed in items.json"
+for f in "${ITEM_FILES[@]}"; do push_verified "$ITEMS_DIR/$f" "$DEV/images/$f" </dev/null; done
 adbs shell "chmod 755 $DEV/vision_bench" >/dev/null
 
 mkdir -p "$(dirname "$OUT")"
