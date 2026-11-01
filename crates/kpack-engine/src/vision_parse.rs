@@ -141,6 +141,49 @@ fn is_tag_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '/'
 }
 
+/// A character of a line that survived tag removal (with its raw byte offset),
+/// or the boundary a removed `<loc_N>` tag leaves between two elements.
+enum Item {
+    Ch(char, usize),
+    Split,
+}
+
+/// Remove every `<[A-Za-z0-9_/]+>` tag of any length from `line`, including tags
+/// that only form once an inner tag is removed (`<<b>script>`), in one linear
+/// pass. `opens` holds the positions of `<` whose body so far is all tag
+/// characters; any other character, or a boundary, invalidates them all.
+/// `base` is the raw offset of the line.
+fn strip_tags(line: &str, base: usize) -> Vec<Item> {
+    let mut out: Vec<Item> = Vec::with_capacity(line.len());
+    let mut opens: Vec<usize> = Vec::new();
+    for (i, c) in line.char_indices() {
+        if c == '>' {
+            if let Some(&open) = opens.last() {
+                if out.len() > open + 1 {
+                    opens.pop();
+                    let tag: String = out[open + 1..]
+                        .iter()
+                        .filter_map(|it| if let Item::Ch(c, _) = it { Some(*c) } else { None })
+                        .collect();
+                    out.truncate(open);
+                    if tag.starts_with("loc_") {
+                        opens.clear();
+                        out.push(Item::Split);
+                    }
+                    continue;
+                }
+            }
+            opens.clear();
+        } else if c == '<' {
+            opens.push(out.len());
+        } else if !is_tag_char(c) {
+            opens.clear();
+        }
+        out.push(Item::Ch(c, base + i));
+    }
+    out
+}
+
 /// Strip DocTags markup and split into (kind, content, span-in-raw) blocks.
 pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
     // Everything after the document end is not transcription.
@@ -153,25 +196,11 @@ pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
         line_start += line.len();
         let line = line.trim_end_matches(['\n', '\r']);
         let mut el = Element::default();
-        let mut i = 0usize;
-        while i < line.len() {
-            let Some(c) = line[i..].chars().next() else { break };
-            if c == '<' {
-                // A tag is short; do not scan the rest of a long line for '>'.
-                let close = line.as_bytes()[i..].iter().take(48).position(|&b| b == b'>');
-                if let Some(rel) = close {
-                    let tag = &line[i + 1..i + rel];
-                    if !tag.is_empty() && tag.chars().all(is_tag_char) {
-                        if tag.starts_with("loc_") {
-                            el.flush(&mut out);
-                        }
-                        i += rel + 1;
-                        continue;
-                    }
-                }
+        for item in strip_tags(line, base) {
+            match item {
+                Item::Split => el.flush(&mut out),
+                Item::Ch(c, at) => el.push(c, at),
             }
-            el.push(c, base + i);
-            i += c.len_utf8();
         }
         el.flush(&mut out);
     }
@@ -813,5 +842,47 @@ mod tests {
         let a = assess(&t, false);
         assert!(a.warnings.contains(&Warning::OperatorUncertain), "{a:?}");
         assert!(a.blocks[0].min_operator_prob.unwrap() < OPERATOR_MIN_PROB);
+    }
+
+    // ---- fix round 2 ----
+
+    #[test]
+    fn h1_a_tag_re_formed_by_removing_an_inner_one_is_removed() {
+        for raw in ["<loc_0><<b>script>x = 1", "<loc_0><a<b>>x = 1", "<loc_0><<<b>a>c>x = 1"] {
+            let blocks = parse_doctags(raw);
+            assert!(!blocks.is_empty(), "{raw}");
+            for b in &blocks {
+                assert!(!b.1.contains('<') && !b.1.contains('>'), "{raw}: {blocks:?}");
+            }
+            assert_eq!(blocks.last().unwrap().1, "x = 1", "{raw}");
+            let a = assess(&toks(raw, -0.01), false);
+            assert!(a.blocks.iter().all(|b| !b.content.contains('<') && !b.content.contains('>')), "{raw}: {a:?}");
+        }
+    }
+
+    #[test]
+    fn h1_a_long_tag_shaped_run_is_removed_whatever_its_length() {
+        for n in [60usize, 5_000] {
+            let raw = format!("<loc_0>x = <{}> 3", "a".repeat(n));
+            let blocks = parse_doctags(&raw);
+            assert_eq!(blocks.len(), 1, "{n}");
+            assert_eq!(blocks[0].1, "x =  3", "{n}");
+        }
+    }
+
+    #[test]
+    fn h1_a_comparison_is_not_a_tag_and_survives() {
+        assert_eq!(parse_doctags("<loc_0>x < 3")[0].1, "x < 3");
+        assert_eq!(parse_doctags("<loc_0>2 < x > 1")[0].1, "2 < x > 1");
+    }
+
+    #[test]
+    fn h1_deeply_nested_angle_runs_stay_linear() {
+        let raw = format!("<loc_0>{}b{}x = 1", "<a".repeat(50_000), ">".repeat(50_000));
+        let t0 = std::time::Instant::now();
+        let blocks = parse_doctags(&raw);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
+        assert_eq!(blocks.last().unwrap().1, "x = 1");
+        assert!(blocks.iter().all(|b| !b.1.contains('<') && !b.1.contains('>')));
     }
 }
