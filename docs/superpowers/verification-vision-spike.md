@@ -1,6 +1,6 @@
 # Vision Input — Stage 0 spike: go/no-go on the floor phone (2026-11-01)
 
-The approved review (`~/.claude/plans/keen-baking-karp.md`, 2026-11-01) asked for one
+The approved review (`docs/superpowers/specs/2026-11-01-vision-input-review.md`, 2026-11-01) asked for one
 thing before any product code: prove that llama.cpp's multimodal library links into the
 Android build, and put measured Galaxy A22 numbers beside the gates for the small
 document-OCR candidates. This is that record. Every number is from a JSONL record or a
@@ -43,8 +43,9 @@ capture path and the catalog plumbing are Stages 1–2 of the plan.
   that never received the cmake arch floor. It now carries `-march=armv8-a` (the fourth
   floor home; `check-cpu-floor.py` reads it: `PASS: aarch64-android CPU floor is armv8-a in all 4 homes`),
   and `audit-arch-floor.sh` disassembles the artifact:
-  `PASS: …/vision_bench — nothing above the floor outside 4 outline-atomics helper(s)`, (From Task 1 on the expected count is 5; see verification-vision-stage1.md.)
+  `PASS: …/vision_bench — nothing above the floor outside 4 outline-atomics helper(s)`,
   the same four helpers the shipped probe binary carries.
+  From Stage 1's Task 1 on, the expected count is 5 (see `verification-vision-stage1.md`).
 - `build.rs` did not track the vendored mtmd sources, so a source patch was once silently
   not compiled (cargo relinked the old objects). It now emits `rerun-if-changed` for each.
 - Two bench defects met on the phone and fixed: a second `llama_backend_init`

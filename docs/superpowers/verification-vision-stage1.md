@@ -51,8 +51,8 @@ Built with `cargo ndk -t arm64-v8a -P 24 build --release -p cleophis --lib`
 
 - **Helper count is 5 from Task 1 on.** The setter's atomic exchange adds
   `__aarch64_swp4_acq_rel`, runtime-gated on LSE like the other four. Stage 0's
-  measurement lines below say 4 because they were measured before Task 1; they stay as
-  measured.
+  measurement lines in `verification-vision-spike.md` say 4 because they were measured
+  before Task 1; they stay as measured.
 - **Size delta is not available.** No pre-vision library size was ever recorded, and this
   task did not build a baseline. 40,041,448 bytes is the first measurement; the next
   build is the one that can be compared.
@@ -104,15 +104,18 @@ carries block content or image bytes.
 All three are in `src-tauri/src/vision_cmds.rs`, registered on both platforms; the
 desktop bodies return `in-process vision commands are mobile-only; this is a desktop build`.
 
-- `transcribe_image(requestId: string, imageBase64: string, onEvent: Channel)`. Resolves
-  `Ok(())` after sending exactly one event on the channel, or `Err(message)` after sending
-  an `error` event. Cancel with the existing `chat_cancel` and the same `requestId`. At
-  most one call per process may be queued or running; a second returns
-  `A transcription is already in progress.`
+- `transcribe_image(requestId: string, imageBase64: string, onEvent: Channel)`. Sends
+  exactly one event per call that reaches the engine's command path: it resolves `Ok(())`
+  after a `done` event, or `Err(message)` after an `error` event. The early refusals
+  reject without any event: a body that is not valid base64, a body over the 20 MiB cap,
+  and a second call while one is queued or running (`A transcription is already in
+  progress.`). Cancel with the existing `chat_cancel` and the same `requestId`.
 - `prewarm_vision()`. Advisory, always `Ok(())` on mobile. It sends the load command only
-  when `vision_state` reports `coresident`.
-- `vision_state()`. Returns `null` when the tier neither declares nor has installed a
-  transcriber, otherwise `{declared, installed, coresident}`.
+  when the transcriber is installed AND the device is co-resident, both computed at call
+  time, so Stage 2 may call it on every camera open.
+- `vision_state()`. Computed at call time, whatever the engine's status. Returns `null`
+  when the tier neither declares nor has installed a transcriber, otherwise
+  `{declared, installed, coresident}`.
 
 Events on the channel (`#[serde(tag = "event", content = "data")]`, camelCase):
 
@@ -140,7 +143,10 @@ TranscribeResult {
 ### `EngineInfo.vision`
 
 `EngineInfo.vision` is omitted when neither flag is set, otherwise
-`{declared, installed, coresident}`:
+`{declared, installed, coresident}`. Its `declared` and `installed` are stamped at the
+last successful tutor load, for the `engine-ready` payload, so they miss a download that
+lands later. Gate the camera and the download on `vision_state()`, which computes the
+same three flags live:
 
 - `declared`: the effective tier's catalog entry has a `vision` block.
 - `installed`: both the model and the projector resolve on disk. Both are sha-checked
@@ -210,11 +216,12 @@ Facts Stage 2 must also design around:
   display-safe with `textContent`; it would not be with `innerHTML`.
 - Prefill cannot be cancelled. Only decode polls the cancel flag, so a cancel during
   prefill takes effect after about 7.6 s on the A22 (Stage 0 figure).
-- The foreground-service flag is a single boolean shared with chat (`inference_service`),
-  not refcounted. A transcription finishing while a chat turn is queued stops the service
-  under it. Stage 2's UI must serialise camera and chat.
-- Call `prewarm_vision` only when `vision_state` reports `coresident`. On a sequential
-  device a prewarm would end an open chat session for nothing.
+- The foreground service is counted across chat and transcription (`inference_service`
+  in `mobile_native.rs`): it starts with the first holder and stops with the last, so
+  camera and chat need no UI serialisation for its sake.
+- `prewarm_vision` gates itself (installed and co-resident). On a device where it would
+  send nothing, calling it costs nothing; where it does send, it ends an open chat
+  session (the next turn re-prefills), as the approved review accepts.
 
 ### Remaining risks
 
@@ -232,16 +239,67 @@ Facts Stage 2 must also design around:
 - `cargo test -p cleophis` on WSL (replaced by the Windows run).
 - A pre-vision library build, so no size delta.
 
+## Fix wave after the final review
+
+The whole-branch review (2026-11-01) found no Critical issue and four Important seam
+defects. One wave fixed them with the review's fix-before-merge list, in seven commits
+(`vision(fix): …`):
+
+- **I1, the document end.** granite-docling's `<doctag>`, `</doctag>`, `<formula>` and
+  `</formula>` are CONTROL tokens. `vision.rs` printed them as nothing, so the parser's
+  `</doctag>` cut never ran and text after the document would fuse into the last block.
+  Now `vision.rs` resolves the `</doctag>` token once at load (id 100328 in this model)
+  and ends generation on it with `StopReason::Eos`, and it renders pieces with control
+  tokens, so `raw` carries the document structure. The parser's text cut stays as the
+  backstop. Host `--via-engine` run, granite-docling Q8 with the 512 projector:
+  - Formula crops, one pass: each raw is now wrapped in `<formula>…</formula>`. With that
+    control-token text removed, all five are byte-identical to
+    `vision-spike/a22-floor-formula-1pass.jsonl` rep 0, and so are the token counts
+    (31, 57, 35, 42, 56). Verdict `Accept` on all five.
+  - Page set, two passes, 120 tokens: every raw is `<doctag>…</doctag>`, all five stopped
+    on the document-end token, and nothing follows `</doctag>`.
+- **I2, no maths leaves the tutor-bound block.** A colon label needs a word, so
+  `a : b = 2 : 3` is one `latex` block. A `\text{…}` head is a label only before a colon,
+  so `\text{cost} = 5` stays one block. The array unwrap keeps what surrounds the array:
+  `A = \left( \begin{array}{cc} … \end{array} \right)` shows `A=\left(1&2 \\ 3&4\right)`.
+  `x : y` stays one block; it still classifies as `text` and refuses.
+- **I3, live vision flags.** `vision_state` computes `declared`, `installed` and
+  `coresident` at call time, whatever the engine's status. `prewarm_vision` sends only
+  when the files are installed and the device is co-resident. `EngineInfo.vision` keeps
+  the values stamped at load.
+- **I4, the counted foreground service.** `inference_service` counts its holders: the
+  service starts on 0 to 1 and stops on 1 to 0, under one lock with the Kotlin call.
+  `chat_stream`'s task-failure path now releases its hold too. The "serialise camera and
+  chat" rule is gone from the inheritances above.
+- **Task 2:** the downscale runs before the EXIF orientation, and every orientation 1-8
+  is tested on an in-memory image.
+- **Task 9:** `TranscribeOutcome.truncated` is deleted; the one-event contract is stated
+  exactly, in code and above.
+- **Task 10:** the document fixes in both records.
+
+Gates on the wave's code (WSL):
+
+| Command | Last line |
+|---|---|
+| `cargo test -p kpack-engine` | `test result: ok. 157 passed; 0 failed` (lib), `4 passed` (parity), 0 doc tests |
+| `cargo build -p kpack-engine` | `Finished`, no warnings |
+| `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` | `Finished \`release\` profile [optimized] target(s) in 9.73s`, exit 0 |
+| `npm test` | `# pass 1215`, `# fail 0` |
+
+The Windows desktop suite runs on the commit that carries this section. Its result goes in
+the pull request description rather than here, because writing it into this file would
+change the commit it ran on.
+
 ## Deferred minors
 
 One line per task, from the SDD ledger; these feed the whole-branch review.
 
 - **Task 1:** `check-mobile-build.sh` audits the probe library, not a shipped artifact (now covered by the vision feature plus this task's app-library audit); the "4 helpers" wording is stale (5).
-- **Task 2:** rotate-before-downscale doubles the peak on a portrait photo (downscale first is preferred); EXIF orientations 2-5, 7, 8 untested; `to_rgb8()` drops alpha, so a transparent PNG goes dark-on-dark.
-- **Task 3:** `split_label` mangles `x : y`, `a : b = 2 : 3` and `\text{cost} = 5`; `classify` is unicode-blind (U+2212 minus becomes `text`, fails safe); `braces_balanced` counts `\{`/`\}` (fails safe); array unwrap drops text before `\begin{array}`; module doc says "vision gate" where `lib.rs` says "real gate".
+- **Task 2:** rotate-before-downscale doubles the peak on a portrait photo, and EXIF orientations 2-5, 7, 8 are untested (both fixed in the fix wave); `to_rgb8()` drops alpha, so a transparent PNG goes dark-on-dark.
+- **Task 3:** `split_label` mangles `x : y`, `a : b = 2 : 3` and `\text{cost} = 5`, and the array unwrap drops text before `\begin{array}` (fixed in the fix wave; `x : y` still refuses, safely); `classify` is unicode-blind (U+2212 minus becomes `text`, fails safe); `braces_balanced` counts `\{`/`\}` (fails safe); module doc says "vision gate" where `lib.rs` says "real gate".
 - **Task 4:** no `Debug` on `VisionLoadRequest`/`Transcription`; `VisionBackend::load` lacks a doc comment; tests do not cover None-skips or base-before-projector ordering.
-- **Task 5:** a Drop guard would restore the one-pass switch on panic; `n_batch` is not capped at `n_ctx` for `eval_chunks`; the `max_tokens == 0` edge.
+- **Task 5:** a Drop guard would restore the one-pass switch on panic; `n_batch` is not capped at `n_ctx` for `eval_chunks`; `max_tokens == 0` still emits one token before `MaxTokens`; prefill (`eval_chunks`) cannot be cancelled, only from the first decoded token (prefill is about 7.6 s on the phone); `--via-engine` silently ignores `--n-ctx`/`--n-batch`/`--repeat`/`--json`/`--raw-stb`; a per-item read failure aborts the `--via-engine` run.
 - **Task 6:** `check_artifact_pinned` indentation would be reflowed by rustfmt; the bundled-catalog test must change when the vision block ships (see above).
-- **Task 7:** the `EngineInfo` test never asserts `coresident` or the installed-only path.
+- **Task 7:** the `EngineInfo` test never asserts `coresident` or the installed-only path (fixed in the fix wave); the resolve test leaves its temp dir and packs statements per line; `resolve_vision` re-reads and parses the catalog where `hero_entry` already does (existing pattern).
 - **Task 8:** `expect("just loaded")` should be `vision.insert`; a local `handle` shadows the tutor's name; the idle expiry is checked only after a timed wait; rustfmt reflow at `engine_inproc.rs:68`/`:316` and `serve.rs:71`.
-- **Task 9:** "exactly one event per call" should read "per call that reaches the engine"; `TranscribeOutcome.truncated` duplicates the Truncated warning; the foreground-service flag is not refcounted (inherited design); `ChatCancels::begin` overwrites a same-id entry; no test for the over-length base64 refusal or `f32_wire(0.1)`; the "too large" message could name 20 MiB.
+- **Task 9:** "exactly one event per call" should read "per call that reaches the engine", `TranscribeOutcome.truncated` duplicates the Truncated warning, and the foreground-service flag is not refcounted (all three fixed in the fix wave); `ChatCancels::begin` overwrites a same-id entry; no test for the over-length base64 refusal or `f32_wire(0.1)`; the "too large" message could name 20 MiB.
