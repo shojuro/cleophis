@@ -105,9 +105,13 @@ mkdir -p "$(dirname "$OUT")"
 DEVJSON="$DEV/out-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
 LOG="${OUT%.jsonl}.log"
 echo "== running on the device (log $LOG) =="
+# The extra flags cross a second shell on the device: single-quote each one so a
+# multi-word --prompt survives (an unquoted expansion split it into "flags" once).
+EXTRA_Q=""
+for arg in "${EXTRA[@]+"${EXTRA[@]}"}"; do EXTRA_Q+=" '${arg//\'/\'\\\'\'}'"; done
 adbs shell "cd $DEV && LD_LIBRARY_PATH=$DEV ${NICE:-nice -n 0} ./vision_bench \
   --model $DEV/$(basename "$MODEL") --mmproj $DEV/$(basename "$MMPROJ") --family $FAMILY \
-  --items $DEV/images/items.json --json $DEVJSON ${EXTRA[*]:-}" 2>&1 | tee "$LOG"
+  --items $DEV/images/items.json --json $DEVJSON$EXTRA_Q" 2>&1 | tee "$LOG"
 if grep -q "INCOMPATIBLE" "$LOG"; then
   echo "FAIL: [cpu-verdict] INCOMPATIBLE — the build's kernels exceed this CPU; the floor check is the fix, not a re-run" >&2
   exit 1

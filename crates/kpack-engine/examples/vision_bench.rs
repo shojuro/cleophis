@@ -249,16 +249,22 @@ fn run_item(
     let mut sampler = LlamaSampler::greedy();
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let n_vocab = model.n_vocab() as usize;
+    let mrope = mtmd.decode_use_mrope();
     let mut raw = String::new();
-    let mut logprobs: Vec<f32> = Vec::new();
+    // None for the first token (its logits were produced by mtmd's prefill, which the
+    // binding's bookkeeping does not see) and for M-RoPE models (positions are
+    // inferred by llama.cpp through get_one, which the binding does not track either).
+    let mut logprobs: Vec<Option<f32>> = Vec::new();
     let mut n_gen = 0usize;
     let mut stop = "eos";
     let gen_start = Instant::now();
     let mut ttft_ms: Option<u128> = None;
+    let mut pos = n_past;
+    let mut logits_tracked = false;
     loop {
         let token = sampler.sample(&ctx, -1);
         sampler.accept(token);
-        logprobs.push(logprob_of(ctx.get_logits_ith(-1), token.0 as usize, n_vocab));
+        logprobs.push(if logits_tracked { Some(logprob_of(ctx.get_logits_ith(0), token.0 as usize, n_vocab)) } else { None });
         if model.is_eog_token(token) {
             break;
         }
@@ -271,9 +277,17 @@ fn run_item(
             stop = "max_tokens";
             break;
         }
-        let toks = [token];
-        let mut batch = LlamaBatch::get_one(&toks)?;
-        ctx.decode(&mut batch)?;
+        if mrope {
+            let toks = [token];
+            let mut batch = LlamaBatch::get_one(&toks)?;
+            ctx.decode(&mut batch)?;
+        } else {
+            let mut batch = LlamaBatch::new(1, 1);
+            batch.add(token, pos, &[0], true)?;
+            ctx.decode(&mut batch)?;
+            logits_tracked = true;
+        }
+        pos += 1;
     }
     let decode_ms = gen_start.elapsed().as_millis();
     let tok_s = if decode_ms > 0 { n_gen as f64 * 1000.0 / decode_ms as f64 } else { 0.0 };
@@ -415,7 +429,7 @@ impl Args {
             repeat: 1,
             json_out: None,
             raw_stb: false,
-            time_encode: true,
+            time_encode: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(f) = it.next() {
@@ -436,6 +450,7 @@ impl Args {
                 "--json" => a.json_out = Some(v()?),
                 "--raw-stb" => a.raw_stb = true,
                 "--no-time-encode" => a.time_encode = false,
+                "--time-encode" => a.time_encode = true,
                 o => return Err(format!("unknown flag {o}")),
             }
         }
