@@ -6,9 +6,14 @@
 //! down).
 //!
 //! Order: byte cap → dimensions from the header (no decode) → pixel cap →
-//! decode → EXIF orientation 1–8 → downscale so the longest edge is `max_side`
+//! decode → downscale so the longest edge is `max_side` → EXIF orientation 1–8
 //! → RGB8. Downscaling to 512 is what keeps the document models' own
 //! preprocessor at one encoder pass (Stage 0, `verification-vision-spike.md`).
+//! It comes BEFORE the orientation because the longest edge is the same either
+//! way (a rotation swaps the two edges) and Triangle resampling is symmetric, so
+//! the result matches the other order up to rounding, while the rotation then
+//! copies a 512-px image instead of a full-size photo: at the 50 MP cap,
+//! orienting first holds two full-size buffers (three for 5 and 7).
 
 use std::io::Cursor;
 
@@ -35,8 +40,8 @@ fn image_err(what: impl std::fmt::Display) -> EngineError {
     EngineError::Backend(format!("image: {what}"))
 }
 
-/// Decode, apply the EXIF orientation, downscale so the longest edge is
-/// `max_side` (0 = keep the size), return RGB8. Fails closed on either cap.
+/// Decode, downscale so the longest edge is `max_side` (0 = keep the size),
+/// apply the EXIF orientation, return RGB8. Fails closed on either cap.
 pub fn prepare_image(bytes: &[u8], max_side: u32) -> Result<PreparedImage, EngineError> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(image_err(format!(
@@ -67,16 +72,7 @@ pub fn prepare_image(bytes: &[u8], max_side: u32) -> Result<PreparedImage, Engin
         })
         .filter(|o| (1..=8).contains(o))
         .unwrap_or(1);
-    img = match orientation {
-        2 => img.fliph(),
-        3 => img.rotate180(),
-        4 => img.flipv(),
-        5 => img.rotate90().fliph(),
-        6 => img.rotate90(),
-        7 => img.rotate270().fliph(),
-        8 => img.rotate270(),
-        _ => img,
-    };
+    // Downscale first: see the module doc for why the order is free and why it matters.
     if max_side > 0 {
         let (w, h) = (img.width(), img.height());
         let longest = w.max(h);
@@ -87,7 +83,7 @@ pub fn prepare_image(bytes: &[u8], max_side: u32) -> Result<PreparedImage, Engin
             img = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
         }
     }
-    let rgb = img.to_rgb8();
+    let rgb = apply_orientation(img, orientation).to_rgb8();
     Ok(PreparedImage {
         width: rgb.width(),
         height: rgb.height(),
@@ -96,9 +92,85 @@ pub fn prepare_image(bytes: &[u8], max_side: u32) -> Result<PreparedImage, Engin
     })
 }
 
+/// Turn a stored image upright for EXIF `orientation` (1–8; anything else is
+/// treated as 1). 5 is a transpose (mirror across the main diagonal) and 7 a
+/// transverse (mirror across the anti-diagonal).
+fn apply_orientation(img: image::DynamicImage, orientation: u32) -> image::DynamicImage {
+    match orientation {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 2-wide, 3-tall image whose six pixels are all different (grey levels
+    /// a..f), stored row by row:
+    ///
+    /// ```text
+    /// a b
+    /// c d
+    /// e f
+    /// ```
+    fn asymmetric_2x3() -> image::DynamicImage {
+        let v = |x: u32, y: u32| (10 + 40 * (y * 2 + x)) as u8;
+        image::DynamicImage::ImageLuma8(image::GrayImage::from_fn(2, 3, |x, y| image::Luma([v(x, y)])))
+    }
+
+    /// The image as rows of letters, `a` for the stored (0,0) pixel.
+    fn letters(img: &image::DynamicImage) -> Vec<String> {
+        let g = img.to_luma8();
+        (0..g.height())
+            .map(|y| (0..g.width()).map(|x| (b'a' + (g.get_pixel(x, y)[0] - 10) / 40) as char).collect())
+            .collect()
+    }
+
+    #[test]
+    fn every_exif_orientation_turns_the_image_upright() {
+        // Expected grids derived from the EXIF definitions, not from the code:
+        // 2 mirror left-right, 3 rotate 180, 4 mirror top-bottom, 5 transpose,
+        // 6 rotate 90 clockwise, 7 transverse, 8 rotate 90 anticlockwise.
+        let cases: [(u32, &[&str]); 9] = [
+            (1, &["ab", "cd", "ef"]),
+            (2, &["ba", "dc", "fe"]),
+            (3, &["fe", "dc", "ba"]),
+            (4, &["ef", "cd", "ab"]),
+            (5, &["ace", "bdf"]),
+            (6, &["eca", "fdb"]),
+            (7, &["fdb", "eca"]),
+            (8, &["bdf", "ace"]),
+            (9, &["ab", "cd", "ef"]), // out of range: treated as 1
+        ];
+        assert_eq!(letters(&asymmetric_2x3()), ["ab", "cd", "ef"]);
+        for (o, want) in cases {
+            assert_eq!(letters(&apply_orientation(asymmetric_2x3(), o)), want, "orientation {o}");
+        }
+    }
+
+    #[test]
+    fn downscaling_before_orienting_matches_the_other_order() {
+        // The fixture is stored 16x8 with orientation 6. Product order:
+        // downscale to 4x2, then rotate to 2x4. The other order: rotate to
+        // 8x16, then downscale to 2x4. Same size, same pixels up to rounding.
+        let p = prepare_image(EXIF6, 4).unwrap();
+        assert_eq!((p.width, p.height, p.orientation), (2, 4, 6));
+        let other = apply_orientation(image::load_from_memory(EXIF6).unwrap(), 6)
+            .resize_exact(2, 4, image::imageops::FilterType::Triangle)
+            .to_rgb8()
+            .into_raw();
+        assert_eq!(p.rgb.len(), other.len());
+        for (i, (a, b)) in p.rgb.iter().zip(&other).enumerate() {
+            assert!(a.abs_diff(*b) <= 1, "byte {i}: {a} vs {b}");
+        }
+    }
 
     const PLAIN: &[u8] = include_bytes!("../tests/fixtures/vision/plain-64x32.png");
     const EXIF6: &[u8] = include_bytes!("../tests/fixtures/vision/exif6-16x8.jpg");
