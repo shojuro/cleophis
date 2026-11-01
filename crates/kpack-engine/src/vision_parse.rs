@@ -20,11 +20,18 @@
 //!
 //! Confidence is `exp(mean log-probability)` over the block's tracked tokens
 //! (a logprob that is not finite or is positive counts as untracked; a block
-//! with no tracked token has confidence 0.0). Operator tokens (`+ - = < > ^ _`
-//! and the words `frac times le ge leq geq ne neq div cdot pm`, with or without
-//! their backslash, whole piece only) also report their minimum probability,
-//! because a flipped sign is the error that teaches the wrong problem with a
-//! straight face.
+//! with no tracked token has confidence 0.0). Operator tokens also report their
+//! minimum probability, because a flipped sign is the error that teaches the
+//! wrong problem with a straight face. A piece is an operator token when ANY of
+//! its characters is one of `+ - = < > ^ _` (the tokenizer merges pieces such
+//! as `=-`, `^{` and `}=`), when it holds one of the commands `\frac \times \le
+//! \ge \leq \geq \ne \neq \div \cdot \pm` as a whole command (`\left` is not
+//! `\le`), or when the whole piece is one of those names without its backslash
+//! (a subword split of `\` + `frac`). Only the part of a piece INSIDE the
+//! block's span is tested: BPE merges a tag's closing `>` with the first
+//! character of the maths (`>\` on the formula crops), and that `>` is tag
+//! syntax, not a comparison. Otherwise the test fails strict: a piece that only
+//! looks like an operator still has its probability checked.
 //!
 //! Input is hostile: brace nesting deeper than [`MAX_GROUP_DEPTH`] is never
 //! tokenised (it would recurse once per level) and is reported as invalid.
@@ -533,12 +540,27 @@ fn braces_balanced(s: &str) -> bool {
     depth == 0
 }
 
+/// Command names (without the backslash) that the operator floor watches.
+const OPERATOR_CMDS: &[&str] = &["frac", "times", "le", "ge", "leq", "geq", "ne", "neq", "div", "cdot", "pm"];
+
+/// See the module doc. Linear in the piece.
 fn is_operator_piece(piece: &str) -> bool {
-    let p = piece.trim();
-    // Subword tokenisers split `\frac` into `\` + `frac`, so the backslash is optional.
-    let w = p.strip_prefix('\\').unwrap_or(p);
-    matches!(p, "+" | "-" | "=" | "<" | ">" | "^" | "_")
-        || matches!(w, "frac" | "times" | "le" | "ge" | "leq" | "geq" | "ne" | "neq" | "div" | "cdot" | "pm")
+    if piece.contains(['+', '-', '=', '<', '>', '^', '_']) {
+        return true;
+    }
+    // A whole command anywhere in the piece: the full letter run after a
+    // backslash, so `\leq` is `leq` and `\left` is `left` (not `le`).
+    let mut rest = piece;
+    while let Some(i) = rest.find('\\') {
+        rest = &rest[i + 1..];
+        let name_len = rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len());
+        if OPERATOR_CMDS.contains(&&rest[..name_len]) {
+            return true;
+        }
+        rest = &rest[name_len..];
+    }
+    // Subword tokenisers split `\frac` into `\` + `frac`: the bare name, whole piece.
+    OPERATOR_CMDS.contains(&piece.trim())
 }
 
 /// Blocks, warnings and the verdict for one transcription.
@@ -568,7 +590,10 @@ pub fn assess(tokens: &[GenToken], truncated: bool) -> Assessment {
             // A log-probability is finite and <= 0; anything else is untracked.
             if let Some(lp) = t.logprob.filter(|lp| lp.is_finite() && *lp <= 0.0) {
                 sum += lp; n += 1;
-                if is_operator_piece(&t.piece) {
+                // The piece's bytes inside the block (module doc): both ends are
+                // char boundaries, a piece's and a content character's.
+                let inside = &raw[ts.max(span.start)..te.min(span.end)];
+                if is_operator_piece(inside) {
                     let p = lp.exp();
                     min_op = Some(min_op.map_or(p, |m: f32| m.min(p)));
                 }
@@ -945,6 +970,36 @@ mod tests {
         let a = assess(&t, false);
         assert!(a.warnings.contains(&Warning::OperatorUncertain), "{a:?}");
         assert!(a.blocks[0].min_operator_prob.unwrap() < OPERATOR_MIN_PROB);
+    }
+
+    #[test]
+    fn merged_pieces_with_an_operator_count_for_the_floor() {
+        // (final review M4) The tokenizer is BPE with merged pieces.
+        for p in ["=-", "^{", "}=", "_{", "-{", "+(", "(-", " =-", r"\times{", r" \leq", r"x\cdot", r"{\frac"] {
+            assert!(is_operator_piece(p), "{p:?}");
+        }
+        for p in ["x", "3", r"\left", r"\left(", r"\leftarrow", r"\right)", "{", "}", r"\text"] {
+            assert!(!is_operator_piece(p), "{p:?}");
+        }
+        // A tag's closing `>` merged into the first maths piece is tag syntax:
+        // the real shape of the formula crops p02 and p05 (host dump), where
+        // `>\` is also the least certain token. The piece alone would count;
+        // its part inside the block (`\`) does not.
+        assert!(is_operator_piece(">\\"));
+        let mk = |p: &str, lp: Option<f32>| GenToken { piece: p.to_string(), logprob: lp };
+        let mut t = vec![mk("<formula><loc_0><loc_0><loc_500><loc_500", None), mk(">\\", Some((0.65f32).ln()))];
+        for p in ["frac", " {", " 1", " }", " {", " 2", " }", " =", " x", " +", " 1"] {
+            t.push(mk(p, Some(-0.001)));
+        }
+        t.push(mk("</formula>", Some((0.5f32).ln())));
+        let a = assess(&t, false);
+        assert_eq!(a.verdict, Verdict::Accept, "{a:?}");
+        assert!(a.blocks[0].min_operator_prob.unwrap() > 0.99, "{a:?}");
+        // An unspaced `x=-1` whose merged `=-` piece is shaky is not Accept.
+        let t = vec![mk(LOC, None), mk("x", Some(-0.01)), mk("=-", Some((0.6f32).ln())), mk("1", Some(-0.01))];
+        let a = assess(&t, false);
+        assert!(a.warnings.contains(&Warning::OperatorUncertain), "{a:?}");
+        assert_eq!(a.verdict, Verdict::Review);
     }
 
     // ---- fix round 2 ----
