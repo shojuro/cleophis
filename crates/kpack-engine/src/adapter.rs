@@ -210,6 +210,46 @@ pub fn prepare_stack(
     })
 }
 
+/// The multimodal projector (`mmproj`) beside a vision base: same `None`-skips
+/// hash semantics as [`ModelSpec`].
+#[derive(Debug, Clone)]
+pub struct ProjectorSpec {
+    pub path: PathBuf,
+    pub expected_sha256: Option<String>,
+}
+
+impl ProjectorSpec {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        ProjectorSpec { path: path.into(), expected_sha256: None }
+    }
+    pub fn with_sha256(mut self, sha256: impl Into<String>) -> Self {
+        self.expected_sha256 = Some(sha256.into());
+        self
+    }
+}
+
+/// A vision base + projector that both exist and both passed their gates.
+#[derive(Debug, Clone)]
+pub struct PreparedVisionStack {
+    pub base: ModelSpec,
+    pub mmproj: ProjectorSpec,
+}
+
+/// The vision counterpart of [`prepare_stack`]: base first, then the projector,
+/// each exist-then-verify, fail-closed. A transcriber with a missing or
+/// tampered projector is not "a transcriber without tiles"; it is not loaded.
+pub fn prepare_vision_stack(
+    base: &ModelSpec,
+    mmproj: &ProjectorSpec,
+    verify: &VerifyCache,
+) -> Result<PreparedVisionStack, EngineError> {
+    require_present(&base.path, "vision base model")?;
+    verify.verify(&base.path, base.expected_sha256.as_deref(), "vision base model")?;
+    require_present(&mmproj.path, "projector")?;
+    verify.verify(&mmproj.path, mmproj.expected_sha256.as_deref(), "projector")?;
+    Ok(PreparedVisionStack { base: base.clone(), mmproj: mmproj.clone() })
+}
+
 /// Fail-closed existence check — the `resolve_model` half of
 /// `resolve_launch_paths`. A declared-but-absent artifact is `Missing`, which
 /// a caller must treat as "not installed", never as "load without it".
@@ -461,5 +501,32 @@ mod tests {
         let content = b"kpack-engine-sha-fixture";
         let path = write(&dir, "s.bin", content);
         assert_eq!(file_sha256(&path).unwrap(), sha256_hex(content));
+    }
+
+    #[test]
+    fn prepare_vision_stack_requires_both_files() {
+        let dir = unique_dir("vision-missing");
+        let base = ModelSpec::new(write(&dir, "v.gguf", b"v"));
+        let proj = ProjectorSpec::new(dir.join("absent-mmproj.gguf"));
+        let err = prepare_vision_stack(&base, &proj, &VerifyCache::new()).unwrap_err();
+        assert!(matches!(err, EngineError::Missing { ref what, .. } if what == "projector"), "got {err:?}");
+    }
+
+    #[test]
+    fn prepare_vision_stack_gates_the_projector_hash() {
+        let dir = unique_dir("vision-bad-proj");
+        let base = ModelSpec::new(write(&dir, "v.gguf", b"v"));
+        let proj = ProjectorSpec::new(write(&dir, "mmproj.gguf", b"tampered")).with_sha256("00".repeat(32));
+        let err = prepare_vision_stack(&base, &proj, &VerifyCache::new()).unwrap_err();
+        assert!(matches!(err, EngineError::Integrity { ref what, .. } if what == "projector"), "got {err:?}");
+    }
+
+    #[test]
+    fn prepare_vision_stack_accepts_matching_hashes() {
+        let dir = unique_dir("vision-ok");
+        let base = ModelSpec::new(write(&dir, "v.gguf", b"v")).with_sha256(sha256_hex(b"v"));
+        let proj = ProjectorSpec::new(write(&dir, "mmproj.gguf", b"p")).with_sha256(sha256_hex(b"p"));
+        let stack = prepare_vision_stack(&base, &proj, &VerifyCache::new()).unwrap();
+        assert_eq!(stack.mmproj.path, dir.join("mmproj.gguf"));
     }
 }

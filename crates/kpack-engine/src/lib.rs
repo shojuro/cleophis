@@ -75,11 +75,13 @@ pub mod probe_io;
 pub mod llama;
 
 pub use adapter::{
-    file_sha256, prepare_stack, AdapterRole, AdapterSpec, ModelSpec, PreparedStack, VerifyCache,
+    file_sha256, prepare_stack, prepare_vision_stack, AdapterRole, AdapterSpec, ModelSpec,
+    PreparedStack, PreparedVisionStack, ProjectorSpec, VerifyCache,
 };
 pub use backend::{
     EngineBackend, EngineHandle, EngineSession, GenStats, LoadParams, LoadRequest, Sampling,
-    SessionConfig, StopReason, TokenSink,
+    SessionConfig, StopReason, TokenSink, Transcription, VisionBackend, VisionConfig, VisionHandle,
+    VisionLoadRequest, VisionTimings,
 };
 pub use error::EngineError;
 pub use mock::{CollectSink, MockBackend};
