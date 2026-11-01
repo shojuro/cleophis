@@ -65,14 +65,14 @@ use kpack_engine::{
     EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig, StopReason,
 };
 use kpack_engine::{
-    assess, prepare_image, LlamaVision, ProjectorSpec, VisionBackend, VisionConfig, VisionHandle,
+    assess, prepare_image, LlamaVision, PreparedImage, ProjectorSpec, VisionBackend, VisionConfig, VisionHandle,
     VisionLoadRequest,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::engine_serve::{
     ChatTurn, Command, OutcomeBlock, OutcomeKind, OutcomeVerdict, OutcomeWarning, SessionEnd,
-    TranscribeOutcome, Waited,
+    TranscribeJob, TranscribeOutcome, Waited,
 };
 use crate::engine_thermal::{ThermalWatch, WINDOW_GAPS};
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
@@ -228,6 +228,10 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     // transcription and reloaded after (the sequential path in `Transcribe`).
     let vision_backend = LlamaVision::new();
     let mut vision: Option<Box<dyn VisionHandle>> = None;
+    // When the transcriber was last loaded or used. The idle release is
+    // measured from HERE, not from the last command of any kind: a chat turn
+    // is not a use of the transcriber and must not keep it resident.
+    let mut vision_last_used: Option<std::time::Instant> = None;
     let ram_gb = crate::hardware::detect().ram_gb;
     let coresident = crate::vision_policy::coresident(ram_gb);
     engine.vision_coresident.store(coresident, Ordering::Relaxed);
@@ -266,34 +270,11 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     loop {
         let cmd = match pending.take() {
             Some(cmd) => cmd,
-            None => {
-                if vision.is_some() {
-                    // A resident transcriber is the costly thing to hold while
-                    // idle (model + projector, hundreds of MB), so the wait has
-                    // a deadline and expiry drops it. The next image pays a
-                    // reload; that is the price of not holding the RAM.
-                    match rx.recv_timeout(crate::vision_policy::VISION_IDLE_TIMEOUT) {
-                        Ok(cmd) => cmd,
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            eprintln!(
-                                "[vision] idle {} s, releasing the transcriber",
-                                crate::vision_policy::VISION_IDLE_TIMEOUT.as_secs()
-                            );
-                            if let Some(v) = vision.take() {
-                                v.unload();
-                            }
-                            continue;
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
-                } else {
-                    match rx.recv() {
-                        Ok(cmd) => cmd,
-                        // Every sender is gone; nothing further can arrive.
-                        Err(_) => break,
-                    }
-                }
-            }
+            None => match recv_releasing_vision(&rx, None, &mut vision, &mut vision_last_used) {
+                Ok(cmd) => cmd,
+                // Every sender is gone; nothing further can arrive.
+                Err(_) => break,
+            },
         };
 
         match cmd {
@@ -319,6 +300,8 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                     turn,
                     &rx,
                     &thermal,
+                    &mut vision,
+                    &mut vision_last_used,
                 );
                 match end {
                     SessionEnd::Idle => {}
@@ -329,65 +312,101 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
             Command::Load => load_tutor(&app, &engine, &backend, &mut handle),
             Command::PrewarmVision => {
                 if coresident && vision.is_none() {
-                    match load_vision(&app, &vision_backend) {
-                        Ok(v) => vision = Some(v),
+                    let loaded = resolve_transcriber(&app)
+                        .and_then(|(variant, paths)| load_vision(&app, &vision_backend, &variant, &paths));
+                    match loaded {
+                        Ok(v) => {
+                            vision = Some(v);
+                            vision_last_used = Some(std::time::Instant::now());
+                        }
                         Err(e) => eprintln!("[vision] prewarm failed: {e}"),
                     }
                 }
             }
             Command::Transcribe(job) => {
                 let t_all = std::time::Instant::now();
-                // Refuse BEFORE touching the tutor. On the sequential path the
-                // next step unloads the tutor, and unloading and reloading a
-                // multi-second model to deliver "this tier has no transcriber"
-                // (or "not downloaded yet") would be a pure cost to the chat.
-                if crate::inference::hero_vision(&app).is_none() {
-                    let _ = job
-                        .reply
-                        .send(Err("This tier has no transcriber.".to_string()));
+                // Resolve ONCE, and refuse BEFORE touching the tutor: on the
+                // sequential path unloading and reloading a multi-second model
+                // to deliver "no transcriber" would be a pure cost to the chat.
+                let (variant, paths) = match resolve_transcriber(&app) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("[vision] refused: {e}");
+                        let _ = job.reply.send(Err(e));
+                        continue;
+                    }
+                };
+                // Decode and downscale BEFORE unloading the tutor too: a bad
+                // image must not cost a tutor reload.
+                let t = std::time::Instant::now();
+                let prepared = match prepare_image(&job.image, variant.max_side) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("[vision] image rejected after {} ms", t.elapsed().as_millis());
+                        let _ = job.reply.send(Err(e.to_string()));
+                        continue;
+                    }
+                };
+                let prep_ms = t.elapsed().as_millis() as u64;
+                let TranscribeJob { image, cancel, reply } = job;
+                drop(image);
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = reply.send(Err(CANCELLED.to_string()));
                     continue;
                 }
-                if crate::inference::resolve_vision(&app).is_none() {
-                    let _ = job
-                        .reply
-                        .send(Err("The transcriber is not downloaded yet.".to_string()));
-                    continue;
-                }
-                let mut reload_ms = None;
+                // Only a tutor actually unloaded HERE is reloaded here: a
+                // `None` handle means a prior load already failed, and
+                // reloading would re-emit `engine-failed` for no reason.
+                let mut unloaded_tutor = false;
                 if !coresident {
                     if let Some(old) = handle.take() {
                         engine.set_status(EngineStatus::Restarting);
                         let _ = app.emit("engine-restarting", ());
                         old.unload();
+                        unloaded_tutor = true;
                     }
                 }
                 let result = transcribe_one(
                     &app,
                     &vision_backend,
                     &mut vision,
-                    job.image,
-                    &job.cancel,
+                    &variant,
+                    &paths,
+                    prepared,
+                    prep_ms,
+                    &cancel,
                     coresident,
                 );
-                // Reload on BOTH the success and the error path: the tutor was
-                // unloaded above and the chat is dead until it is back.
+                if vision.is_some() {
+                    vision_last_used = Some(std::time::Instant::now());
+                }
+                let mut reload_ms = None;
                 if !coresident {
                     if let Some(v) = vision.take() {
                         v.unload();
                     }
-                    let t = std::time::Instant::now();
-                    load_tutor(&app, &engine, &backend, &mut handle);
-                    reload_ms = Some(t.elapsed().as_millis() as u64);
+                    vision_last_used = None;
+                    // Reload on BOTH the success and the error path: the tutor
+                    // was unloaded above and the chat is dead until it is back.
+                    // Not during shutdown or a tier switch: that would load the
+                    // OLD tier's tutor inside `stop_thread`'s join and emit a
+                    // spurious `engine-ready`.
+                    if unloaded_tutor && !engine.shutting_down.load(Ordering::Relaxed) {
+                        let t = std::time::Instant::now();
+                        load_tutor(&app, &engine, &backend, &mut handle);
+                        reload_ms = Some(t.elapsed().as_millis() as u64);
+                    }
                 }
                 let result = result.map(|mut o| {
                     o.reload_ms = reload_ms;
                     o
                 });
                 eprintln!(
-                    "[vision] transcribe total {} ms (coresident={coresident}, reload={reload_ms:?})",
+                    "[vision] transcribe {} total {} ms (coresident={coresident}, reload={reload_ms:?})",
+                    if result.is_ok() { "ok" } else { "err" },
                     t_all.elapsed().as_millis()
                 );
-                let _ = job.reply.send(result);
+                let _ = reply.send(result);
             }
         }
     }
@@ -462,14 +481,29 @@ fn load_tutor(
     }
 }
 
-/// Resolve the effective tier's transcriber and load it with the catalog's
-/// pinned hashes attached, so `prepare_vision_stack` gates both files before
-/// anything native is touched — the same shape as `load_stack`.
-fn load_vision(app: &AppHandle, backend: &LlamaVision) -> Result<Box<dyn VisionHandle>, String> {
-    let variant = crate::inference::hero_vision(app)
-        .ok_or_else(|| "This tier has no transcriber.".to_string())?;
-    let paths = crate::inference::resolve_vision(app)
-        .ok_or_else(|| "The transcriber is not downloaded yet.".to_string())?;
+const NO_TRANSCRIBER: &str = "This tier has no transcriber.";
+const NOT_DOWNLOADED: &str = "The transcriber is not downloaded yet.";
+const CANCELLED: &str = "Transcription cancelled.";
+
+/// The effective tier's transcriber declaration and its resolved files, or the
+/// legible refusal. The only place the two refusal strings are written.
+fn resolve_transcriber(
+    app: &AppHandle,
+) -> Result<(crate::catalog::VisionVariant, crate::inference::VisionPaths), String> {
+    let variant = crate::inference::hero_vision(app).ok_or_else(|| NO_TRANSCRIBER.to_string())?;
+    let paths = crate::inference::resolve_vision(app).ok_or_else(|| NOT_DOWNLOADED.to_string())?;
+    Ok((variant, paths))
+}
+
+/// Load the transcriber with the catalog's pinned hashes attached, so
+/// `prepare_vision_stack` gates both files before anything native is touched —
+/// the same shape as `load_stack`.
+fn load_vision(
+    app: &AppHandle,
+    backend: &LlamaVision,
+    variant: &crate::catalog::VisionVariant,
+    paths: &crate::inference::VisionPaths,
+) -> Result<Box<dyn VisionHandle>, String> {
     let pinned = crate::inference::vision_hashes(app)?;
     let mut base = ModelSpec::new(&paths.model);
     if let Some(h) = pinned.model {
@@ -496,24 +530,29 @@ fn load_vision(app: &AppHandle, backend: &LlamaVision) -> Result<Box<dyn VisionH
         .map_err(|e| format!("The transcriber failed to load: {e}"))
 }
 
-/// Prepare, transcribe and assess one image. Logs timings, counts and the
+/// Transcribe one prepared image and assess it. Logs timings, counts and the
 /// verdict only — never the transcription, a block's content or image bytes.
+#[allow(clippy::too_many_arguments)]
 fn transcribe_one(
     app: &AppHandle,
     backend: &LlamaVision,
     vision: &mut Option<Box<dyn VisionHandle>>,
-    image: Vec<u8>,
+    variant: &crate::catalog::VisionVariant,
+    paths: &crate::inference::VisionPaths,
+    prepared: PreparedImage,
+    prep_ms: u64,
     cancel: &Arc<AtomicBool>,
     coresident: bool,
 ) -> Result<TranscribeOutcome, String> {
-    let variant = crate::inference::hero_vision(app)
-        .ok_or_else(|| "This tier has no transcriber.".to_string())?;
-    let t = std::time::Instant::now();
-    let prepared = prepare_image(&image, variant.max_side).map_err(|e| e.to_string())?;
-    drop(image);
-    let prep_ms = t.elapsed().as_millis() as u64;
+    // Cancel is otherwise noticed only in the decode loop; a load is seconds.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED.to_string());
+    }
     if vision.is_none() {
-        *vision = Some(load_vision(app, backend)?);
+        *vision = Some(load_vision(app, backend, variant, paths)?);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED.to_string());
     }
     let handle = vision.as_mut().expect("just loaded");
     let mut cancelled = || cancel.load(Ordering::Relaxed);
@@ -521,7 +560,7 @@ fn transcribe_one(
         .transcribe(&prepared, &mut cancelled)
         .map_err(|e| e.to_string())?;
     if tr.stop == StopReason::Cancelled {
-        return Err("Transcription cancelled.".to_string());
+        return Err(CANCELLED.to_string());
     }
     let truncated = tr.stop == StopReason::MaxTokens;
     let assessment = assess(&tr.tokens, truncated);
@@ -545,6 +584,64 @@ fn transcribe_one(
         peak_rss_kb: vm_hwm_kb(),
         coresident,
     })
+}
+
+/// Block for the next command, releasing the transcriber 120 s after its LAST
+/// USE rather than 120 s after the last command of any kind.
+///
+/// `deadline` is the caller's own absolute deadline (an open chat session's
+/// idle limit), or `None` for the outer loop. The wait is bounded by whichever
+/// comes first; when the transcriber's deadline passes it is unloaded in place
+/// and the wait CONTINUES toward the caller's deadline, so releasing the
+/// transcriber never restarts or cuts short the session's own clock. `Timeout`
+/// is returned only when the caller's deadline passes; `Disconnected` when
+/// every sender is gone.
+fn recv_releasing_vision(
+    rx: &Receiver<Command>,
+    deadline: Option<std::time::Instant>,
+    vision: &mut Option<Box<dyn VisionHandle>>,
+    last_used: &mut Option<std::time::Instant>,
+) -> Result<Command, mpsc::RecvTimeoutError> {
+    use std::time::Instant;
+    let limit = crate::vision_policy::VISION_IDLE_TIMEOUT;
+    loop {
+        let now = Instant::now();
+        let vision_left = vision.as_ref().map(|_| {
+            // Resident but never stamped should not happen; treat as used now.
+            let used = *last_used.get_or_insert(now);
+            limit.saturating_sub(now.saturating_duration_since(used))
+        });
+        let session_left = deadline.map(|d| d.saturating_duration_since(now));
+        let wait = match (vision_left, session_left) {
+            (None, None) => {
+                return rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected);
+            }
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+        };
+        match rx.recv_timeout(wait) {
+            Ok(cmd) => return Ok(cmd),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(mpsc::RecvTimeoutError::Disconnected)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                if let (true, Some(used)) = (vision.is_some(), *last_used) {
+                    if now.saturating_duration_since(used) >= limit {
+                        eprintln!("[vision] idle {} s, releasing the transcriber", limit.as_secs());
+                        if let Some(v) = vision.take() {
+                            v.unload();
+                        }
+                        *last_used = None;
+                    }
+                }
+                if deadline.is_some_and(|d| now >= d) {
+                    return Err(mpsc::RecvTimeoutError::Timeout);
+                }
+            }
+        }
+    }
 }
 
 /// kpack's assessment, as the crate-local mirrors `serve.rs` carries everywhere.
@@ -631,6 +728,8 @@ fn serve_one_session(
     first: ChatTurn,
     rx: &Receiver<Command>,
     thermal: &Rc<RefCell<ThermalProbe>>,
+    vision: &mut Option<Box<dyn VisionHandle>>,
+    vision_last_used: &mut Option<std::time::Instant>,
 ) -> SessionEnd {
     let mut session = match handle.session(cfg) {
         Ok(session) => session,
@@ -669,7 +768,17 @@ fn serve_one_session(
         // ran to completion and the session is clean.
         let _ = reply.send(result);
     };
-    let mut wait = || match rx.recv_timeout(IDLE_SESSION_TIMEOUT) {
+    // The session's idle limit is an ABSOLUTE deadline fixed when the wait
+    // begins, so releasing the transcriber partway through (which loops inside
+    // `recv_releasing_vision`) cannot restart the 300 s. The transcriber is
+    // released here too: a chat turn is not a use of it, and an open
+    // conversation must not keep it resident for the conversation's length.
+    let mut wait = || match recv_releasing_vision(
+        rx,
+        Some(std::time::Instant::now() + IDLE_SESSION_TIMEOUT),
+        vision,
+        vision_last_used,
+    ) {
         Ok(cmd) => Waited::Cmd(cmd),
         Err(mpsc::RecvTimeoutError::Timeout) => Waited::Timeout,
         Err(mpsc::RecvTimeoutError::Disconnected) => Waited::Closed,

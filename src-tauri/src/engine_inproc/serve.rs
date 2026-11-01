@@ -67,8 +67,8 @@ pub(crate) struct ChatTurn {
 /// It is a [`Command`] (and so ends any open chat session) rather than work
 /// done beside the session, for the same reason `Load` is: the outer loop owns
 /// BOTH the tutor handle and the transcriber handle, and the sequential path
-/// (below 6 GB) must `unload()` the tutor before the transcriber loads. That is
-/// impossible while a chat session borrows the tutor, so the session closes and
+/// (below `crate::vision_policy::CORESIDENT_MIN_RAM_GB`) must `unload()` the
+/// tutor before the transcriber loads. That is impossible while a chat session borrows the tutor, so the session closes and
 /// hands this command back.
 pub(crate) struct TranscribeJob {
     /// The encoded image bytes (PNG/JPEG/...) exactly as the picker produced
@@ -144,12 +144,12 @@ pub(crate) enum Command {
     /// text and the final outcome cross back.
     Chat(ChatTurn),
     /// Transcribe one image. Yields like `Load`: see [`TranscribeJob`].
-    // TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
+    // TEMPORARY (vision Task 8 -> 9): `Transcribe` is never constructed until Task 9's vision_cmds sends it; Task 9 deletes this allow.
     #[cfg_attr(mobile, allow(dead_code))]
     Transcribe(TranscribeJob),
     /// Load the transcriber ahead of the first image (co-resident tiers only).
     /// Yields for the same reason: the outer loop owns the transcriber handle.
-    // TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
+    // TEMPORARY (vision Task 8 -> 9): `PrewarmVision` is never constructed until Task 9's vision_cmds sends it; Task 9 deletes this allow.
     #[cfg_attr(mobile, allow(dead_code))]
     PrewarmVision,
     /// Unload and exit the thread.
