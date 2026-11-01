@@ -106,7 +106,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="local AI text generation at explicit user request; no network" />
+                android:value="local AI text generation and image transcription at explicit user request; no network" />
         </service>
     </application>
 </manifest>

@@ -116,8 +116,6 @@ pub(crate) struct OutcomeBlock {
 }
 
 /// What one transcription produced, plus the costs worth reporting.
-// TEMPORARY (vision Task 8 -> 9): the producer (vision_cmds) and the reader of these fields arrive in Task 9; Task 9 deletes this allow.
-#[cfg_attr(mobile, allow(dead_code))]
 pub(crate) struct TranscribeOutcome {
     pub blocks: Vec<OutcomeBlock>,
     pub warnings: Vec<OutcomeWarning>,
@@ -128,6 +126,8 @@ pub(crate) struct TranscribeOutcome {
     pub prep_ms: u64,
     /// `Some` only on the sequential path: how long reloading the tutor took.
     pub reload_ms: Option<u64>,
+    // The wire carries truncation as the `Truncated` warning, so no command reads this flag.
+    #[cfg_attr(mobile, allow(dead_code))]
     pub truncated: bool,
     pub peak_rss_kb: u64,
     pub coresident: bool,
@@ -144,13 +144,9 @@ pub(crate) enum Command {
     /// text and the final outcome cross back.
     Chat(ChatTurn),
     /// Transcribe one image. Yields like `Load`: see [`TranscribeJob`].
-    // TEMPORARY (vision Task 8 -> 9): `Transcribe` is never constructed until Task 9's vision_cmds sends it; Task 9 deletes this allow.
-    #[cfg_attr(mobile, allow(dead_code))]
     Transcribe(TranscribeJob),
     /// Load the transcriber ahead of the first image (co-resident tiers only).
     /// Yields for the same reason: the outer loop owns the transcriber handle.
-    // TEMPORARY (vision Task 8 -> 9): `PrewarmVision` is never constructed until Task 9's vision_cmds sends it; Task 9 deletes this allow.
-    #[cfg_attr(mobile, allow(dead_code))]
     PrewarmVision,
     /// Unload and exit the thread.
     Shutdown,

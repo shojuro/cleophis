@@ -311,6 +311,10 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
             }
             Command::Load => load_tutor(&app, &engine, &backend, &mut handle),
             Command::PrewarmVision => {
+                if coresident && vision.is_some() {
+                    // A prewarm means the camera just opened: the transcriber must not expire while the user frames the shot.
+                    vision_last_used = Some(std::time::Instant::now());
+                }
                 if coresident && vision.is_none() {
                     let loaded = resolve_transcriber(&app)
                         .and_then(|(variant, paths)| load_vision(&app, &vision_backend, &variant, &paths));
@@ -401,9 +405,14 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                     o.reload_ms = reload_ms;
                     o
                 });
+                // The error text is one of the engine's own messages, never
+                // transcription content or image bytes.
                 eprintln!(
                     "[vision] transcribe {} total {} ms (coresident={coresident}, reload={reload_ms:?})",
-                    if result.is_ok() { "ok" } else { "err" },
+                    match &result {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => format!("err ({e})"),
+                    },
                     t_all.elapsed().as_millis()
                 );
                 let _ = reply.send(result);

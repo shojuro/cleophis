@@ -23,6 +23,10 @@ mod catalog_dist;
 /// the command bodies are cfg-gated and the desktop ones refuse; see the
 /// module doc for why that beats maintaining two lists.
 mod chat_cmds;
+/// The mobile image-transcription commands (`transcribe_image` /
+/// `prewarm_vision` / `vision_state`). Compiled on every platform for the same
+/// reason as `chat_cmds`: bodies cfg-gated, desktop ones refuse.
+mod vision_cmds;
 mod cloud;
 mod convstore;
 /// The in-process engine backing `inference`'s mobile lifecycle. Android-only:
@@ -351,6 +355,11 @@ pub fn run() {
             // desktop never populates it.
             app.manage(chat_cmds::ChatCancels::default());
 
+            // At most one transcription queued or running per process
+            // (mitigation M1). Managed on both platforms for uniformity;
+            // desktop never populates it.
+            app.manage(vision_cmds::VisionInFlight::default());
+
             // The last thermal verdict, so a webview that reloaded can re-ask
             // rather than wait for a transition that can never come again
             // (H6/A7). Managed on both platforms for the same uniformity
@@ -418,6 +427,9 @@ pub fn run() {
             chat_cmds::chat_thermal_state,
             chat_cmds::chat_thermal_selftest,
             chat_cmds::chat_stage5_probe,
+            vision_cmds::transcribe_image,
+            vision_cmds::prewarm_vision,
+            vision_cmds::vision_state,
             mobile_native::network_state,
             mobile_native::share_chat,
             mobile_native::share_triage_log,

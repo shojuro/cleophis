@@ -163,7 +163,7 @@ mod imp {
     use crate::inference::Engine;
 
     impl ChatCancels {
-        fn begin(&self, request_id: &str) -> Arc<AtomicBool> {
+        pub(crate) fn begin(&self, request_id: &str) -> Arc<AtomicBool> {
             let flag = Arc::new(AtomicBool::new(false));
             self.inner
                 .lock()
@@ -172,7 +172,7 @@ mod imp {
             flag
         }
 
-        fn end(&self, request_id: &str) {
+        pub(crate) fn end(&self, request_id: &str) {
             self.inner
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
