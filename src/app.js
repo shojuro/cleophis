@@ -744,7 +744,11 @@ async function selectTier(m, mode) {
   const el = $('errMsg');
   const btn = $('dlBtn');
   // Looked up at call time: `openDrawer` rebuilds the drawer, #errMsg included.
+  // Every drawer has an #errMsg, so the message is written only while THIS
+  // model's drawer is the open one; if the user has moved to another model's
+  // drawer (or closed it) mid-switch, it is dropped rather than shown there.
   const showErr = (msg, muted) => {
+    if (state.drawerId !== m.id) return;
     const e = $('errMsg');
     if (e) { e.style.display = 'block'; e.style.color = muted ? 'var(--muted)' : ''; e.textContent = msg; }
   };
