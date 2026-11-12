@@ -779,15 +779,20 @@ left behind. The build is recorded in
 
 | field | value |
 |---|---|
-| commit | `010fd60246cb588d3896f1cf25be07535d883b2d` (`mobile/vision-p2`) |
-| APK file | `~/cleophis-artifacts/cleophis-vision-s2-debug-010fd60.apk` (tutor variant, debug) |
-| APK sha256 | `c4ad4c06b46b66e4644eeae0512df174cf95645d3aaf5de1c88e10b2d88ab865` |
-| APK size (bytes) | 380,325,886 |
+| commit | `3cd142d230f1731958a09deef7be32b60f31d046` (`mobile/vision-p2`) |
+| APK file | `~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk` (tutor variant, debug) |
+| APK sha256 | `cc4f6386ba91187394811d161e1c9d827ba83e5a0b42e7d8fa4882126e124f6d` |
+| APK size (bytes) | 380,312,110 |
+
+This build replaces the one at `010fd60`
+(`cleophis-vision-s2-debug-010fd60.apk`, sha256 `c4ad4c06…`). That build does
+not sweep a photo abandoned on the crop pane, so V7 fails on it. Install this
+one.
 
 Before you start:
 
 - Install it over whatever is on the phone (the same debug key, so the app's
-  data stays): `adb install -r ~/cleophis-artifacts/cleophis-vision-s2-debug-010fd60.apk`.
+  data stays): `adb install -r ~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk`.
   Sign in, open the Socratic Math Tutor tile and download its model as in S3,
   so the tutor chat opens. When you are done, reinstall the triage APK from the
   build record above if the phone goes back to the triage journey.
@@ -837,28 +842,34 @@ Add a photo of a problem
    `--variant=triage` build of the same commit the triage chat has no camera
    button. Note whether you ran it.
 4. Tap the camera button. Before the vision files are on the phone the menu
-   shows a size line and a Download button. The line begins:
+   shows ONE of two things. Either it shows a size line and a Download
+   button, and the line begins:
 
 <!-- expect-source: src/vision-download.js -->
 ```text
 Photo input needs a one-time
 ```
 
-5. With the catalog this build pins, the line reads "Photo input needs a
-   one-time 269 MB download." Tap Download. If the signed catalog does not
-   list the two vision files yet (the founder publishes them; see the Stage 1
-   record, "How the vision files reach `models/`"), the line shows a message
-   containing:
+   Or the signed catalog does not list the two vision files yet (the founder
+   publishes them; see the Stage 1 record, "How the vision files reach
+   `models/`"). Then the line is a message containing the text below, and
+   there is NO Download button. Until the catalog that lists the vision files
+   (v13) is published, this second menu is the one you will see. In that case
+   skip step 5 and go to step 6.
 
 <!-- expect-source: src/dist-pick.js -->
 ```text
 is not in the signed catalog
 ```
 
-6. In that case load the two files by hand, and write "sideloaded" in the
-   note. The projector must be the `preproc512` file: the unpatched one has
-   the same size and a different sha. The last command must print
-   `b687245c…` for the model and `bb75a65a…` for the projector.
+5. Only with the size line and the Download button: with the catalog this
+   build pins, the line reads "Photo input needs a one-time 269 MB download."
+   Tap Download, wait for it to finish, and go to step 7.
+6. Only with the "is not in the signed catalog" message: load the two files
+   by hand, and write "sideloaded" in the note. The projector must be the
+   `preproc512` file: the unpatched one has the same size and a different
+   sha. The last command must print `b687245c…` for the model and
+   `bb75a65a…` for the projector.
 
 <!-- literal -->
 ```text
@@ -1042,8 +1053,8 @@ Cancel
   reading pane appears. If the tap beats the engine's registration of the
   request, the reading runs to its end unseen: the modal is closed, nothing
   reaches the chat, and the camera button stays disabled until the reading
-  finishes. The window is about the time it takes to decode the ~100 KB
-  crop's base64, so it is hard to hit. Note whether the button took a full
+  finishes. The window is about the time the base64 decode of a crop at most
+  512 px on its longest edge takes, so it is hard to hit. Note whether the button took a full
   reading's time to come back.
 - **Probe (back, reading):** press Android back while the device reads. On API
   31 and later the app goes to the background, the reading goes on, and the
@@ -1109,13 +1120,17 @@ Problem from photo:
 6. Under that line come the maths lines exactly as you left them, and no text
    block. The tutor answers it.
 7. Read a clean, confident photo: no amber, no note, Use this pressable at
-   once, and no Use anyway.
+   once, and no Use anyway. Any reading that shows amber behaves as in steps 1
+   to 4, whatever the engine's verdict: Use this greyed, the note shown, and
+   Use anyway offered.
 
 - **Probe (back, confirm):** press Android back on the confirm pane. Same
   expectation as V1's back probe.
 - **Probe (export):** export the chat as JSON from its menu. The photo
   message's row carries `attachments` with `kind` `vision`, the model, the
-  verdict, `edited` and the block counts, and no image and no block text.
+  verdict, `edited`, `override` and the block counts, and no image and no
+  block text. `override` is `true` only for a handoff by Use anyway, so after
+  step 5's Use this it is `false`.
   The typed turns carry no `attachments`.
 
 **Evidence:** screenshots `screenshots/V6-review.png` (amber block, note,
@@ -1135,33 +1150,50 @@ location tag included, into the app's own pictures folder. Its name begins:
 JPEG_
 ```
 
-The app deletes those files when it starts and after every reading. This step
-checks both. It first checks that the folder is the right one, because an
-empty listing of the wrong folder proves nothing.
+The app creates that file, empty, as the camera app opens, and the camera app
+fills it. The app deletes those files when it starts, after every reading, as
+soon as the crop pane has drawn the photo, and whenever the photo flow is left
+(Retake, the × close, a photo it cannot open). This step checks each of
+those. It first checks that the folder is the right one, because an empty
+listing of the wrong folder proves nothing. The file is only there while the
+camera app is in front, so that is when step 1 lists it.
 
-1. Tap the camera button, Take a photo, take one, and stop at the crop pane.
-   On the laptop:
+1. Tap the camera button, then Take a photo. While the camera app is in
+   front, before you press its shutter, list the folder on the laptop:
    `adb shell ls -l /sdcard/Android/data/${PKG:-com.cleophis.app}/files/Pictures/`
-   One `JPEG_….jpg` is listed. If the shell is refused, list the same folder
-   through the app:
+   One `JPEG_….jpg` is listed, probably 0 bytes long. If the shell is
+   refused, list the same folder through the app:
    `adb shell run-as ${PKG:-com.cleophis.app} ls -l /storage/emulated/0/Android/data/${PKG:-com.cleophis.app}/files/Pictures/`
    If neither lists a `JPEG_` file here, the path is wrong for this phone:
    paste what `adb shell ls /sdcard/Android/data/${PKG:-com.cleophis.app}/files/`
    shows into the note and tick FAIL.
-2. Tap Use selection and wait for the confirm pane. List again: no `JPEG_`
-   file. The device log names the sweep. `adb logcat -d | grep 'swept'` shows
-   a line of this form, with the count in place of `{n}`:
+2. Take the photo and accept it in the camera app. Once the crop pane shows
+   the photo, list again: no `JPEG_` file. The device log names the sweep.
+   `adb logcat -d | grep 'swept'` shows a line of this form, with the count in
+   place of `{n}`:
 
 <!-- expect-source: src-tauri/src/mobile_native.rs -->
 ```text
 [vision] swept {n} capture file(s)
 ```
 
-3. The start-up sweep: take another photo and stop at the crop pane (one
-   `JPEG_` file listed again). Force-stop the app and open it:
-   `adb shell am force-stop ${PKG:-com.cleophis.app}`
+3. Retake: take another photo, and on the crop pane tap Retake. List again:
+   no `JPEG_` file.
+4. A photo never taken: tap Take a photo, then leave the camera app without
+   taking one (its back or cancel). The menu is back. List: a `JPEG_` file of
+   0 bytes is usually there, because the camera app never filled it; note
+   what you saw. Close the menu with its × at the top right. List again: no
+   `JPEG_` file.
+5. A reading: take a photo, tap Use selection and wait for the confirm pane.
    List again: no `JPEG_` file.
-4. After V1 to V6, list once more: no `JPEG_` file.
+6. The start-up sweep: tap Take a photo, and while the camera app is in front
+   force-stop the app from the laptop:
+   `adb shell am force-stop ${PKG:-com.cleophis.app}`
+   List: the `JPEG_` file is still there, because nothing ran to delete it
+   (if it is gone, note it: the camera app removed it, and this step then
+   cannot show the start-up sweep). Press Home, then open the app from its
+   icon. List again: no `JPEG_` file.
+7. After V1 to V6, list once more: no `JPEG_` file.
 
 - **Probe (process death under the camera):** tap Take a photo, and while the
   camera app is in front, kill the app's process from the laptop:
@@ -1172,7 +1204,7 @@ empty listing of the wrong folder proves nothing.
   removes the file the camera wrote: the listing shows no `JPEG_` file. Note
   what the app showed on return.
 
-**Evidence:** the four listings and the logcat line pasted into the note.
+**Evidence:** the listings of steps 1 to 7 and the logcat line pasted into the note.
 
 - [ ] PASS
 - [ ] FAIL
