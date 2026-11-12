@@ -20,7 +20,7 @@
 
 use std::ops::ControlFlow;
 
-use crate::adapter::{AdapterRole, AdapterSpec, ModelSpec};
+use crate::adapter::{AdapterRole, AdapterSpec, ModelSpec, ProjectorSpec};
 use crate::error::EngineError;
 use crate::template::{ChatMessage, ChatTemplate};
 
@@ -264,6 +264,93 @@ pub struct GenStats {
     pub prompt_tokens: usize,
     pub generated_tokens: usize,
     pub stop: StopReason,
+}
+
+/// Knobs for one vision transcription regime. `Default` is Stage 0's measured
+/// regime, the one the spike's numbers were taken under; change a value only
+/// with a new measurement.
+#[derive(Debug, Clone)]
+pub struct VisionConfig {
+    pub n_threads: i32,
+    pub n_ctx: u32,
+    pub n_batch: u32,
+    /// Generation cap per image.
+    pub max_tokens: usize,
+    pub prompt: String,
+    /// Run image prefill as a single pass rather than tiled chunks.
+    pub one_pass: bool,
+    /// Upper bound on image tokens the projector may emit for one image.
+    pub max_image_tokens: usize,
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        VisionConfig {
+            n_threads: 4,
+            n_ctx: 2048,
+            n_batch: 1024,
+            max_tokens: 96,
+            prompt: "Convert formula to latex.".to_string(),
+            one_pass: true,
+            max_image_tokens: 320,
+        }
+    }
+}
+
+/// Everything [`VisionBackend::load`] needs: the vision base, its projector
+/// (both gated by `prepare_vision_stack`), the regime, and GPU offload.
+pub struct VisionLoadRequest {
+    pub base: ModelSpec,
+    pub mmproj: ProjectorSpec,
+    pub config: VisionConfig,
+    pub n_gpu_layers: u32,
+}
+
+/// Wall-clock split of one transcription, in milliseconds.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VisionTimings {
+    pub prefill_ms: u64,
+    pub decode_ms: u64,
+}
+
+/// What one image produced: the raw decoded text, the per-token record the
+/// parser and confidence gate consume, and how generation ended.
+pub struct Transcription {
+    pub raw: String,
+    pub tokens: Vec<crate::vision_parse::GenToken>,
+    pub n_image_tokens: usize,
+    pub n_prompt_tokens: usize,
+    pub stop: StopReason,
+    pub timings: VisionTimings,
+}
+
+/// The vision counterpart of [`EngineBackend`]: a stateless factory that loads
+/// a vision base plus its projector and returns a live [`VisionHandle`].
+/// `Send + Sync` for the same reason as [`EngineBackend`].
+pub trait VisionBackend: Send + Sync {
+    fn load(&self, req: VisionLoadRequest) -> Result<Box<dyn VisionHandle>, EngineError>;
+}
+
+/// A loaded vision base + projector.
+///
+/// **Thread-affine, deliberately not `Send`**, exactly like [`EngineHandle`]:
+/// the native context and projector are thread-bound, so the handle lives on
+/// the inference thread that created it. Images and results cross threads via
+/// channels, never the handle.
+pub trait VisionHandle {
+    /// Transcribe one prepared image. Opens a fresh context for every image
+    /// and never reuses KV state, so one image can never leak into the next.
+    /// `cancel` is polled once per generated token; returning `true` stops
+    /// generation with [`StopReason::Cancelled`].
+    fn transcribe(
+        &mut self,
+        image: &crate::vision_prep::PreparedImage,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Transcription, EngineError>;
+
+    /// Release the model, projector, and native state. Dropping the handle
+    /// does the same; this is the explicit lifecycle spelling.
+    fn unload(self: Box<Self>);
 }
 
 #[cfg(test)]

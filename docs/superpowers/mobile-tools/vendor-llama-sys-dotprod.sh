@@ -32,8 +32,27 @@
 #   cargo clean -p llama-cpp-sys-2 --release --target aarch64-linux-android
 # after any change here, and confirm against the ARTIFACT's own [kernels] line.
 #
-# The floor string has three homes (here, build.rs, and the Kotlin pre-load
-# gate). `mobile-tools/check-cpu-floor.py` fails if they disagree.
+# The floor string has four homes (here, build.rs's cmake define, build.rs's
+# `-march` flag on the separate cc build of llama.cpp's multimodal tool (mtmd,
+# added 2026-11-01 for the vision spike), and the Kotlin pre-load gate).
+# `mobile-tools/check-cpu-floor.py` fails if they disagree.
+#
+# ── IN-TREE PATCHES BEYOND THE FLOOR (vision spike, 2026-11-01) ──────────────
+# The vendored tree carries three more edits; this script re-applies them all
+# so a re-vendor reproduces the committed tree (security item P08: a vendored
+# edit that lives only in the tree is invisible to review).
+#   1. build.rs, mtmd cc build: `-march=armv8-a` for aarch64-android (the
+#      fourth floor home; the cc build does not see the cmake define).
+#   2. build.rs, mtmd glob loop: `cargo:rerun-if-changed` per mtmd source, or a
+#      source patch under tools/mtmd is silently not recompiled (measured).
+#   3. llama.cpp/tools/mtmd/mtmd-image.cpp, idefics3 preprocessor: a C-linkage
+#      setter cleophis_mtmd_idefics3_overview_only(int) over a process-global
+#      atomic; when on and the tile grid is 1x1, emit only the global (overview)
+#      image — HF's do_image_splitting=false.
+#      Upstream always adds the tile grid, so a 512-px input costs two encoder
+#      passes; on the A22 that is the difference between ~16 s and ~9 s per
+#      image. Default behaviour unchanged (switch off).
+# Verify after rebuild with mobile-tools/audit-arch-floor.sh on the artifact.
 #
 # This is a TEMPORARY vendored patch. The permanent fix is an upstream
 # llama-cpp-rs PR exposing a GGML cmake-define passthrough; moving [patch] to
@@ -82,6 +101,82 @@ open(path, "w").write(src.replace(anchor, patch + anchor, 1))
 print("patched build.rs (GGML_CPU_ARM_ARCH=armv8-a for aarch64-android)")
 PY
 
+python3 - "$DEST/build.rs" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+# Patch 1: the mtmd cc build's -march (fourth floor home). Keyed on our marker.
+if "CLEOPHIS ARM ARCH FLOOR (mtmd home)" not in src:
+    anchor = "        // Collect all .cpp files in tools/mtmd and its subdirectories\n"
+    assert anchor in src, "mtmd anchor not found — build.rs layout changed; re-inspect before patching"
+    patch = (
+        "        // CLEOPHIS ARM ARCH FLOOR (mtmd home): the cmake build above pins\n"
+        "        // GGML_CPU_ARM_ARCH for ggml; this cc build of the multimodal tool is\n"
+        "        // separate and would otherwise take the NDK compiler's default. Keep the\n"
+        "        // two in step (docs/superpowers/mobile-tools/check-cpu-floor.py checks\n"
+        "        // both) so the image encoder cannot emit instructions the floor phone\n"
+        "        // class lacks — the A51 SIGILL of 2026-07-31 was exactly that.\n"
+        "        {\n"
+        "            let arch_target = env::var(\"TARGET\").unwrap_or_default();\n"
+        "            if arch_target.starts_with(\"aarch64\") && arch_target.contains(\"android\") {\n"
+        "                mtmd_build.flag(\"-march=armv8-a\");\n"
+        "            }\n"
+        "        }\n\n"
+    )
+    src = src.replace(anchor, patch + anchor, 1)
+    print("patched build.rs (mtmd cc build -march=armv8-a)")
+# Patch 2: recompile when a vendored mtmd source changes.
+if "cargo:rerun-if-changed={}\", path.display()" not in src:
+    anchor = "                    mtmd_build.file(&path);\n"
+    assert src.count(anchor) == 1, "mtmd_build.file anchor not unique — re-inspect"
+    patch = (
+        "                    // CLEOPHIS: the vendored mtmd sources are patched in-tree; cargo must\n"
+        "                    // recompile when they change (found 2026-11-01: a patch was silently\n"
+        "                    // not built).\n"
+        "                    println!(\"cargo:rerun-if-changed={}\", path.display());\n"
+    )
+    src = src.replace(anchor, patch + anchor, 1)
+    print("patched build.rs (rerun-if-changed per mtmd source)")
+open(path, "w").write(src)
+PY
+
+python3 - "$DEST/llama.cpp/tools/mtmd/mtmd-image.cpp" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+if "cleophis_mtmd_idefics3_overview_only" in src:
+    print("mtmd-image.cpp already patched"); raise SystemExit(0)
+inc = '#include "mtmd-image.h"\n'
+assert src.startswith(inc), "mtmd-image.cpp no longer starts with its own header — re-inspect"
+setter = (
+    "#include <atomic>\n"
+    "\n"
+    "// CLEOPHIS (vision, 2026-11-01): process-global switch for the idefics3\n"
+    "// preprocessor below. Set from Rust (kpack-engine/src/vision.rs) through the\n"
+    "// C-linkage setter; 0 = upstream behaviour (global image + tile grid).\n"
+    "static std::atomic<int> g_cleophis_idefics3_overview_only{0};\n"
+    "extern \"C\" int cleophis_mtmd_idefics3_overview_only(int enable) {\n"
+    "    return g_cleophis_idefics3_overview_only.exchange(enable);\n"
+    "}\n"
+)
+src = src.replace(inc, inc + setter, 1)
+loop = "    for (int y = 0; y < refined_size.height; y += hparams.image_size) {\n"
+assert src.count(loop) == 1, "idefics3 tile loop anchor not unique — re-inspect"
+patch = (
+    "    // CLEOPHIS (vision, 2026-11-01): HF's idefics3 processor with\n"
+    "    // do_image_splitting=false emits ONLY the global image; upstream mtmd always\n"
+    "    // adds the tile grid, so an image that fits one tile still costs two encoder\n"
+    "    // passes (measured on the A22: 16 s vs 9 s per formula crop). When the\n"
+    "    // process-global switch is on and the grid is 1x1, emit the overview only.\n"
+    "    // Default behaviour is unchanged.\n"
+    "    const bool no_tile_single = instructions.grid_size.width == 1 && instructions.grid_size.height == 1\n"
+    "        && g_cleophis_idefics3_overview_only.load() != 0;\n"
+    "    for (int y = 0; y < refined_size.height && !no_tile_single; y += hparams.image_size) {\n"
+)
+open(path, "w").write(src.replace(loop, patch, 1))
+print("patched mtmd-image.cpp (cleophis_mtmd_idefics3_overview_only setter, idefics3 overview-only)")
+PY
+
 cat <<EOF
 
 Now add to the consuming crate's Cargo.toml (kpack-engine for the spike; the
@@ -92,5 +187,6 @@ workspace root at gate time):
 
 Verify after rebuild:
   find \$CARGO_TARGET_DIR/aarch64-linux-android -path '*ggml-cpu*' -name flags.make \\
-    | xargs grep -o 'march=[^ ]*'      # expect: march=armv8.2-a+dotprod
+    | xargs grep -o 'march=[^ ]*'      # expect: march=armv8-a
+  docs/superpowers/mobile-tools/audit-arch-floor.sh <the built binary>   # expect: PASS
 EOF

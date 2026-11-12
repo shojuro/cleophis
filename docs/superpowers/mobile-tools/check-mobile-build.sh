@@ -73,3 +73,7 @@ if [ "$ALIGNS" != "0x4000" ]; then
   exit 1
 fi
 echo "PASS (H2): all LOAD segments 16 KB aligned; $(basename "$SO") is AArch64."
+
+# The source-side floor check (check-cpu-floor.py) says what the sources ask for; this says what the artifact contains.
+echo "== [5/5, cont.] auditing the artifact for instructions above the CPU floor =="
+bash "$HERE/audit-arch-floor.sh" "$SO"

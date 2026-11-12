@@ -95,3 +95,24 @@ export function heroVariantFor(hero, baseModel) {
     contractAdapterSha256: src.contractAdapterSha256 || null,
   };
 }
+
+/**
+ * The transcriber this build pins for `tier`, or null when the tier declares none.
+ * Only tiered heroes carry vision (flat entries never do).
+ */
+export function visionVariantFor(hero, tier) {
+  const t = hero && hero.tiers && hero.tiers[tier];
+  const v = t && t.vision;
+  if (!v || !v.sha256 || !v.mmprojSha256) return null;
+  return { baseModel: v.baseModel, sha256: v.sha256, mmprojSha256: v.mmprojSha256 };
+}
+
+/** The vision base + projector out of the signed catalog, by pinned sha. */
+export function pickVisionArtifacts(artifacts, variant) {
+  const arts = Array.isArray(artifacts) ? artifacts : [];
+  if (arts.length === 0) throw new Error(NOT_PUBLISHED);
+  const v = variant || {};
+  const base = pickOne(arts, v.sha256, 'vision_base', v.baseModel, 'vision model');
+  const mmproj = pickOne(arts, v.mmprojSha256, 'mmproj', v.baseModel, 'projector');
+  return { base, mmproj };
+}

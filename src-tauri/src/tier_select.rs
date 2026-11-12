@@ -274,13 +274,13 @@ fn basename(path: &str) -> Option<String> {
     Path::new(path).file_name().and_then(|n| n.to_str()).map(str::to_string)
 }
 
-/// The base + adapter basenames of a resolved tier variant — the "keep set"
-/// for [`sweep_models`] AND the on-disk set for [`variant_on_disk`]. Includes
-/// the contract adapter (adapter v2): it is part of the active composition, so
-/// the sweep must PRESERVE it (omitting it deletes it on the next switch, and
-/// the engine then fail-closes its load-time integrity check) and
-/// `variant_on_disk` must REQUIRE it before relaunching onto the tier.
-fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
+/// The base + adapter basenames of a resolved tier variant — the files the
+/// tutor needs to launch, i.e. the on-disk set for [`variant_on_disk`].
+/// Includes the contract adapter (adapter v2): it is part of the active
+/// composition, so `variant_on_disk` must REQUIRE it before relaunching onto
+/// the tier (and the sweep must preserve it — see [`keep_basenames`]). Never
+/// includes the optional transcriber: the tutor launches without it.
+fn required_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
     let mut keep = Vec::new();
     if let Some(m) = variant.model_file.as_deref().and_then(basename) {
         keep.push(m);
@@ -294,6 +294,21 @@ fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
     keep
 }
 
+/// The "keep set" for [`sweep_models`]: [`required_basenames`] plus the tier's
+/// transcriber model and projector when the tier declares one. The sweep must
+/// PRESERVE the contract adapter (omitting it deletes it on the next switch,
+/// and the engine then fail-closes its load-time integrity check) and the
+/// vision files (omitting them deletes a download the user already paid for),
+/// yet `variant_on_disk` must not REQUIRE the latter.
+pub(crate) fn keep_basenames(variant: &crate::catalog::ResolvedHero) -> Vec<String> {
+    let mut keep = required_basenames(variant);
+    if let Some(v) = &variant.vision {
+        keep.extend(basename(&v.model_file));
+        keep.extend(basename(&v.mmproj_file));
+    }
+    keep
+}
+
 /// Does the tier variant's base + behavioral adapter + (when declared) contract
 /// adapter all already exist under `models/`? Mirrors `resolve_launch`'s
 /// fail-closed set — a switch must not relaunch onto a partially-present tier.
@@ -301,7 +316,7 @@ fn variant_on_disk(app: &AppHandle, variant: &crate::catalog::ResolvedHero) -> b
     let Some(dir) = models_dir(app) else {
         return false;
     };
-    keep_basenames(variant)
+    required_basenames(variant)
         .iter()
         .all(|name| dir.join(name).exists())
 }
@@ -739,6 +754,21 @@ mod tests {
         };
         let keep = keep_basenames(&variant);
         assert_eq!(keep.len(), 2, "no contract declared → base + behavioral only: {keep:?}");
+    }
+
+    #[test]
+    fn keep_basenames_includes_vision_files_but_variant_on_disk_does_not_require_them() {
+        let variant = crate::catalog::ResolvedHero {
+            model_file: Some("models/Qwen3-1.7B-Instruct-Q4_K_M.gguf".to_string()),
+            adapter_file: Some("models/behavioral-v1-Qwen3-1.7B.gguf".to_string()),
+            vision: Some(serde_json::from_str(r#"{"baseModel":"granite-docling-258M","modelFile":"models/granite-docling-258M-Q8_0.gguf","sha256":"aa","fileBytes":1,"mmprojFile":"models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf","mmprojSha256":"bb","mmprojBytes":1,"family":"docling"}"#).unwrap()),
+            ..Default::default()
+        };
+        let keep = keep_basenames(&variant);
+        assert!(keep.contains(&"granite-docling-258M-Q8_0.gguf".to_string()), "{keep:?}");
+        assert!(keep.contains(&"mmproj-granite-docling-258M-Q8_0.preproc512.gguf".to_string()), "{keep:?}");
+        let required = required_basenames(&variant);
+        assert_eq!(required.len(), 2, "the tutor launches without vision: {required:?}");
     }
 
     #[test]

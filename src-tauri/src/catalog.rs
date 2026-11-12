@@ -135,6 +135,62 @@ pub struct SamplingOverride {
     pub max_tokens: usize,
 }
 
+/// The transcriber for this tier (Vision Input v0.1): a small document-OCR
+/// model (`modelFile`) plus its multimodal projector (`mmprojFile`), run by the
+/// engine's mtmd path to turn a photographed formula or page into text for the
+/// tutor. Absent = the camera is hidden on this tier. Both files are pinned by
+/// sha like the tutor's, and the tutor launches without them: they are kept by
+/// the tier-switch sweep but never required to relaunch (see
+/// `tier_select::keep_basenames`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionVariant {
+    /// Dist-catalog `base_model` label of the transcriber (e.g.
+    /// `"granite-docling-258M"`) — the cross-check key for `vision_base` and
+    /// `mmproj` artifacts.
+    pub base_model: String,
+    pub model_file: String,
+    pub sha256: String,
+    pub file_bytes: u64,
+    pub mmproj_file: String,
+    pub mmproj_sha256: String,
+    pub mmproj_bytes: u64,
+    /// Prompt/decoder family the engine drives the transcriber with
+    /// (e.g. `"docling"`).
+    pub family: String,
+    /// The instruction sent with the image.
+    #[serde(default = "default_vision_prompt")]
+    pub prompt: String,
+    /// Longest image side, in pixels, after the engine's downscale.
+    #[serde(default = "default_max_side")]
+    pub max_side: u32,
+    /// CPU threads for the transcriber's decode.
+    #[serde(default = "default_threads")]
+    pub threads: i32,
+    /// Encode and decode in a single pass (no tiling).
+    #[serde(default = "default_true")]
+    pub one_pass: bool,
+    /// Decode budget: the most tokens one transcription may emit.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+}
+
+fn default_vision_prompt() -> String {
+    "Convert formula to latex.".to_string()
+}
+fn default_max_side() -> u32 {
+    512
+}
+fn default_threads() -> i32 {
+    4
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_tokens() -> usize {
+    96
+}
+
 /// One device tier's fully-pinned base+adapter identity — everything a launch
 /// or an integrity check needs, self-contained so the app knows all three
 /// tiers offline without a network fetch. Hashes here are cross-checked
@@ -164,6 +220,10 @@ pub struct TierVariant {
     #[serde(default)]
     pub contract_adapter_id: Option<String>,
     pub file_bytes: u64,
+    /// The tier's optional transcriber (Vision Input v0.1). `None` = no
+    /// camera on this tier; the tutor is unaffected either way.
+    #[serde(default)]
+    pub vision: Option<VisionVariant>,
 }
 
 /// The three device tiers the wrapper selects between: `low` → 1B, `mid` →
@@ -211,6 +271,9 @@ pub struct ResolvedHero {
     pub contract_adapter_sha256: Option<String>,
     pub contract_adapter_id: Option<String>,
     pub file_bytes: Option<u64>,
+    /// The tier's transcriber. `None` on the flat-field fallback and for any
+    /// tier that declares none.
+    pub vision: Option<VisionVariant>,
 }
 
 /// Resolve `entry`'s base+adapter identity for device `tier`. Uses the
@@ -231,6 +294,7 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
             contract_adapter_sha256: v.contract_adapter_sha256.clone(),
             contract_adapter_id: v.contract_adapter_id.clone(),
             file_bytes: Some(v.file_bytes),
+            vision: v.vision.clone(),
         }
     } else {
         ResolvedHero {
@@ -245,13 +309,15 @@ pub fn hero_variant(entry: &CatalogEntry, tier: &str) -> ResolvedHero {
             contract_adapter_sha256: None,
             contract_adapter_id: None,
             file_bytes: Some(entry.file_bytes),
+            vision: None,
         }
     }
 }
 
 /// Phase 1g M1 (defense in depth): refuse a signed-catalog artifact whose
-/// `sha256` is none of the hero's pinned shas — base, adapter and contract
-/// adapter, across EVERY tier. The FE already picks by these shas
+/// `sha256` is none of the hero's pinned shas — base, adapter, contract
+/// adapter and (when declared) the transcriber's model and projector, across
+/// EVERY tier. The FE already picks by these shas
 /// (`src/dist-pick.js`); this is the Rust side refusing to write any other
 /// file into `models/` even if the FE is wrong or bypassed.
 ///
@@ -265,8 +331,14 @@ pub fn check_artifact_pinned(hero: &CatalogEntry, sha256: &str) -> Result<(), St
     let pinned = !want.is_empty()
         && ["low", "mid", "high"].iter().any(|tier| {
             let v = hero_variant(hero, tier);
-            [v.sha256, v.adapter_sha256, v.contract_adapter_sha256]
-                .iter()
+            [
+                v.sha256,
+                v.adapter_sha256,
+                v.contract_adapter_sha256,
+                v.vision.as_ref().map(|x| x.sha256.clone()),
+                v.vision.as_ref().map(|x| x.mmproj_sha256.clone()),
+            ]
+            .iter()
                 .flatten()
                 .any(|p| p.trim().eq_ignore_ascii_case(want))
         });
@@ -315,6 +387,47 @@ pub fn stamp_provenance(entry: &mut serde_json::Value, catalog_sha256: &str, app
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tier_without_vision_still_parses_and_resolves_none() {
+        let raw = include_str!("../resources/catalog.json");
+        let v = parse_catalog(raw).unwrap();
+        let h = hero(&v).unwrap();
+        assert!(hero_variant(h, "low").vision.is_none());
+    }
+
+    #[test]
+    fn a_vision_variant_round_trips_as_camel_case_with_defaults() {
+        let json = r#"{"baseModel":"granite-docling-258M","modelFile":"models/granite-docling-258M-Q8_0.gguf","sha256":"b687245c212b59da","fileBytes":177918144,"mmprojFile":"models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf","mmprojSha256":"bb75a65aa3ec14ac","mmprojBytes":103769792,"family":"docling"}"#;
+        let v: VisionVariant = serde_json::from_str(json).unwrap();
+        assert_eq!(v.prompt, "Convert formula to latex.");
+        assert_eq!((v.max_side, v.threads, v.one_pass, v.max_tokens), (512, 4, true, 96));
+        let back = serde_json::to_value(&v).unwrap();
+        assert_eq!(back["mmprojSha256"], "bb75a65aa3ec14ac");
+        assert_eq!(back["onePass"], true);
+    }
+
+    #[test]
+    fn hero_variant_projects_the_tiers_vision_block() {
+        let mut v = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let h = v.iter_mut().find(|e| e.real && e.model_file.is_some()).unwrap();
+        let vis: VisionVariant = serde_json::from_str(r#"{"baseModel":"granite-docling-258M","modelFile":"models/g.gguf","sha256":"aa","fileBytes":1,"mmprojFile":"models/m.gguf","mmprojSha256":"bb","mmprojBytes":1,"family":"docling"}"#).unwrap();
+        h.tiers.as_mut().unwrap().low.vision = Some(vis.clone());
+        assert_eq!(hero_variant(h, "low").vision, Some(vis));
+        assert_eq!(hero_variant(h, "mid").vision, None);
+    }
+
+    #[test]
+    fn pin_check_accepts_a_tiers_vision_shas() {
+        let mut v = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
+        let h = v.iter_mut().find(|e| e.real && e.model_file.is_some()).unwrap();
+        let vis: VisionVariant = serde_json::from_str(&format!(r#"{{"baseModel":"granite-docling-258M","modelFile":"models/g.gguf","sha256":"{}","fileBytes":1,"mmprojFile":"models/m.gguf","mmprojSha256":"{}","mmprojBytes":1,"family":"docling"}}"#, "c".repeat(64), "d".repeat(64))).unwrap();
+        h.tiers.as_mut().unwrap().low.vision = Some(vis);
+        let h = &*h;
+        assert!(check_artifact_pinned(h, &"c".repeat(64)).is_ok());
+        assert!(check_artifact_pinned(h, &"D".repeat(64)).is_ok());
+        assert!(check_artifact_pinned(h, &"e".repeat(64)).is_err());
+    }
 
     const SAMPLE: &str = r#"[
       {"id":"a","name":"A","category":"education","subject":"Math","cover":"covers/a.webp",

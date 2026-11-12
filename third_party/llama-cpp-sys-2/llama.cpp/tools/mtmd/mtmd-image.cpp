@@ -1,4 +1,13 @@
 #include "mtmd-image.h"
+#include <atomic>
+
+// CLEOPHIS (vision, 2026-11-01): process-global switch for the idefics3
+// preprocessor below. Set from Rust (kpack-engine/src/vision.rs) through the
+// C-linkage setter; 0 = upstream behaviour (global image + tile grid).
+static std::atomic<int> g_cleophis_idefics3_overview_only{0};
+extern "C" int cleophis_mtmd_idefics3_overview_only(int enable) {
+    return g_cleophis_idefics3_overview_only.exchange(enable);
+}
 
 #include <algorithm>
 #include <cmath>
@@ -1062,7 +1071,15 @@ bool mtmd_image_preprocessor_idefics3::preprocess(const clip_image_u8 & img, cli
         static_cast<int>(std::ceil(static_cast<float>(refined_size.width) / hparams.image_size)),
         static_cast<int>(std::ceil(static_cast<float>(refined_size.height) / hparams.image_size)),
     };
-    for (int y = 0; y < refined_size.height; y += hparams.image_size) {
+    // CLEOPHIS (vision, 2026-11-01): HF's idefics3 processor with
+    // do_image_splitting=false emits ONLY the global image; upstream mtmd always
+    // adds the tile grid, so an image that fits one tile still costs two encoder
+    // passes (measured on the A22: 16 s vs 9 s per formula crop). When the
+    // process-global switch is on and the grid is 1x1, emit the overview only.
+    // Default behaviour is unchanged.
+    const bool no_tile_single = instructions.grid_size.width == 1 && instructions.grid_size.height == 1
+        && g_cleophis_idefics3_overview_only.load() != 0;
+    for (int y = 0; y < refined_size.height && !no_tile_single; y += hparams.image_size) {
         for (int x = 0; x < refined_size.width; x += hparams.image_size) {
             // LOG_INF("%s: adding slice at x=%d, y=%d\n", __func__, x, y);
             instructions.slices.push_back(mtmd_image_preprocessor_llava_uhd::slice_coordinates{

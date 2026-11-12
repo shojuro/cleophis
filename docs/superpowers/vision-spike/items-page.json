@@ -1,0 +1,39 @@
+{
+ "items": [
+  {
+   "id": "p01-linear",
+   "file": "p01-linear.png",
+   "kind": "printed",
+   "ground_truth_latex": "3x - 7 = 2x + 5",
+   "variant": "page"
+  },
+  {
+   "id": "p02-fraction",
+   "file": "p02-fraction.png",
+   "kind": "printed",
+   "ground_truth_latex": "\\frac{2x}{3} + \\frac{x}{6} = 5",
+   "variant": "page"
+  },
+  {
+   "id": "p03-quadratic",
+   "file": "p03-quadratic.png",
+   "kind": "printed",
+   "ground_truth_latex": "x^2 - 5x + 6 = 0",
+   "variant": "page"
+  },
+  {
+   "id": "p04-exponent",
+   "file": "p04-exponent.png",
+   "kind": "printed",
+   "ground_truth_latex": "2^{3} \\times 3^{2} - 4_{1}",
+   "variant": "page"
+  },
+  {
+   "id": "p05-system",
+   "file": "p05-system.png",
+   "kind": "printed",
+   "ground_truth_latex": "2x + y = 7 \\\\ x - y = -1",
+   "variant": "page"
+  }
+ ]
+}

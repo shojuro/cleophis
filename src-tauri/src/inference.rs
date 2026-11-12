@@ -79,6 +79,50 @@ pub struct EngineInfo {
     /// frontend would have left the tier→window rule written in two languages,
     /// which is the mechanism that produced the bug in the first place.
     pub n_ctx: u32,
+    /// The document transcriber's state, present only once the tier declares a
+    /// vision variant or its files are installed, so a build without vision
+    /// serialises exactly the fields it always did.
+    ///
+    /// `declared` and `installed` here are STAMPED by the last successful tutor
+    /// load, for the `engine-ready` payload; they go stale when the vision files
+    /// are downloaded later, and stay unset while no tutor has loaded. The live
+    /// answer is the `vision_state` command (`vision_cmds`), which computes the
+    /// same three flags at call time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision: Option<VisionInfo>,
+}
+
+/// What the front end may know about the document transcriber. Absence of the
+/// whole struct means "this tier has no vision"; the three flags separate a
+/// declared-but-not-downloaded variant from an installed one and say whether it
+/// may stay resident beside the tutor.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionInfo {
+    /// The effective tier's catalog entry declares a vision variant.
+    pub declared: bool,
+    /// Both the model and the projector resolve on disk.
+    pub installed: bool,
+    /// The device may keep the transcriber loaded beside the tutor
+    /// (see `vision_policy::coresident`).
+    pub coresident: bool,
+}
+
+impl VisionInfo {
+    /// `None` ("this tier has no vision") unless the tier declares a
+    /// transcriber or its files are on disk. The one home of that rule, shared
+    /// by the stamped [`EngineInfo::vision`] and the live `vision_state`.
+    pub(crate) fn from_flags(declared: bool, installed: bool, coresident: bool) -> Option<Self> {
+        (declared || installed).then_some(VisionInfo { declared, installed, coresident })
+    }
+
+    /// Whether a prewarm can keep anything resident: the files are on disk AND
+    /// the device keeps the transcriber beside the tutor. Anything else would
+    /// only end an open chat session (and its KV cache) for nothing.
+    #[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile) `prewarm_vision`
+    pub(crate) fn can_prewarm(&self) -> bool {
+        self.installed && self.coresident
+    }
 }
 
 pub struct Engine {
@@ -143,6 +187,15 @@ pub struct Engine {
     /// same lock, where the resource two concurrent loads would fight over is
     /// RAM rather than a port.
     pub(crate) restart_lock: Mutex<()>,
+    /// The effective tier declares a vision variant. Stamped by the engine
+    /// thread at each successful tutor load; read by [`Engine::info`] for the
+    /// `engine-ready` payload only (`vision_state` computes it live).
+    pub(crate) vision_declared: AtomicBool,
+    /// Both vision files resolve on disk. Stamped like `vision_declared`.
+    pub(crate) vision_installed: AtomicBool,
+    /// The transcriber may stay loaded beside the tutor on this device.
+    /// Written once when the engine thread starts.
+    pub(crate) vision_coresident: AtomicBool,
 }
 
 impl Engine {
@@ -173,6 +226,9 @@ impl Engine {
             #[cfg(desktop)]
             verified_contract_adapter: Mutex::new(None),
             restart_lock: Mutex::new(()),
+            vision_declared: AtomicBool::new(false),
+            vision_installed: AtomicBool::new(false),
+            vision_coresident: AtomicBool::new(false),
         }
     }
 
@@ -182,6 +238,11 @@ impl Engine {
             status: self.status.lock().unwrap().clone(),
             gpu_offload: self.gpu_offload.load(Ordering::Relaxed),
             n_ctx: self.n_ctx.load(Ordering::Relaxed),
+            vision: VisionInfo::from_flags(
+                self.vision_declared.load(Ordering::Relaxed),
+                self.vision_installed.load(Ordering::Relaxed),
+                self.vision_coresident.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -347,6 +408,49 @@ fn resolve_launch_paths(
     Some(LaunchPaths { model, behavioral_lora, contract_lora })
 }
 
+/// The resolved files of the document transcriber: its model and the
+/// multimodal projector that must load with it.
+#[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile)
+pub struct VisionPaths {
+    pub model: PathBuf,
+    pub mmproj: PathBuf,
+}
+
+/// Resolves the effective tier's vision files the way [`resolve_launch`] does
+/// the tutor's. `None` when the tier declares no vision OR when either file is
+/// missing: a transcriber without its projector cannot run, so it is reported
+/// as not installed rather than half-resolved.
+#[cfg_attr(desktop, allow(dead_code))] // only production caller is cfg(mobile)
+pub fn resolve_vision(app: &AppHandle) -> Option<VisionPaths> {
+    let root = resources_root(app);
+    let raw = std::fs::read_to_string(root.join("catalog.json"))
+        .map_err(|e| eprintln!("resolve_vision: catalog read: {e}"))
+        .ok()?;
+    let entries = crate::catalog::parse_catalog(&raw)
+        .map_err(|e| eprintln!("resolve_vision: catalog parse: {e}"))
+        .ok()?;
+    let hero = crate::catalog::hero(&entries)?;
+    let tier = crate::tier_select::effective_tier(app);
+    let vision = crate::catalog::hero_variant(hero, &tier).vision?;
+    let app_data = app.path().app_data_dir().ok();
+    resolve_vision_paths(app_data, root, &vision.model_file, &vision.mmproj_file)
+}
+
+/// Pure resolution logic behind [`resolve_vision`]: each file resolves exactly
+/// as `resolve_model` resolves the tutor's (app-data copy wins, else bundled),
+/// and either one missing collapses the result to `None` (fail-closed via `?`).
+/// No `AppHandle`, so it is directly unit-testable.
+fn resolve_vision_paths(
+    app_data: Option<PathBuf>,
+    resources: PathBuf,
+    model_file: &str,
+    mmproj_file: &str,
+) -> Option<VisionPaths> {
+    let model = resolve_model(app_data.clone(), resources.clone(), model_file)?;
+    let mmproj = resolve_model(app_data, resources, mmproj_file)?;
+    Some(VisionPaths { model, mmproj })
+}
+
 /// Pure resolution logic behind `model_path`: app-data copy wins if present,
 /// else the bundled resources copy, else None.
 fn resolve_model(app_data: Option<PathBuf>, resources: PathBuf, model_file: &str) -> Option<PathBuf> {
@@ -494,6 +598,33 @@ pub(crate) fn launch_hashes(app: &AppHandle) -> Result<LaunchHashes, String> {
         behavioral: hero_hash(app, |v| v.adapter_sha256.clone())?,
         contract: hero_hash(app, |v| v.contract_adapter_sha256.clone())?,
     })
+}
+
+/// The catalog's pinned hashes for the vision files [`resolve_vision`] would
+/// produce. Both `None` when the effective tier declares no vision, which is
+/// not an error: there is simply nothing to verify.
+#[cfg(mobile)]
+pub(crate) struct VisionHashes {
+    pub model: Option<String>,
+    pub mmproj: Option<String>,
+}
+
+/// Reads [`VisionHashes`] from the same effective-tier variant
+/// [`resolve_vision`] resolved, so the hash and the file always agree.
+#[cfg(mobile)]
+pub(crate) fn vision_hashes(app: &AppHandle) -> Result<VisionHashes, String> {
+    Ok(match hero_vision(app) {
+        Some(v) => VisionHashes { model: Some(v.sha256), mmproj: Some(v.mmproj_sha256) },
+        None => VisionHashes { model: None, mmproj: None },
+    })
+}
+
+/// The vision block of the effective tier's hero variant, if it declares one.
+#[cfg(mobile)]
+pub(crate) fn hero_vision(app: &AppHandle) -> Option<crate::catalog::VisionVariant> {
+    let hero = hero_entry(app)?;
+    let tier = crate::tier_select::effective_tier(app);
+    crate::catalog::hero_variant(&hero, &tier).vision
 }
 
 /// The hero catalog entry, parsed fresh. Small file, read on every call — the
@@ -985,6 +1116,57 @@ pub use crate::engine_inproc::{restart, shutdown, start, start_if_no_model};
 #[cfg(all(test, desktop))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_vision_paths_needs_both_files_and_prefers_app_data() {
+        let dir = std::env::temp_dir().join(format!("cleophis-vision-resolve-{}", std::process::id()));
+        let app = dir.join("app"); let res = dir.join("res");
+        std::fs::create_dir_all(app.join("models")).unwrap(); std::fs::create_dir_all(res.join("models")).unwrap();
+        std::fs::write(res.join("models/g.gguf"), b"r").unwrap();
+        // projector absent everywhere -> None (fail-closed)
+        assert!(resolve_vision_paths(Some(app.clone()), res.clone(), "models/g.gguf", "models/m.gguf").is_none());
+        std::fs::write(res.join("models/m.gguf"), b"r").unwrap();
+        let p = resolve_vision_paths(Some(app.clone()), res.clone(), "models/g.gguf", "models/m.gguf").unwrap();
+        assert_eq!(p.model, res.join("models/g.gguf"));
+        // an app-data copy of the model wins
+        std::fs::write(app.join("models/g.gguf"), b"a").unwrap();
+        let p = resolve_vision_paths(Some(app.clone()), res, "models/g.gguf", "models/m.gguf").unwrap();
+        assert_eq!(p.model, app.join("models/g.gguf"));
+    }
+
+    #[test]
+    fn engine_info_omits_vision_until_something_is_declared_or_installed() {
+        let e = Engine::new(1);
+        let v = serde_json::to_value(e.info()).unwrap();
+        assert!(v.get("vision").is_none(), "{v}");
+        e.vision_declared.store(true, std::sync::atomic::Ordering::Relaxed);
+        let v = serde_json::to_value(e.info()).unwrap();
+        assert_eq!(v["vision"]["declared"], true);
+        assert_eq!(v["vision"]["installed"], false);
+        assert_eq!(v["vision"]["coresident"], false);
+        // Installed without a declaration (a tier switch away from vision
+        // before the sweep) is still reported, not hidden.
+        let e = Engine::new(1);
+        e.vision_installed.store(true, std::sync::atomic::Ordering::Relaxed);
+        e.vision_coresident.store(true, std::sync::atomic::Ordering::Relaxed);
+        let v = serde_json::to_value(e.info()).unwrap();
+        assert_eq!(v["vision"]["declared"], false);
+        assert_eq!(v["vision"]["installed"], true);
+        assert_eq!(v["vision"]["coresident"], true);
+    }
+
+    #[test]
+    fn vision_info_exists_once_declared_or_installed_and_prewarms_only_when_both_hold() {
+        // The rule `vision_state` applies to its LIVE flags (final review I3);
+        // the flags themselves need an AppHandle, so only the rule runs here.
+        assert!(VisionInfo::from_flags(false, false, true).is_none());
+        let declared_only = VisionInfo::from_flags(true, false, true).unwrap();
+        assert!((declared_only.declared, declared_only.installed) == (true, false));
+        assert!(!declared_only.can_prewarm(), "nothing to load: a prewarm would only end the chat session");
+        assert!(!VisionInfo::from_flags(true, true, false).unwrap().can_prewarm(), "sequential device");
+        assert!(VisionInfo::from_flags(true, true, true).unwrap().can_prewarm());
+        assert!(VisionInfo::from_flags(false, true, true).unwrap().can_prewarm());
+    }
 
     fn unique_dir(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()

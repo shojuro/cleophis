@@ -64,9 +64,16 @@ use kpack_engine::{
     AdapterRole, AdapterSpec, ChatMessage, ChatTemplate, EngineBackend, EngineHandle,
     EngineSession, LlamaEngine, LoadRequest, ModelSpec, Role, SessionConfig, StopReason,
 };
+use kpack_engine::{
+    assess, prepare_image, LlamaVision, PreparedImage, ProjectorSpec, VisionBackend, VisionConfig, VisionHandle,
+    VisionLoadRequest,
+};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::engine_serve::{ChatTurn, Command, SessionEnd, Waited};
+use crate::engine_serve::{
+    ChatTurn, Command, OutcomeBlock, OutcomeKind, OutcomeVerdict, OutcomeWarning, SessionEnd,
+    TranscribeJob, TranscribeOutcome, Waited,
+};
 use crate::engine_thermal::{ThermalWatch, WINDOW_GAPS};
 use crate::engine_tool_loop::{LoopMessage, LoopRole, TurnSource};
 
@@ -214,6 +221,21 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
 
     let backend = LlamaEngine::new();
 
+    // The document transcriber (Vision Input). Like the tutor's handle it is
+    // `!Send` and lives only on this thread. `coresident` is decided once from
+    // the device's RAM: at or above the policy floor the transcriber loads
+    // BESIDE the tutor; below it, the tutor is unloaded for the duration of a
+    // transcription and reloaded after (the sequential path in `Transcribe`).
+    let vision_backend = LlamaVision::new();
+    let mut vision: Option<Box<dyn VisionHandle>> = None;
+    // When the transcriber was last loaded or used. The idle release is
+    // measured from HERE, not from the last command of any kind: a chat turn
+    // is not a use of the transcriber and must not keep it resident.
+    let mut vision_last_used: Option<std::time::Instant> = None;
+    let ram_gb = crate::hardware::detect().ram_gb;
+    let coresident = crate::vision_policy::coresident(ram_gb);
+    engine.vision_coresident.store(coresident, Ordering::Relaxed);
+
     // The self-evidencing kernels block (spec H3).
     //
     // 🔴 It was NOT self-evidencing until now, and the correction is the whole
@@ -248,7 +270,7 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
     loop {
         let cmd = match pending.take() {
             Some(cmd) => cmd,
-            None => match rx.recv() {
+            None => match recv_releasing_vision(&rx, None, &mut vision, &mut vision_last_used) {
                 Ok(cmd) => cmd,
                 // Every sender is gone; nothing further can arrive.
                 Err(_) => break,
@@ -278,6 +300,8 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                     turn,
                     &rx,
                     &thermal,
+                    &mut vision,
+                    &mut vision_last_used,
                 );
                 match end {
                     SessionEnd::Idle => {}
@@ -285,52 +309,396 @@ fn run(app: AppHandle, engine: Arc<Engine>, rx: Receiver<Command>) {
                     SessionEnd::Closed => break,
                 }
             }
-            Command::Load => {
-                // Release the previous model FIRST. Loading the new one while
-                // the old is still resident would momentarily need both, which
-                // the reference device does not have the RAM for.
-                if let Some(old) = handle.take() {
-                    old.unload();
+            Command::Load => load_tutor(&app, &engine, &backend, &mut handle),
+            Command::PrewarmVision => {
+                if coresident && vision.is_some() {
+                    // A prewarm means the camera just opened: the transcriber must not expire while the user frames the shot.
+                    vision_last_used = Some(std::time::Instant::now());
                 }
-                engine.set_status(EngineStatus::Starting);
-                match load_stack(&app, &backend) {
-                    Ok(loaded) => {
-                        handle = Some(loaded);
-                        // No GPU offload on Android: CPU-first is policy
-                        // (spec §1/H3), not a fallback.
-                        engine.gpu_offload.store(false, Ordering::Relaxed);
-                        // Publish the window this tier actually runs with,
-                        // BEFORE `engine-ready` carries it to the frontend
-                        // (decision D-4). `session_config` stays the only place
-                        // the tier→window rule is written; this reads it rather
-                        // than restating it, which is the whole point — the bug
-                        // being fixed was a second copy of this number living
-                        // in another language.
-                        //
-                        // A tier switch restarts the engine and comes back
-                        // through here, so the frontend's window updates on the
-                        // same event that tells it the engine is ready again.
-                        let tier = crate::tier_select::effective_tier(&app);
-                        engine.n_ctx.store(
-                            session_config(&tier, pinned_sampling(&app)).n_ctx,
-                            Ordering::Relaxed,
-                        );
-                        engine.set_status(EngineStatus::Ready);
-                        let _ = app.emit("engine-ready", engine.info());
+                if coresident && vision.is_none() {
+                    let loaded = resolve_transcriber(&app)
+                        .and_then(|(variant, paths)| load_vision(&app, &vision_backend, &variant, &paths));
+                    match loaded {
+                        Ok(v) => {
+                            vision = Some(v);
+                            vision_last_used = Some(std::time::Instant::now());
+                        }
+                        Err(e) => eprintln!("[vision] prewarm failed: {e}"),
                     }
+                }
+            }
+            Command::Transcribe(job) => {
+                let t_all = std::time::Instant::now();
+                // Resolve ONCE, and refuse BEFORE touching the tutor: on the
+                // sequential path unloading and reloading a multi-second model
+                // to deliver "no transcriber" would be a pure cost to the chat.
+                let (variant, paths) = match resolve_transcriber(&app) {
+                    Ok(x) => x,
                     Err(e) => {
-                        eprintln!("engine_inproc: load failed: {e}");
-                        engine.set_status(EngineStatus::Failed);
-                        let _ = app.emit("engine-failed", e);
+                        eprintln!("[vision] refused: {e}");
+                        let _ = job.reply.send(Err(e));
+                        continue;
+                    }
+                };
+                // Decode and downscale BEFORE unloading the tutor too: a bad
+                // image must not cost a tutor reload.
+                let t = std::time::Instant::now();
+                let prepared = match prepare_image(&job.image, variant.max_side) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("[vision] image rejected after {} ms", t.elapsed().as_millis());
+                        let _ = job.reply.send(Err(e.to_string()));
+                        continue;
+                    }
+                };
+                let prep_ms = t.elapsed().as_millis() as u64;
+                let TranscribeJob { image, cancel, reply } = job;
+                drop(image);
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = reply.send(Err(CANCELLED.to_string()));
+                    continue;
+                }
+                // Only a tutor actually unloaded HERE is reloaded here: a
+                // `None` handle means a prior load already failed, and
+                // reloading would re-emit `engine-failed` for no reason.
+                let mut unloaded_tutor = false;
+                if !coresident {
+                    if let Some(old) = handle.take() {
+                        engine.set_status(EngineStatus::Restarting);
+                        let _ = app.emit("engine-restarting", ());
+                        old.unload();
+                        unloaded_tutor = true;
                     }
                 }
+                let result = transcribe_one(
+                    &app,
+                    &vision_backend,
+                    &mut vision,
+                    &variant,
+                    &paths,
+                    prepared,
+                    prep_ms,
+                    &cancel,
+                    coresident,
+                );
+                if vision.is_some() {
+                    vision_last_used = Some(std::time::Instant::now());
+                }
+                let mut reload_ms = None;
+                if !coresident {
+                    if let Some(v) = vision.take() {
+                        v.unload();
+                    }
+                    vision_last_used = None;
+                    // Reload on BOTH the success and the error path: the tutor
+                    // was unloaded above and the chat is dead until it is back.
+                    // Not during shutdown or a tier switch: that would load the
+                    // OLD tier's tutor inside `stop_thread`'s join and emit a
+                    // spurious `engine-ready`.
+                    if unloaded_tutor && !engine.shutting_down.load(Ordering::Relaxed) {
+                        let t = std::time::Instant::now();
+                        load_tutor(&app, &engine, &backend, &mut handle);
+                        reload_ms = Some(t.elapsed().as_millis() as u64);
+                    }
+                }
+                let result = result.map(|mut o| {
+                    o.reload_ms = reload_ms;
+                    o
+                });
+                // The error text is one of the engine's own messages, never
+                // transcription content or image bytes.
+                eprintln!(
+                    "[vision] transcribe {} total {} ms (coresident={coresident}, reload={reload_ms:?})",
+                    match &result {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => format!("err ({e})"),
+                    },
+                    t_all.elapsed().as_millis()
+                );
+                let _ = reply.send(result);
             }
         }
     }
 
+    if let Some(v) = vision {
+        v.unload();
+    }
     if let Some(h) = handle {
         h.unload();
     }
+}
+
+/// (Re)load the tutor: unload the previous handle, resolve and load the stack,
+/// and publish the result. Shared by `Command::Load` and the sequential
+/// transcription path, which reloads the tutor it unloaded.
+fn load_tutor(
+    app: &AppHandle,
+    engine: &Engine,
+    backend: &LlamaEngine,
+    handle: &mut Option<Box<dyn EngineHandle>>,
+) {
+    // Release the previous model FIRST. Loading the new one while
+    // the old is still resident would momentarily need both, which
+    // the reference device does not have the RAM for.
+    if let Some(old) = handle.take() {
+        old.unload();
+    }
+    engine.set_status(EngineStatus::Starting);
+    match load_stack(app, backend) {
+        Ok(loaded) => {
+            *handle = Some(loaded);
+            // No GPU offload on Android: CPU-first is policy
+            // (spec §1/H3), not a fallback.
+            engine.gpu_offload.store(false, Ordering::Relaxed);
+            // Publish the window this tier actually runs with,
+            // BEFORE `engine-ready` carries it to the frontend
+            // (decision D-4). `session_config` stays the only place
+            // the tier→window rule is written; this reads it rather
+            // than restating it, which is the whole point — the bug
+            // being fixed was a second copy of this number living
+            // in another language.
+            //
+            // A tier switch restarts the engine and comes back
+            // through here, so the frontend's window updates on the
+            // same event that tells it the engine is ready again.
+            let tier = crate::tier_select::effective_tier(app);
+            engine.n_ctx.store(
+                session_config(&tier, pinned_sampling(app)).n_ctx,
+                Ordering::Relaxed,
+            );
+            // Vision availability rides the same event: whether this tier
+            // declares a transcriber, and whether its files are on the device.
+            // Stamped here, before `engine-ready`, so the front end never sees
+            // a ready engine with stale vision flags (a tier switch lands here
+            // too, and the answer can change with it).
+            engine.vision_declared.store(
+                crate::inference::hero_vision(app).is_some(),
+                Ordering::Relaxed,
+            );
+            engine.vision_installed.store(
+                crate::inference::resolve_vision(app).is_some(),
+                Ordering::Relaxed,
+            );
+            engine.set_status(EngineStatus::Ready);
+            let _ = app.emit("engine-ready", engine.info());
+        }
+        Err(e) => {
+            eprintln!("engine_inproc: load failed: {e}");
+            engine.set_status(EngineStatus::Failed);
+            let _ = app.emit("engine-failed", e);
+        }
+    }
+}
+
+const NO_TRANSCRIBER: &str = "This tier has no transcriber.";
+const NOT_DOWNLOADED: &str = "The transcriber is not downloaded yet.";
+const CANCELLED: &str = "Transcription cancelled.";
+
+/// The effective tier's transcriber declaration and its resolved files, or the
+/// legible refusal. The only place the two refusal strings are written.
+fn resolve_transcriber(
+    app: &AppHandle,
+) -> Result<(crate::catalog::VisionVariant, crate::inference::VisionPaths), String> {
+    let variant = crate::inference::hero_vision(app).ok_or_else(|| NO_TRANSCRIBER.to_string())?;
+    let paths = crate::inference::resolve_vision(app).ok_or_else(|| NOT_DOWNLOADED.to_string())?;
+    Ok((variant, paths))
+}
+
+/// Load the transcriber with the catalog's pinned hashes attached, so
+/// `prepare_vision_stack` gates both files before anything native is touched —
+/// the same shape as `load_stack`.
+fn load_vision(
+    app: &AppHandle,
+    backend: &LlamaVision,
+    variant: &crate::catalog::VisionVariant,
+    paths: &crate::inference::VisionPaths,
+) -> Result<Box<dyn VisionHandle>, String> {
+    let pinned = crate::inference::vision_hashes(app)?;
+    let mut base = ModelSpec::new(&paths.model);
+    if let Some(h) = pinned.model {
+        base = base.with_sha256(h);
+    }
+    let mut mmproj = ProjectorSpec::new(&paths.mmproj);
+    if let Some(h) = pinned.mmproj {
+        mmproj = mmproj.with_sha256(h);
+    }
+    let config = VisionConfig {
+        n_threads: variant.threads,
+        max_tokens: variant.max_tokens,
+        prompt: variant.prompt.clone(),
+        one_pass: variant.one_pass,
+        ..VisionConfig::default()
+    };
+    backend
+        .load(VisionLoadRequest {
+            base,
+            mmproj,
+            config,
+            n_gpu_layers: 0,
+        })
+        .map_err(|e| format!("The transcriber failed to load: {e}"))
+}
+
+/// Transcribe one prepared image and assess it. Logs timings, counts and the
+/// verdict only — never the transcription, a block's content or image bytes.
+#[allow(clippy::too_many_arguments)]
+fn transcribe_one(
+    app: &AppHandle,
+    backend: &LlamaVision,
+    vision: &mut Option<Box<dyn VisionHandle>>,
+    variant: &crate::catalog::VisionVariant,
+    paths: &crate::inference::VisionPaths,
+    prepared: PreparedImage,
+    prep_ms: u64,
+    cancel: &Arc<AtomicBool>,
+    coresident: bool,
+) -> Result<TranscribeOutcome, String> {
+    // Cancel is otherwise noticed only in the decode loop; a load is seconds.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED.to_string());
+    }
+    if vision.is_none() {
+        *vision = Some(load_vision(app, backend, variant, paths)?);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(CANCELLED.to_string());
+    }
+    let handle = vision.as_mut().expect("just loaded");
+    let mut cancelled = || cancel.load(Ordering::Relaxed);
+    let tr = handle
+        .transcribe(&prepared, &mut cancelled)
+        .map_err(|e| e.to_string())?;
+    if tr.stop == StopReason::Cancelled {
+        return Err(CANCELLED.to_string());
+    }
+    let truncated = tr.stop == StopReason::MaxTokens;
+    let assessment = assess(&tr.tokens, truncated);
+    eprintln!(
+        "[vision] verdict {:?} warnings {:?} blocks {}",
+        assessment.verdict,
+        assessment.warnings,
+        assessment.blocks.len()
+    );
+    let (blocks, warnings, verdict) = outcome_parts(assessment);
+    Ok(TranscribeOutcome {
+        blocks,
+        warnings,
+        verdict,
+        n_image_tokens: tr.n_image_tokens,
+        prefill_ms: tr.timings.prefill_ms,
+        decode_ms: tr.timings.decode_ms,
+        prep_ms,
+        reload_ms: None,
+        peak_rss_kb: vm_hwm_kb(),
+        coresident,
+    })
+}
+
+/// Block for the next command, releasing the transcriber 120 s after its LAST
+/// USE rather than 120 s after the last command of any kind.
+///
+/// `deadline` is the caller's own absolute deadline (an open chat session's
+/// idle limit), or `None` for the outer loop. The wait is bounded by whichever
+/// comes first; when the transcriber's deadline passes it is unloaded in place
+/// and the wait CONTINUES toward the caller's deadline, so releasing the
+/// transcriber never restarts or cuts short the session's own clock. `Timeout`
+/// is returned only when the caller's deadline passes; `Disconnected` when
+/// every sender is gone.
+fn recv_releasing_vision(
+    rx: &Receiver<Command>,
+    deadline: Option<std::time::Instant>,
+    vision: &mut Option<Box<dyn VisionHandle>>,
+    last_used: &mut Option<std::time::Instant>,
+) -> Result<Command, mpsc::RecvTimeoutError> {
+    use std::time::Instant;
+    let limit = crate::vision_policy::VISION_IDLE_TIMEOUT;
+    loop {
+        let now = Instant::now();
+        let vision_left = vision.as_ref().map(|_| {
+            // Resident but never stamped should not happen; treat as used now.
+            let used = *last_used.get_or_insert(now);
+            limit.saturating_sub(now.saturating_duration_since(used))
+        });
+        let session_left = deadline.map(|d| d.saturating_duration_since(now));
+        let wait = match (vision_left, session_left) {
+            (None, None) => {
+                return rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected);
+            }
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+        };
+        match rx.recv_timeout(wait) {
+            Ok(cmd) => return Ok(cmd),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(mpsc::RecvTimeoutError::Disconnected)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                if let (true, Some(used)) = (vision.is_some(), *last_used) {
+                    if now.saturating_duration_since(used) >= limit {
+                        eprintln!("[vision] idle {} s, releasing the transcriber", limit.as_secs());
+                        if let Some(v) = vision.take() {
+                            v.unload();
+                        }
+                        *last_used = None;
+                    }
+                }
+                if deadline.is_some_and(|d| now >= d) {
+                    return Err(mpsc::RecvTimeoutError::Timeout);
+                }
+            }
+        }
+    }
+}
+
+/// kpack's assessment, as the crate-local mirrors `serve.rs` carries everywhere.
+fn outcome_parts(
+    a: kpack_engine::Assessment,
+) -> (Vec<OutcomeBlock>, Vec<OutcomeWarning>, OutcomeVerdict) {
+    use kpack_engine::{BlockKind, Verdict, Warning};
+    let blocks = a
+        .blocks
+        .into_iter()
+        .map(|b| OutcomeBlock {
+            kind: match b.kind {
+                BlockKind::Latex => OutcomeKind::Latex,
+                BlockKind::Text => OutcomeKind::Text,
+            },
+            content: b.content,
+            confidence: b.confidence,
+            min_operator_prob: b.min_operator_prob,
+        })
+        .collect();
+    let warnings = a
+        .warnings
+        .into_iter()
+        .map(|w| match w {
+            Warning::LowConfidence => OutcomeWarning::LowConfidence,
+            Warning::OperatorUncertain => OutcomeWarning::OperatorUncertain,
+            Warning::NoMathFound => OutcomeWarning::NoMathFound,
+            Warning::InvalidLatex => OutcomeWarning::InvalidLatex,
+            Warning::Truncated => OutcomeWarning::Truncated,
+        })
+        .collect();
+    let verdict = match a.verdict {
+        Verdict::Accept => OutcomeVerdict::Accept,
+        Verdict::Review => OutcomeVerdict::Review,
+        Verdict::Refuse => OutcomeVerdict::Refuse,
+    };
+    (blocks, warnings, verdict)
+}
+
+/// Peak resident set size so far (`VmHWM`), in kB; 0 if unreadable.
+fn vm_hwm_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
+        })
+        .unwrap_or(0)
 }
 
 /// How long an open session waits for the conversation's next turn before
@@ -368,6 +736,8 @@ fn serve_one_session(
     first: ChatTurn,
     rx: &Receiver<Command>,
     thermal: &Rc<RefCell<ThermalProbe>>,
+    vision: &mut Option<Box<dyn VisionHandle>>,
+    vision_last_used: &mut Option<std::time::Instant>,
 ) -> SessionEnd {
     let mut session = match handle.session(cfg) {
         Ok(session) => session,
@@ -406,7 +776,17 @@ fn serve_one_session(
         // ran to completion and the session is clean.
         let _ = reply.send(result);
     };
-    let mut wait = || match rx.recv_timeout(IDLE_SESSION_TIMEOUT) {
+    // The session's idle limit is an ABSOLUTE deadline fixed when the wait
+    // begins, so releasing the transcriber partway through (which loops inside
+    // `recv_releasing_vision`) cannot restart the 300 s. The transcriber is
+    // released here too: a chat turn is not a use of it, and an open
+    // conversation must not keep it resident for the conversation's length.
+    let mut wait = || match recv_releasing_vision(
+        rx,
+        Some(std::time::Instant::now() + IDLE_SESSION_TIMEOUT),
+        vision,
+        vision_last_used,
+    ) {
         Ok(cmd) => Waited::Cmd(cmd),
         Err(mpsc::RecvTimeoutError::Timeout) => Waited::Timeout,
         Err(mpsc::RecvTimeoutError::Disconnected) => Waited::Closed,

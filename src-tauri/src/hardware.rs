@@ -107,8 +107,9 @@ pub fn mobile_supported(ram_gb: u64) -> bool {
 
 /// Mobile tier per the brief: **mid (4B) only if RAM >= 8 GB AND the CPU is a
 /// generation above the floor** (i8mm, or a core at 2.75 GHz or better).
-/// Everything else is low. The A22 — 4 GB, no i8mm — is low by design, which is
-/// the case this rule was written from.
+/// Everything else is low. The A22 — 8 GB (device docs; the earlier 4 GB was the
+/// tier rule's worked example, not the phone), no i8mm and not fast — is low by
+/// design, which is the case this rule was written from.
 pub fn tier_for_mobile(ram_gb: u64, caps: SocCaps) -> &'static str {
     let fast_cpu = caps.i8mm || caps.max_core_khz >= FAST_CORE_KHZ;
     if ram_gb >= 8 && fast_cpu {
@@ -227,7 +228,8 @@ mod tests {
         SocCaps { dotprod: true, i8mm: true, max_core_khz: 2_400_000 }
     }
 
-    /// The A22 5G (Dimensity 700): dotprod yes, i8mm no, 2.2 GHz, 4 GB.
+    /// The A22 5G (Dimensity 700): dotprod yes, i8mm no, 2.2 GHz, 8 GB (device docs;
+    /// the earlier 4 GB was the tier rule's worked example, not the phone).
     fn a22() -> SocCaps {
         SocCaps { dotprod: true, i8mm: false, max_core_khz: 2_200_000 }
     }
