@@ -112,10 +112,15 @@
         <button class="btn lookupbtn" id="lookupBtn" type="button" aria-pressed="false">Look up a drug or condition</button>
       </div>
       <div class="composer" id="chatComposer">
+        <!-- Vision Stage 2: shown only for the hero, and only when this tier
+             pins a transcriber (app.js renderPhotoButton). -->
+        <button class="btn iconbtn" id="photoBtn" type="button" hidden aria-label="Add a photo of a problem">📷</button>
         <input id="chatInput" placeholder="Type your question…" autocomplete="off"/>
         <button class="btn" id="stopBtn" hidden>Stop</button>
         <button class="btn primary" id="sendBtn">Send</button>
       </div>
+      <input type="file" id="photoCapture" accept="image/*" capture="environment" hidden/>
+      <input type="file" id="photoPick" accept="image/*" hidden/>
     </div>
   </section>
 
@@ -199,6 +204,58 @@
     <p class="sub">Answers in this chat will cite the packs you attach — or say when there's no evidence in them.</p>
     <div id="attachList"></div>
     <button class="btn primary block" id="attachDoneBtn">Done</button>
+  </div>
+</div>
+
+<!-- Vision Stage 2: a photo of a printed problem -> crop -> read -> confirm.
+     Exactly one pane is visible at a time. Every string in it is written by
+     app.js with textContent, from the copy constants in vision-confirm.js and
+     vision-download.js, and every transcribed block is a <textarea> whose
+     .value is set, so no model text is ever parsed as markup. -->
+<div class="modal" id="visionModal">
+  <div class="box">
+    <button class="x" data-close>&times;</button>
+    <div class="vpane" id="visionMenu" hidden>
+      <button class="btn primary block" id="visionTakeBtn" type="button"></button>
+      <button class="btn block" id="visionPickBtn" type="button"></button>
+      <p class="sub" id="visionDl" hidden></p>
+      <button class="btn primary block" id="visionDlBtn" type="button" hidden></button>
+    </div>
+    <div class="vpane" id="visionCrop" hidden>
+      <div class="cropwrap" id="cropWrap">
+        <canvas id="cropCanvas"></canvas>
+        <div id="cropFrame"><i data-h="nw"></i><i data-h="n"></i><i data-h="ne"></i><i data-h="e"></i><i data-h="se"></i><i data-h="s"></i><i data-h="sw"></i><i data-h="w"></i></div>
+      </div>
+      <div class="vactions">
+        <button class="btn primary" id="cropUseBtn" type="button"></button>
+        <button class="btn" id="cropRetakeBtn" type="button"></button>
+      </div>
+    </div>
+    <div class="vpane" id="visionReading" hidden>
+      <p id="visionReadingText"></p>
+      <div class="prog vreadprog"><i></i></div>
+      <div class="vactions">
+        <button class="btn" id="visionCancel" type="button"></button>
+      </div>
+    </div>
+    <div class="vpane" id="visionConfirm" hidden>
+      <img id="visionThumb" alt=""/>
+      <div id="visionBlocks"></div>
+      <p class="sub" id="visionNotes"></p>
+      <div class="vactions">
+        <button class="btn primary" id="visionUse" type="button"></button>
+        <button class="btn primary" id="visionUseAnyway" type="button"></button>
+        <button class="btn" id="visionRetake" type="button"></button>
+        <button class="btn" id="visionTypeIt" type="button"></button>
+      </div>
+    </div>
+    <div class="vpane" id="visionRefuse" hidden>
+      <p id="visionRefuseText"></p>
+      <div class="vactions">
+        <button class="btn" id="visionRefuseRetake" type="button"></button>
+        <button class="btn" id="visionRefuseTypeIt" type="button"></button>
+      </div>
+    </div>
   </div>
 </div>
 
