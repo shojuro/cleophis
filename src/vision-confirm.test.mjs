@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
-  HANDOFF_PREFIX, REFUSE_NO_MATHS, REFUSE_LOW_CONFIDENCE, REVIEW_NOTE, WARNING_COPY, CONFIDENCE_FLAG,
+  HANDOFF_PREFIX, REFUSE_NO_MATHS, REFUSE_LOW_CONFIDENCE, REVIEW_NOTE, WARNING_COPY, CONFIDENCE_FLAG, OPERATOR_FLAG,
   confirmState, applyEdit, composeHandoff, attachmentFor,
 } from './vision-confirm.js';
 
@@ -41,6 +42,7 @@ test('copy constants match the brief verbatim', () => {
     truncated: 'The reading was cut short.',
   });
   assert.equal(CONFIDENCE_FLAG, 0.9);
+  assert.equal(OPERATOR_FLAG, 0.97);
 });
 
 test('accept: one latex block can be used and hands off verbatim', () => {
@@ -85,11 +87,13 @@ test('review: operatorUncertain blocks Use, allows Use anyway, flags the block, 
 });
 
 test('notes follow wire order, dedupe, ignore unknown warnings, and add REVIEW_NOTE only in review', () => {
-  // An amber latex block in both, so only the mode decides the review note.
   const amber = [{ kind: 'latex', content: '3x-7=2x+5', confidence: 0.5 }];
   const review = confirmState(result({ verdict: 'review', blocks: amber, warnings: ['truncated', 'lowConfidence', 'truncated', 'mystery'] }));
   assert.deepEqual(review.notes, [WARNING_COPY.truncated, WARNING_COPY.lowConfidence, REVIEW_NOTE]);
-  const accept = confirmState(result({ blocks: amber, warnings: ['lowConfidence'] }));
+  // An accept cannot carry an amber block (it opens as review, below), so the
+  // accept side is a confident block: the warnings' copy, and no review note.
+  const accept = confirmState(result({ warnings: ['lowConfidence'] }));
+  assert.equal(accept.mode, 'accept');
   assert.deepEqual(accept.notes, [WARNING_COPY.lowConfidence]);
 });
 
@@ -177,7 +181,7 @@ test('attachmentFor carries counts and provenance, never block text', () => {
   });
   const s = confirmState(r);
   const a = attachmentFor(r, s);
-  assert.deepEqual(a, { kind: 'vision', model: MODEL, verdict: 'accept', edited: false, blocks: { latex: 2, text: 1 } });
+  assert.deepEqual(a, { kind: 'vision', model: MODEL, verdict: 'accept', edited: false, override: false, blocks: { latex: 2, text: 1 } });
   const wire = JSON.stringify(a);
   for (const b of r.blocks) assert.ok(!wire.includes(b.content), `leaked ${b.content}`);
   assert.equal(attachmentFor(r, applyEdit(s, 0, 'z=9')).edited, true);
@@ -348,9 +352,11 @@ test('the review note retires with the last amber latex block, and the warnings 
 });
 
 test('an edit in accept mode never adds the review note', () => {
-  const s = confirmState(result({ warnings: ['truncated'], blocks: [flaggedBlock('a'), flaggedBlock('b')] }));
+  const sure = (content) => ({ kind: 'latex', content, confidence: 0.99 });
+  const s = confirmState(result({ warnings: ['truncated'], blocks: [sure('a'), sure('b')] }));
   assert.equal(s.mode, 'accept');
   const e = applyEdit(s, 0, 'a=1');
+  assert.equal(e.mode, 'accept');
   assert.deepEqual(e.notes, [WARNING_COPY.truncated]);
 });
 
@@ -362,4 +368,81 @@ test('a review verdict with no amber latex block opens without the review note',
   assert.deepEqual(s.notes, [WARNING_COPY.truncated]);
   assert.equal(s.canUse, false);
   assert.equal(s.canUseAnyway, true);
+});
+
+// ------------------------------------------------- final review M5 and M7
+// M5: fail closed (the S2-P8 posture). An accept whose latex is amber means the
+// engine's thresholds and these ones disagree; the user checks before it goes.
+test('an accept with an amber latex block opens as review', () => {
+  const r = result({ blocks: [
+    { kind: 'latex', content: '3x-7=2x+5', confidence: 0.99, minOperatorProb: 0.995 },
+    { kind: 'latex', content: 'y=2', confidence: 0.8999999761581421 },
+  ] });
+  const s = confirmState(r);
+  assert.equal(s.mode, 'review');
+  assert.deepEqual(s.blocks.map((b) => b.flagged), [false, true]);
+  assert.equal(s.canUse, false);
+  assert.equal(s.canUseAnyway, true);
+  assert.deepEqual(s.notes, [REVIEW_NOTE]);
+  assert.equal(s.verdict, 'accept', 'the raw verdict is kept for provenance');
+  assert.equal(attachmentFor(r, s, 'anyway').verdict, 'accept');
+});
+
+test('an accept with a weak operator opens as review, and an edit unlocks Use', () => {
+  const s = confirmState(result({ blocks: [{ kind: 'latex', content: '3x+7=2x+5', confidence: 0.99, minOperatorProb: 0.96 }] }));
+  assert.equal(s.mode, 'review');
+  assert.equal(s.canUse, false);
+  assert.equal(s.canUseAnyway, true);
+  const e = applyEdit(s, 0, '3x-7=2x+5');
+  assert.equal(e.canUse, true);
+  assert.equal(e.canUseAnyway, false);
+  assert.deepEqual(e.notes, []);
+});
+
+test('an amber text block alone does not turn an accept into review', () => {
+  const s = confirmState(result({ blocks: [
+    { kind: 'latex', content: '3x=12', confidence: 0.99 },
+    { kind: 'text', content: 'Solve.', confidence: 0.2 },
+  ] }));
+  assert.equal(s.mode, 'accept');
+  assert.equal(s.canUse, true);
+});
+
+// The engine decides the verdict with its own copies of these thresholds
+// (kpack-engine's vision_parse.rs). This pins the two copies together, so a
+// recalibration of one side alone fails here instead of on a phone.
+test('the gate thresholds equal the engine constants in vision_parse.rs', () => {
+  const rs = readFileSync(new URL('../crates/kpack-engine/src/vision_parse.rs', import.meta.url), 'utf8');
+  const constant = (name) => {
+    const m = rs.match(new RegExp(`^pub const ${name}: f32 = ([0-9]+(?:\\.[0-9]+)?);`, 'm'));
+    assert.ok(m, `${name} not found in vision_parse.rs`);
+    return Number(m[1]);
+  };
+  assert.equal(constant('ACCEPT_MIN_CONFIDENCE'), CONFIDENCE_FLAG);
+  assert.equal(constant('OPERATOR_MIN_PROB'), OPERATOR_FLAG);
+});
+
+// M7: Stage 3 asks how often amber is overridden, so the provenance says which
+// button was pressed, not only whether something was edited.
+test('attachmentFor tells an override from a correction', () => {
+  const r = rv([flaggedBlock('a'), flaggedBlock('b')]);
+  const one = applyEdit(confirmState(r), 0, 'a=1');
+  assert.equal(one.canUseAnyway, true);
+  const anyway = attachmentFor(r, one, 'anyway');
+  assert.equal(anyway.edited, true);
+  assert.equal(anyway.override, true);
+  const both = applyEdit(one, 1, 'b=2');
+  assert.equal(both.canUse, true);
+  const use = attachmentFor(r, both, 'use');
+  assert.equal(use.edited, true);
+  assert.equal(use.override, false);
+});
+
+test('attachmentFor records no override without the button, or for an unknown one', () => {
+  const r = result();
+  const s = confirmState(r);
+  assert.equal(attachmentFor(r, s).override, false);
+  assert.equal(attachmentFor(r, s, 'use').override, false);
+  assert.equal(attachmentFor(r, s, 'Anyway').override, false);
+  assert.equal(typeof attachmentFor(r, s, 'anyway').override, 'boolean');
 });

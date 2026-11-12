@@ -464,9 +464,11 @@ pub(crate) fn inference_service(running: bool) {
 pub(crate) fn inference_service(_running: bool) {}
 
 /// Delete the JPEGs the WebView's camera capture leaves in the app's pictures
-/// directory (`CaptureHygiene.sweep`). Called after every transcription, once
-/// the page has already read the file. Never panics: a JNI failure is logged
-/// and swallowed, since a missed sweep is retried at the next activity start.
+/// directory (`CaptureHygiene.sweep`). Called after every transcription and
+/// from the `sweep_captures` command (the page has decoded the capture, or has
+/// left the photo flow), so the page never needs the file again. Never panics:
+/// a JNI failure is logged and swallowed, since a missed sweep is retried at
+/// the next sweep or activity start.
 #[cfg(all(mobile, target_os = "android"))]
 pub(crate) fn sweep_capture_files() {
     let outcome = crate::android_bridge::with_app_class(

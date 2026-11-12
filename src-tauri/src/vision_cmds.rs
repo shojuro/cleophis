@@ -1,5 +1,6 @@
 //! Image-transcription commands for the in-process engine (`transcribe_image` /
-//! `prewarm_vision` / `vision_state`).
+//! `prewarm_vision` / `vision_state`), and `sweep_captures`, which deletes the
+//! camera's capture files when the page abandons or no longer needs one.
 //!
 //! A photographed line of maths goes in as base64; a verdict, the transcribed
 //! blocks and the costs come back over a Tauri `Channel`. The work itself runs
@@ -366,6 +367,26 @@ pub fn vision_state(app: AppHandle) -> Result<Option<VisionInfo>, String> {
     {
         let _ = app;
         Err(DESKTOP_REFUSAL.to_string())
+    }
+}
+
+/// Delete the WebView camera's capture files now (`CaptureHygiene.sweep`). The
+/// page calls this once it has decoded a capture (the crop is drawn from the
+/// bitmap, never from the file again) and whenever it leaves the photo flow, so
+/// a photo abandoned at Retake, at the close button or at a decode failure does
+/// not wait for the next transcription or a cold start. Advisory and idempotent:
+/// always `Ok(())`. The desktop body does nothing, because desktop has no
+/// capture folder (the page does not call it there).
+#[tauri::command]
+pub async fn sweep_captures() -> Result<(), String> {
+    #[cfg(mobile)]
+    {
+        crate::mobile_native::sweep_capture_files();
+        return Ok(());
+    }
+    #[cfg(desktop)]
+    {
+        Ok(())
     }
 }
 

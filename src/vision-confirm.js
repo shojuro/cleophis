@@ -22,11 +22,13 @@ export const WARNING_COPY = {
   invalidLatex: 'A bracket is unbalanced.',
   truncated: 'The reading was cut short.',
 };
-// Plan threshold; Stage 3 calibrates it against real photos.
+// Plan threshold; Stage 3 calibrates it against real photos. The engine decides
+// the verdict with its own copies (ACCEPT_MIN_CONFIDENCE and OPERATOR_MIN_PROB in
+// kpack-engine's vision_parse.rs); a node test pins the two sides together.
 export const CONFIDENCE_FLAG = 0.9;
 // Stricter than the block threshold because an operator flip (+/-, =/≠) changes
 // the problem while the block as a whole still reads as confident.
-const OPERATOR_FLAG = 0.97;
+export const OPERATOR_FLAG = 0.97;
 
 // Fails closed: a missing, non-numeric or NaN confidence is "unknown", and
 // unknown must be amber, never green. An absent minOperatorProb means the block
@@ -80,6 +82,10 @@ export function confirmState(result) {
     flagged: b.kind === 'latex' && isFlagged(b),
     edited: false,
   }));
+  // An accept with amber maths means the engine and this gate disagree about a
+  // threshold. Fail closed: the user checks it, as in review. `verdict` below
+  // keeps what the engine said.
+  if (mode === 'accept' && blocks.some((b) => b.flagged)) mode = 'review';
   // Nothing to hand the tutor, whatever the model's verdict says.
   const noMaths = !blocks.some(hasMaths);
   if (noMaths) mode = 'refuse';
@@ -126,13 +132,17 @@ export function composeHandoff(state) {
 
 // Provenance for the stored message. Counts only: the problem text may be a
 // child's homework and the transcript already holds what the user confirmed.
-export function attachmentFor(result, state) {
+// `how` is the button pressed ('use' or 'anyway'). `override` is true only for
+// "Use anyway", so a correction (edited, then Use this) and an override (Use
+// anyway, edited or not) stay apart for Stage 3's calibration.
+export function attachmentFor(result, state, how) {
   const count = (kind) => state.blocks.filter((b) => b.kind === kind).length;
   return {
     kind: 'vision',
     model: { id: result.model?.id ?? null, family: result.model?.family ?? null },
     verdict: result.verdict,
     edited: state.blocks.some((b) => b.edited),
+    override: how === 'anyway',
     blocks: { latex: count('latex'), text: count('text') },
   };
 }

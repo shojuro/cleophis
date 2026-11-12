@@ -3095,14 +3095,24 @@ function isVisionPaneShown(id) {
   return $('visionModal').classList.contains('show') && !$(id).hidden;
 }
 
+// Delete the camera's capture files (`JPEG_*.jpg` in the app's external
+// Pictures folder, which is not private on Android 10 and lower). Fire and
+// forget: a missed sweep is retried at the next one. Mobile only; desktop has
+// no capture folder and the command would only return.
+function sweepCaptures() {
+  if (IS_MOBILE) invoke('sweep_captures').catch(() => {});
+}
+
 // Everything but `info` (a fact about the device) and `inFlight` (a fact about
 // the engine). Runs on every dismissal of the modal, through `hide`, and on
 // Retake. A transcription still running is cancelled and its id forgotten, so
-// a late `done` for it lands nowhere.
+// a late `done` for it lands nowhere. An abandoned capture is swept: the page
+// is leaving the flow, so no file in that folder is still needed.
 function resetVision() {
   const v = state.vision;
   visionSession += 1;
   if (v.requestId) invoke('chat_cancel', { requestId: v.requestId }).catch(() => {});
+  sweepCaptures();
   if (v.bmp) v.bmp.close();
   Object.assign(v, {
     requestId: null, file: null, bmp: null, fit: null, crop: null, drag: null,
@@ -3237,6 +3247,11 @@ async function startCrop(file) {
   } catch (e) {
     if (session === visionSession) showVisionError(visionErrorText(e));
     return;
+  } finally {
+    // Decoded or not, the page never reads the file again (the crop is drawn
+    // from the bitmap), so a camera capture is swept now rather than left on
+    // the phone until a reading or a cold start.
+    sweepCaptures();
   }
   if (session !== visionSession) { bmp.close(); return; }
   // One decoded photo at a time, whatever path got here: each is tens of MB.
@@ -3450,7 +3465,7 @@ function visionHandoff(how) {
     showVisionError(REFUSE_NO_MATHS);
     return;
   }
-  const attachment = attachmentFor(v.result, c);
+  const attachment = attachmentFor(v.result, c, how);
   hide($('visionModal'));
   const permit = sendPermit();
   if (!permit.allowed) { showEngineBanner(permit.message); return; }
