@@ -962,7 +962,11 @@ mod tests {
         let raw = "<loc_0><loc_0>x = <b>3</b> + <otsl>1";
         let blocks = parse_doctags(raw);
         // `</b>` is a closing tag, so it also ends the element (fix round I1).
+        // Any closer splits, whatever its name: a split only adds blocks, and
+        // every character still lands in one, while a closer that did not split
+        // would let what follows it fuse into the maths.
         assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert!(blocks.iter().all(|b| !b.1.contains('<') && !b.1.contains('>')), "{blocks:?}");
         assert_eq!(blocks[0].1, "x = 3");
         assert_eq!(&raw[blocks[0].2.clone()], "x = <b>3");
         assert_eq!(blocks[1].1, "+ 1");
