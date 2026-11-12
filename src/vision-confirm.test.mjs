@@ -306,3 +306,48 @@ test('Use anyway stays when another latex block still holds maths', () => {
   assert.equal(e.canUse, false);
   assert.equal(e.canUseAnyway, true);
 });
+
+// Ruling S2-P13: only maths can be amber. Text blocks are read-only and never
+// handed off, so a flag on one would ask the user to check something they
+// cannot change and that the tutor never sees.
+test('only latex blocks are flagged: a low-confidence text block is not amber', () => {
+  const s = confirmState(result({
+    blocks: [
+      { kind: 'latex', content: '3x=12', confidence: 0.99 },
+      { kind: 'text', content: 'Solve for x.', confidence: 0.3 },
+      { kind: 'text', content: 'Show your working.' },
+    ],
+  }));
+  assert.deepEqual(s.blocks.map((b) => b.flagged), [false, false, false]);
+  assert.equal(s.canUse, true);
+});
+
+test('a low-confidence text block does not keep review locked on its own', () => {
+  const s = confirmState(rv([flaggedBlock(), { kind: 'text', content: 'prose', confidence: 0.2 }]));
+  assert.deepEqual(s.blocks.map((b) => b.flagged), [true, false]);
+  const e = applyEdit(s, 0, 'x=1');
+  assert.deepEqual(e.blocks.map((b) => b.flagged), [false, false]);
+  assert.equal(e.canUse, true);
+  assert.equal(e.canUseAnyway, false);
+});
+
+test('the review note retires with the last amber latex block, and the warnings stay', () => {
+  const s = confirmState(rv([flaggedBlock('a'), flaggedBlock('b')], { warnings: ['lowConfidence', 'operatorUncertain'] }));
+  const withNote = [WARNING_COPY.lowConfidence, WARNING_COPY.operatorUncertain, REVIEW_NOTE];
+  assert.deepEqual(s.notes, withNote);
+  const one = applyEdit(s, 0, 'a=1');
+  assert.deepEqual(one.notes, withNote);           // block b is still amber
+  const blank = applyEdit(one, 1, '  ');
+  assert.deepEqual(blank.notes, withNote);         // a blank edit leaves b amber
+  const both = applyEdit(blank, 1, 'b=2');
+  assert.deepEqual(both.notes, [WARNING_COPY.lowConfidence, WARNING_COPY.operatorUncertain]);
+  // pure: the earlier states keep their own notes
+  assert.deepEqual(one.notes, withNote);
+});
+
+test('an edit in accept mode never adds the review note', () => {
+  const s = confirmState(result({ warnings: ['truncated'], blocks: [flaggedBlock('a'), flaggedBlock('b')] }));
+  assert.equal(s.mode, 'accept');
+  const e = applyEdit(s, 0, 'a=1');
+  assert.deepEqual(e.notes, [WARNING_COPY.truncated]);
+});

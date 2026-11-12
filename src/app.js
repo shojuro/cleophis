@@ -129,7 +129,7 @@ const state = {
   // (a cancelled one included), so it is never reset by a close.
   vision: {
     info: null, requestId: null, file: null, bmp: null, fit: null, crop: null, drag: null,
-    result: null, confirm: null, plan: null, menuMode: null, inFlight: 0,
+    result: null, confirm: null, plan: null, menuMode: null, relayoutPending: false, inFlight: 0,
   },
 };
 
@@ -665,6 +665,9 @@ async function downloadHeroPair(baseModel, btn) {
   if (prog) prog.style.display = 'block';
   if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
   state.dl.active = true;
+  // The artifact paths this install started, so the `finally` frees only a
+  // slot it owns (see releaseArtDl).
+  const mine = [];
   try {
     // The pinned identity comes from the BUNDLED catalog (tiers entry, or the
     // flat entry's own fields); an empty or unknown baseModel means this build
@@ -678,6 +681,8 @@ async function downloadHeroPair(baseModel, btn) {
     // Throws a user-facing reason when a pinned sha is not in the signed
     // catalog or its record's kind / base_model disagree.
     const { base, adapter, contract } = pickHeroArtifacts(cat && cat.artifacts, variant);
+    mine.push(base.path, adapter.path);
+    if (contract) mine.push(contract.path);
     // Totalled across everything this install will pull, including the
     // contract adapter when the variant declares one — the user is being asked
     // about their data allowance, and a figure that undercounts what will
@@ -697,7 +702,7 @@ async function downloadHeroPair(baseModel, btn) {
     // Always clear the in-flight flag + progress bar, even on a missing-artifact
     // throw or a download rejection — otherwise the button sticks on "Downloading…".
     state.dl.active = false;
-    state.artDl = null;
+    releaseArtDl(mine);
     if (prog) prog.style.display = 'none';
   }
 }
@@ -711,7 +716,8 @@ async function heroDownload(m, btn) {
   const el = $('errMsg');
   const fail = (msg) => {
     state.dl.active = false;
-    state.artDl = null;
+    // No `state.artDl` reset here: downloadHeroPair's `finally` has already
+    // freed any slot of its own, and the one left may be another download's.
     const prog = $('prog'); if (prog) prog.style.display = 'none';
     if (btn) { btn.disabled = false; btn.textContent = 'Retry download'; }
     if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = msg; }
@@ -737,8 +743,10 @@ async function selectTier(m, mode) {
   state.tierSwitching = true;
   const el = $('errMsg');
   const btn = $('dlBtn');
+  // Looked up at call time: `openDrawer` rebuilds the drawer, #errMsg included.
   const showErr = (msg, muted) => {
-    if (el) { el.style.display = 'block'; el.style.color = muted ? 'var(--muted)' : ''; el.textContent = msg; }
+    const e = $('errMsg');
+    if (e) { e.style.display = 'block'; e.style.color = muted ? 'var(--muted)' : ''; e.textContent = msg; }
   };
   if (el) { el.style.display = 'none'; el.textContent = ''; }
   try {
@@ -760,9 +768,13 @@ async function selectTier(m, mode) {
     if (state.drawerId === m.id) openDrawer(m.id);
     renderGrid();
   } catch (err) {
-    showErr(String(err && err.message ? err.message : err));
+    const msg = String(err && err.message ? err.message : err);
     try { state.tierSel = await invoke('get_tier_selection'); } catch (_) {}
     if (state.drawerId === m.id) openDrawer(m.id);
+    // AFTER the re-render, which empties #errMsg: shown before it, every
+    // download error on this path (a busy download slot included) vanished
+    // as soon as get_tier_selection answered.
+    showErr(msg);
   } finally {
     state.tierSwitching = false;
   }
@@ -777,7 +789,13 @@ async function selectTier(m, mode) {
 // An "Already installed." rejection means this artifact's file is already on
 // disk (e.g. resuming after the base landed but the adapter failed) — treat
 // it as success so the sequence proceeds to the next artifact.
+//
+// The Downloads registry has ONE slot. While another artifact holds it this
+// rejects at once, with the engine's own refusal, and leaves the slot alone:
+// overwriting it would orphan the holder's promise (a vision download stuck on
+// "Downloading…" because a tier switch started over it).
 function downloadArtifact(artifact) {
+  if (state.artDl) return Promise.reject(new Error('A download is already in progress.'));
   return new Promise((resolve, reject) => {
     state.artDl = { path: artifact.path, resolve, reject };
     invoke('download_artifact', { artifact }).catch((err) => {
@@ -790,6 +808,12 @@ function downloadArtifact(artifact) {
       else reject(new Error(msg));
     });
   });
+}
+
+// Free the download slot only when one of `paths` holds it: a sequencer that
+// stopped must not release a slot another download is still using.
+function releaseArtDl(paths) {
+  if (state.artDl && paths.includes(state.artDl.path)) state.artDl = null;
 }
 
 async function finishInstalled(m, btn) {
@@ -3015,6 +3039,9 @@ let visionDownloading = false;
 // Bumped by every reset, so an await that resolves after a close or retake (a
 // bitmap decode, a catalog fetch) can tell that its flow is gone.
 let visionSession = 0;
+// `openVision` awaits a state refresh before it opens, so a double tap would
+// otherwise open twice and send two prewarms.
+let visionOpening = false;
 
 // Same shape as transport.js's request ids (not exported there).
 function newVisionRequestId() {
@@ -3073,7 +3100,7 @@ function resetVision() {
   if (v.bmp) v.bmp.close();
   Object.assign(v, {
     requestId: null, file: null, bmp: null, fit: null, crop: null, drag: null,
-    result: null, confirm: null, plan: null, menuMode: null,
+    result: null, confirm: null, plan: null, menuMode: null, relayoutPending: false,
   });
   const canvas = $('cropCanvas');
   canvas.width = 0; canvas.height = 0; // releases the preview's backing store
@@ -3083,12 +3110,18 @@ function resetVision() {
 }
 
 async function openVision() {
+  if (visionOpening || $('visionModal').classList.contains('show')) return;
   if (!enteredIsHero() || state.chat.streaming || state.vision.inFlight > 0) return;
-  await refreshVisionState(); // the freshest answer, coresident included
-  if (photoAvailability() === 'unavailable') return;
-  resetVision();
-  show($('visionModal'));
-  renderVisionMenu();
+  visionOpening = true;
+  try {
+    await refreshVisionState(); // the freshest answer, coresident included
+    if (photoAvailability() === 'unavailable') return;
+    resetVision();
+    show($('visionModal'));
+    renderVisionMenu();
+  } finally {
+    visionOpening = false;
+  }
 }
 
 function renderVisionMenu() {
@@ -3160,7 +3193,7 @@ async function downloadVision() {
     // `state.dl.active` and leaves a failed payload in `state.dlProgress`. Left
     // in place, the engine-state row would offer the hero's Resume for a
     // vision file, so both are put back to "no hero download".
-    state.artDl = null;
+    releaseArtDl([plan.base.path, plan.mmproj.path]);
     state.dl.active = false;
     state.dlProgress = null;
     refreshEngineState();
@@ -3184,6 +3217,13 @@ function onPhotoFile(e) {
 
 async function startCrop(file) {
   const session = visionSession;
+  // Leave the menu NOW, before the decode. A large photo can take a while to
+  // decode, and while the menu stayed up a second pick was admitted (by
+  // onPhotoFile's menu check), decoded beside the first, and overwrote it
+  // unclosed. The crop pane waits with its frame hidden and Use disabled until
+  // the picture is drawn; Retake works throughout.
+  showVisionPane('visionCrop'); // visible BEFORE layout: a hidden pane has no width
+  setCropBusy(true);
   let bmp;
   try {
     // `from-image` applies the EXIF orientation, so a portrait photo is upright.
@@ -3193,12 +3233,19 @@ async function startCrop(file) {
     return;
   }
   if (session !== visionSession) { bmp.close(); return; }
+  // One decoded photo at a time, whatever path got here: each is tens of MB.
+  if (state.vision.bmp) state.vision.bmp.close();
   state.vision.file = file;
   state.vision.bmp = bmp;
-  showVisionPane('visionCrop'); // visible BEFORE layout: a hidden pane has no width
   layoutCrop();
   state.vision.crop = defaultCrop(state.vision.fit);
   placeCropFrame();
+  setCropBusy(false);
+}
+
+function setCropBusy(on) {
+  $('cropFrame').hidden = on;
+  $('cropUseBtn').disabled = on;
 }
 
 // Sizes the canvas to the picture as drawn (no letterbox to crop into), and
@@ -3240,7 +3287,11 @@ function placeCropFrame() {
 // A rotation resizes the box; the selection keeps its place on the picture.
 function relayoutCrop() {
   const v = state.vision;
-  if (!isVisionPaneShown('visionCrop') || !v.bmp || !v.fit || !v.crop || v.drag) return;
+  if (!isVisionPaneShown('visionCrop') || !v.bmp || !v.fit || !v.crop) return;
+  // Not under a finger: the drag's start rect would no longer match the
+  // layout. Remembered, and run by endCropDrag (pointerup or pointercancel).
+  if (v.drag) { v.relayoutPending = true; return; }
+  v.relayoutPending = false;
   const { fit: f, crop: r } = v;
   const rel = { x: (r.x - f.x) / f.w, y: (r.y - f.y) / f.h, w: r.w / f.w, h: r.h / f.h };
   layoutCrop();
@@ -3265,6 +3316,9 @@ function useCrop() {
   ctx.drawImage(v.bmp, sx, sy, sw, sh, 0, 0, w, h);
   const dataUrl = out.toDataURL('image/jpeg', 0.92);
   out.width = 0; out.height = 0;
+  // The preview is not shown again for this photo; free its device-pixel store.
+  const preview = $('cropCanvas');
+  preview.width = 0; preview.height = 0;
   v.bmp.close();
   v.bmp = null;
   v.file = null;
@@ -3374,8 +3428,10 @@ function visionHandoff(how) {
   const c = v.confirm;
   if (!c || !v.result) return;
   if (how === 'use' ? !c.canUse : !c.canUseAnyway) return;
-  // From here, what `sendMessage` does for typed text, in its order.
-  if (state.chat.streaming) return;
+  // From here, what `sendMessage` does for typed text, in its order. A disabled
+  // composer (the engine restarting or failed: the engine banner says which)
+  // holds the handoff too, with the confirm pane left up for when it is back.
+  if (state.chat.streaming || $('chatInput').disabled) return;
   let text;
   try {
     text = composeHandoff(c);
@@ -3461,6 +3517,8 @@ function endCropDrag(e) {
   if (!d || d.id !== e.pointerId) return;
   state.vision.drag = null;
   if ($('cropFrame').hasPointerCapture(e.pointerId)) $('cropFrame').releasePointerCapture(e.pointerId);
+  // A rotation that landed mid-drag (see relayoutCrop).
+  if (state.vision.relayoutPending) relayoutCrop();
 }
 $('cropFrame').addEventListener('pointerup', endCropDrag);
 $('cropFrame').addEventListener('pointercancel', endCropDrag);

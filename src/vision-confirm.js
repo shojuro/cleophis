@@ -37,6 +37,16 @@ const isFlagged = (b) =>
 
 const hasMaths = (b) => b.kind === 'latex' && typeof b.content === 'string' && b.content.trim() !== '';
 
+// The warnings' copy in wire order, deduped, unknown names dropped.
+function warningNotes(warnings) {
+  const notes = [];
+  for (const w of warnings) {
+    const copy = Object.hasOwn(WARNING_COPY, w) ? WARNING_COPY[w] : null;
+    if (copy && !notes.includes(copy)) notes.push(copy);
+  }
+  return notes;
+}
+
 // What the buttons may do, derived from the blocks so an edit can never leave a
 // stale answer. Review unlocks only when a human has put real maths into a latex
 // block and no latex block is still amber: editing prose or blanking a block
@@ -60,17 +70,16 @@ export function confirmState(result) {
     kind: b.kind,
     content: b.content,
     confidence: b.confidence,
-    flagged: isFlagged(b),
+    // Only maths can be amber: a text block is read-only and never handed off,
+    // so a flag on it would ask for a check the user cannot make and that
+    // protects nothing the tutor sees.
+    flagged: b.kind === 'latex' && isFlagged(b),
     edited: false,
   }));
   // Nothing to hand the tutor, whatever the model's verdict says.
   const noMaths = !blocks.some(hasMaths);
   if (noMaths) mode = 'refuse';
-  const notes = [];
-  for (const w of warnings) {
-    const copy = Object.hasOwn(WARNING_COPY, w) ? WARNING_COPY[w] : null;
-    if (copy && !notes.includes(copy)) notes.push(copy);
-  }
+  const notes = warningNotes(warnings);
   if (mode === 'review') notes.push(REVIEW_NOTE);
   return {
     mode,
@@ -97,7 +106,11 @@ export function applyEdit(state, id, text) {
     if (isMaths && nonBlank) next.flagged = false;
     return next;
   });
-  return { ...state, blocks, ...gate(state.mode, blocks) };
+  // The review note asks the user to check what is amber, so it goes once no
+  // latex block is; the warnings' copy describes the reading and stays.
+  const notes = warningNotes(Array.isArray(state.warnings) ? state.warnings : []);
+  if (state.mode === 'review' && blocks.some((b) => b.kind === 'latex' && b.flagged)) notes.push(REVIEW_NOTE);
+  return { ...state, blocks, notes, ...gate(state.mode, blocks) };
 }
 
 export function composeHandoff(state) {
