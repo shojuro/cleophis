@@ -1,0 +1,90 @@
+---
+title: "Skin cyst"
+url: "https://www.nhs.uk/conditions/skin-cyst/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "skin-cyst"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "09 May 2023", "retrieved": "2026-09-26", "title": "Skin cyst", "url": "https://www.nhs.uk/conditions/skin-cyst/"}]
+---
+# Skin cyst
+
+**Skin cysts are round lumps, often filled with fluid or pus. They're usually harmless and often do not need treatment. But see a GP if you have an unexplained lump.**
+
+## Symptoms of a skin cyst
+
+Skin cysts:
+
+- are round lumps just underneath the skin
+- often contain fluid or pus
+- sometimes have a small, dark spot in the middle
+- grow slowly and vary in size from smaller than a pea to several centimetres across
+- can get sore or red if they get infected – the redness may be harder to see on black or brown skin
+
+Skin cysts can form on most areas of the body, including the head, face, neck, chest and back. It's also possible to get them on the scrotum or inside the vagina.
+
+## Non-urgent advice: See a GP if:
+
+- you have a lump on your skin and you do not know what it is
+
+## Urgent advice: Ask for an urgent GP appointment or get help from NHS 111 if:
+
+- you have a sore or red lump on your skin
+
+You can call 111 or get help from 111 online.
+
+## Treatments for a skin cyst
+
+Skin cysts do not need to be treated if they're not causing any problems.
+
+But treatment may be recommended if you have:
+
+- an infected skin cyst – you may be given antibiotics
+- a large, painful cyst which interferes with everyday life – for example, a cyst on your head that catches when you brush your hair
+
+### Skin cyst removal
+
+If you have a large, painful skin cyst which is making everyday tasks difficult, you may be able to have it removed on the NHS.
+
+If it's not causing any problems but is on a visible part of your body, such as on your face, you may choose to have it removed. But you'll probably have to pay for this privately.
+
+Local anaesthetic is used to numb the area around the cyst before it's cut out. You'll have a small scar after the wound has healed.
+
+You may also get new skin cysts in the future.
+
+### Important
+
+Do not squeeze a skin cyst. If it bursts it could become infected, or if it's already infected you might spread the infection.
+
+## Types of skin cyst
+
+There are lots of different types of skin cyst. Here are some of the main types.
+
+**Different types of cyst**
+
+| Location | Type |
+| --- | --- |
+| A cyst that develops in the top layer of skin (epidermis) | Epidermoid cyst (sometimes known as a sebaceous cyst) |
+| A cyst that forms in a hair follicle, usually on the scalp | Pilar cyst (also sometimes known as a sebaceous cyst) |
+| A cyst in a joint or tendon, most commonly on the wrists, hands and fingers | Ganglion cyst |
+| A fluid-filled swelling on the back of the knee | Baker's cyst |
+| A small, fluid-filled lump just inside the opening of the vagina | Bartholin's cyst |
+| A small lump or swelling on the eyelid | Meibomian cyst or chalazion |
+
+## Causes of skin cysts
+
+Anyone can get a skin cyst and it's not always known what causes them.
+
+You may be more likely to get a skin cyst if:
+
+- a family member also has cysts (particularly pilar cysts)
+- you're an adult, particularly in middle age
+- you're a woman
+- you have acne
+- you have a rare condition, such as familial adenomatous polyposis syndrome
+
+Skin cysts are not cancerous and you cannot get them from someone who has one.

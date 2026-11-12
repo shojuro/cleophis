@@ -148,7 +148,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 PIPELINE_ROOT = Path(__file__).resolve().parent
 
@@ -463,7 +463,19 @@ def download_peft_dir_from_s3(
         rel = key[len(prefix):]
         if not rel:
             continue
+        # The key comes from a bucket we do not fully control and this runs on
+        # the signing machine: refuse anything that could leave dest_dir.
+        # (PurePosixPath collapses "a//b" and "./a", so check the raw split.)
+        if (
+            rel.startswith("/")
+            or "\\" in rel
+            or PurePosixPath(rel).is_absolute()
+            or any(seg in ("", ".", "..") for seg in rel.split("/"))
+        ):
+            raise RuntimeError(f"refusing unsafe S3 key {key!r}: path escapes {dest_dir}")
         local_path = dest_dir / rel
+        if not local_path.resolve().is_relative_to(dest_dir.resolve()):
+            raise RuntimeError(f"refusing unsafe S3 key {key!r}: resolves outside {dest_dir}")
         local_path.parent.mkdir(parents=True, exist_ok=True)
         remote_size = obj["Size"]
         etag = obj.get("ETag", "").strip('"')

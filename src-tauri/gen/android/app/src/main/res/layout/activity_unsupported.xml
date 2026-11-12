@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The honest "not yet" screen, rendered WITHOUT the native library.
+
+     The web version of this screen (src/index.html `#notYetScreen`) is the
+     product's answer for a phone with too little RAM. It cannot serve here:
+     it lives inside the webview, the webview lives inside the Tauri Rust
+     library, and the whole reason this layout exists is a device where loading
+     that library may execute an instruction the CPU does not implement.
+
+     So the copy is deliberately kept in step with the web screen by hand, and
+     the palette is taken from `src/styles.css`'s ink, text, amber and muted
+     custom properties. Two homes for one piece of copy is a real cost; it is
+     paid because the alternative is a phone whose launcher icon does nothing.
+
+     NOTE for whoever edits this comment: a double hyphen is illegal inside an
+     XML comment and aapt2 rejects the WHOLE FILE for it, with an error that
+     names a row and column rather than the cause. This ledger already records
+     that trap from a previous incident, and it caught this file anyway on the
+     first compile: the CSS variable names were written in their real form.
+     Spell them out instead. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/cleo_ink"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:minHeight="100dp"
+        android:paddingLeft="24dp"
+        android:paddingRight="24dp"
+        android:paddingTop="48dp"
+        android:paddingBottom="48dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:gravity="center"
+            android:text="@string/unsupported_title"
+            android:textColor="@color/cleo_text"
+            android:textSize="22sp" />
+
+        <TextView
+            android:id="@+id/unsupportedWhy"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:gravity="center"
+            android:textColor="@color/cleo_amber"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/unsupported_sub"
+            android:textColor="@color/cleo_muted"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+</ScrollView>

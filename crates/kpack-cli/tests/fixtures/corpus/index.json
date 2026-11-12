@@ -1,0 +1,48 @@
+{
+ "attribution": "Information from the NHS website, licensed under the Open Government Licence v3.0",
+ "counts": {
+  "conditions": {
+   "bytes": 1588,
+   "entries": 2,
+   "pages": 3
+  },
+  "medicines": {
+   "bytes": 803,
+   "entries": 1,
+   "pages": 1
+  }
+ },
+ "entries": {
+  "conditions/chronic-obstructive-pulmonary-disease-copd": {
+   "bytes": 807,
+   "pages": 1,
+   "section": "conditions",
+   "sha256": "b93a2986d8723f2be981e314c122215dd58f48105765b63544e0fcdf40bb29ea",
+   "slug": "chronic-obstructive-pulmonary-disease-copd",
+   "title": "Chronic obstructive pulmonary disease (COPD)",
+   "url": "https://www.nhs.uk/conditions/chronic-obstructive-pulmonary-disease-copd/"
+  },
+  "conditions/gout": {
+   "bytes": 781,
+   "pages": 2,
+   "section": "conditions",
+   "sha256": "f686eb720d49ed1bc31ecb78e6f041b13c9385c7020e16166823f3b3b5c46a1e",
+   "slug": "gout",
+   "title": "Gout",
+   "url": "https://www.nhs.uk/conditions/gout/"
+  },
+  "medicines/paracetamol-for-adults": {
+   "bytes": 803,
+   "pages": 1,
+   "section": "medicines",
+   "sha256": "b8e33c327f253971ae433d11c51c012a2d411d256d5a83e61e797d9fc11e4d7d",
+   "slug": "paracetamol-for-adults",
+   "title": "Paracetamol for adults",
+   "url": "https://www.nhs.uk/medicines/paracetamol-for-adults/"
+  }
+ },
+ "licence": "OGL v3",
+ "schema": "cleophis/reference-corpus-index/v1",
+ "sha256_of": "the UTF-8 body of each file (everything after the closing front-matter fence)",
+ "source": "NHS website (www.nhs.uk) Medicines A-Z and Health A-Z"
+}

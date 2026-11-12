@@ -1,0 +1,2 @@
+# Signed bytes: never let git normalise line endings (the .sig verifies over the exact .json bytes).
+* -text

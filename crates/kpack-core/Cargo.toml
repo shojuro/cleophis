@@ -111,3 +111,9 @@ docx-rust = "=0.1.11"
 epub = "=2.1.5"
 
 [dev-dependencies]
+# Reads the contract golden's input fixture
+# (`tests/fixtures/contract-golden/chunks-k3.json`) in contract.rs's tests —
+# JSON because the triage repo's JS and Python ports read the same file
+# natively. Test-only; EXACT pin to the version already in the workspace
+# lockfile (src-tauri's), so this adds no new crate to the resolved graph.
+serde_json = "=1.0.150"

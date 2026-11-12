@@ -403,6 +403,44 @@ pub struct Citation {
     pub doc_title: String,
     pub section_path: String,
     pub locator: String,
+    /// The cited page's public URL — `Some` only for an `nhs-web` doc
+    /// (see [`CitationSource::from_doc`]).
+    pub url: Option<String>,
+    /// The cited page's retrieval date (ISO 8601 `YYYY-MM-DD`) — `Some`
+    /// only for an `nhs-web` doc. The UI shows it as "as at <date>".
+    pub retrieved_at: Option<String>,
+}
+
+/// The only URL prefix a citation's `url` may carry.
+pub const NHS_WEB_URL_PREFIX: &str = "https://www.nhs.uk/";
+
+/// Where a cited page came from, for display: its public URL and retrieval
+/// date (Phase 1h M4b ruling 2). Read from the doc's row, no schema change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CitationSource {
+    pub url: Option<String>,
+    pub retrieved_at: Option<String>,
+}
+
+impl CitationSource {
+    /// `docs.source_path` / `docs.source_mtime` for a
+    /// [`crate::format::SOURCE_TYPE_NHS_WEB`] doc; nothing for any other
+    /// source type — a personal pack's `source_path` is a private file path
+    /// and never leaves the pack through a citation. The URL must also start
+    /// with [`NHS_WEB_URL_PREFIX`]; any other value (`javascript:`, a file
+    /// path) in an `nhs-web` row is dropped.
+    pub fn from_doc(doc: &format::Doc) -> CitationSource {
+        if doc.source_type.as_deref() == Some(format::SOURCE_TYPE_NHS_WEB) {
+            CitationSource {
+                // Only an NHS website page URL reaches the UI; anything else
+                // in a (possibly hand-made) row is dropped, never rendered.
+                url: doc.source_path.clone().filter(|u| u.starts_with(NHS_WEB_URL_PREFIX)),
+                retrieved_at: doc.source_mtime.clone(),
+            }
+        } else {
+            CitationSource::default()
+        }
+    }
 }
 
 /// The outcome of a full retrieval + assembly pass (spec §4.1–4.2):
@@ -486,12 +524,11 @@ fn cross_pack_rrf(lanes: &[&[(usize, i64)]], k_rrf: f64) -> Vec<((usize, i64), f
 ///    contract) that gives the model the document's identity as legitimate
 ///    context, so "what is the title / what is this about" is answerable
 ///    even though a title never appears in a chunk's searchable body text.
-///    The final `prompt` is `contract::system_contract()` (trailing
-///    whitespace trimmed) — the versioned contract the composed adapter-v2 is
-///    trained to obey — + a blank line + `doc_context` (when non-empty) + a
-///    blank line + the rendered sources
-///    block; when `doc_context` is empty (no resolved doc had a non-empty
-///    title), the layout falls back to the original two-part form — no
+///    The final `prompt` is [`contract::assemble_system`] over the tutor
+///    contract: `system_contract` (trailing whitespace trimmed) + a blank
+///    line + `doc_context` (when non-empty) + a blank line + the rendered
+///    sources block; when `doc_context` is empty (no resolved doc had a
+///    non-empty title), the layout falls back to the two-part form — no
 ///    dangling blank section. `citations` mirrors the rendered sources 1:1,
 ///    `n` matching each line's `[n]`.
 pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
@@ -605,75 +642,81 @@ pub fn assemble(hits: &[PackHit<'_>], tier: Tier) -> Result<RetrievalResult> {
         return Ok(RetrievalResult::NoEvidence);
     }
 
-    let render_chunks: Vec<RenderChunk<'_>> = resolved
+    let sources: Vec<CitationSource> = resolved.iter().map(|(_, _, doc)| CitationSource::from_doc(doc)).collect();
+    let items: Vec<GroundedItem<'_>> = resolved
         .iter()
-        .map(|(_, chunk, doc)| RenderChunk {
-            source_title: &doc.title,
-            section_path: &chunk.section_path,
-            locator: &chunk.locator,
-            text: &chunk.text,
+        .zip(&sources)
+        .map(|((pack_index, chunk, doc), source)| GroundedItem {
+            pack_id: &hits[*pack_index].manifest.pack_id,
+            chunk,
+            title: &doc.title,
+            source,
         })
         .collect();
-    let sources_block = contract::render_sources(&render_chunks);
+    Ok(render_grounded(
+        contract::contract_for(contract::ContractId::Tutor),
+        &items,
+    ))
+}
 
-    // RAG-quality quick win: the book/document's TITLE lives in doc
-    // metadata (`doc.title`, already shown in each citation), not the
-    // searchable body text -- so retrieval alone can never surface it as a
-    // "match", and a query like "what is the title?" / "what is this
-    // about?" would otherwise have nothing to ground on. Collect the
-    // DISTINCT titles of the docs actually cited (the same docs already
-    // resolved for `render_chunks`/citations above), preserving first-seen
-    // order, and state them as a short context line the model can answer
-    // identity questions from -- without touching the numbered-sources
-    // semantics `render_sources` owns.
-    let mut titles: Vec<&str> = Vec::new();
-    for (_, _, doc) in &resolved {
-        let title = doc.title.trim();
-        if !title.is_empty() && !titles.contains(&title) {
-            titles.push(title);
-        }
-    }
-    let doc_context = if titles.is_empty() {
-        String::new()
-    } else {
-        format!("These sources are excerpts from: {}.", titles.join("; "))
+/// One resolved source for [`render_grounded`]: the chunk, the title of the
+/// document it came from, and the id of the pack it came from.
+pub(crate) struct GroundedItem<'a> {
+    pub pack_id: &'a str,
+    pub chunk: &'a format::Chunk,
+    pub title: &'a str,
+    pub source: &'a CitationSource,
+}
+
+/// [`assemble`]'s step 5, shared with the lexical reference lookup
+/// (`crate::lookup::assemble_lexical`, Phase 1h M5). A THIN wrapper: the
+/// system message itself comes from `contract::assemble_system` — the ONE
+/// assembler, byte-pinned by the golden fixtures in
+/// `tests/fixtures/contract-golden/` — with `c` choosing the contract
+/// (tutor for [`assemble`], triage for the lookup). This function only adds
+/// what `assemble_system` does not own: mapping resolved sources to
+/// `RenderChunk`s, the doc-context line (`contract::doc_context_for` — the
+/// DISTINCT titles of the docs actually cited, first-seen order; the
+/// book/document's TITLE lives in doc metadata, not the searchable body
+/// text, so this line is what lets the model answer identity questions),
+/// and the 1:1 citations. Zero sources is `NoEvidence` — never a
+/// citation-less grounded prompt.
+pub(crate) fn render_grounded(
+    c: &contract::PromptContract,
+    items: &[GroundedItem<'_>],
+) -> RetrievalResult {
+    let render_chunks: Vec<RenderChunk<'_>> = items
+        .iter()
+        .map(|item| RenderChunk {
+            source_title: item.title,
+            section_path: &item.chunk.section_path,
+            locator: &item.chunk.locator,
+            text: &item.chunk.text,
+        })
+        .collect();
+    let doc_context = contract::doc_context_for(&render_chunks);
+
+    let prompt = match contract::assemble_system(c, doc_context.as_deref(), &render_chunks) {
+        Ok(prompt) => prompt,
+        Err(contract::AssembleError::NoChunks) => return RetrievalResult::NoEvidence,
     };
 
-    // Adapter v2: the grounded system prompt is now the VERSIONED CONTRACT
-    // (`contracts/prompt-contract.v1.toml` / `contract::system_contract()`) —
-    // the contract-trained adapter is composed onto the base and obeys exactly
-    // this (cite `[n]` strictly from the numbered sources; refuse-with-offer on
-    // NO_EVIDENCE), so the interim base-model prompt is retired. `doc_context`
-    // (the doc-identity line) is a runtime-only addition the contract file
-    // doesn't carry; it is kept AFTER the contract and BEFORE the sources
-    // block, and the v2 training data is generated in this EXACT assembled
-    // shape (system_contract [+ doc_context] + sources) so the adapter sees the
-    // same format the runtime sends — see the adapter-v2 dataset harness.
-    let prompt = if doc_context.is_empty() {
-        format!("{}\n\n{}", contract::system_contract().trim_end(), sources_block)
-    } else {
-        format!(
-            "{}\n\n{}\n\n{}",
-            contract::system_contract().trim_end(),
-            doc_context,
-            sources_block
-        )
-    };
-
-    let citations: Vec<Citation> = resolved
+    let citations: Vec<Citation> = items
         .iter()
         .enumerate()
-        .map(|(i, (pack_index, chunk, doc))| Citation {
+        .map(|(i, item)| Citation {
             n: i + 1,
-            pack_id: hits[*pack_index].manifest.pack_id.clone(),
-            chunk_id: chunk.id,
-            doc_title: doc.title.clone(),
-            section_path: chunk.section_path.clone(),
-            locator: chunk.locator.clone(),
+            pack_id: item.pack_id.to_string(),
+            chunk_id: item.chunk.id,
+            doc_title: item.title.to_string(),
+            section_path: item.chunk.section_path.clone(),
+            locator: item.chunk.locator.clone(),
+            url: item.source.url.clone(),
+            retrieved_at: item.source.retrieved_at.clone(),
         })
         .collect();
 
-    Ok(RetrievalResult::Grounded { prompt, citations })
+    RetrievalResult::Grounded { prompt, citations }
 }
 
 /// Spec §4's top-level retrieval entry point — the one function a caller
@@ -1995,5 +2038,105 @@ mod tests {
             prompt.starts_with(&expected_prefix),
             "must fall back to the contract+blank-line+sources layout: {prompt}"
         );
+    }
+
+    // 30. Phase 1h M3: `assemble`'s grounded prompt IS
+    // `contract::assemble_system` over the tutor contract (the function the
+    // golden fixtures pin) -- one assembler, no second copy of the rule.
+    #[test]
+    fn t30_assemble_prompt_equals_contract_assemble_system() {
+        let pack = empty_pack("t30-assemble-system");
+        let chunk_id =
+            insert_test_chunk_with_title(&pack, "The Great Cookbook", "Intro", "p.1", "hello world");
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: vec![candidate(chunk_id, 0.9)],
+        };
+        let RetrievalResult::Grounded { prompt, .. } = assemble(&[hit], Tier::Small).unwrap() else {
+            panic!("expected Grounded");
+        };
+        let chunk = RenderChunk {
+            source_title: "The Great Cookbook",
+            section_path: "Intro",
+            locator: "p.1",
+            text: "hello world",
+        };
+        let expected = contract::assemble_system(
+            contract::contract_for(contract::ContractId::Tutor),
+            Some("These sources are excerpts from: The Great Cookbook."),
+            &[chunk],
+        )
+        .unwrap();
+        assert_eq!(prompt, expected);
+        assert_eq!(
+            prompt,
+            format!(
+                "{}\n\nThese sources are excerpts from: The Great Cookbook.\n\n[1] (The Great Cookbook, Intro, p.1): hello world",
+                contract::system_contract().trim_end()
+            )
+        );
+    }
+
+    // 31. Phase 1h M4b ruling 2: a citation carries the page URL and the
+    // retrieval date for an `nhs-web` doc (from `docs.source_path` /
+    // `docs.source_mtime`) and NOTHING for any other source type — a
+    // personal pack's `source_path` is a private file path and must never
+    // reach a citation.
+    #[test]
+    fn t31_citations_carry_url_and_retrieval_date_only_for_nhs_web_docs() {
+        let pack = empty_pack("t31-citation-source");
+        let mut web = sample_doc();
+        web.title = "Gout".to_string();
+        web.source_type = Some(crate::format::SOURCE_TYPE_NHS_WEB.to_string());
+        web.source_path = Some("https://www.nhs.uk/conditions/gout/".to_string());
+        web.source_mtime = Some("2026-09-26".to_string());
+        let mut personal = sample_doc();
+        personal.title = "My notes".to_string();
+        personal.source_path = Some("C:\\Users\\me\\private notes.md".to_string());
+        personal.source_mtime = Some("2026-01-01T00:00:00Z".to_string());
+        let mut web_bad = web.clone();
+        web_bad.title = "Bad".to_string();
+        web_bad.source_path = Some("javascript:alert(1)".to_string());
+        let mut web_no_path = web.clone();
+        web_no_path.title = "Asthma".to_string();
+        web_no_path.source_path = None;
+        let mut ids = Vec::new();
+        for (i, doc) in [web, personal, web_no_path, web_bad].iter().enumerate() {
+            let doc_id = pack.insert_doc(doc).unwrap();
+            ids.push(
+                pack.insert_chunk(&Chunk {
+                    id: 0,
+                    doc_id,
+                    section_path: format!("S{i}"),
+                    locator: "L1".to_string(),
+                    prefix: String::new(),
+                    text: format!("text {i}"),
+                    token_count: 2,
+                })
+                .unwrap(),
+            );
+        }
+        let manifest = test_manifest(0.5, 0.05);
+        let hit = PackHit {
+            pack: &pack,
+            manifest: &manifest,
+            candidates: ids.iter().map(|&id| candidate(id, 0.9)).collect(),
+        };
+        let RetrievalResult::Grounded { citations, .. } = assemble(&[hit], Tier::Large).unwrap() else {
+            panic!("expected Grounded");
+        };
+        let by_title = |t: &str| citations.iter().find(|c| c.doc_title == t).unwrap().clone();
+        let gout = by_title("Gout");
+        assert_eq!(gout.url.as_deref(), Some("https://www.nhs.uk/conditions/gout/"));
+        assert_eq!(gout.retrieved_at.as_deref(), Some("2026-09-26"));
+        let notes = by_title("My notes");
+        assert_eq!((notes.url, notes.retrieved_at), (None, None));
+        let asthma = by_title("Asthma");
+        assert_eq!(asthma.url, None);
+        assert_eq!(asthma.retrieved_at.as_deref(), Some("2026-09-26"));
+        let bad = by_title("Bad");
+        assert_eq!(bad.url, None, "a non-NHS URL never reaches a citation");
     }
 }

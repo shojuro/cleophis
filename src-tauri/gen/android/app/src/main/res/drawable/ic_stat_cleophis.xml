@@ -1,0 +1,24 @@
+<!-- Notification small icon (Phase 5.1's foreground service).
+
+     A monochrome VECTOR rather than `mipmap/ic_launcher`, which is the
+     tempting reuse and is wrong: from API 21 the system masks a notification's
+     small icon to a flat silhouette, so a full-colour launcher PNG renders as
+     a solid white blob in the status bar. Silhouette-shaped from the start is
+     the only form that survives that masking legibly.
+
+     A speech bubble, because what the service protects is a reply being
+     written. 24dp viewport, single path, no gradients, since anything subtler
+     is lost at status-bar size anyway.
+
+     (Prose here avoids the double hyphen: XML forbids it inside a comment, and
+     aapt2 rejects the whole resource with a parse error that names a row and
+     column rather than the rule.) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M20,2H4C2.9,2 2,2.9 2,4v12c0,1.1 0.9,2 2,2h4v4l4,-4h8c1.1,0 2,-0.9 2,-2V4C22,2.9 21.1,2 20,2z" />
+</vector>

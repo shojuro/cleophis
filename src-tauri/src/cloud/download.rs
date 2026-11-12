@@ -1124,9 +1124,10 @@ pub async fn download_model(
 /// streaming-sha256/atomic-rename core `download_model` uses, just with no
 /// `Authorization` header and no `mint_download_url`/re-mint. Integrity
 /// comes from `artifact.sha256`/`artifact.size`, themselves already
-/// authenticated by the catalog's ed25519 signature (Task B1) — this
-/// command trusts the `Artifact` record it's handed exactly as
-/// `download_model` trusts the bundled `catalog.json`'s hero entry.
+/// authenticated by the catalog's ed25519 signature (Task B1). A signed
+/// record is necessary but not sufficient: since Phase 1g M1 the command
+/// also refuses any artifact whose `sha256` the bundled hero entry does not
+/// pin (`catalog::check_artifact_pinned`).
 ///
 /// Destination is `<app_data>/models/<final component of artifact.path>`
 /// (`artifact_dest_filename` validates that component defense-in-depth) —
@@ -1152,6 +1153,22 @@ pub async fn download_artifact(
     let downloads = downloads.inner().clone();
 
     let dest_name = artifact_dest_filename(&artifact.path)?;
+
+    // Phase 1g M1, defense in depth: only bytes the BUNDLED catalog pins may
+    // land in `models/`. The FE picks by these shas already (`dist-pick.js`);
+    // this refuses the rest even if that selection is wrong or bypassed — a
+    // signed record for another hero's adapter is still the wrong file here.
+    // Checked before "Already installed." so an unpinned file on disk is not
+    // reported as a successful install either.
+    {
+        let root = crate::inference::resources_root(&app);
+        let raw = std::fs::read_to_string(root.join("catalog.json")).map_err(|e| e.to_string())?;
+        let entries = crate::catalog::parse_catalog(&raw)?;
+        let hero = crate::catalog::hero(&entries)
+            .ok_or_else(|| "catalog missing integrity data".to_string())?;
+        crate::catalog::check_artifact_pinned(hero, &artifact.sha256)?;
+    }
+
     let url = format!("{}/{}", crate::catalog_dist::ARTIFACT_BASE_URL, artifact.path);
     let expected_bytes = artifact.size;
     let sha256 = artifact.sha256.clone();

@@ -1,0 +1,45 @@
+{
+  "format": "cleophis-contract-golden/1",
+  "k": 3,
+  "chunks": [
+    {
+      "source_title": "Reference Handbook",
+      "section_path": "Ch 2 > Fever",
+      "locator": "p. 12",
+      "text": "Body one."
+    },
+    {
+      "source_title": "Reference Handbook",
+      "section_path": "",
+      "locator": "p. 4",
+      "text": "Body two, from a root chunk with an empty section_path."
+    },
+    {
+      "source_title": "Second Reference",
+      "section_path": "C",
+      "locator": "p. 5",
+      "text": "has {n} and {text} and {source} literal"
+    }
+  ],
+  "doc_context": "These sources are excerpts from: Reference Handbook; Second Reference.",
+  "outputs": [
+    {
+      "file": "assembled-triage-with-doc-context.txt",
+      "contract": "contracts/prompt-contract.triage.v1.toml",
+      "contract_id": "triage",
+      "with_doc_context": true
+    },
+    {
+      "file": "assembled-triage-no-doc-context.txt",
+      "contract": "contracts/prompt-contract.triage.v1.toml",
+      "contract_id": "triage",
+      "with_doc_context": false
+    },
+    {
+      "file": "assembled-tutor-with-doc-context.txt",
+      "contract": "contracts/prompt-contract.v1.toml",
+      "contract_id": "tutor",
+      "with_doc_context": true
+    }
+  ]
+}

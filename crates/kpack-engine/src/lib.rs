@@ -23,6 +23,8 @@
 //! - [`template`] — per-model chat template selection and the Qwen-only,
 //!   start-of-turn `<think>` stripper.
 //! - [`mock`] — a deterministic backend for tests and pre-native bring-up.
+//! - `prefix` — how much of a prompt the KV cache already holds (task 1.5),
+//!   kept out of the feature gate so it is tested rather than only checked.
 //! - [`llama`] — the real `llama-cpp-2`-backed backend (`--features real`).
 //!
 //! ## Prompt contract
@@ -36,9 +38,32 @@
 
 pub mod adapter;
 pub mod backend;
+/// Runtime CPU capability (`AT_HWCAP`) and its differential against the
+/// compile-time macros llama.cpp reports. Deliberately **outside** the `real`
+/// gate: the adjudication is pure and must be tested by the desktop suite, and
+/// the capability read is what a caller needs *before* deciding to load a
+/// native backend at all.
+pub mod cpu;
 pub mod error;
 pub mod mock;
 pub mod template;
+
+/// The prefix-reuse arithmetic (task 1.5). Deliberately *outside* the `real`
+/// gate so its tests run in a build with no llama.cpp — the module docs explain
+/// why that one function is worth the split. Its only production caller is the
+/// `real` backend, which is what the attribute states.
+#[cfg_attr(not(feature = "real"), allow(dead_code))]
+mod prefix;
+
+/// The device-probe harness's pure half — the prompt-file format, the output
+/// record, the catalog fields the run is answerable to, and every refusal the
+/// gate mode makes. It owns NO rendering: the prompt bytes and their parity sha
+/// are [`template::ChatTemplate`]'s, and the think-strip is [`template::ThinkStripper`]'s.
+/// Outside the `real` gate for the same reason [`cpu`] and `prefix` are: the
+/// parsing, the serialisation and the refusals are the parts a reviewer can be
+/// wrong about in a way no device run would reveal, so they must be tested on a
+/// box with no NDK and no phone.
+pub mod probe_io;
 
 #[cfg(feature = "real")]
 pub mod llama;
@@ -52,7 +77,10 @@ pub use backend::{
 };
 pub use error::EngineError;
 pub use mock::{CollectSink, MockBackend};
-pub use template::{ChatMessage, ChatTemplate, Role, ThinkStripper};
+pub use template::{
+    prompt_sha256, role_name, ChatMessage, ChatTemplate, Role, StripFinish, ThinkPolicy,
+    ThinkStripper, QWEN3_THINK_BLOCK,
+};
 
 #[cfg(feature = "real")]
-pub use llama::{backend_system_info, LlamaEngine};
+pub use llama::{backend_system_info, print_kernel_report, LlamaEngine};

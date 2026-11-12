@@ -1,20 +1,72 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network: public GET only (signed catalog + model/APK download). The app
+         never opens a socket for anything a user types; inference is offline. -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Self-update (spec §4.1/§6): the direct-APK channel installs its own
+         signed updates. Special access, NOT a runtime permission — the one
+         permission we ask for, so the user can update us without Google. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Optional: download-complete notice (spec §6 — the only notification we
+         ever request). Runtime-prompted on Android 13+. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Download network policy (§2.2): ConnectivityManager.isActiveNetworkMetered
+         throws SecurityException without this. Normal/install-time, so no runtime
+         prompt, and it grants no ability to read traffic — only to ask whether the
+         active connection is metered.
+
+         Deliberately added WITH its caller (NetworkPolicy.kt + net_state.rs) and
+         not before. A permission with no caller is the same dead surface as a
+         frontend policy invoking a command that does not exist: it shows up in
+         every store listing and every privacy review, and nobody can say what it
+         is for. This one is the only way to keep the promise that a multi-GB
+         model never downloads on someone's cellular plan without being asked. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- On-device inference runs in a foreground service so the OS does not kill
+         generation mid-turn (H4/H5). Android 14+ requires a declared FGS type;
+         none fits local inference, so `specialUse` with a justification string
+         (see the <service> below). The service does NO network. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:theme="@style/Theme.cleophis"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!-- windowSoftInputMode (task 2.2): the composer must never sit under
+             the keyboard. This is the belt; the braces is a visualViewport
+             listener in app.js that drives the layout height directly,
+             because an edge-to-edge activity on newer Android may not honour
+             adjustResize at all. -->
+        <!-- The CPU capability gate, and the ONLY activity that runs before
+             libcleophis_lib.so is loaded.
+
+             The LAUNCHER filter moved here from MainActivity deliberately. A
+             Galaxy A51 (Cortex-A73, ARMv8.0) exits 132 — SIGILL — on the
+             armv8.2 build, and the check has to happen before the library
+             loads or there is no Rust left to render an explanation. There is
+             no earlier legal hook inside MainActivity: onCreate must call
+             super, and that chain is what triggers System.loadLibrary. See
+             LaunchGateActivity's doc comment.
+
+             MainActivity keeps every attribute it had; only the filter moved,
+             and `exported` drops to false because nothing outside the app
+             starts it any more. -->
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
-            android:launchMode="singleTask"
+            android:name=".LaunchGateActivity"
             android:label="@string/main_activity_title"
-            android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -23,6 +75,14 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:label="@string/main_activity_title"
+            android:name=".MainActivity"
+            android:exported="false" />
 
         <provider
           android:name="androidx.core.content.FileProvider"
@@ -33,5 +93,20 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- On-device inference foreground service (spec §8, H4/H5). Declared
+             here in Phase 0.3; the real start/stop around chat_stream, the
+             notification, and the thermal-throttle notice land in Phase 5.1.
+             `specialUse` is the only Android 14+ FGS type that fits local AI
+             text generation; the justification string below is what Play review
+             reads (PROPERTY_SPECIAL_USE_FGS_SUBTYPE). -->
+        <service
+            android:name=".InferenceService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="local AI text generation at explicit user request; no network" />
+        </service>
     </application>
 </manifest>

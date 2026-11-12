@@ -1,0 +1,93 @@
+---
+title: "Colour vision deficiency (colour blindness)"
+url: "https://www.nhs.uk/conditions/colour-vision-deficiency/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "colour-vision-deficiency"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "17 March 2023", "retrieved": "2026-09-26", "title": "Colour vision deficiency (colour blindness)", "url": "https://www.nhs.uk/conditions/colour-vision-deficiency/"}]
+---
+# Colour vision deficiency (colour blindness)
+
+**Colour vision deficiency (colour blindness) is where you see colours differently to most people, and have difficulty telling colours apart. There's no treatment for colour vision deficiency that runs in families, but people usually adapt to living with it.**
+
+## Symptoms of colour vision deficiency
+
+The main symptom of colour vision deficiency is finding it hard to tell the difference between colours.
+
+You can be born with colour vision deficiency, or it can start at any age.
+
+If your child has colour vision deficiency you may not notice any symptoms, but you may notice your child:
+
+- uses the wrong colours when drawing or painting, for example, drawing purple leaves on trees
+- has difficulty with tasks involving sorting colours
+- lacks interest in colouring tasks
+- smells food before eating it
+
+## Non-urgent advice: Go to an opticians if:
+
+- you or your child have signs of colour vision deficiency
+
+## Tests for colour vision deficiency
+
+There are 2 main tests for colour vision deficiency:
+
+- the Ishihara test, where you'll be asked to read images made up of coloured dots
+- colour arrangement tests, where you'll be asked to put coloured objects in order of what shade they are
+
+Colour vision testing is not part of the routine NHS eye test, but you can ask your opticians for it if you think you or your child needs it.
+
+Tests are available online, but it's important to get checked at an opticians if you have concerns about your vision.
+
+### NHS eye tests
+
+NHS eye tests are free for some people including:
+
+- children aged under 18, or under 19 and in full-time education
+- people who have diabetes or glaucoma
+- people on some benefits, including Universal Credit
+
+Find out more about free NHS eye tests
+
+### If you or your child has been diagnosed with colour vision deficiency
+
+People usually adapt well to life with colour vision deficiency.
+
+It may affect your child's performance at school.
+
+Tell your child's school if they have colour vision deficiency. The school may be able to make adjustments for your child's lessons and exams.
+
+Having colour vision deficiency may mean you're unable to do certain careers for safety reasons, such as being a pilot or train driver.
+
+### Find out more
+
+- Colour Blind Awareness: what to do next after your child has been diagnosed
+- Colour Blind Awareness: living with colour vision deficiency
+
+## Causes of colour vision deficiency
+
+It's not known exactly what causes colour vision deficiency, but it's thought to be a problem with the signals from your eyes to your brain.
+
+It can be passed on in families and some people are born with it.
+
+Colour vision deficiency can also sometimes be caused by:
+
+- eye conditions, such as glaucoma
+- other conditions such as diabetes, liver disease and multiple sclerosis
+- an eye or head injury
+- a stroke
+- taking certain medicines
+
+## Treatment for colour vision deficiency
+
+There is currently no treatment for colour vision deficiency that runs in families. Most people adapt to seeing colours differently.
+
+If your colour vision has been affected by an underlying medical condition or by medicines, getting treatment for the condition or changing medicines may help.
+
+## Find out more
+
+- Colour Blind Awareness: about colour blindness

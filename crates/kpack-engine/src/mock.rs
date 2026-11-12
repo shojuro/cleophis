@@ -74,6 +74,20 @@ struct MockSession {
 }
 
 impl EngineSession for MockSession {
+    fn rendered_prompt_sha256(&self, messages: &[ChatMessage]) -> Result<String, EngineError> {
+        // The SAME renderer the native backend's ChatML path finishes through
+        // (`ChatTemplate::finish_generation_prompt`), so a mock-backed parity
+        // test is testing the shipping decision rather than a second copy of it.
+        self.template
+            .rendered_prompt_sha256(messages)
+            .ok_or_else(|| {
+                EngineError::Backend(format!(
+                    "the mock cannot render the {:?} template without a model; only ChatMl is pure",
+                    self.template
+                ))
+            })
+    }
+
     fn stream(
         &mut self,
         messages: &[ChatMessage],
@@ -111,6 +125,16 @@ impl EngineSession for MockSession {
                 break;
             }
         }
+
+        // The flush the stripper never had. A cap that lands inside the think
+        // block leaves every byte suppressed, and without this the turn returns
+        // an empty string that no caller can tell from a model with nothing to
+        // say. Same three lines as the native path, deliberately.
+        let end = stripper.finish();
+        if !end.text().is_empty() {
+            let _ = sink.on_token(end.text());
+        }
+        let stop = stop.with_think_truncation(end.truncated_in_think());
 
         Ok(GenStats {
             prompt_tokens,
@@ -249,6 +273,54 @@ mod tests {
         // The <think> block the mock emits is stripped in the stream path; the
         // sink only ever saw the visible tokens.
         assert_eq!(sink.text, "tok0tok1tok2tok3tok4");
+    }
+
+    #[test]
+    fn a_stream_cut_off_inside_the_think_block_reports_truncation_not_silence() {
+        // The device's catastrophic case, on the stream path rather than in a
+        // stripper unit test: the budget runs out while the model is still
+        // thinking. Every byte was suppressed, so the sink saw nothing — and
+        // before Phase 1c that nothing arrived as `stop: MaxTokens` with an
+        // empty string, which the product rendered as a blank reply.
+        let dir = unique_dir("truncated-think");
+        let (base, adapters) = full_stack(&dir);
+        let backend = MockBackend::new();
+        let mut handle = backend
+            .load(LoadRequest::new(base, adapters).with_template(ChatTemplate::ChatMl))
+            .unwrap();
+        let mut cfg = SessionConfig::default();
+        cfg.sampling.max_tokens = 2;
+        let mut session = handle.session(cfg).unwrap();
+        let mut sink = CollectSink::new();
+        let stats = session
+            .stream(&[ChatMessage::user("hi")], &mut sink)
+            .unwrap();
+        assert_eq!(sink.text, "", "the think block never reaches the sink");
+        assert_eq!(
+            stats.stop,
+            StopReason::TruncatedInThink,
+            "truncation inside the block outranks the max-tokens cap that caused it"
+        );
+    }
+
+    #[test]
+    fn a_session_can_state_the_sha_of_the_prompt_it_would_tokenise() {
+        // The parity handle: A3's device run records this and compares it with
+        // the pod's sha for the same message. A `promptFingerprint` match
+        // cannot make that claim — it pins the system prompt text, not the
+        // template around it.
+        let dir = unique_dir("prompt-sha");
+        let (base, adapters) = full_stack(&dir);
+        let backend = MockBackend::new();
+        let mut handle = backend
+            .load(LoadRequest::new(base, adapters).with_template(ChatTemplate::ChatMl))
+            .unwrap();
+        let session = handle.session(SessionConfig::default()).unwrap();
+        let msgs = [ChatMessage::system("S"), ChatMessage::user("U")];
+        assert_eq!(
+            session.rendered_prompt_sha256(&msgs).unwrap(),
+            ChatTemplate::ChatMl.rendered_prompt_sha256(&msgs).unwrap()
+        );
     }
 
     #[test]

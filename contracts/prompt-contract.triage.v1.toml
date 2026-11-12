@@ -1,0 +1,52 @@
+# Cleophis prompt contract — TRIAGE, v1.
+#
+# The contract for the bundled medical reference lookup (the triage floor
+# tier). It is the tutor contract (`prompt-contract.v1.toml`) with the two
+# parts that are wrong for a bundled medical reference replaced:
+#   - NO arithmetic delegation. A floor-tier phone has no arithmetic tool in
+#     the lookup, and a dose must never be computed, converted or adjusted:
+#     it is quoted exactly as the source states it, with its citation.
+#   - A refusal that refers the user on, instead of offering to "add a source
+#     and rebuild" a pack the user cannot rebuild.
+# Everything the renderer consumes (`citation_line`, `citation_source_sep`,
+# `no_evidence_marker`) is byte-identical to the tutor contract, so one
+# renderer and one assembly rule (`kpack-core::contract::assemble_system`)
+# serve both.
+#
+# THREE consumers import THIS file — never a re-typed copy:
+#   - the on-device runtime  (kpack-core::contract, `ContractId::Triage`)
+#   - the triage repo's JS probe runner (vendored, sha-pinned)
+#   - the triage repo's Python row builder (vendored, sha-pinned)
+# They must assemble the same grounded system message byte-for-byte; the
+# golden fixtures in `crates/kpack-core/tests/fixtures/contract-golden/`
+# pin those bytes (see that directory's README.md for the assembly rule).
+#
+# A change here is a COORDINATED, versioned event: bump `contract_version`,
+# re-emit the golden fixtures, re-vendor into the triage repo.
+
+contract_version = 1
+contract_id = "triage"
+
+# --- System contract -------------------------------------------------------
+# Prepended to every grounded lookup. Deliberately contains no tool
+# instruction and no arithmetic instruction of any kind.
+system_contract = """
+You answer strictly from the numbered sources provided below, and nothing else. Every factual claim you make must cite its supporting source as [n]. If the sources do not cover the question, say so plainly and decline to answer — never fall back on outside or remembered knowledge, and never guess. State a dose only exactly as a source states it, with that source's citation; never work out, convert or adjust a dose yourself.
+"""
+
+# --- Citation line (identical to the tutor contract) -----------------------
+#   {n}      citation index, 1-based
+#   {source} the NON-EMPTY parts of [source_title, section_path, locator],
+#            joined by `citation_source_sep`
+#   {text}   the chunk body
+# Substituted in a single left-to-right pass: substituted values are never
+# re-scanned, so chunk text containing a literal "{n}" or "{text}" is safe.
+citation_line = "[{n}] ({source}): {text}"
+citation_source_sep = ", "
+
+# --- No-evidence path (identical to the tutor contract) --------------------
+no_evidence_marker = "[[NO_EVIDENCE]]"
+
+# The refusal the model is trained to produce when the reference does not
+# cover the question. The runtime does not emit this string (the model does).
+refusal_with_offer = "This reference does not cover that. Ask a pharmacist or clinician."

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Scan STAGED changes for secrets before every commit (security review 2026-10-04, L27).
+#
+# Enable once per clone (core.hooksPath is repo-wide, so it covers every worktree):
+#   git config core.hooksPath tools/git-hooks
+#
+# A missing gitleaks never blocks a commit; it only prints a warning.
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not found on PATH, skipping secret scan" >&2
+  exit 0
+fi
+
+exec gitleaks git --pre-commit --staged --redact --no-banner --config "$(git rev-parse --show-toplevel)/.gitleaks.toml" .

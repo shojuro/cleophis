@@ -8,6 +8,10 @@ pub mod config;
 pub mod download;
 pub mod error;
 pub mod rest;
+/// The platform seam for persisted secrets (refresh token, offline-auth
+/// verifiers). Phase 3.1 split these out of `store` because their storage is
+/// platform-dependent; `store` itself is plain JSON and needs no `cfg`.
+pub mod secure_store;
 pub mod session;
 pub mod store;
 pub mod strength;

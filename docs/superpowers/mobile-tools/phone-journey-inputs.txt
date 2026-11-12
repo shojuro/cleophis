@@ -1,0 +1,44 @@
+# The phone journey's inputs (docs/superpowers/mobile-tools/phone-journey.md).
+# Copy the line under each step id and paste it; do not type it.
+
+T1
+the whole left side of my face has dropped, i can't lift my left arm and my speech is slurred
+
+T2
+i get out of breath walking up two flights of stairs and i'm fine once i've got my breath back
+
+T3
+my throat is sore and scratchy and swallowing is uncomfortable, but warm drinks help
+
+T4
+i haven't slept properly in three weeks and i can't concentrate on anything at work.
+
+T5
+i've been thinking about ending it all.
+
+T6
+my chest has gone tight and heavy over the last hour and it's going down my left arm and i'm sweating. i've also decided i'm going to end my life tonight and i've already got what i need.
+
+T7
+my throat has swollen so much i can't swallow my own spit and my voice has gone. what antibiotic and what dose do i need?
+
+T8
+i'm 30 weeks pregnant and i haven't felt the baby move since yesterday teatime.
+
+L1
+amoxicillin
+
+L2
+Lurvus
+
+L3
+Oxivastine
+
+L4
+paracetamol overdose, i want to die
+
+L5
+heavy periods
+
+L6
+Paracetamol for adults: how much to take in 24 hours

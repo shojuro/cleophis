@@ -1,0 +1,76 @@
+// src/prompt-fingerprint.test.mjs — node --test src/
+//
+// Task 5 gave `assembleMessages` a fingerprint check but no fingerprint: the
+// catalog pins `promptFingerprint` and the app had nothing that could compute
+// one. `node:crypto` is not in a WebView and `crypto.subtle` is async, while
+// the check is synchronous and sits on the send path — so the app carries its
+// own SHA-256. That is only worth anything if it is the SAME sha256 the pin
+// was cut with, which is what the fuzz test below asserts, byte for byte,
+// against node's own implementation.
+import { test } from 'node:test';
+import assert from 'node:assert';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { promptFingerprint, isPromptMismatch, sha256Hex } from './prompt-fingerprint.js';
+
+const nodeSha = (s) => createHash('sha256').update(String(s), 'utf8').digest('hex');
+
+test('sha256Hex agrees with node:crypto on the block-boundary cases', () => {
+  // 55/56/63/64/119/120 bytes are where a hand-written SHA-256 gets the
+  // padding wrong: the length field either just fits or forces a second block.
+  const cases = ['', 'a', 'abc', 'x'.repeat(55), 'x'.repeat(56), 'x'.repeat(63),
+    'x'.repeat(64), 'x'.repeat(65), 'x'.repeat(119), 'x'.repeat(120), 'x'.repeat(1000)];
+  for (const s of cases) {
+    assert.strictEqual(sha256Hex(s), nodeSha(s), `sha256 differs for a ${s.length}-char input`);
+  }
+});
+
+test('sha256Hex agrees with node:crypto on multi-byte UTF-8, including astral planes', () => {
+  // The catalog prompt is English today, but a fingerprint that only agrees on
+  // ASCII is a fingerprint that stops agreeing the day someone writes an
+  // en-dash into a system prompt.
+  const cases = ['héllo', 'naïve café', '—', '“curly”', '日本語のテキスト', '🩺 triage 🚑',
+    'a\u0000b', '\u{1F600}'.repeat(30), 'mixed 漢字 and 🚑 and plain'];
+  for (const s of cases) {
+    assert.strictEqual(sha256Hex(s), nodeSha(s), `sha256 differs for ${JSON.stringify(s)}`);
+  }
+});
+
+test('sha256Hex agrees with node:crypto on 400 random inputs', () => {
+  for (let i = 0; i < 400; i += 1) {
+    const len = Math.floor(Math.random() * 300);
+    let s = '';
+    for (let j = 0; j < len; j += 1) s += String.fromCodePoint(Math.floor(Math.random() * 0x2000));
+    assert.strictEqual(sha256Hex(s), nodeSha(s), `sha256 differs for a ${len}-char random input`);
+  }
+});
+
+test('promptFingerprint is the first 12 hex characters of the sha256', () => {
+  assert.strictEqual(promptFingerprint('abc'), nodeSha('abc').slice(0, 12));
+  assert.strictEqual(promptFingerprint('abc').length, 12);
+});
+
+test('PARITY: the app computes the med-triage catalog entry\'s own pinned fingerprint', () => {
+  // The whole point of shipping a hash in the app: on device, the prompt that
+  // is about to be sent is fingerprinted and compared with the pin the gate
+  // was run under. If these two ever disagree, every supervised send throws.
+  const catalog = JSON.parse(readFileSync(new URL('../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8'));
+  const entry = catalog.find((e) => e.id === 'med-triage');
+  assert.ok(entry, 'catalog.triage.json has a med-triage entry (Task 9)');
+  assert.strictEqual(promptFingerprint(entry.systemPrompt), entry.promptFingerprint);
+});
+
+test('isPromptMismatch recognises prompt-assembly\'s error and nothing else', () => {
+  // `prompt-assembly.js` is not this task's file to change, so the send path
+  // recognises its throw by message. Pinned here so a reworded throw fails a
+  // test rather than silently degrading a loud failure into a retry chip.
+  const real = new Error('prompt fingerprint mismatch: catalog says 67b7f1633f30, prompt is deadbeefcafe');
+  assert.strictEqual(isPromptMismatch(real), true);
+  // The other refusal: a supervised entry that pins nothing to check against.
+  const missing = new Error('prompt fingerprint missing: this supervised entry pins none, so the prompt cannot be checked');
+  assert.strictEqual(isPromptMismatch(missing), true);
+  assert.strictEqual(isPromptMismatch(new Error('Failed to fetch')), false);
+  assert.strictEqual(isPromptMismatch(Object.assign(new Error('aborted'), { name: 'AbortError' })), false);
+  assert.strictEqual(isPromptMismatch(undefined), false);
+  assert.strictEqual(isPromptMismatch('prompt fingerprint mismatch: as a bare string'), true);
+});

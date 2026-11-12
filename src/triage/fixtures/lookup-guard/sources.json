@@ -1,0 +1,209 @@
+{
+  "_comment": "Shared source sets for the dose-cite-v7 verdict fixtures (verdicts.json). Shaped like the lookup sources the app recovers from rag_lookup: n, chunkId (page order; absent in most sets, so n stands in), docTitle, sectionPath, text. Invented reference text for tests only; not clinical guidance. nodoseP is the re-reviews' NODOSE source; paraAdult/ibu/ibuNamed are re-review 3's title shorthands.",
+  "paracetamol": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "How and when to take it",
+      "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours. Always leave at least 4 hours between doses."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains. It can also be used to reduce a high temperature."
+    },
+    {
+      "n": 3,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "If you take too much",
+      "text": "Taking 2 extra tablets by accident is unlikely to be harmful. Go to A&E straight away if you take more than 8 tablets in 24 hours."
+    }
+  ],
+  "salbutamol": [
+    {
+      "n": 1,
+      "docTitle": "Salbutamol inhaler",
+      "sectionPath": "Dosage",
+      "text": "Take 1 or 2 puffs when you need them, every 4–6 hours. Do not use more than 8 puffs in 24 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Salbutamol inhaler",
+      "sectionPath": "Maximum dose",
+      "text": "Never take more than 8 puffs in 24 hours."
+    }
+  ],
+  "amoxicillin": [
+    {
+      "n": 1,
+      "docTitle": "Amoxicillin",
+      "sectionPath": "Dosage > Adults",
+      "text": "The usual dose is 500 milligrams three times a day. The liquid is 250 mg/5 ml."
+    }
+  ],
+  "noDose": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains."
+    }
+  ],
+  "nodoseP": [
+    {
+      "n": 1,
+      "docTitle": "P",
+      "sectionPath": "P > How to take it",
+      "text": "Paracetamol is a painkiller."
+    }
+  ],
+  "children": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "Dosage",
+      "text": "Children aged 6 to 11: 1/2 tablet. Babies: give ½ tablet only on advice. Take 1 to 2 tablets if aged 16 or over. Children: 10 mg per kilogram of body weight. The usual dose is 500 mg."
+    }
+  ],
+  "poisoning": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol",
+      "sectionPath": "Dosage",
+      "text": "Take 1 or 2 tablets every 4 to 6 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol",
+      "sectionPath": "Paracetamol poisoning",
+      "text": "Paracetamol poisoning can damage the liver."
+    }
+  ],
+  "paraIbu": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol",
+      "sectionPath": "Dosage",
+      "text": "Paracetamol: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen",
+      "sectionPath": "Dosage",
+      "text": "Ibuprofen: take 2 tablets."
+    }
+  ],
+  "paraAdultIbu": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "Dosage",
+      "text": "Adults: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen for adults",
+      "sectionPath": "Dosage",
+      "text": "Take 2 tablets."
+    }
+  ],
+  "paraAdultIbuNamed": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "Dosage",
+      "text": "Adults: take 1 tablet."
+    },
+    {
+      "n": 2,
+      "docTitle": "Ibuprofen for adults",
+      "sectionPath": "Dosage",
+      "text": "Ibuprofen: take 2 tablets."
+    }
+  ],
+  "twoChunks": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "How to take it",
+      "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains."
+    }
+  ],
+  "bands": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets. Give 1 tablet up to 4 times in 24 hours. Children aged 12 to 15 can take paracetamol tablets. Give 2 tablets up to 4 times in 24 hours."
+    }
+  ],
+  "bandChunks": [
+    {
+      "n": 1,
+      "chunkId": 20,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "Dosage > 6 to 11",
+      "text": "Children aged 6 to 11 can take paracetamol tablets. Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 21,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "Dosage > 12 to 15",
+      "text": "Children aged 12 to 15 can take paracetamol tablets. Give 2 tablets up to 4 times in 24 hours."
+    }
+  ],
+  "pageOrder": [
+    {
+      "n": 1,
+      "chunkId": 11,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 10,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets."
+    }
+  ],
+  "rankOrder": [
+    {
+      "n": 1,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Give 1 tablet up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "docTitle": "Paracetamol for children",
+      "sectionPath": "How to take it",
+      "text": "Children aged 6 to 11 can take paracetamol tablets."
+    }
+  ],
+  "farChunks": [
+    {
+      "n": 1,
+      "chunkId": 5,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "How to take it",
+      "text": "The usual dose is one or two 500mg tablets up to 4 times in 24 hours."
+    },
+    {
+      "n": 2,
+      "chunkId": 9,
+      "docTitle": "Paracetamol for adults",
+      "sectionPath": "About paracetamol",
+      "text": "Paracetamol is a common painkiller used to treat aches and pains."
+    }
+  ]
+}

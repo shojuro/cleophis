@@ -446,6 +446,7 @@ mod tests {
             vram_gb: 4,
             platform: "windows".into(),
             tier: "mid".into(),
+            supported: true,
         };
         let result = upsert_device("token", "user-1", &hw, "abc123fingerprint");
         assert!(result.is_ok(), "expected Ok(()), got {result:?}");

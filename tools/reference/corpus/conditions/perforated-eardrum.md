@@ -1,0 +1,82 @@
+---
+title: "Perforated eardrum"
+url: "https://www.nhs.uk/conditions/perforated-eardrum/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "perforated-eardrum"
+aliases: ["Eardrum (burst)"]
+brands: []
+sources: [{"last_reviewed": "19 April 2023", "retrieved": "2026-09-26", "title": "Perforated eardrum", "url": "https://www.nhs.uk/conditions/perforated-eardrum/"}]
+---
+# Perforated eardrum
+
+**A perforated (burst) eardrum is** **a hole or tear in your eardrum. It usually gets better on its own** **within 2 months, but you may need treatment such as antibiotics.**
+
+## Symptoms of a perforated eardrum
+
+Symptoms of a perforated eardrum usually start suddenly after an:
+
+- ear infection
+- injury (such as getting hit on your ear)
+- loud noise
+- sudden change in air pressure (such as flying on a plane)
+
+Most of the time symptoms affect 1 ear and include:
+
+- hearing loss
+- a ringing or buzzing sound in your ear (tinnitus)
+- earache or ear pain
+- itching in your ear
+- clear fluid, blood or pus leaking from your ear
+- feeling dizzy
+- a high temperature
+
+If you're not sure if it's a perforated eardrum, find out about other conditions that can cause earache, hearing loss or tinnitus.
+
+## Urgent advice: Ask for an urgent GP appointment or get help from NHS 111 if:
+
+- you have sudden hearing loss in 1 or both ears
+- your hearing has been getting worse over the last few days or weeks
+- you have hearing loss along with other symptoms, such as earache or discharge coming out of the ear
+
+It might not be anything serious, but it's best to get help as it may need to be treated quickly.
+
+You can call 111 or get help from 111 online.
+
+## Treatment for a perforated eardrum
+
+A perforated eardrum usually gets better on its own within 2 months and your hearing returns to normal.
+
+You may need antibiotics if you have an ear infection, or to stop you getting an ear infection while your eardrum heals.
+
+Sometimes, surgery to repair the eardrum (myringoplasty) may be needed if the eardrum is not healing by itself.
+
+### Important
+
+See a GP if your symptoms have not started to improve after a few weeks.
+
+### More information
+
+Find out more about myringoplasty surgery on the ENT UK website
+
+## Things you can do if you have a perforated eardrum
+
+There are some things you can do to help heal a perforated eardrum and ease symptoms.
+
+### Do
+
+- take painkillers like paracetamol or ibuprofen to ease any pain
+- put a large piece of cotton wool covered in petroleum jelly in your outer ear when you wash your hair to stop water getting in
+
+### Don’t
+
+- do not go swimming or get your ear wet until your eardrum heals
+- do not put anything inside your ear, such as cotton buds or eardrops (unless a doctor recommends them)
+- try not to blow your nose too hard because this can damage your eardrum as it heals
+
+### Flying with a perforated eardrum
+
+It's safe to fly if you have a perforated eardrum. But if you've had surgery to repair a perforated eardrum (myringoplasty), do not fly until you're told it's safe to.

@@ -1,0 +1,197 @@
+{
+  "_comment": "isOverdoseSentence(sentence) over OVERDOSE_SENTENCE_PATTERNS only (dose-cite-v7: overdose narratives and their inflections and near-synonyms, fix round 1; a kill word in a sentence naming a microbe or cells is mechanism text and does not match, nor does \"killing yourself\" (a crisis signpost); Latin diacritics are folded before matching (fix round 2); the dose-instruction and route words left the list, and the section list no longer reads sentence text). A matching SOURCE sentence, and the sentence right before and after it, verify nothing; a matching REPLY sentence is withheld.",
+  "cases": [
+    {
+      "sentence": "Do not take more than 8 tablets in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "Maximum 4 doses in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "The maximum dose is 8 tablets in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not exceed 8 tablets in 24 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "Take no more than 2 at a time.",
+      "overdose": false
+    },
+    {
+      "sentence": "Take up to 4 times a day.",
+      "overdose": false
+    },
+    {
+      "sentence": "At most 4 doses a day.",
+      "overdose": false
+    },
+    {
+      "sentence": "Go to A&E straight away.",
+      "overdose": false
+    },
+    {
+      "sentence": "Call 999 in an emergency.",
+      "overdose": false
+    },
+    {
+      "sentence": "Call 111 or go to A&E if the pain is severe.",
+      "overdose": false
+    },
+    {
+      "sentence": "Go to hospital if it gets worse.",
+      "overdose": false
+    },
+    {
+      "sentence": "Taking too many can cause serious liver damage.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be fatal.",
+      "overdose": true
+    },
+    {
+      "sentence": "A large amount can be lethal.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 20 tablets could kill you.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can kill.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol poisoning can damage the liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be life-threatening.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol toxicity is serious.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can harm your liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "This is dangerous.",
+      "overdose": true
+    },
+    {
+      "sentence": "This is an overdose.",
+      "overdose": true
+    },
+    {
+      "sentence": "If you take too much, get help.",
+      "overdose": true
+    },
+    {
+      "sentence": "Take 1 or 2 tablets every 4 to 6 hours.",
+      "overdose": false
+    },
+    {
+      "sentence": "It is harmless in normal doses.",
+      "overdose": false
+    },
+    {
+      "sentence": "Paracetamol is a painkiller.",
+      "overdose": false
+    },
+    {
+      "sentence": "Leave 4 hours between doses.",
+      "overdose": false
+    },
+    {
+      "sentence": "Taking more than the maximum can damage your liver.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can cause liver failure.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 30 tablets will kill you.",
+      "overdose": true
+    },
+    {
+      "sentence": "Amoxicillin kills bacteria.",
+      "overdose": false
+    },
+    {
+      "sentence": "Paracetamol is toxic in large amounts.",
+      "overdose": true
+    },
+    {
+      "sentence": "It would stop your heart.",
+      "overdose": true
+    },
+    {
+      "sentence": "You could stop breathing.",
+      "overdose": true
+    },
+    {
+      "sentence": "It is a threat to life.",
+      "overdose": true
+    },
+    {
+      "sentence": "She overdosed.",
+      "overdose": true
+    },
+    {
+      "sentence": "It can be fatally toxic.",
+      "overdose": true
+    },
+    {
+      "sentence": "Paracetamol is a painkiller for mild pain.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not take more than the maximum dose.",
+      "overdose": false
+    },
+    {
+      "sentence": "Do not take more than the recommended dose.",
+      "overdose": false
+    },
+    {
+      "sentence": "Stop taking it if you get a rash.",
+      "overdose": false
+    },
+    {
+      "sentence": "This will make sure all the bacteria have been killed.",
+      "overdose": false
+    },
+    {
+      "sentence": "You have thoughts about harming yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "It helps stop your heart failure getting worse.",
+      "overdose": false
+    },
+    {
+      "sentence": "Call 999 or go to A&E if you have thoughts of harming or killing yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "You have thoughts of harming or killing yourself.",
+      "overdose": false
+    },
+    {
+      "sentence": "It can be fátal.",
+      "overdose": true
+    },
+    {
+      "sentence": "Taking 30 tablets could kill you.",
+      "overdose": true
+    }
+  ]
+}

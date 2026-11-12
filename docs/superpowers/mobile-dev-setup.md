@@ -54,6 +54,11 @@ export ANDROID_NDK_HOME=/home/$USER/android-ndk-r27c
 export ANDROID_NDK_ROOT=/home/$USER/android-ndk-r27c
 export NDK_ROOT=/home/$USER/android-ndk-r27c
 export ANDROID_NDK=/home/$USER/android-ndk-r27c
+# ...and `tauri android` (cargo-mobile2) reads NDK_HOME and ONLY NDK_HOME.
+# Without it the CLI aborts before doing any work, with a message that blames
+# the SDK ("Skipping Android Studio command line tools installation") rather
+# than the NDK.
+export NDK_HOME=/home/$USER/android-ndk-r27c
 
 # bindgen (llama-cpp-sys-2 build.rs) needs a host libclang
 export LIBCLANG_PATH=/home/$USER/.local/lib/python3.10/site-packages/clang/native

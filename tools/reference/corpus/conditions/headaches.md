@@ -1,0 +1,93 @@
+---
+title: "Headaches"
+url: "https://www.nhs.uk/symptoms/headaches/"
+retrieved: "2026-09-26"
+as_at: "260926"
+licence: "OGL v3"
+attribution: "Information from the NHS website, licensed under the Open Government Licence v3.0"
+section: "conditions"
+slug: "headaches"
+aliases: []
+brands: []
+sources: [{"last_reviewed": "17 April 2024", "retrieved": "2026-09-26", "title": "Headaches", "url": "https://www.nhs.uk/symptoms/headaches/"}]
+---
+# Headaches
+
+Most headaches go away on their own and are not a sign of something more serious.
+
+## How you can ease headaches yourself
+
+Headaches can last 30 minutes, several hours, or sometimes several days.
+
+### Do
+
+- drink plenty of water
+- get plenty of rest if you also have a cold or the flu
+- try to relax – stress can make headaches worse
+- take paracetamol or ibuprofen
+- try to stay at home and avoid contact with other people if you also have a high temperature or you do not feel well enough to do your normal activities
+
+### Don’t
+
+- do not skip meals (even if you might not feel like eating anything)
+- do not sleep more than you usually would – it can make the headache worse
+- do not strain your eyes for a long time – for example, by looking at a screen
+- do not drink alcohol
+
+## When and where to get medical help
+
+Most headaches are not serious but sometimes you may need medical help.
+
+### Non-urgent advice: See a GP if:
+
+- you've tried treating a headache yourself and it's not getting better or is getting worse
+- you regularly get headaches
+
+### Urgent advice: Ask for an urgent GP appointment or get help from NHS 111 if:
+
+- you or a child has a headache and vision or eye problems
+- you or a child has a headache triggered or made worse by coughing, sneezing, bending down or exercising
+- you or a child has a headache and is being sick (vomiting)
+- a child has a headache that's getting worse or wakes them at night
+- you have a headache and jaw pain when eating or a sore or tender scalp
+- you or a child has any other symptoms you're worried about
+
+You can call 111 or get help from 111 online. Call 111 if you need advice for a child under 5 years old.
+
+### Immediate action required: Call 999 or go to A&E if:
+
+You or a child has a headache and:
+
+- has had a seizure (fit)
+- has numbness or weakness in the body or face
+- it started suddenly and is extremely painful
+- has had a head injury within the last 3 months – for example, from a fall or accident
+- are finding it difficult to speak, balance, walk or remember things
+- are drowsy or confused
+- has loss of vision
+- has a rash that does not fade when a glass is rolled over it
+- has a very high temperature, a stiff neck, or bright lights are bothering you
+
+Do not drive to A&E. Ask someone to drive you or call 999 and ask for an ambulance.
+
+Bring any medicines you take with you.
+
+## What can cause headaches
+
+Common causes of headaches include:
+
+- having a cold or flu
+- stress
+- drinking too much alcohol
+- bad posture
+- eyesight problems
+- not eating regular meals
+- not drinking enough fluids (dehydration)
+- taking too many painkillers
+- having your period or during menopause (hormone headache)
+
+Keeping a headache diary might help you work out what triggers your headaches.
+
+Severe headaches can sometimes be caused by a migraine or cluster headache.
+
+The Migraine Trust has advice about what to record in a headache diary

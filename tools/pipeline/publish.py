@@ -62,14 +62,24 @@ Local artifact resolution (binding decision for Task A5 — the catalog
 carries only a bucket-relative `path`, not a local filesystem path): for
 each `catalog.json["artifacts"][i]`, the local file is
 
-    <out-dir>/<artifact.base_model>/Q4_K_M/<basename>   if kind == "base"
+    <out-dir>/<artifact.base_model>/<quant>/<basename>  if kind == "base"
     <out-dir>/<artifact.base_model>/adapter/<basename>  if kind == "adapter"
+                                                         or "contract-adapter"
 
 where `<basename>` is the final path component of `artifact.path`. This
 mirrors build_base.py's `<out-dir>/<model-name>/<quant>/<name>` and
 build_adapter.py's `<out-dir>/<model-name>/adapter/<name>` output layouts
-exactly (quant is hardcoded to Q4_K_M — the only quant this pipeline
-builds — rather than read from the catalog, which doesn't carry it).
+exactly. `<quant>` is parsed from the base basename
+`<base_model>-Instruct-<quant>.gguf` (Phase 1g M3; it was hardcoded to
+Q4_K_M before), so e.g. a Q6_K base resolves under `.../Q6_K/`; a base
+basename not of that shape is refused.
+
+--carried-forward <catalog.json> (M3): catalog entries EXACTLY equal to an
+entry of that previously published catalog (build_catalog.py
+--carry-forward's source) are never resolved locally or uploaded; each is
+confirmed by a HEAD to be in --bucket with matching sha256 metadata (the
+same condition that makes an ordinary artifact "skipped"), before any
+upload starts. Absent or mismatched -> hard refusal.
 
 Before ANY upload, every resolved local file is re-hashed (streaming,
 never loads the whole file into memory) and its size and sha256 are
@@ -226,6 +236,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import shlex
 import sys
 import tempfile
@@ -273,7 +284,13 @@ SIG_KEY = "catalog.json.sig"
 # The contract adapter (adapter v2) shares the behavioral adapter's local
 # `adapter/` build subdir (build_adapter.py writes both under
 # `<out>/<model>/adapter/`); only its catalog `kind`/basename differ.
-LOCAL_ARTIFACT_SUBDIR_BY_KIND = {"base": "Q4_K_M", "adapter": "adapter", "contract-adapter": "adapter"}
+#
+# Phase 1g M3: a base's subdir is NOT fixed — it is the quant parsed from its
+# basename (`<base_model>-Instruct-<quant>.gguf`, build_base.py's
+# `<out>/<model>/<quant>/` layout), so a Q6_K base resolves under `Q6_K/` and
+# every existing Q4 base still under `Q4_K_M/`. None marks "parse the quant".
+LOCAL_ARTIFACT_SUBDIR_BY_KIND = {"base": None, "adapter": "adapter", "contract-adapter": "adapter"}
+BASE_BASENAME_QUANT_RE = re.compile(r"-Instruct-([A-Za-z0-9_]+)\.gguf$")
 
 REQUIRED_ARTIFACT_FIELDS = ("path", "sha256", "size", "kind", "base_model")
 
@@ -446,9 +463,65 @@ def validate_artifact_entry(artifact: object, index: int) -> None:
 
 def local_artifact_path(out_dir: Path, artifact: dict) -> Path:
     """See the module docstring's "Local artifact resolution" section."""
-    subdir = LOCAL_ARTIFACT_SUBDIR_BY_KIND[artifact["kind"]]
     basename = Path(artifact["path"]).name
+    subdir = LOCAL_ARTIFACT_SUBDIR_BY_KIND[artifact["kind"]]
+    if subdir is None:
+        match = BASE_BASENAME_QUANT_RE.search(basename)
+        if match is None:
+            raise PublishError(
+                f"base artifact {artifact['path']!r}: basename is not <base_model>-Instruct-<quant>.gguf, "
+                "so its local quant subdir cannot be derived"
+            )
+        subdir = match.group(1)
     return out_dir / artifact["base_model"] / subdir / basename
+
+
+# ---------------------------------------------------------------------
+# Carried-forward artifacts (Phase 1g M3): entries a new catalog carries
+# verbatim from an already-published one (build_catalog.py --carry-forward).
+# They are already in --bucket, so they are never uploaded and need no local
+# file: each one is instead confirmed present remotely with matching sha256
+# metadata — the very condition under which publish_artifact would "skip"
+# it anyway. A carried artifact missing from the bucket is a hard refusal
+# (there is no local file to upload), never a silent pass.
+# ---------------------------------------------------------------------
+
+
+def load_carried_forward_entries(path: Path) -> list[dict]:
+    """The artifact entries of a previously published catalog.json. Only
+    EXACT entry matches (all fields equal) are treated as carried, so a
+    stale or doctored file can only ever cause a refusal, not an upload
+    skip for bytes the new signed catalog describes differently."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PublishError(f"--carried-forward {path}: could not read/parse: {exc}") from exc
+    artifacts = data.get("artifacts") if isinstance(data, dict) else None
+    if not isinstance(artifacts, list) or not all(isinstance(a, dict) for a in artifacts):
+        raise PublishError(f"--carried-forward {path}: no artifacts list")
+    return artifacts
+
+
+def is_carried(artifact: dict, carried: list[dict]) -> bool:
+    return any(artifact == c for c in carried)
+
+
+def confirm_carried_artifact(client, bucket: str, artifact: dict) -> str:
+    """HEAD only — never uploads. Returns "present" iff the object exists
+    with sha256 metadata equal to the catalog's; raises otherwise."""
+    key = artifact["path"]
+    existing = client.head(bucket, key)
+    if existing is None:
+        raise PublishError(
+            f"carried-forward artifact s3://{bucket}/{key} is NOT in the bucket — refusing (it has no local "
+            "file to upload; a carried entry must already be published)"
+        )
+    if existing.get("sha256") != artifact["sha256"].lower():
+        raise ImmutabilityViolation(
+            f"carried-forward artifact s3://{bucket}/{key} has sha256 metadata {existing.get('sha256')!r}, "
+            f"catalog says {artifact['sha256'].lower()!r} — refusing"
+        )
+    return "present"
 
 
 def sha256_file(path: Path) -> str:
@@ -1255,6 +1328,32 @@ def self_test() -> bool:
         _sanitize_s3_exception(ValueError(f"connect to https://user:{secret_marker}@example.com failed")) == "ValueError",
     )
 
+    # Phase 1g M3 — quant-derived base subdir; carried-forward confirmation.
+    out = Path("/nonexistent/out")
+    q6 = {"path": "models/Qwen3-1.7B/v1/Qwen3-1.7B-Instruct-Q6_K.gguf", "sha256": "b" * 64, "size": 1,
+          "kind": "base", "base_model": "Qwen3-1.7B"}
+    check("a Q6_K base resolves under <out>/Qwen3-1.7B/Q6_K/",
+          local_artifact_path(out, q6) == out / "Qwen3-1.7B" / "Q6_K" / "Qwen3-1.7B-Instruct-Q6_K.gguf")
+    check("a Q4_K_M base still resolves under <out>/Qwen3-4B/Q4_K_M/",
+          local_artifact_path(out, artifact) == out / "Qwen3-4B" / "Q4_K_M" / "Qwen3-4B-Instruct-Q4_K_M.gguf")
+    triage = {"path": "adapters/triage/v3/Qwen3-1.7B/triage-v3-Qwen3-1.7B.gguf", "sha256": "c" * 64, "size": 1,
+              "kind": "adapter", "base_model": "Qwen3-1.7B"}
+    check("an adapter still resolves under <out>/<base>/adapter/",
+          local_artifact_path(out, triage) == out / "Qwen3-1.7B" / "adapter" / "triage-v3-Qwen3-1.7B.gguf")
+    check("a base basename with no -Instruct-<quant> is refused",
+          raises(PublishError, lambda: local_artifact_path(out, dict(q6, path="models/Qwen3-1.7B/v1/Qwen3-1.7B.gguf"))))
+    fake_c = _FakeS3Client()
+    check("a carried artifact missing from the bucket is refused",
+          raises(PublishError, lambda: confirm_carried_artifact(fake_c, "dist", triage)))
+    fake_c._seed("dist", triage["path"], b"x", sha256_hex="d" * 64)
+    check("a carried artifact with different sha256 metadata is an ImmutabilityViolation",
+          raises(ImmutabilityViolation, lambda: confirm_carried_artifact(fake_c, "dist", triage)))
+    fake_c._seed("dist", triage["path"], b"x", sha256_hex="c" * 64)
+    check("a carried artifact with matching metadata is 'present' and nothing is written",
+          confirm_carried_artifact(fake_c, "dist", triage) == "present"
+          and not any(op in ("upload_file", "put_bytes") for op, _, _ in fake_c.calls))
+    check("is_carried needs an exact entry match", is_carried(triage, [dict(triage)]) and not is_carried(triage, [dict(triage, size=2)]))
+
     return ok
 
 
@@ -1302,6 +1401,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "verifies under it nor is this build's own partial-swap remnant",
     )
     parser.add_argument(
+        "--carried-forward",
+        type=Path,
+        default=None,
+        metavar="CATALOG_JSON",
+        help="the previously published catalog.json that build_catalog.py --carry-forward carried entries from; "
+        "catalog entries equal to one of its entries are confirmed present in --bucket (HEAD, matching sha256 "
+        "metadata) instead of being resolved locally and uploaded",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the full publish plan from local state only — loads no credentials, makes no network call, "
@@ -1331,9 +1439,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise PublishError(f"{sig_path} does NOT verify against {args.catalog} under the given --verify-pubkey — refusing to publish")
             print(f"[verify] {sig_path} verifies against {args.catalog} under the given public key", flush=True)
 
+        carried = load_carried_forward_entries(args.carried_forward) if args.carried_forward is not None else []
+        carried_plan: list[dict] = []
         plan: list[tuple[dict, Path]] = []
         for index, artifact in enumerate(catalog["artifacts"]):
             validate_artifact_entry(artifact, index)
+            if is_carried(artifact, carried):
+                carried_plan.append(artifact)
+                print(f"[carried] {artifact['path']} — already published; will confirm remotely, no local file", flush=True)
+                continue
             local_path = local_artifact_path(args.out_dir, artifact)
             verify_local_artifact(local_path, artifact)
             plan.append((artifact, local_path))
@@ -1347,6 +1461,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         print("[dry-run] no credentials loaded, no network touched — plan below is from local state only:", flush=True)
+        for artifact in carried_plan:
+            print(
+                f"[dry-run] would confirm s3://{args.bucket}/{artifact['path']} is present with sha256 metadata "
+                f"{artifact['sha256']} (carried forward; HARD ERROR if absent or different, never uploaded)",
+                flush=True,
+            )
         for artifact, local_path in plan:
             print(
                 f"[dry-run] would publish s3://{args.bucket}/{artifact['path']} <- {shlex.quote(str(local_path))} "
@@ -1387,6 +1507,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         dest_client = create_s3_client(endpoint, key_id, app_key)
         archive_client = dest_client if models_creds is None else create_s3_client(endpoint, *models_creds)
+        # Carried entries first: cheap HEADs, so a missing one refuses before
+        # any multi-GB upload starts.
+        for artifact in carried_plan:
+            result = confirm_carried_artifact(dest_client, args.bucket, artifact)
+            print(f"[publish] carried, {result}: s3://{args.bucket}/{artifact['path']}", flush=True)
         for artifact, local_path in plan:
             result = publish_artifact(dest_client, args.bucket, artifact, local_path)
             print(f"[publish] {result}: s3://{args.bucket}/{artifact['path']}", flush=True)
