@@ -2381,6 +2381,42 @@ mod tests {
         assert_eq!(msgs[1].guard.as_ref().unwrap()["route"], "CLINICIAN");
     }
 
+    /// The partial-row UPGRADE is a separate SQL path from the INSERT; it must
+    /// write `attachments` too, and must not grow the row count.
+    #[test]
+    fn partial_row_upgrade_writes_attachments() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "t", None, None, "hero", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "q", None, None, None, None)
+            .unwrap();
+        let partial_id = store.checkpoint_partial(USER, chat.id, "par").unwrap();
+        let before = store.get_chat(USER, chat.id).unwrap().messages.len();
+        let att = json!({"kind":"vision","verdict":"accept","edited":false,"blocks":{"latex":1,"text":0}});
+        let info = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "done",
+                None,
+                None,
+                None,
+                Some(att.clone()),
+            )
+            .unwrap();
+        assert_eq!(info.id, partial_id, "upgrade, not insert");
+        assert_eq!(info.attachments, Some(att.clone()));
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), before, "row count did not grow");
+        let row = msgs.iter().find(|m| m.id == partial_id).unwrap();
+        assert_eq!(row.attachments, Some(att));
+        assert_eq!(row.content, "done");
+        assert!(!row.partial);
+    }
+
     /// A USER append must never be diverted onto the in-flight assistant
     /// row — the upgrade is an assistant-only path.
     #[test]
