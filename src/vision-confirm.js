@@ -37,13 +37,17 @@ const isFlagged = (b) =>
 
 const hasMaths = (b) => b.kind === 'latex' && typeof b.content === 'string' && b.content.trim() !== '';
 
-// The warnings' copy in wire order, deduped, unknown names dropped.
-function warningNotes(warnings) {
+// The notes under the blocks: the warnings' copy in wire order, deduped, unknown
+// names dropped, then the review note while it is true. That note asks the user
+// to check what is amber, so it is there only in review and only while some
+// latex block IS amber: from the first render, and after every edit.
+function notesFor(mode, warnings, blocks) {
   const notes = [];
   for (const w of warnings) {
     const copy = Object.hasOwn(WARNING_COPY, w) ? WARNING_COPY[w] : null;
     if (copy && !notes.includes(copy)) notes.push(copy);
   }
+  if (mode === 'review' && blocks.some((b) => b.kind === 'latex' && b.flagged)) notes.push(REVIEW_NOTE);
   return notes;
 }
 
@@ -79,8 +83,7 @@ export function confirmState(result) {
   // Nothing to hand the tutor, whatever the model's verdict says.
   const noMaths = !blocks.some(hasMaths);
   if (noMaths) mode = 'refuse';
-  const notes = warningNotes(warnings);
-  if (mode === 'review') notes.push(REVIEW_NOTE);
+  const notes = notesFor(mode, warnings, blocks);
   return {
     mode,
     blocks,
@@ -106,10 +109,7 @@ export function applyEdit(state, id, text) {
     if (isMaths && nonBlank) next.flagged = false;
     return next;
   });
-  // The review note asks the user to check what is amber, so it goes once no
-  // latex block is; the warnings' copy describes the reading and stays.
-  const notes = warningNotes(Array.isArray(state.warnings) ? state.warnings : []);
-  if (state.mode === 'review' && blocks.some((b) => b.kind === 'latex' && b.flagged)) notes.push(REVIEW_NOTE);
+  const notes = notesFor(state.mode, Array.isArray(state.warnings) ? state.warnings : [], blocks);
   return { ...state, blocks, notes, ...gate(state.mode, blocks) };
 }
 

@@ -85,9 +85,11 @@ test('review: operatorUncertain blocks Use, allows Use anyway, flags the block, 
 });
 
 test('notes follow wire order, dedupe, ignore unknown warnings, and add REVIEW_NOTE only in review', () => {
-  const review = confirmState(result({ verdict: 'review', warnings: ['truncated', 'lowConfidence', 'truncated', 'mystery'] }));
+  // An amber latex block in both, so only the mode decides the review note.
+  const amber = [{ kind: 'latex', content: '3x-7=2x+5', confidence: 0.5 }];
+  const review = confirmState(result({ verdict: 'review', blocks: amber, warnings: ['truncated', 'lowConfidence', 'truncated', 'mystery'] }));
   assert.deepEqual(review.notes, [WARNING_COPY.truncated, WARNING_COPY.lowConfidence, REVIEW_NOTE]);
-  const accept = confirmState(result({ warnings: ['lowConfidence'] }));
+  const accept = confirmState(result({ blocks: amber, warnings: ['lowConfidence'] }));
   assert.deepEqual(accept.notes, [WARNING_COPY.lowConfidence]);
 });
 
@@ -350,4 +352,14 @@ test('an edit in accept mode never adds the review note', () => {
   assert.equal(s.mode, 'accept');
   const e = applyEdit(s, 0, 'a=1');
   assert.deepEqual(e.notes, [WARNING_COPY.truncated]);
+});
+
+// Ruling S2-P15: the review note asks the user to check what is amber, so a
+// review verdict with nothing amber never shows it, from the first render on.
+test('a review verdict with no amber latex block opens without the review note', () => {
+  const s = confirmState(result({ verdict: 'review', warnings: ['truncated'] }));
+  assert.equal(s.blocks[0].flagged, false);
+  assert.deepEqual(s.notes, [WARNING_COPY.truncated]);
+  assert.equal(s.canUse, false);
+  assert.equal(s.canUseAnyway, true);
 });

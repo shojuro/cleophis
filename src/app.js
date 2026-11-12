@@ -1866,8 +1866,10 @@ function renderConfirm(bubbleEl, msg, supervised) {
 function setComposerEnabled(on) {
   $('chatInput').disabled = !on;
   $('sendBtn').disabled = !on || state.chat.streaming;
-  // A photo turn ends in a tutor turn, so the camera is off whenever typing is.
+  // A photo turn ends in a tutor turn, so the camera is off whenever typing is,
+  // and so are the confirm pane's Use buttons.
   renderPhotoButton();
+  if (state.vision.confirm && isVisionPaneShown('visionConfirm')) renderVisionGate();
 }
 
 // The engine banner is normally a plain status line. `action` (optional) turns
@@ -3409,9 +3411,13 @@ function renderVisionGate() {
   $('visionNotes').textContent = c.notes.join(' ');
   // Use is always on the pane and pressable only when the gate says so (in
   // review it reads as "edit first"); Use anyway is there exactly when the
-  // gate offers the override.
-  $('visionUse').disabled = !c.canUse;
+  // gate offers the override. Both also wait for the composer: a handoff is a
+  // tutor turn, and while the engine is restarting or failed there is none to
+  // send (setComposerEnabled re-renders this; visionHandoff re-checks it).
+  const composerOff = $('chatInput').disabled;
+  $('visionUse').disabled = !c.canUse || composerOff;
   $('visionUseAnyway').hidden = !c.canUseAnyway;
+  $('visionUseAnyway').disabled = composerOff;
 }
 
 function onVisionEdit(e) {
