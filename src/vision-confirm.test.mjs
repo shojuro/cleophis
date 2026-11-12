@@ -287,3 +287,22 @@ test('attachmentFor tolerates a missing model', () => {
   const r = result({ model: undefined });
   assert.deepEqual(attachmentFor(r, confirmState(r)).model, { id: null, family: null });
 });
+
+test('blanking the only flagged latex block withdraws both buttons, and retyping restores Use', () => {
+  const s = confirmState(rv([flaggedBlock()]));
+  assert.equal(s.canUseAnyway, true);
+  const blank = applyEdit(s, 0, ' ');
+  assert.equal(blank.mode, 'review');
+  assert.equal(blank.canUse, false);
+  assert.equal(blank.canUseAnyway, false);
+  const back = applyEdit(blank, 0, 'x=1');
+  assert.equal(back.canUse, true);
+  assert.equal(back.canUseAnyway, false);
+});
+
+test('Use anyway stays when another latex block still holds maths', () => {
+  const s = confirmState(rv([flaggedBlock('a'), flaggedBlock('b')]));
+  const e = applyEdit(s, 0, '');
+  assert.equal(e.canUse, false);
+  assert.equal(e.canUseAnyway, true);
+});

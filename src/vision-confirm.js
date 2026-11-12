@@ -46,7 +46,8 @@ function gate(mode, blocks) {
   let canUse = false;
   if (mode === 'accept') canUse = blocks.some(hasMaths);
   else if (mode === 'review') canUse = latex.some((b) => b.edited && hasMaths(b)) && !latex.some((b) => b.flagged);
-  return { canUse, canUseAnyway: mode === 'review' && !canUse };
+  // Use anyway overrides a flag on maths that exists; with no maths left there is nothing to override.
+  return { canUse, canUseAnyway: mode === 'review' && !canUse && blocks.some(hasMaths) };
 }
 
 export function confirmState(result) {
