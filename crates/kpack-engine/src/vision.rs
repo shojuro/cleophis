@@ -18,12 +18,15 @@
 //! follow, and both are done here:
 //!
 //! - Pieces are rendered with `special = true`. llama.cpp prints a CONTROL token
-//!   as zero bytes otherwise, so `raw` would carry no document structure and
-//!   `vision_parse`'s `</doctag>` cut could never match: text the model writes
-//!   after its document would fuse into the last block.
+//!   as zero bytes otherwise, so `raw` would carry no document structure:
+//!   `vision_parse` could neither end an element at its closer (`</formula>`)
+//!   nor cut at `</doctag>`, and text the model writes after its document would
+//!   fuse into the last block.
 //! - Generation stops when the `</doctag>` token is sampled (looked up once at
 //!   load; no such token in the vocabulary, no extra stop). The model is done
 //!   transcribing at that point, and nothing it writes afterwards should exist.
+//!   Only page output emits it. The formula-crop regime ends with `</formula>`
+//!   and end-of-text, so there the closer is the only guard.
 
 use std::ffi::CString;
 use std::num::NonZeroU32;

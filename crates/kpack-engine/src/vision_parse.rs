@@ -5,16 +5,27 @@
 //! element, `<doctag>…</doctag>` / `<formula>…</formula>` wrappers (CONTROL
 //! tokens in its vocabulary, which `vision.rs` renders so that they reach this
 //! parser), and labels: `\text{…}` followed by `\colon` or `:`, or a plain
-//! head of letters holding a word (two or more letters) before a `:` or
-//! `\colon`. A `<loc_N>` tag anywhere in a line starts a new element, and every
-//! other tag-shaped run is removed, so no tag bytes reach a block.
+//! head of letters holding a word (three or more letters with at least one
+//! lowercase, letter-spaced or not) before a `:` or `\colon`. A `<loc_N>` tag
+//! or a closing tag (`</formula>`, `</text>`, `</doctag>`: `</[A-Za-z0-9_]+>`)
+//! anywhere in a line ends the current element, and every other tag-shaped run
+//! (`<[A-Za-z0-9_/|-]+>`, which includes control tokens such as `<|pad|>` and
+//! `<global-img>`) is removed, so no tag bytes reach a block.
 //!
-//! The document end is guarded twice. `vision.rs` stops generation when the
-//! model samples the `</doctag>` token, so a model that would keep talking after
-//! its document never writes the words; and [`parse_doctags`] drops everything
-//! after a [`DOC_END_TAG`] in the text, the backstop for a vocabulary without
-//! that token or a caller that renders pieces without control tokens. Neither
-//! guard looks INSIDE the document: prose there is kept out of `latex` blocks by
+//! What the model writes after an element is kept out of it by three
+//! mechanisms:
+//!
+//! - A closing tag ends the element, and what follows it is a new element,
+//!   classified on its own. This is the only one of the three that runs on the
+//!   shipped formula-crop regime, whose output is `<formula>…</formula>` then
+//!   end-of-text, with no `<doctag>` or `</doctag>`.
+//! - [`parse_doctags`] drops everything after a [`DOC_END_TAG`] in the text.
+//! - `vision.rs` stops generation when the model samples the `</doctag>` token,
+//!   which only page output emits.
+//!
+//! None of them excludes prose from the tutor-bound blocks. Prose after a
+//! closer is its own block, and prose with no tag between it and the maths
+//! stays in the maths element. Both are kept out of `latex` blocks only by
 //! `classify`'s word count, which reduces prose in the tutor-bound blocks but
 //! cannot exclude it. The confirmation gate is the check on top.
 //!
@@ -156,22 +167,35 @@ impl Element {
     }
 }
 
+/// The body of a tag. `|` and `-` are in it because `vision.rs` renders control
+/// tokens, and granite's include `<|pad|>`, `<|start_of_role|>`, `<|unk|>` and
+/// `<global-img>`. A comparison stays maths: `x < 3` has a space after the `<`.
 fn is_tag_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '/'
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '/' | '|' | '-')
+}
+
+/// A closing tag ends the element it closes: `/` then one or more of
+/// `[A-Za-z0-9_]`. Every DocTags closer in granite's vocabulary has this shape
+/// (`</formula>`, `</text>`, `</doctag>`, `</section_header_level_1>`).
+fn is_closing_tag(tag: &str) -> bool {
+    tag.strip_prefix('/')
+        .is_some_and(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
 }
 
 /// A character of a line that survived tag removal (with its raw byte offset),
-/// or the boundary a removed `<loc_N>` tag leaves between two elements.
+/// or the boundary a removed `<loc_N>` tag or closing tag leaves between two
+/// elements.
 enum Item {
     Ch(char, usize),
     Split,
 }
 
-/// Remove every `<[A-Za-z0-9_/]+>` tag of any length from `line`, including tags
-/// that only form once an inner tag is removed (`<<b>script>`), in one linear
-/// pass. `opens` holds the positions of `<` whose body so far is all tag
-/// characters; any other character, or a boundary, invalidates them all.
-/// `base` is the raw offset of the line.
+/// Remove every `<[A-Za-z0-9_/|-]+>` tag of any length from `line`, including
+/// tags that only form once an inner tag is removed (`<<b>script>`), in one
+/// linear pass. `opens` holds the positions of `<` whose body so far is all tag
+/// characters; any other character, or a boundary, invalidates them all, so no
+/// tag re-forms across a boundary and erases it. `base` is the raw offset of
+/// the line.
 fn strip_tags(line: &str, base: usize) -> Vec<Item> {
     let mut out: Vec<Item> = Vec::with_capacity(line.len());
     let mut opens: Vec<usize> = Vec::new();
@@ -185,7 +209,7 @@ fn strip_tags(line: &str, base: usize) -> Vec<Item> {
                         .filter_map(|it| if let Item::Ch(c, _) = it { Some(*c) } else { None })
                         .collect();
                     out.truncate(open);
-                    if tag.starts_with("loc_") {
+                    if tag.starts_with("loc_") || is_closing_tag(&tag) {
                         opens.clear();
                         out.push(Item::Split);
                     }
@@ -204,6 +228,8 @@ fn strip_tags(line: &str, base: usize) -> Vec<Item> {
 }
 
 /// Strip DocTags markup and split into (kind, content, span-in-raw) blocks.
+/// A new element starts at each line, `<loc_N>` tag and closing tag; each
+/// span runs from the element's first content character to its last.
 pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
     // Everything after the document end is not transcription.
     let end = raw.find(DOC_END_TAG).unwrap_or(raw.len());
@@ -235,10 +261,10 @@ pub fn parse_doctags(raw: &str) -> Vec<RawBlock> {
 /// - `\text{…}` is a label only when `\colon` or `:` follows it. `\text{cost} = 5`
 ///   is one line of maths whose left-hand side happens to be words.
 /// - A plain head is letters, spaces and commas only (so no relation or
-///   operator: `a + b : c` is not a label), and must hold a word: a
-///   comma-separated part with two or more letters once spaces are removed.
-///   `a : b = 2 : 3` and `x : y` are ratios, not labels; `Solve for x :` and
-///   the letter-spaced `S o l v e \colon` are labels.
+///   operator: `a + b : c` is not a label), and must hold a word (see
+///   [`holds_a_word`]). `a : b = 2 : 3`, `x : y` and the segment ratio
+///   `AB : BC = 2 : 3` are maths, not labels; `Solve for x :` and the
+///   letter-spaced `S o l v e \colon` are labels.
 fn split_label(s: &str) -> Option<(&str, &str, usize)> {
     if let Some(after) = s.strip_prefix("\\text") {
         let after_t = after.trim_start();
@@ -268,11 +294,29 @@ fn split_label(s: &str) -> Option<(&str, &str, usize)> {
     None
 }
 
-/// A label head (letters, spaces, commas) holds a word when some comma-separated
-/// part has at least two letters once its spaces are removed: `Solve for x`,
-/// the letter-spaced `S o l v e`. A lone letter (`a`, `x`) is a variable.
+/// A label head (letters, spaces, commas) holds a word when it has a word of
+/// three or more letters, at least one of them lowercase. A word is a run of
+/// letters, or a run of single letters separated by spaces (the letter-spaced
+/// `S o l v e` is "Solve"); a comma ends both. `Solve for x` holds one. A lone
+/// letter (`a`, `x`) is a variable, and capitals alone (`AB`, `ABC`) are
+/// point or segment names.
 fn holds_a_word(head: &str) -> bool {
-    head.split(',').any(|part| part.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 2)
+    let qualifies = |w: &str| w.len() >= 3 && w.bytes().any(|b| b.is_ascii_lowercase());
+    head.split(',').any(|part| {
+        // The current run of single letters, joined.
+        let mut spaced = String::new();
+        for w in part.split(' ').filter(|w| !w.is_empty()) {
+            if w.len() == 1 {
+                spaced.push_str(w);
+                continue;
+            }
+            if qualifies(&spaced) || qualifies(w) {
+                return true;
+            }
+            spaced.clear();
+        }
+        qualifies(&spaced)
+    })
 }
 
 /// Alphabetic runs of three or more letters that are not a command name
@@ -734,16 +778,20 @@ mod tests {
         // `</doctag>` tokens print as nothing, so prose the model writes after
         // its document lands in the same element as the maths. No parse rule
         // can see a boundary that is not in the text: it is one LATEX block and
-        // the verdict is Accept. That is why `vision.rs` renders control tokens
-        // and stops at the `</doctag>` token, which makes this input
-        // unreachable from the product path. (If `classify` ever learns to
-        // catch it, flip these two assertions.)
+        // the verdict is Accept. That is why `vision.rs` renders control
+        // tokens: the closer is then in the text, and it ends the maths element
+        // (the only guard on the formula-crop regime, which never writes
+        // `</doctag>`). Page output also has the `</doctag>` cut and the token
+        // stop in `vision.rs`. A model that writes prose straight after the
+        // maths with no tag between still produces this input. (If `classify`
+        // ever learns to catch it, flip these two assertions.)
         let fused = "<loc_0><loc_0><loc_500><loc_500>x = 2The answer is x = 2";
         let blocks = parse_doctags(fused);
         assert_eq!(blocks.len(), 1, "{blocks:?}");
         assert_eq!(blocks[0].0, BlockKind::Latex, "{blocks:?}");
         assert_eq!(assess(&toks(fused, -0.01), false).verdict, Verdict::Accept);
-        // The same generation as `vision.rs` now renders it: the cut drops the prose.
+        // The same generation as `vision.rs` now renders it: the closer ends
+        // the maths element and the cut drops the prose.
         let rendered = "<formula><loc_0><loc_0><loc_500><loc_500>x = 2</formula></doctag>The answer is x = 2";
         let blocks = parse_doctags(rendered);
         assert_eq!(blocks.len(), 1, "{blocks:?}");
@@ -913,9 +961,12 @@ mod tests {
     fn i2_any_other_tag_is_removed_before_a_block_exists() {
         let raw = "<loc_0><loc_0>x = <b>3</b> + <otsl>1";
         let blocks = parse_doctags(raw);
-        assert_eq!(blocks.len(), 1, "{blocks:?}");
-        assert_eq!(blocks[0].1, "x = 3 + 1");
-        assert_eq!(&raw[blocks[0].2.clone()], "x = <b>3</b> + <otsl>1");
+        // `</b>` is a closing tag, so it also ends the element (fix round I1).
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[0].1, "x = 3");
+        assert_eq!(&raw[blocks[0].2.clone()], "x = <b>3");
+        assert_eq!(blocks[1].1, "+ 1");
+        assert_eq!(&raw[blocks[1].2.clone()], "+ <otsl>1");
         // A bare less-than is maths, not a tag.
         assert_eq!(parse_doctags("x < 3 and y > 2 = z")[0].1, "x < 3 and y > 2 = z");
     }
@@ -1095,5 +1146,91 @@ mod tests {
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "{:?}", t0.elapsed());
         assert_eq!(blocks.last().unwrap().1, "x = 1");
         assert!(blocks.iter().all(|b| !b.1.contains('<') && !b.1.contains('>')));
+    }
+
+    // ---- fix round I1: the formula-crop regime ----
+
+    #[test]
+    fn a_closer_ends_the_maths_in_the_formula_regime() {
+        // The re-review's probe. The shipped formula-crop output ends with
+        // `</formula>` and end-of-text, never `</doctag>`, so only the closer
+        // separates the maths from what the model writes after it.
+        let raw = "<formula><loc_0><loc_0><loc_500><loc_500>x = 2</formula>The answer is x = 2";
+        let blocks = parse_doctags(raw);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!((blocks[0].0, blocks[0].1.as_str()), (BlockKind::Latex, "x = 2"));
+        assert_eq!(&raw[blocks[0].2.clone()], "x = 2");
+        // The second block is the prose alone: its span starts after the
+        // closer, so none of the maths element's bytes are in it.
+        let after_closer = raw.find("</formula>").unwrap() + "</formula>".len();
+        assert_eq!(blocks[1].1, "The answer is x = 2");
+        assert_eq!(blocks[1].2.start, after_closer, "{blocks:?}");
+        assert_eq!(&raw[blocks[1].2.clone()], "The answer is x = 2");
+        let a = assess(&toks(raw, -0.01), false);
+        assert_eq!(a.blocks.len(), 2, "{a:?}");
+        assert_eq!((a.blocks[0].kind, a.blocks[0].content.as_str()), (BlockKind::Latex, "x=2"));
+        assert!(!a.blocks[0].content.contains("answer"), "{a:?}");
+        // Classified on its own by the existing rules, this prose still counts
+        // as maths (an `=` and two words). The closer keeps it out of the maths
+        // block; it does not keep it from the tutor. (If `classify` ever
+        // catches it, flip this assertion.)
+        assert_eq!(a.blocks[1].kind, BlockKind::Latex, "{a:?}");
+    }
+
+    #[test]
+    fn two_formulas_on_one_line_are_two_blocks() {
+        let raw = "<formula><loc_0><loc_0><loc_500><loc_500>a = 1</formula><formula><loc_0><loc_0><loc_500><loc_500>b = 2</formula>";
+        let blocks: Vec<(BlockKind, String)> = parse_doctags(raw).into_iter().map(|b| (b.0, b.1)).collect();
+        assert_eq!(blocks, vec![(BlockKind::Latex, "a = 1".to_string()), (BlockKind::Latex, "b = 2".to_string())]);
+        // Without location tags the closer is the only boundary.
+        let raw = "<formula>a = 1</formula><formula>b = 2</formula>";
+        let blocks = parse_doctags(raw);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(&raw[blocks[0].2.clone()], "a = 1");
+        assert_eq!(&raw[blocks[1].2.clone()], "b = 2");
+    }
+
+    #[test]
+    fn any_closing_tag_ends_the_element() {
+        // `</text>` before maths: one Text block of four words otherwise.
+        assert_eq!(
+            parse_doctags("<text>Find the value</text>x = 1").into_iter().map(|b| (b.0, b.1)).collect::<Vec<_>>(),
+            vec![(BlockKind::Text, "Find the value".to_string()), (BlockKind::Latex, "x = 1".to_string())]
+        );
+        // A tag that is not a closer (`/` not first, or a bare `</>`) is only removed.
+        assert_eq!(parse_doctags("x = <a/b>1").len(), 1);
+        assert_eq!(parse_doctags("x = </>1").len(), 1);
+        assert_eq!(parse_doctags("x = </>1")[0].1, "x = 1");
+    }
+
+    #[test]
+    fn control_tokens_with_a_bar_or_a_hyphen_are_stripped() {
+        assert_eq!(shown("x = 1<|pad|>"), vec![(BlockKind::Latex, "x=1".to_string())]);
+        let raw = format!("{LOC}x = 1<|pad|>");
+        let blocks = parse_doctags(&raw);
+        assert_eq!((blocks[0].0, blocks[0].1.as_str()), (BlockKind::Latex, "x = 1"));
+        assert_eq!(&raw[blocks[0].2.clone()], "x = 1");
+        assert_eq!(parse_doctags("<global-img>x = 1")[0].1, "x = 1");
+        for tok in ["<|start_of_role|>", "<|end_of_role|>", "<|unk|>", "<global-img>"] {
+            assert_eq!(shown(&format!("x = 1{tok} + 2")), vec![(BlockKind::Latex, "x=1+2".to_string())], "{tok}");
+        }
+        // A comparison is still not a tag.
+        assert_eq!(parse_doctags("<loc_0>x < 3")[0].1, "x < 3");
+        assert_eq!(parse_doctags("<loc_0>a < b > c")[0].1, "a < b > c");
+    }
+
+    #[test]
+    fn segment_names_are_maths_not_a_label() {
+        assert_eq!(shown("AB : BC = 2 : 3"), vec![(BlockKind::Latex, "AB:BC=2:3".to_string())]);
+        assert_eq!(assess(&toks(&format!("{LOC}AB : BC = 2 : 3"), -0.01), false).verdict, Verdict::Accept);
+        // Three capitals are a triangle's name, not a word.
+        assert_eq!(shown("ABC : DEF = 2 : 3"), vec![(BlockKind::Latex, "ABC:DEF=2:3".to_string())]);
+        // So is an all-capitals instruction: the label rides in the maths
+        // block, which loses nothing.
+        assert_eq!(kinds_of("SOLVE : x + 1 = 2"), vec![BlockKind::Latex]);
+        // Two spaced letters are not a word; three with a lowercase are.
+        assert!(!holds_a_word("a b"));
+        assert!(holds_a_word("S o l v e"));
+        assert!(!holds_a_word("A, B, C"));
     }
 }
