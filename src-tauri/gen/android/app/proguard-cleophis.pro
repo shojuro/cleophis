@@ -73,3 +73,9 @@
 # is told they are protected and is not. Nothing in the UI can detect this,
 # because the frontend owns the preference and the platform owns the effect.
 -keep class com.cleophis.app.ScreenPrivacy { *; }
+
+# Vision input (Stage 2): the capture-file sweep. Same JNI-only reachability as
+# the rest -- R8 cannot see a Rust caller, so `sweep` would be removed. (Its
+# Kotlin caller in MainActivity would keep it in the shrunk build, but only by
+# accident of that call; the rule makes the Rust path independent of it.)
+-keep class com.cleophis.app.CaptureHygiene { *; }

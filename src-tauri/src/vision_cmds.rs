@@ -228,6 +228,7 @@ mod imp {
         let image = match decode_image_base64(&image_base64) {
             Ok(bytes) => bytes,
             Err(message) => {
+                crate::mobile_native::sweep_capture_files();
                 in_flight.end();
                 return Err(message);
             }
@@ -259,6 +260,7 @@ mod imp {
         };
         app.state::<crate::chat_cmds::ChatCancels>().end(&request_id);
         crate::mobile_native::inference_service(false);
+        crate::mobile_native::sweep_capture_files();
         in_flight.end();
         let (model_id, family) = crate::inference::hero_vision(&app)
             .map(|v| (v.base_model, v.family))
