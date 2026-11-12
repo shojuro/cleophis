@@ -83,13 +83,30 @@ pub fn prepare_image(bytes: &[u8], max_side: u32) -> Result<PreparedImage, Engin
             img = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
         }
     }
-    let rgb = apply_orientation(img, orientation).to_rgb8();
+    let img = apply_orientation(img, orientation);
+    let rgb = if img.color().has_alpha() { flatten_over_white(&img) } else { img.to_rgb8() };
     Ok(PreparedImage {
         width: rgb.width(),
         height: rgb.height(),
         orientation,
         rgb: rgb.into_raw(),
     })
+}
+
+/// Composite an image that carries alpha over opaque white: `c' = (c*a +
+/// 255*(255-a)) / 255`, integer arithmetic rounded to nearest, so opaque pixels
+/// are untouched. `to_rgb8()` alone drops alpha, and a transparent-background
+/// PNG of dark ink (RGB 0,0,0 under alpha 0) would reach the model as black on
+/// black.
+fn flatten_over_white(img: &image::DynamicImage) -> image::RgbImage {
+    let rgba = img.to_rgba8();
+    let mut out = image::RgbImage::new(rgba.width(), rgba.height());
+    for (x, y, p) in rgba.enumerate_pixels() {
+        let a = u32::from(p[3]);
+        let blend = |c: u8| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8;
+        out.put_pixel(x, y, image::Rgb([blend(p[0]), blend(p[1]), blend(p[2])]));
+    }
+    out
 }
 
 /// Turn a stored image upright for EXIF `orientation` (1–8; anything else is
@@ -111,6 +128,35 @@ fn apply_orientation(img: image::DynamicImage, orientation: u32) -> image::Dynam
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpha_is_composited_over_white_not_dropped() {
+        // A 2x1 RGBA PNG: left pixel fully transparent black, right pixel opaque black.
+        let mut img = image::RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
+        img.put_pixel(1, 0, image::Rgba([0, 0, 0, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let p = prepare_image(&bytes, 512).unwrap();
+        assert_eq!(&p.rgb[0..3], &[255, 255, 255], "transparent becomes white, not black");
+        assert_eq!(&p.rgb[3..6], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn partial_alpha_blends_with_rounding_and_opaque_colour_is_untouched() {
+        let mut img = image::RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([0, 0, 0, 128])); // (0 + 255*127 + 127)/255 = 127
+        img.put_pixel(1, 0, image::Rgba([10, 200, 77, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        let p = prepare_image(&bytes, 512).unwrap();
+        assert_eq!(&p.rgb[0..3], &[127, 127, 127]);
+        assert_eq!(&p.rgb[3..6], &[10, 200, 77]);
+    }
 
     /// A 2-wide, 3-tall image whose six pixels are all different (grey levels
     /// a..f), stored row by row:

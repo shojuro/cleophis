@@ -16,7 +16,7 @@
 //!       --items items.json | --image <path> [--image <path> ...] \
 //!       [--prompt TEXT] [--max-side 512] [--threads 4] [--n-ctx 2048] \
 //!       [--n-batch 1024] [--max-tokens 256] [--repeat 1] [--json out.jsonl] \
-//!       [--raw-stb] [--one-pass] [--via-engine]
+//!       [--raw-stb] [--one-pass] [--via-engine] [--multi-formula]
 //!
 //! `--via-engine` skips the bench's own loop and drives the product path
 //! (`LlamaVision` + `assess`) over the same items, to prove the module reproduces
@@ -198,6 +198,7 @@ fn run_via_engine(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
             n_threads: a.threads,
             max_tokens: a.max_tokens,
             one_pass: a.one_pass,
+            single_formula: !a.multi_formula,
             prompt,
             ..Default::default()
         },
@@ -450,6 +451,8 @@ struct Args {
     one_pass: bool,
     time_encode: bool,
     via_engine: bool,
+    /// `--via-engine` only: `single_formula: false`, so the page regime stays measurable.
+    multi_formula: bool,
 }
 
 impl Args {
@@ -472,6 +475,7 @@ impl Args {
             one_pass: false,
             time_encode: false,
             via_engine: false,
+            multi_formula: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(f) = it.next() {
@@ -493,6 +497,7 @@ impl Args {
                 "--raw-stb" => a.raw_stb = true,
                 "--one-pass" => a.one_pass = true,
                 "--via-engine" => a.via_engine = true,
+                "--multi-formula" => a.multi_formula = true,
                 "--no-time-encode" => a.time_encode = false,
                 "--time-encode" => a.time_encode = true,
                 o => return Err(format!("unknown flag {o}")),
