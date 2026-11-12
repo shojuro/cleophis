@@ -25,5 +25,10 @@ export function visionDownloadPlan(artifacts, variant) {
   // Throws pickVisionArtifacts's readable reasons; a partial plan would
   // download a base the projector can't pair with.
   const { base, mmproj } = pickVisionArtifacts(artifacts, variant);
-  return { base, mmproj, totalBytes: (Number(base.size) || 0) + (Number(mmproj.size) || 0) };
+  const ok = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  // Coercing a missing size to 0 would show the user a too-small number in the consent prompt.
+  if (!ok(base.size) || !ok(mmproj.size)) {
+    throw new Error('The signed catalog lists no size for the vision files — please update the app.');
+  }
+  return { base, mmproj, totalBytes: base.size + mmproj.size };
 }

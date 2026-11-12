@@ -28,11 +28,31 @@ export const CONFIDENCE_FLAG = 0.9;
 // the problem while the block as a whole still reads as confident.
 const OPERATOR_FLAG = 0.97;
 
+// Fails closed: a missing, non-numeric or NaN confidence is "unknown", and
+// unknown must be amber, never green. An absent minOperatorProb means the block
+// has no operators, which is fine.
 const isFlagged = (b) =>
-  b.confidence < CONFIDENCE_FLAG || (typeof b.minOperatorProb === 'number' && b.minOperatorProb < OPERATOR_FLAG);
+  !(typeof b.confidence === 'number' && Number.isFinite(b.confidence) && b.confidence >= CONFIDENCE_FLAG) ||
+  (typeof b.minOperatorProb === 'number' && Number.isFinite(b.minOperatorProb) && b.minOperatorProb < OPERATOR_FLAG);
+
+const hasMaths = (b) => b.kind === 'latex' && typeof b.content === 'string' && b.content.trim() !== '';
+
+// What the buttons may do, derived from the blocks so an edit can never leave a
+// stale answer. Review unlocks only when a human has put real maths into a latex
+// block and no latex block is still amber: editing prose or blanking a block
+// proves nothing about the maths.
+function gate(mode, blocks) {
+  const latex = blocks.filter((b) => b.kind === 'latex');
+  let canUse = false;
+  if (mode === 'accept') canUse = blocks.some(hasMaths);
+  else if (mode === 'review') canUse = latex.some((b) => b.edited && hasMaths(b)) && !latex.some((b) => b.flagged);
+  return { canUse, canUseAnyway: mode === 'review' && !canUse };
+}
 
 export function confirmState(result) {
-  const mode = result.verdict === 'refuse' || result.verdict === 'review' ? result.verdict : 'accept';
+  const verdict = result.verdict;
+  // An unknown verdict string must not read as a pass.
+  let mode = verdict === 'refuse' || verdict === 'review' || verdict === 'accept' ? verdict : 'review';
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const blocks = (result.blocks || []).map((b, id) => ({
     id,
@@ -42,6 +62,9 @@ export function confirmState(result) {
     flagged: isFlagged(b),
     edited: false,
   }));
+  // Nothing to hand the tutor, whatever the model's verdict says.
+  const noMaths = !blocks.some(hasMaths);
+  if (noMaths) mode = 'refuse';
   const notes = [];
   for (const w of warnings) {
     const copy = Object.hasOwn(WARNING_COPY, w) ? WARNING_COPY[w] : null;
@@ -52,10 +75,9 @@ export function confirmState(result) {
     mode,
     blocks,
     notes,
-    refuseText: mode === 'refuse' ? (warnings.includes('noMathFound') ? REFUSE_NO_MATHS : REFUSE_LOW_CONFIDENCE) : null,
-    canUse: mode === 'accept',
-    canUseAnyway: mode === 'review',
-    verdict: result.verdict,
+    refuseText: mode === 'refuse' ? (noMaths || warnings.includes('noMathFound') ? REFUSE_NO_MATHS : REFUSE_LOW_CONFIDENCE) : null,
+    ...gate(mode, blocks),
+    verdict,
     warnings,
     model: result.model,
   };
@@ -63,14 +85,18 @@ export function confirmState(result) {
 
 export function applyEdit(state, id, text) {
   // A refusal stays a refusal: typing into it must not launder it into a handoff.
-  if (state.mode === 'refuse' || !state.blocks.some((b) => b.id === id)) return state;
-  return {
-    ...state,
-    blocks: state.blocks.map((b) => (b.id === id ? { ...b, content: text, edited: true, flagged: false } : b)),
-    // A human has now read and changed the text, so there is nothing left to override.
-    canUse: true,
-    canUseAnyway: false,
-  };
+  const target = state.blocks.find((b) => b.id === id);
+  if (state.mode === 'refuse' || !target) return state;
+  const isMaths = target.kind === 'latex';
+  const nonBlank = typeof text === 'string' && text.trim() !== '';
+  const blocks = state.blocks.map((b) => {
+    if (b.id !== id) return b;
+    const next = { ...b, content: text, edited: true };
+    // Only real maths in a latex block counts as a human having checked it.
+    if (isMaths && nonBlank) next.flagged = false;
+    return next;
+  });
+  return { ...state, blocks, ...gate(state.mode, blocks) };
 }
 
 export function composeHandoff(state) {
@@ -90,7 +116,7 @@ export function attachmentFor(result, state) {
   const count = (kind) => state.blocks.filter((b) => b.kind === kind).length;
   return {
     kind: 'vision',
-    model: { id: result.model.id, family: result.model.family },
+    model: { id: result.model?.id ?? null, family: result.model?.family ?? null },
     verdict: result.verdict,
     edited: state.blocks.some((b) => b.edited),
     blocks: { latex: count('latex'), text: count('text') },

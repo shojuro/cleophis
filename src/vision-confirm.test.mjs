@@ -188,3 +188,102 @@ test('attachmentFor records the verdict the model gave, even after a human edit'
   assert.equal(a.verdict, 'review');
   assert.equal(a.edited, true);
 });
+
+// ---------------------------------------------------------- fail-closed round
+const rv = (blocks, over = {}) => result({ verdict: 'review', warnings: ['operatorUncertain'], blocks, ...over });
+
+test('accept with only text blocks is forced to refuse', () => {
+  const s = confirmState(result({ blocks: [{ kind: 'text', content: 'hello', confidence: 0.99 }] }));
+  assert.equal(s.mode, 'refuse');
+  assert.equal(s.refuseText, REFUSE_NO_MATHS);
+  assert.equal(s.canUse, false);
+  assert.equal(s.canUseAnyway, false);
+});
+
+test('review with an empty latex block is forced to refuse', () => {
+  const s = confirmState(rv([{ kind: 'latex', content: '  ', confidence: 0.5 }]));
+  assert.equal(s.mode, 'refuse');
+  assert.equal(s.refuseText, REFUSE_NO_MATHS);
+  assert.equal(s.canUseAnyway, false);
+});
+
+test('an explicit refuse is unchanged by the no-maths rule', () => {
+  const s = confirmState(result({ verdict: 'refuse', warnings: ['lowConfidence'] }));
+  assert.equal(s.mode, 'refuse');
+  assert.equal(s.refuseText, REFUSE_LOW_CONFIDENCE);
+});
+
+test('unknown confidence is flagged, never trusted', () => {
+  const s = confirmState(result({
+    blocks: [
+      { kind: 'latex', content: 'a' },
+      { kind: 'latex', content: 'b', confidence: NaN },
+      { kind: 'latex', content: 'c', confidence: '0.95' },
+      { kind: 'latex', content: 'd', confidence: 0.95, minOperatorProb: NaN },
+      { kind: 'latex', content: 'e', confidence: 0.95 },
+    ],
+  }));
+  assert.deepEqual(s.blocks.map((b) => b.flagged), [true, true, true, false, false]);
+});
+
+const flaggedBlock = (content = 'x') => ({ kind: 'latex', content, confidence: 0.5 });
+
+test('editing a text block never unlocks review', () => {
+  const s = confirmState(rv([flaggedBlock(), { kind: 'text', content: 'prose', confidence: 0.99 }]));
+  const e = applyEdit(s, 1, 'other prose');
+  assert.equal(e.blocks[1].edited, true);
+  assert.equal(e.blocks[0].flagged, true);
+  assert.equal(e.canUse, false);
+  assert.equal(e.canUseAnyway, true);
+});
+
+test('a blank latex edit leaves the block amber and review locked', () => {
+  const s = confirmState(rv([flaggedBlock(), flaggedBlock('y')]));
+  const e = applyEdit(s, 0, '   ');
+  assert.equal(e.blocks[0].edited, true);
+  assert.equal(e.blocks[0].flagged, true);
+  assert.equal(e.canUse, false);
+  assert.equal(e.canUseAnyway, true);
+});
+
+test('a non-blank edit of the only flagged block unlocks Use and retires Use anyway', () => {
+  const e = applyEdit(confirmState(rv([flaggedBlock()])), 0, 'x=1');
+  assert.equal(e.canUse, true);
+  assert.equal(e.canUseAnyway, false);
+});
+
+test('with two flagged latex blocks both must be edited', () => {
+  const s = confirmState(rv([flaggedBlock('a'), flaggedBlock('b')]));
+  const one = applyEdit(s, 0, 'a=1');
+  assert.equal(one.canUse, false);
+  assert.equal(one.canUseAnyway, true);
+  const both = applyEdit(one, 1, 'b=2');
+  assert.equal(both.canUse, true);
+  assert.equal(both.canUseAnyway, false);
+});
+
+test('review with nothing flagged still needs an edit', () => {
+  const s = confirmState(result({ verdict: 'review' }));
+  assert.equal(s.canUse, false);
+  assert.equal(s.canUseAnyway, true);
+  assert.equal(applyEdit(s, 0, '3x=12').canUse, true);
+});
+
+test('blanking the only maths in accept mode withdraws Use', () => {
+  const e = applyEdit(confirmState(result()), 0, '');
+  assert.equal(e.canUse, false);
+});
+
+test('an unknown verdict is treated as review and kept raw', () => {
+  const r = result({ verdict: 'maybe' });
+  const s = confirmState(r);
+  assert.equal(s.mode, 'review');
+  assert.equal(s.canUse, false);
+  assert.equal(s.verdict, 'maybe');
+  assert.equal(attachmentFor(r, s).verdict, 'maybe');
+});
+
+test('attachmentFor tolerates a missing model', () => {
+  const r = result({ model: undefined });
+  assert.deepEqual(attachmentFor(r, confirmState(r)).model, { id: null, family: null });
+});

@@ -48,3 +48,11 @@ test("visionDownloadPlan surfaces pickVisionArtifacts's readable error when the 
   assert.throws(() => visionDownloadPlan([VBASE], VARIANT), /projector/);
   assert.throws(() => visionDownloadPlan([], VARIANT), /isn't published yet/);
 });
+
+test('visionDownloadPlan refuses a missing or invalid size instead of coercing to 0', () => {
+  const msg = /lists no size for the vision files/;
+  assert.throws(() => visionDownloadPlan([{ ...VBASE, size: undefined }, VPROJ], VARIANT), msg);
+  assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: '100' }], VARIANT), msg);
+  assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: -1 }], VARIANT), msg);
+  assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: NaN }], VARIANT), msg);
+});
