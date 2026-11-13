@@ -9,12 +9,24 @@
 
 docx-rust 0.1.11 requires `zip = "4"`. The zip 4.6.1 chain carried RUSTSEC-2026-0367/0368/0369/0429 (cargo-audit) and CVE-2026-115905/-115909/-115906 (Dependabot). Upstream has no release on zip 9. Vendoring with the requirement raised lets the single remaining zip in the lock be 9.x (shared with `epub`).
 
-## Diff policy
+## Every difference from the registry crate
 
-`.gitattributes` in this directory marks everything `-diff`, because the root `.gitattributes` has no `third_party` rule. This record is therefore the only readable diff. Files removed from the crates.io tarball: `.cargo_vcs_info.json`, `Cargo.toml.orig`, `.cargo-ok`.
+The tree is the crates.io 0.1.11 tarball (as unpacked in `~/.cargo/registry/src`) minus the omissions below, plus the edits and added files below. Nothing else differs.
 
-## Every changed line (before -> after)
+### Omitted (not built by this repository)
 
+- Tarball metadata: `.cargo_vcs_info.json`, `Cargo.toml.orig`, `.cargo-ok`.
+- `tests/`: `integration_test.rs`, `tests/aaa/` (`AA1/`, `aa_list/`, the `19323...` extracted-docx directory, `aa.xlsx`) and `tests/pandoc/`. Upstream's own `.gitignore` had already excluded `*.docx` from git, so a vendored copy would have held only a half set. Those ignored files are also omitted: `tests/aaa/aa.docx`, `tests/aaa/aa_list.docx` and the 39 files `tests/pandoc/*.docx`.
+- `examples/` (`hello_world.rs`, `table.rs`), `.github/` (`workflows/test.yml`), `.editorconfig`, `validator/` (a C# docx validator).
+- Upstream `Cargo.lock` (the crate is a library; our own lock governs).
+- Upstream `.gitignore`. It silently dropped the files named above, and the repository's root ignore rules suffice.
+- Consequence: the `[[example]]` and `[[test]]` sections of the vendored `Cargo.toml` still name the missing paths. Cargo ignores them for a path dependency (`cargo metadata --locked` succeeds). Standalone `cargo test` inside this directory would fail; the crate is tested through `kpack-core`.
+
+### Attributes
+
+`third_party/.gitattributes` already applies `* -text -diff` to the whole tree. The nested `.gitattributes` here (`VENDORED.md diff`, `LICENSE diff`, `README.md diff`) only makes the human-readable files diffable again. Source files under `src/` stay `-diff`, so this record is their readable diff.
+
+### Edited lines (before -> after)
 `Cargo.toml` line 80, `[dependencies.zip]`:
 
 ```
@@ -37,11 +49,11 @@ docx-rust 0.1.11 requires `zip = "4"`. The zip 4.6.1 chain carried RUSTSEC-2026-
 +    pub fn numbering_details(&self, id: isize) -> Option<AbstractNum<'_>> {
 ```
 
-New file: `.gitattributes` (`* -diff`).
+Added files: `VENDORED.md` and the nested `.gitattributes` described above.
 
 ## Re-vendor
 
-1. `cp -a ~/.cargo/registry/src/index.crates.io-*/docx-rust-<ver>/. third_party/docx-rust/` and delete `.cargo_vcs_info.json`, `Cargo.toml.orig`, `.cargo-ok`.
-2. Re-apply the `zip` version line, the two `file_names()` lines and the `numbering.rs` lifetime above, and restore `.gitattributes` and this file.
+1. `cp -a ~/.cargo/registry/src/index.crates.io-*/docx-rust-<ver>/. third_party/docx-rust/` then delete everything listed under Omitted.
+2. Re-apply the `zip` version line, the two `file_names()` lines and the `numbering.rs` lifetime above, and keep the nested `.gitattributes` and this file.
 3. `cargo update -p docx-rust`, then confirm `grep -A1 '^name = "zip"$' Cargo.lock` shows one zip >= 9.0.5.
 4. Retire this vendoring once upstream releases on zip 9 or later.

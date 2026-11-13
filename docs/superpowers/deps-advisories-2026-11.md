@@ -100,11 +100,19 @@ Ruling DA-2. Full record, with every changed line before and after, in
   `filter_map(ok)`, so an entry name zip cannot decode is skipped rather than listed. This
   affects only the two multi-file readers (`option_read_multiple`, `option_read_multiple_files`).
   All 218 kpack-core fixtures still round-trip.
-- A nested `third_party/docx-rust/.gitattributes` (`* -diff`) keeps the vendored tree out of
-  diffs, because the root `.gitattributes` has no `third_party` rule. `VENDORED.md` is the
-  readable diff.
-- Upstream `tests/` is kept in the commit. The vendored crate is 172 tracked files; 50 are
-  under `tests/`.
+- Attributes: `third_party/.gitattributes` already applies `* -text -diff` to the whole tree.
+  The nested `third_party/docx-rust/.gitattributes` (`VENDORED.md diff`, `LICENSE diff`,
+  `README.md diff`) only makes the human-readable files diffable. `VENDORED.md` is the readable
+  record of every difference from the registry crate.
+- The vendored tree keeps only what we build: 113 tracked files (108 under `src/`, plus
+  `Cargo.toml`, `LICENSE`, `README.md`, `VENDORED.md`, `.gitattributes`). Upstream `tests/`,
+  `examples/`, `validator/`, `.github/`, `.editorconfig`, the upstream `.gitignore` and
+  `Cargo.lock` are dropped, and `VENDORED.md` names each omission, including the `*.docx`
+  files upstream's own `.gitignore` had excluded.
+- Lock facts after the vendoring: `grep -A1 '^name = "zip"$' Cargo.lock` prints one entry,
+  `zip` version `9.5.1`. No `arbitrary` or `derive_arbitrary` entry remains in the lock, and no
+  entry names zip 4. `cargo-audit audit -f Cargo.lock` reports no vulnerabilities, and that
+  report is the authority.
 - Retire the vendoring once upstream releases on zip 9 or later.
 
 ## Gates
