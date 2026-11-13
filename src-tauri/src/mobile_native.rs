@@ -386,14 +386,16 @@ mod imp {
 /// let whichever ended first stop the service under the other (final review
 /// I4). Given the holders before a call and whether it begins (`true`) or ends
 /// (`false`) a hold, this returns the holders after and the `InferenceService`
-/// method to call: `start` only on 0 to 1, `stop` only on 1 to 0. An end with
+/// method to call: `start` on every begin, `stop` only on 1 to 0. Kotlin's
+/// `start` is idempotent and re-delivers `onStartCommand`, so a later begin
+/// refreshes the notification with its own title: the shade names the latest
+/// holder, not the first (a reply sent after a cancelled reading is a reply). An end with
 /// no holder is a pairing bug; it stays at 0 and calls nothing, so it can never
 /// stop a service another caller holds.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))] // only production caller is the Android `inference_service`
 fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static str>) {
     match (begin, holders) {
-        (true, 0) => (1, Some("start")),
-        (true, n) => (n.saturating_add(1), None),
+        (true, n) => (n.saturating_add(1), Some("start")),
         (false, 0) => (0, None),
         (false, 1) => (0, Some("stop")),
         (false, n) => (n - 1, None),
@@ -430,7 +432,7 @@ impl ServiceKind {
 /// Called from `chat_stream` and `transcribe_image`, whose lifetimes *are* the
 /// condition being signalled. `true` on the way in, `false` on the way out, on
 /// every exit path including cancel and error. The calls are counted
-/// ([`service_transition`]): the service starts with the first holder and stops
+/// ([`service_transition`]): the service starts with each holder (retitling it) and stops
 /// with the last.
 ///
 /// # A lock, not a bare atomic
@@ -551,7 +553,11 @@ mod service_tests {
     #[test]
     fn the_service_starts_with_the_first_holder_and_stops_with_the_last() {
         assert_eq!(service_transition(0, true), (1, Some("start")));
-        assert_eq!(service_transition(1, true), (2, None), "a second holder does not restart it");
+        assert_eq!(
+            service_transition(1, true),
+            (2, Some("start")),
+            "a second holder refreshes the title"
+        );
         assert_eq!(service_transition(2, false), (1, None), "the first to end does not stop it");
         assert_eq!(service_transition(1, false), (0, Some("stop")));
     }
@@ -567,13 +573,13 @@ mod service_tests {
             users = after;
             calls.extend(method);
         }
-        assert_eq!(calls, ["start", "stop"]);
+        assert_eq!(calls, ["start", "start", "stop"]);
         assert_eq!(users, 0);
     }
 
     #[test]
     fn an_unpaired_end_never_stops_a_service_and_never_underflows() {
         assert_eq!(service_transition(0, false), (0, None));
-        assert_eq!(service_transition(usize::MAX, true), (usize::MAX, None));
+        assert_eq!(service_transition(usize::MAX, true), (usize::MAX, Some("start")));
     }
 }
