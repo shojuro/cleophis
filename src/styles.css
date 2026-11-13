@@ -570,6 +570,10 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 
 /* Phase 1h M6: the reference lookup (supervised screen only). */
 .lookupbar{display:flex;padding:8px 24px 0;background:rgba(14,18,24,.9);border-top:1px solid var(--line)}
+/* The class's display:flex beats the browser's [hidden]{display:none}, so the
+   bar showed on every model (the tutor included) although app.js hides it
+   whenever lookup is unavailable. Same guard the engine banner uses. */
+.lookupbar[hidden]{display:none}
 .lookupbtn{font-size:13px;padding:6px 12px}
 .lookupbtn.active{background:var(--teal);color:var(--teal-ink);border-color:var(--teal)}
 .is-mobile .lookupbar{padding:8px 12px 0}
