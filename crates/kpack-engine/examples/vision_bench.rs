@@ -97,6 +97,8 @@ impl Family {
 
 struct Item {
     id: String,
+    /// The `file` value as items.json spells it (relative to the json), for the record.
+    file: String,
     path: PathBuf,
 }
 
@@ -205,16 +207,123 @@ fn run_via_engine(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
         n_gpu_layers: 0,
     };
     let mut handle = kpack_engine::LlamaVision::new().load(req)?;
-    for item in &items {
-        let bytes = std::fs::read(&item.path)?;
-        let img = prepare_product_image(&bytes, a.max_side)?;
-        let tr = handle.transcribe(&img, &mut || false)?;
-        let assessment = assess(&tr.tokens, tr.stop == StopReason::MaxTokens);
-        eprintln!("[{}] img_tok {} stop {:?}", item.id, tr.n_image_tokens, tr.stop);
-        eprintln!("    raw: {}", tr.raw.replace('\n', "\\n"));
-        eprintln!("    verdict: {:?} warnings {:?}", assessment.verdict, assessment.warnings);
+    let mut out = match &a.json_out {
+        Some(p) => Some(BufWriter::new(File::create(p)?)),
+        None => None,
+    };
+    for rep in 0..a.repeat {
+        for item in &items {
+            let t = Instant::now();
+            let mut rec = serde_json::json!({
+                "id": item.id, "file": item.file, "rep": rep,
+                "verdict": null, "warnings": [], "blocks": [], "raw": null,
+                "n_image_tokens": null, "stop": null,
+                "prep_ms": null, "prefill_ms": null, "decode_ms": null,
+                "total_ms": null, "vmrss_kb": null, "vmhwm_kb": null, "error": null,
+            });
+            let res: Result<(), Box<dyn std::error::Error>> = (|| {
+                let tp = Instant::now();
+                let bytes = std::fs::read(&item.path)?;
+                let img = prepare_product_image(&bytes, a.max_side)?;
+                rec["prep_ms"] = serde_json::json!(tp.elapsed().as_millis() as u64);
+                let tr = handle.transcribe(&img, &mut || false)?;
+                let assessment = assess(&tr.tokens, tr.stop == StopReason::MaxTokens);
+                eprintln!("[{}] img_tok {} stop {:?}", item.id, tr.n_image_tokens, tr.stop);
+                eprintln!("    raw: {}", tr.raw.replace('\n', "\\n"));
+                eprintln!("    verdict: {:?} warnings {:?}", assessment.verdict, assessment.warnings);
+                rec["verdict"] = serde_json::json!(verdict_wire(assessment.verdict));
+                rec["warnings"] = serde_json::json!(assessment.warnings.iter().copied().map(warning_wire).collect::<Vec<_>>());
+                rec["blocks"] = blocks_wire(&assessment.blocks);
+                rec["raw"] = serde_json::json!(tr.raw);
+                rec["n_image_tokens"] = serde_json::json!(tr.n_image_tokens);
+                rec["stop"] = serde_json::json!(format!("{:?}", tr.stop));
+                rec["prefill_ms"] = serde_json::json!(tr.timings.prefill_ms);
+                rec["decode_ms"] = serde_json::json!(tr.timings.decode_ms);
+                Ok(())
+            })();
+            if let Err(e) = res {
+                eprintln!("[{}] rep {} ERROR {e}", item.id, rep);
+                rec["error"] = serde_json::json!(e.to_string());
+            }
+            let (r, h) = rss_kb();
+            rec["total_ms"] = serde_json::json!(t.elapsed().as_millis() as u64);
+            rec["vmrss_kb"] = serde_json::json!(r);
+            rec["vmhwm_kb"] = serde_json::json!(h);
+            if let Some(f) = out.as_mut() {
+                writeln!(f, "{}", rec)?;
+                f.flush()?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Same shortest-decimal widening as `src-tauri/src/vision_cmds.rs::f32_wire`
+/// (that one lives in the Tauri crate, so it is repeated here).
+fn f32_wire(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(f64::from(x))
+}
+
+fn verdict_wire(v: kpack_engine::Verdict) -> &'static str {
+    match v {
+        kpack_engine::Verdict::Accept => "accept",
+        kpack_engine::Verdict::Review => "review",
+        kpack_engine::Verdict::Refuse => "refuse",
+    }
+}
+
+fn warning_wire(w: kpack_engine::Warning) -> &'static str {
+    use kpack_engine::Warning::*;
+    match w {
+        LowConfidence => "low_confidence",
+        OperatorUncertain => "operator_uncertain",
+        NoMathFound => "no_math_found",
+        InvalidLatex => "invalid_latex",
+        Truncated => "truncated",
+    }
+}
+
+fn blocks_wire(blocks: &[kpack_engine::Block]) -> serde_json::Value {
+    blocks
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "kind": match b.kind {
+                    kpack_engine::BlockKind::Latex => "latex",
+                    kpack_engine::BlockKind::Text => "text",
+                },
+                "content": b.content,
+                "confidence": f32_wire(b.confidence),
+                "min_operator_prob": b.min_operator_prob.map(f32_wire),
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kpack_engine::{Block, BlockKind, Verdict, Warning};
+
+    #[test]
+    fn record_shape_matches_the_scorer() {
+        let blocks = vec![
+            Block { kind: BlockKind::Latex, content: "3x-7=2x+5".into(), confidence: 0.99, min_operator_prob: Some(0.995), n_tokens: 9 },
+            Block { kind: BlockKind::Text, content: "hi".into(), confidence: 0.5, min_operator_prob: None, n_tokens: 1 },
+        ];
+        let b = blocks_wire(&blocks);
+        assert_eq!(b[0]["kind"], "latex");
+        assert_eq!(b[0]["confidence"], 0.99);
+        assert_eq!(b[0]["min_operator_prob"], 0.995);
+        assert!(b[1]["min_operator_prob"].is_null());
+        assert!(b[1].as_object().unwrap().contains_key("min_operator_prob"));
+        assert_eq!(b[1]["kind"], "text");
+        assert_eq!(verdict_wire(Verdict::Review), "review");
+        let w: Vec<_> = [Warning::LowConfidence, Warning::OperatorUncertain, Warning::NoMathFound, Warning::InvalidLatex, Warning::Truncated]
+            .into_iter().map(warning_wire).collect();
+        assert_eq!(w, ["low_confidence", "operator_uncertain", "no_math_found", "invalid_latex", "truncated"]);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -520,12 +629,12 @@ impl Args {
             for it in doc["items"].as_array().ok_or("items.json: no items array")? {
                 let id = it["id"].as_str().ok_or("item without id")?.to_string();
                 let file = it["file"].as_str().ok_or("item without file")?;
-                out.push(Item { id, path: base.join(file) });
+                out.push(Item { id, file: file.to_string(), path: base.join(file) });
             }
         }
         for p in &self.images {
             let id = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "image".into());
-            out.push(Item { id, path: p.clone() });
+            out.push(Item { id, file: p.to_string_lossy().to_string(), path: p.clone() });
         }
         Ok(out)
     }
