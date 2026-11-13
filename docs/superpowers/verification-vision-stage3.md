@@ -3,8 +3,9 @@
 Branch `vision/stage3` from `origin/main` `4aadcc9`. Plan:
 `docs/superpowers/plans/2026-11-13-vision-stage3-probes.md` (`e1a53fe`). Stage 2's record is
 `docs/superpowers/verification-vision-stage2.md`; Stage 0's is
-`docs/superpowers/verification-vision-spike.md`. The code under test is `b4b4131`: Task 6's
-`166ab9e` plus the fix wave's parser rule (`83b8929`) and scorer rules (`b4b4131`). The record's own
+`docs/superpowers/verification-vision-spike.md`. The code under test is `f5bd4d3`: Task 6's
+`166ab9e` plus the fix wave's parser rule (`83b8929`, widened in round 2 by `f5bd4d3`) and scorer
+rules (`b4b4131`). The record's own
 commits change no code and no constant.
 
 Every number below is quoted from the file named beside it, or comes from a command run for this
@@ -19,7 +20,9 @@ marked.
 
 - **After the fix wave the gate run passes: exact 18/18, refusals 2/2, no accepted sign, operator
   or symbol error** (`docs/superpowers/vision-stage3/host-v1-cm-product-r2.md`). The parser now
-  refuses a LaTeX block with no digit and no operator (S3-P9). The diagram and the prose come back
+  refuses a LaTeX block with no digit and no operator (S3-P9). Round 2 widened the operators to the
+  commands and Unicode signs that letters-only maths is written with (S3-P15), and its re-run,
+  `host-v1-cm-product-r3`, is identical to r2 apart from the timings. The diagram and the prose come back
   `refuse` with `no_math_found`. All 18 raws are byte-identical to Task 6's CM run, and only q17's
   and q18's verdicts changed (Fix wave).
 - **The scorer now counts look-alike swaps.** `x`/`X`, `1`/`l`, `0`/`O`, `5`/`S` and `2`/`Z` weigh ×5
@@ -66,6 +69,7 @@ marked.
 | `host-v1-dejavu-fill-product` (Task 6) | formula, 96 | DejaVu Sans, crop-filling (`gen.py --fontset dejavusans`) | 14/18 | 14/16 | 0/2 | 0 | FAIL (exact, refusals) |
 | `host-v1-cm-product` (Task 6) | formula, 96 | Computer Modern, committed | 16/18 | 16/16 | 0/2 | 0 | FAIL (exact, refusals) |
 | `host-v1-cm-product-r2` (fix wave, `b4b4131`) | formula, 96 | Computer Modern, committed | 18/18 | 16/16 | 2/2 | 0 | **PASS** |
+| `host-v1-cm-product-r3` (round 2, `f5bd4d3`) | formula, 96 | Computer Modern, committed | 18/18 | 16/16 | 2/2 | 0 | **PASS** |
 | `host-v1-dejavu-fill-product-r2` (fix wave, `b4b4131`) | formula, 96 | DejaVu Sans, crop-filling | 16/18 | 14/16 | 2/2 | 0, and 2 symbol | FAIL (exact, tutor: q08, q13) |
 
 The exact count includes the two refusal items, which are exact only when refused. The first five
@@ -82,14 +86,26 @@ controller ruled on each, and three commits carry them:
 |---|---|---|
 | `83b8929` | S3-P9 | The parser refuses a "formula" with no digit and no operator. |
 | `b4b4131` | S3-P10, S3-P11, S3-P12 | The scorer counts look-alike swaps, the exact gate scales by the spec, and the device latency gate is the accepted floor band. |
-| this commit | S3-P13 | The evidence is committed under `docs/superpowers/vision-stage3/`, and the CM gate run and the DejaVu crop-filling run are re-run on `b4b4131`. |
+| `d77f541` | S3-P13 | The evidence is committed under `docs/superpowers/vision-stage3/`, and the CM gate run and the DejaVu crop-filling run are re-run on `b4b4131`. |
+| `f5bd4d3` | S3-P15 | Round 2: letters-only maths with a command or a Unicode operator stays maths. |
+| this commit | S3-P15 | Round 2's docs: the plan's gate line, the Stage 4 items, the photo-join checklist and the r3 re-run. |
 
 ### The parser: no digit and no operator is not maths (S3-P9)
 
 `classify` (`crates/kpack-engine/src/vision_parse.rs`) now also asks an element to hold maths. It
-needs a digit, one of `= < > + - ^ _`, or one of `\le \leq \ge \geq \ne \neq \times \cdot \div
-\frac \sqrt` as a whole command. `\left` is not `\le`, `\neg` is not `\ne`, and `\cdots` is not
-`\cdot`. The array syntax `&` and `\\` and the label's `\colon` are not operators. An element
+needs a digit, one of `= < > + - ^ _`, a Unicode operator, or a maths command as a whole token:
+
+- **S3-P9 (`83b8929`):** `\le \leq \ge \geq \ne \neq \times \cdot \div \frac \sqrt`.
+- **S3-P15 (`f5bd4d3`, round 2):** `\pm \mp \dfrac \tfrac \int \sum \prod \lim \log \ln \sin \cos
+  \tan \in \notin \cup \cap \subset \subseteq \to \rightarrow \infty \equiv \approx \sim \propto
+  \cong \angle \perp \parallel \circ \ldots \cdots`, and the Unicode operators `≤ ≥ ≠ × ÷ ± − → ∞ ∈`
+  (U+2212 for the minus).
+
+A command is the backslash and its full letter run, compared whole. `\left` is not `\le`, `\neg`
+is not `\ne`, `\intertext` is not `\int` or `\in`, and `\toprule` is not `\to`. The array syntax
+`&` and `\\` and the label's `\colon` are not operators. A Unicode operator also marks an element
+as maths the way `\` and `=` do. Without that, `a ≤ b` would still be text by `classify`'s older
+test, which needs a strong marker or a digit. An element
 without one is a text block. A result with no other LaTeX block then takes the existing no-LaTeX
 path: `NoMathFound` and `refuse`. A text block was already on the wire and is never handed to the
 tutor, so `vision_cmds.rs` and `src/vision-confirm.js` are unchanged.
@@ -108,7 +124,7 @@ new rule refuses it. q18 also loses `invalid_latex`, because the brace check run
 blocks. Its warnings are now `no_math_found, truncated`, the same shape as the page-prompt
 refusals.
 
-The four new tests: both raws and both contents refuse; an array of letters is text; `x+y=1`,
+The four S3-P9 tests: both raws and both contents refuse; an array of letters is text; `x+y=1`,
 `a_1`, `\frac{1}{2}`, `x^2`, `3x-7=2x+5` and each token of the set beside two Greek letters stay
 LaTeX; a formula beside an array of letters keeps the formula and its `accept`, with no
 `NoMathFound`. Three of the four failed before the change; the fourth guards what must not move.
@@ -119,11 +135,14 @@ What the rule does not do:
   5) or prose holding a digit, a hyphen or a dash still classifies by the word count alone. It
   would come back `review`, as q17 and q18 did before. q17 and q18 refuse because their text
   happens to hold neither.
-- **It refuses letters-only maths built from tokens outside the set.** Examples are `a \pm b`,
-  `\dfrac{a}{b}`, `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A` and a Unicode `≤`. These
-  fail closed: the student sees "I could not find any maths" and types it.
-- **A bare `x + y` was already text** before this rule, because `classify` needs a strong marker
-  (`\ = ^ _`) or a digit. The ruling's example holds with a marker: `x+y=1` stays LaTeX.
+- **Letters-only maths outside the widened set still refuses.** After S3-P15, `a \pm b`,
+  `\dfrac{a}{b}`, `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A`, `a ≤ b` and
+  `\lim_{x \to \infty} f(x)` are maths (`f5bd4d3`'s test). Still outside: Greek letters alone
+  (`\alpha \beta`), the hyperbolic functions (`\sinh`), `\vec`, `\overline`, `\triangle`, `\mid`.
+  These fail closed: the student sees "I could not find any maths" and types it.
+- **A bare `x + y` or `a < b` is text,** as it was before this rule, because `classify` needs a
+  strong marker (`\ = ^ _` or a Unicode operator) or a digit. The ruling's example holds with a
+  marker: `x+y=1` stays LaTeX.
 
 ### The scorer (S3-P10, S3-P11, S3-P12)
 
@@ -255,6 +274,39 @@ of `83b8929`. It printed no warning:
 1331 is the earlier 1328 plus three new scorer tests. Three existing ones changed: the pinned
 gates, the exact gate's scaling and the p50 gate.
 
+### Round 2 (S3-P15)
+
+`f5bd4d3` widens the maths-token set (The parser, above). Its one new test checks the brief's
+cases. `a \pm b`, `\dfrac{a}{b}`, `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A`, `a ≤ b`,
+`\lim_{x \to \infty} f(x)` and `x \to \infty` each stay LaTeX and do not refuse. So does every
+added command placed between two Greek letters, and every Unicode operator placed between two
+letters. The test failed first, at `a \pm b`. The letters-array test gained two prefix guards,
+`\intertext{AB}` and `\toprule A`, which stay text. It dropped `A , B , \cdots`, now maths because
+`\cdots` is in the set. The S3-P9 tests are unchanged and pass, so q17's and q18's raws and
+contents still refuse.
+
+Gates on `f5bd4d3`:
+
+```
+cargo test -p kpack-engine:
+test result: ok. 171 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Android check (no warning printed):
+    Finished `release` profile [optimized] target(s) in 2m 16s
+npm test:
+# tests 1331
+# pass 1331
+# fail 0
+```
+
+**The r3 re-run.** The gate run's command again, output
+`docs/superpowers/vision-stage3/host-v1-cm-product-r3.jsonl`, with the same regime line. It scores
+PASS: exact 18/18, refusals 2/2, no accepted sign, operator or symbol error. All 18 raws are
+byte-identical to r2, and all 18 records are identical apart from the timings. The widening adds
+maths tokens, and none of the probe set's readings turned on one. Applied to every recorded block
+of the seven runs, the widened set changes no kind. Host `total_ms` ran from 10,131 to 17,559 ms.
+
 ### What the fix wave did not change
 
 - **The thresholds and the operator finding.** 0.90 / 0.70 / 0.97 stay, and 0.86 stays a proposal
@@ -262,8 +314,7 @@ gates, the exact gate's scaling and the p50 gate.
   calibration number on the printed items stands. q17 and q18 now have no LaTeX block. In the
   re-run no wrong reading remains, so no confidence or operator value is set against one.
 - **The device run and the CI job.** Neither has run.
-- **The aarch64 bench.** The controller builds it for the device run. It must be built from
-  `83b8929` or later to carry the parser rule.
+- **The aarch64 bench.** The controller builds it for the device run. It must be built from `f5bd4d3` or later to carry the parser rule.
 
 ## What each task built
 
@@ -275,7 +326,7 @@ gates, the exact gate's scaling and the p50 gate.
 | 4 | `dbcec3f`, `6085ad3` | `docs/superpowers/mobile-tools/run-vision-probes.sh`: sha-verified pushes of the bench, libc++, model, projector and fixtures, the device run, the pull, `score.mjs --device`, and one `dumpsys meminfo` of the running bench. The fix round set the executable bit, verified every push and removed stale pulls and reports. |
 | 5 | `ba47bd4` | `.github/workflows/vision-regression.yml`: the probe set on `ubuntu-latest` and `ubuntu-24.04-arm`, models from the public dist bucket verified by sha256 on cache hit and miss, an 18-record guard, the scorer's exit code passed through, the report uploaded. Its header says it gates transcription only. |
 | 6 | `087d1d9`, `2953552` | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
-| Fix wave | `83b8929`, `b4b4131`, this commit | The parser refuses a "formula" with no digit and no operator (S3-P9). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
+| Fix wave | `83b8929`, `b4b4131`, `d77f541`; round 2 `f5bd4d3` and this commit | The parser refuses a "formula" with no digit and no operator (S3-P9), widened in round 2 to the commands and Unicode operators letters-only maths uses (S3-P15). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
 
 Tasks 2, 3 (round 1), 4 and 5 were built in side worktrees and rebased onto `vision/stage3`; the
 commits above are the rebased ones. The originals were `9ba31d7`/`8e84a72` (Task 2), `4d2ef13` (Task 3
@@ -558,7 +609,7 @@ What the scorer will judge against: since `b4b4131`, a p50 gate of 10,000 ms and
 its lever 6 (the 8–12 s band). Stage 2's four readings were 8,991 to 9,403 ms. The gate is that
 accepted floor band, and the spec's 8 s p50 is the mid-tier aspiration. A p50 above 10,000 ms is a
 regression from Stage 0 and Stage 2; the lever for the aspiration is runtime kernel dispatch
-(Stage 0's lever 4). The bench pushed to the phone must be built from `83b8929` or later, so that it
+(Stage 0's lever 4). The bench pushed to the phone must be built from `f5bd4d3` or later, so that it
 carries the parser rule (S3-P9).
 
 ## CI
@@ -921,6 +972,7 @@ From the SDD ledger, one line each.
 | S3-P12 | The device gates encode the accepted floor regime: p50 ≤ 10,000 ms, p95 ≤ 12,000 ms. The spec's 8 s p50 is the mid-tier aspiration. |
 | S3-P13 | The JSONL evidence is committed under `docs/superpowers/vision-stage3/`, the page-prompt runs labelled as such. |
 | S3-P14 | No separate task review for Task 6's record; the whole-branch review verifies it after the fix wave. |
+| S3-P15 | The maths-token set widens to the commands and Unicode operators letters-only maths is written with (`\pm`, `\dfrac`, `\int`, `\lim`, `\in`, `\cong`, `\angle`, `≤`, …), compared as whole tokens. |
 
 ## Deferred minors
 
@@ -953,22 +1005,24 @@ From the SDD ledger and the reviews, per task.
 - **Task 6:** the record has no per-piece operator probabilities. The five JSONL files are now
   committed (S3-P13).
 - **Fix wave:** the S3-P9 rule reads the element's raw text, so an array column spec holding a
-  digit (`p{2cm}`) would count as maths and fall back to the old behaviour. A re-kinded block keeps
-  its raw text, `\begin{array} { c c c } C & & …`, because text blocks are shown trimmed, not
-  normalised. The app shows no block on a refusal, so this is seen only when a real formula sits
-  beside the junk. The symbol pairs are the five the ruling names. Other case swaps (`a`/`A`,
-  `n`/`N`) and look-alikes (`1`/`I`, `0`/`o`) are still plain edits. The plan's Task 2 interface
-  line keeps the original `GATES` it specified.
+  digit (`p{2cm}`) would count as maths and fall back to the old behaviour. The symbol pairs are
+  the five the ruling names. Other case swaps (`a`/`A`, `n`/`N`) and look-alikes (`1`/`I`, `0`/`o`)
+  are still plain edits. Round 2 corrected the plan's Task 2 interface line to the code's `GATES`.
 
 ## What Stage 4 inherits
 
-- **Non-maths images that hold a digit or a hyphen.** The parser rule (S3-P9) refuses an array of
-  letters. A diagram labelled with numbers, or prose with a digit, a hyphen or a dash, still
-  classifies by the word count alone and would come back `review`. The probe set has no such
-  image. A labelled diagram with side lengths is the next refusal probe to add.
-- **Letters-only maths outside the rule's token set** refuses: `a \pm b`, `\dfrac{a}{b}`,
-  `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A`, a Unicode `≤`. Each is one name in
-  `MATHS_CMDS` (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
+- **A prose-likeness heuristic.** The parser rule (S3-P9) refuses an array of letters. Prose with a
+  digit, a hyphen or a dash, or a diagram labelled with numbers, still classifies by the word count
+  alone and lands in `review`, with "Use anyway" offered. The probe set has no such image. A
+  labelled diagram with side lengths and a prose page with a date are the next refusal probes to
+  add.
+- **Drop re-kinded junk rather than show it.** A block the rule re-kinds keeps its raw text, for
+  example `\begin{array} { c c c } C & & …`, because text blocks are shown trimmed, not normalised.
+  The app shows no block on a refusal, so this appears only when a real formula sits beside the
+  junk, as a read-only text block. Dropping the block, or showing it normalised, is the fix.
+- **Letters-only maths outside the widened token set** (S3-P15) still refuses: Greek letters alone,
+  `\sinh`, `\vec`, `\overline`, `\triangle`, `\mid`. Each is one name in `MATHS_CMDS`
+  (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
 - **Confident misreadings that reach the tutor.** The crop-filling DejaVu render's `x` read as `X`
   was accepted twice, above every threshold. The confirmation step, where the student reads the
   maths before using it, is the only guard in the product. Since `b4b4131` the scorer's tutor gate
@@ -976,14 +1030,19 @@ From the SDD ledger and the reviews, per task.
   digit misread as another digit, or a dropped exponent still fails no gate except the exact count.
 - **The device run** (The device run), and then the operator proposal of 0.86.
   It needs at least one observed sign or operator error, or a deliberate check that the guard catches
-  one, before that guard is lowered. The aarch64 bench is the controller's build, from `83b8929` or
-  later.
+  one, before that guard is lowered. The aarch64 bench is the controller's build, from `f5bd4d3` or later.
 - **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
   operators. A per-piece field in the bench's record would let the sign guard be calibrated against
   signs.
-- **The founder's photographs** join as `q19-photo-upright` and `q20-photo-rotated` (S3-P11; the plan
-  is corrected). At 20 items `GATES.exactMin` gives 18 of 20, the spec's gate. The CI job's
-  18-record guard and the manifest test's count change with them.
+- **The founder's photographs: the join checklist.** They join as `q19-photo-upright` and
+  `q20-photo-rotated` (S3-P11; the plan is corrected).
+  - [ ] The PNGs go under `probes/vision/fixtures/v1/photos/`, CC0, with entries in `manifest.json`
+    and `items.json`.
+  - [ ] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
+    `items.length` of 18) move to 20.
+  - [ ] `.github/workflows/vision-regression.yml`: the 18-record guard moves to 20.
+  - [ ] Nothing in the scorer: at 20 items `GATES.exactMin` already gives 18 of 20, the spec's gate.
+  - [ ] Re-run the host gate run and the device run with the 20 items.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
@@ -1003,9 +1062,9 @@ From the SDD ledger and the reviews, per task.
 
 - **The device run.** The founder has not run `run-vision-probes.sh`.
 - **The CI job.** Its first run is on the PR.
-- **The aarch64 build of the bench at `83b8929` or later.** It is the controller's, and it comes
-  before the device run. A build that started before `83b8929` was committed may not carry the
-  parser rule.
+- **The aarch64 build of the bench at `f5bd4d3` or later.** It is the controller's, and it comes
+  before the device run. A build from before `f5bd4d3` lacks the widened token set, and one from
+  before `83b8929` may lack the rule altogether.
 - **The host bench after a calibration change.** No threshold changed.
 - **The Windows desktop suite.** No `src-tauri` file changed on this branch.
 - **A repeat of any host run.** Each of the seven runs is one repeat. q17 and q18 are byte-identical

@@ -9,7 +9,7 @@ Common flags: `--family docling --max-side 512 --threads 4 --one-pass`, base
 `granite-docling-258M-Q8_0.gguf` (sha256 `b687245c…`) and projector
 `mmproj-granite-docling-258M-Q8_0.preproc512.gguf` (sha256 `bb75a65a…`), the two files the CI job
 pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged from `main`
-(`4aadcc9`) until `83b8929` (S3-P9).
+(`4aadcc9`) until `83b8929` (S3-P9), widened by `f5bd4d3` (S3-P15).
 
 | File | Prompt, cap | Render | Bench | Parser | Scored by | Gate evidence |
 |---|---|---|---|---|---|---|
@@ -18,10 +18,14 @@ pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged
 | `host-v1-product.jsonl` | formula ("Convert formula to latex."), 96, both flags explicit | DejaVu Sans 28 pt (`b53ab15`, extracted with `git show`) | `ba47bd4` (same example as `1ac6b5a`) | `main` | — | no |
 | `host-v1-dejavu-fill-product.jsonl` | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling (`gen.py --out <dir> --fontset dejavusans`, `5fc68a4`) | `166ab9e` | `main` | — | no |
 | `host-v1-cm-product.jsonl` | formula, 96, both flags explicit | Computer Modern, committed | `ba47bd4` | `main` | — | superseded by r2 |
-| `host-v1-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `b4b4131` | `83b8929` | `b4b4131` | **yes** |
+| `host-v1-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `b4b4131` | `83b8929` | `b4b4131` | yes, until round 2 |
+| `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | **yes** |
 | `host-v1-dejavu-fill-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling, byte-identical to the earlier render | `b4b4131` | `83b8929` | `b4b4131` | no |
 
-The two fix-wave runs score as follows with the scorer at `b4b4131`. The CM gate run passes: exact
+Round 2's `host-v1-cm-product-r3` scores PASS like r2. Its 18 raws, and all 18 records apart
+from the timings, are identical to r2's.
+
+The two round-1 fix-wave runs score as follows with the scorer at `b4b4131`. The CM gate run passes: exact
 18/18, refusals 2/2, no accepted sign, operator or symbol error. The DejaVu crop-filling run fails:
 exact 16/18, and q08 and q13 (`x` read as `X`, accepted) reach the tutor. Both runs' 18 raws are
 byte-identical to the Task 6 runs on the same images. Only q17 and q18 changed, from `review` to
