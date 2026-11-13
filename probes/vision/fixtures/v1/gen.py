@@ -3,6 +3,10 @@
 
   python3 gen.py          write the 18 PNGs, items.json, manifest.json next to this file
   python3 gen.py --check  re-render to a temp dir and compare sha256s with the committed files (exit 1 on any difference)
+  python3 gen.py --out DIR [--fontset NAME]
+                          scratch render: the 18 PNGs + items.json into DIR (no manifest); DIR may not be inside the
+                          fixture directory; NAME is any matplotlib mathtext.fontset (default cm)
+  python3 gen.py --self-test  scratch-render dejavusans to a temp dir, and check the default render still matches the committed set
 
 Rendered with matplotlib mathtext in the Computer Modern fontset (the transcriber was trained on
 LaTeX-rendered formulas), 512x160 px, white, each formula scaled to fill ~78% of the width.
@@ -132,23 +136,68 @@ def dump(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
+def arg(name):
+    if name not in sys.argv:
+        return None
+    i = sys.argv.index(name)
+    if i + 1 >= len(sys.argv):
+        sys.exit(f"{name} needs a value")
+    return sys.argv[i + 1]
+
+
+def check():
+    with tempfile.TemporaryDirectory() as td:
+        items = build(Path(td))
+        bad = []
+        manifest = json.loads((HERE / "manifest.json").read_text())
+        for it in items:
+            got = sha(Path(td) / it["file"])
+            committed = HERE / it["file"]
+            if not committed.exists() or sha(committed) != got or manifest["files"].get(it["file"]) != got:
+                bad.append(it["file"])
+        if (HERE / "items.json").read_text() != dump({"version": 1, "items": items}):
+            bad.append("items.json")
+    return bad
+
+
+def self_test():
+    with tempfile.TemporaryDirectory() as td:
+        matplotlib.rcParams["mathtext.fontset"] = "dejavusans"
+        items = build(Path(td))
+        (Path(td) / "items.json").write_text(dump({"version": 1, "items": items}))
+        assert len(list(Path(td).glob("*.png"))) == 18 and (Path(td) / "items.json").exists(), "scratch render incomplete"
+    matplotlib.rcParams["mathtext.fontset"] = "cm"
+    bad = check()
+    assert not bad, f"default render no longer matches the committed set: {bad}"
+    print("ok: dejavusans scratch render has 18 PNGs + items.json; default render matches the committed hashes")
+
+
 def main():
+    if "--self-test" in sys.argv:
+        self_test()
+        return
+    out, fontset = arg("--out"), arg("--fontset")
     if "--check" in sys.argv:
-        with tempfile.TemporaryDirectory() as td:
-            items = build(Path(td))
-            bad = []
-            manifest = json.loads((HERE / "manifest.json").read_text())
-            for it in items:
-                got = sha(Path(td) / it["file"])
-                committed = HERE / it["file"]
-                if not committed.exists() or sha(committed) != got or manifest["files"].get(it["file"]) != got:
-                    bad.append(it["file"])
-            if (HERE / "items.json").read_text() != dump({"version": 1, "items": items}):
-                bad.append("items.json")
+        if out or fontset:
+            sys.exit("--check verifies the committed set; it takes no --out or --fontset")
+        bad = check()
         if bad:
             print("DIFFERENT:", ", ".join(bad))
             sys.exit(1)
         print("ok: 18 PNGs and items.json reproduce byte-for-byte")
+        return
+    if fontset and not out:
+        sys.exit("--fontset only makes sense with --out; the committed set is Computer Modern")
+    if fontset:
+        matplotlib.rcParams["mathtext.fontset"] = fontset
+    if out:
+        dest = Path(out).resolve()
+        if dest == HERE or HERE in dest.parents:
+            sys.exit(f"refusing to render into the fixture directory: {dest}")
+        dest.mkdir(parents=True, exist_ok=True)
+        items = build(dest)
+        (dest / "items.json").write_text(dump({"version": 1, "items": items}))
+        print(f"wrote {len(items)} PNGs and items.json to {dest} (fontset {fontset or 'cm'}; no manifest)")
         return
     items = build(HERE)
     (HERE / "items.json").write_text(dump({"version": 1, "items": items}))
