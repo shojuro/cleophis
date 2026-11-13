@@ -817,7 +817,7 @@ Before you start:
 | V2 | "Take a photo" opens the system camera | `AndroidManifest.xml`, `app.js`, `vision-confirm.js` | screenshots |
 | V3 | "Choose an image" picks a screenshot | `vision-confirm.js` | screenshot |
 | V4 | a photo stored sideways reads upright | `vision-confirm.js` `READING_TEXT` | screenshots |
-| V5 | Cancel mid-reading closes the modal, the notification goes | `app.js`, `InferenceService.kt` | screenshots |
+| V5 | Cancel mid-reading closes the modal, the notification goes | `app.js`, `InferenceService.kt`, `mobile_native.rs` | screenshots |
 | V6 | the confirmation gate, then the handoff | `vision-confirm.js` | screenshots |
 | V7 | no captured photo is left on the phone | `CaptureHygiene.kt`, `mobile_native.rs` | `adb` listings |
 
@@ -871,7 +871,20 @@ is not in the signed catalog
 Download
 ```
 
-   Tap Download, wait for it to finish, and go to step 7.
+   Tap Download. The button then reads the downloading label, and with the
+   menu closed the bar above the composer reads the photo-reader label:
+
+<!-- expect: visionDownload.DOWNLOADING_LABEL -->
+```text
+Downloading…
+```
+
+<!-- expect-source: src/engine-state.js -->
+```text
+Downloading the photo reader
+```
+
+   Wait for it to finish, and go to step 7.
 6. Only with the "is not in the signed catalog" message: load the two files
    by hand, and write "sideloaded" in the note. The projector must be the
    `preproc512` file: the unpatched one has the same size and a different
@@ -1040,14 +1053,14 @@ Reading the image…
 2. While "Reading the image…" shows, pull down the notification shade. The
    app's notification is there. A chat reply titles it:
 
-<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
+<!-- expect-source: src-tauri/src/mobile_native.rs -->
 ```text
 Writing a reply
 ```
 
 During a reading the notification's title is this string instead:
 
-<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
+<!-- expect-source: src-tauri/src/mobile_native.rs -->
 ```text
 Reading an image
 ```

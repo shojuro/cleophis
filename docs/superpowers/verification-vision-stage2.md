@@ -525,8 +525,8 @@ One line per task, from the SDD ledger, plus Task 6's.
 
 ## Copy pass (2026-11-13, branch vision/copy-pass)
 
-Two small tasks closed the copy items deferred from Stage 2 (Task 4 copy items, the notification
-title, and the final review's M8 strings). Reviewed on the branch at 484e58c and 813beba.
+Three tasks plus the wrap-up closed the copy items deferred from Stage 2 (Task 4 copy items, the notification
+title, and the final review's M8 strings). Reviewed on the branch at 484e58c and 813beba; the final review covered 58ff0c6..2b5c31e.
 
 ### What changed
 
@@ -550,10 +550,11 @@ step 5 and V2 pins in `phone-journey.md` cite the constants.
 to `TITLE_REPLY`. `mobile_native.rs` gains `ServiceKind { Reply, Vision }` with `title()`;
 `inference_service(running, kind)` passes it over JNI (`(Context;String)V`). `chat_cmds.rs` calls
 with Reply, `vision_cmds.rs` with Vision. `phone-journey.md` V5 keeps the `Writing a reply` pin and
-adds a `Reading an image` pin.
+adds a `Reading an image` pin. Both pins cite `mobile_native.rs`: Rust owns the title strings in `ServiceKind::title()` and passes them over JNI, so Kotlin's `TITLE_REPLY` and `TITLE_VISION` are only a mirror (M1, deferred).
 
 ### Gates (verbatim from the task reports)
 
+- `npm test` at 2b5c31e: 1286 tests, 0 failures.
 - `npm test` (Task 1): `# pass 1286`, `# fail 0`. Task 2 re-run: tests 1286, pass 1286, fail 0.
 - Android (Task 2): `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` finished the `release` profile in 11m 04s, exit 0, zero warnings.
 - Windows desktop on 813beba (Task 2): `test result: ok. 460 passed; 0 failed; 10 ignored`, exit 0.
@@ -577,12 +578,21 @@ adds a `Reading an image` pin.
 
 ### What the founder re-checks on this APK
 
-- **V1, the Download button.** The menu button reads `Download`. Pin: `visionDownload.DOWNLOAD_LABEL`.
-- **V2, the opening text.** After the camera returns, the crop pane says `Opening the photo…` until the frame appears. Pin: `visionConfirm.OPENING_TEXT`. During the vision download the engine row reads `Downloading the photo reader — N%`.
-- **V5, the notification title.** During a reading, the shade shows `Reading an image`; a chat reply still shows `Writing a reply`. Pin: `expect-source` on `InferenceService.kt`.
+- **V1, the Download button and the photo-reader row.** The menu button reads `Download` (pin `visionDownload.DOWNLOAD_LABEL`), then `Downloading…` (pin `visionDownload.DOWNLOADING_LABEL`). With the modal closed, the bar above the composer reads `Downloading the photo reader — N%`; the row shows only with the modal closed. Preparation: the A22 still holds both vision files from the Stage 2 run, and `adb install -r` keeps app data, so the menu would go straight to Take a photo. First force-stop the app and remove the two files (a 269 MB re-download):
+
+  ```text
+  adb shell am force-stop ${PKG:-com.cleophis.app}
+  adb shell run-as ${PKG:-com.cleophis.app} rm models/granite-docling-258M-Q8_0.gguf models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+  ```
+
+  Relaunch: `vision_state` should report `installed: false` and the menu shows the 269 MB line and `Download`.
+- **V2, the opening text.** After the camera returns, the crop pane says `Opening the photo…` until the frame appears. Pin: `visionConfirm.OPENING_TEXT`.
+- **V5, the notification title.** During a reading, the shade shows `Reading an image`; a chat reply still shows `Writing a reply`. Pin: `expect-source` on `mobile_native.rs`. After a cancelled reading the title follows the latest holder (see Deferred and open).
 
 ### Deferred and open
 
-- **Explicit hide on the error path (Task 1 review, minor).** `startCrop`'s error path does not call `setCropBusy(false)` to hide `#cropOpening`. It works today because `showVisionError` switches to the refuse pane, which hides the whole crop pane, and the next `startCrop` sets busy again. A one-line explicit hide would survive a future change that shows the crop pane after an error.
+- **Explicit hide on the error path: DONE in 2b5c31e.** `startCrop`'s error path now hides `#cropOpening` explicitly. The commit is JS-only and postdates the 813beba APK, so HEAD is one commit past it. It cannot be seen on the device, because the refuse pane replaces the crop pane either way.
+- **The title follows the latest holder: fixed after the final review (I3).** Before the fix the counted service called Kotlin only on 0 to 1, so a reply sent while a cancelled reading was still finishing was titled "Reading an image"; `service_transition` now returns `start` on every begin and the shade names the latest holder. The APK above predates this fix.
+- **Minor items deferred (final review).** M1: the `ServiceKind` test cannot catch Rust/Kotlin drift and `TITLE_VISION` is unread; delete it with the next Kotlin change or add a comparing probe. M2: the notification channel name "Writing replies" and its description also cover readings. M3: during the photo-reader download the `requesting` phase still says "Asking for your copy of the model." and the percentage runs twice from 0%. M4: the picture moves up one line when `#cropOpening` hides. M5: the Kotlin comment about a null intent names a case `START_NOT_STICKY` all but rules out. `NO_SIZE_TEXT` is an error the pinned catalog cannot produce, so only its unit test pins it.
 - **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the APK build above, which passed with `tauri_exit 0`, and the dex check confirms the title string is present.
 - **The concurrent Windows run (Task 2 concern).** Task 2's red run checked out a branch in the shared Windows worktree while another branch's run may have been mid-compile; that run finished ok, so treat its result as probably unaffected.
