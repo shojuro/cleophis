@@ -17,7 +17,7 @@ Dependabot's next scan. Alert #1 is the founder's dismissal (below).
 | #4, #5, #6, #8 | RUSTSEC-2026-0346 (medium, #4 GHSA-c8m5-c952-6cm4), -0347 (#8), -0348 (#6), -0349 (#5) | rustls 0.23.45 | 0.23.46 or later | **Fixed** in cca47b7: 0.23.45 to 0.23.46. |
 | none (cargo-audit only) | RUSTSEC-2026-0382 | rustls-webpki 0.103.15 | 0.103.17 | **Fixed** in 031b451: 0.103.15 to 0.103.17 (ruling DA-4). Found by `cargo-audit` after the first bump. |
 | none (cargo-audit only) | RUSTSEC-2026-0381 | webpki-roots 1.0.8 | 1.0.12 | **Fixed** in 031b451: 1.0.8 to 1.0.12 (ruling DA-4). The 0.26.11 line on the ureq side is a shim over 1.0.12. |
-| #9, #10 | CVE-2026-115909 (high), CVE-2026-115906 (medium) | zip 3.0.0 | 9.0.0 or later | **Fixed** in cca47b7: epub 2.1.5 to 2.1.6 moves the chain to zip 9.5.1; zip 3.0.0 is gone from the lock. |
+| #7, #9, #10 | CVE-2026-115905 (critical), CVE-2026-115909 (high), CVE-2026-115906 (medium) | zip 3.0.0 | 9.0.5 or later | **Fixed** in cca47b7: epub 2.1.5 to 2.1.6 moves the chain to zip 9.5.1; zip 3.0.0 is gone from the lock. |
 | #7, #9, #10 | CVE-2026-115905 (critical), -115909, -115906 | zip 4.6.1 | 9.0.5 or later | **Vendored** in 4da54e7: docx-rust 0.1.11 on zip 9. The same three alerts cover zip 3 and zip 4; they clear once neither remains. |
 | #1 | GHSA-wrw7-89jp-8q8g (medium) | glib 0.18.5 | 0.20 or later | **Accepted** (see below). Dismissal is the founder's command, printed below. |
 | #2, #3, #11 | GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w (high) | sharp 0.33.5 (`tools/covers`) | 0.35.5 or later | **Fixed** in cca47b7: `sharp@^0.35.5`; `npm audit` reports 0. |
@@ -26,7 +26,7 @@ Dependabot's next scan. Alert #1 is the founder's dismissal (below).
 
 Dependabot reports the zip findings under CVE ids (CVE-2026-115905, -115909, -115906).
 `cargo-audit` reports the same crate under four RUSTSEC ids: RUSTSEC-2026-0367, -0368, -0369
-and -0429. Both lists describe the zip 4.6.1 chain that the vendoring removes. The webpki pair
+and -0429. Both lists describe the zip 4.6.1 chain that the vendoring removes (the same CVEs also covered zip 3.0.0, which epub's bump had already removed). The webpki pair
 is likewise RUSTSEC-2026-0382 (rustls-webpki) and RUSTSEC-2026-0381 (webpki-roots), found by
 `cargo-audit` rather than by the plan's Dependabot listing.
 
