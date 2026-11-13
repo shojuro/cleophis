@@ -7,8 +7,9 @@ checklist up to date follows it and changes no product code. Plan:
 `docs/superpowers/verification-vision-stage1.md`; Stage 0's is
 `docs/superpowers/verification-vision-spike.md`. Every number below comes from a command run
 in Task 6 or in the fix wave (2026-11-13, the WSL2 box and the founder's Windows toolchain),
-or is quoted from the file named beside it. Nothing is estimated unless marked. No device step
-has run: the checklist below is handed to the founder unrun.
+or is quoted from the file named beside it. Nothing is estimated unless marked. The device run below
+was made by the founder on the Galaxy A22 on 2026-11-13 with the fix wave's APK (`3cd142d`); every
+step passed.
 
 ## What each task built
 
@@ -252,7 +253,9 @@ rendered first.
 
 ## Device check
 
-Not run. The checklist is handed to the founder unrun:
+**Run by the founder on the Galaxy A22 (the floor tier) on 2026-11-13, on the fix wave's APK
+(`3cd142d`, sha256 cc4f6386…): V1–V7 all PASS.** The results and the phone-log evidence follow the
+step table. The checklist text:
 `docs/superpowers/mobile-tools/phone-journey.md`, section "Photo input (Stage 2)", on the
 fix wave's APK above. Each step has PASS and FAIL boxes and names its evidence, and every quoted screen
 string is pinned by `probes/phone-journey.test.mjs`.
@@ -266,6 +269,43 @@ string is pinned by `probes/phone-journey.test.mjs`.
 | V5 | Cancel mid-reading closes the modal and the foreground notification disappears | `InferenceService.kt` "Writing a reply", `src/app.js` "Cancel" |
 | V6 | The confirmation gate: amber latex only, text blocks grey and read-only; "Use this" always shown and disabled until the gate allows; "Use anyway" only in review; after the amber block is edited, "Use this" enables and "Use anyway" disappears; the handoff bubble | `REVIEW_NOTE`, `USE_LABEL`, `USE_ANYWAY_LABEL`, `TYPE_IT_LABEL`, `HANDOFF_PREFIX` |
 | V7 | No `JPEG_*.jpg` is left in the app's external pictures folder. A positive listing comes first, taken while the camera app is in front, because the file now lives only until the crop pane draws it. Then empty listings once the crop pane shows the photo, after Retake, after a capture abandoned in the camera app and the menu closed, after a reading, and after a cold start | `CaptureHygiene.kt` `JPEG_`, `mobile_native.rs` `[vision] swept {n} capture file(s)` |
+
+### Results (founder, A22, 2026-11-13)
+
+Evidence is the founder's report per step plus the phone log (`adb logcat`, tag `RustStdoutStderr`,
+the `[vision]` lines) and `adb shell ls` of the app's external Pictures folder, read from the
+laptop during the run.
+
+| Step | Result | Evidence |
+|---|---|---|
+| V1 | PASS | The camera button on the tutor; the menu offered the download against the live v13 catalog; the download completed; the menu turned into "Take a photo" / "Choose an image". |
+| V2 | PASS | The system camera opened. First reading 11:04:20: `verdict Accept warnings [] blocks 1`, `transcribe ok total 8991 ms (coresident=true, reload=None)`. |
+| V3 | PASS | A screenshot picked and cropped. |
+| V4 | PASS | The sideways picture read upright with "Reading the image…" showing (founder). |
+| V5 | PASS | Cancel closed the modal and the notification went away (founder). Engine side: the cancel at 11:08:21 settled after 20,417 ms because the encoder pass is not interruptible; nothing of that reached the UI. |
+| V6 | PASS | Amber maths, "Use this" disabled until edited, "Use anyway" present, the `Problem from photo:` bubble (founder). Review readings in the log: 11:06:31 `[LowConfidence, OperatorUncertain]` 9,403 ms; 15:34:30 `[OperatorUncertain]` 9,258 ms. |
+| V7 | PASS | Pictures folder empty after a full reading and after Take a photo → Retake; log `swept 1 capture file(s)` at 15:38:44 (the decode sweep) then `swept 0` at 15:38:45 (the reset sweep). |
+
+Readings observed during the run: four totals, 8,991 / 9,403 / 9,373 / 9,258 ms, all
+`coresident=true`, `reload=None`, inside Stage 0's 8–12 s floor gate. The 15:33:38 reading was a
+`Refuse [NoMathFound]` on a non-maths frame. Transcriber loads: model 393–943 ms, projector
+226–488 ms. The 120 s idle release fired twice as designed.
+
+Process lifecycle, observed and diagnosed from the log (not Stage 2 defects): at 11:09:07 the
+system reclaimed the app as a cached process (`cch CRE`) about 45 s after a cancelled reading
+with the app in the background; at 11:13:30 the foreground process exited through
+`std::process::exit` in tao's Android event loop 0.4 s after a launcher relaunch of
+`LaunchGateActivity` onto the backgrounded task, and Android restarted it 1.6 s later. No panic,
+no signal, the crash buffer empty. An in-flight photo flow does not survive either; the
+transcriber reloads in under a second. Follow-up outside this plan: the Tauri/tao Android
+relaunch lifecycle.
+
+Found during the run: the triage "Look up a drug or condition" bar showed on the tutor, the
+pre-existing `.lookupbar` rule flagged by the Task 4 review; fixed in PR #43.
+
+Not probed in this run and still on the watchlist: HEIC input, decode memory at the largest
+camera mode, one-thumb handle drags and a rotation mid-drag, Android back in each pane, a
+two-line problem in one crop, and the backup exclusion on a real backup.
 
 V4's test picture is made on the laptop from Stage 0's `p03-quadratic.png`: rotated 90°
 counter-clockwise and tagged orientation 6. Checked here with Pillow 12.3.0: stored
@@ -293,8 +333,8 @@ the steps as "Probe" lines, which are observations and not pass criteria:
   and `override` false after a handoff by Use this.
 
 V5 quotes one latency, with its source: Stage 0's A22 prefill, `prefill_ms` 7,609 to 7,653 over
-the 15 rows of `docs/superpowers/vision-spike/a22-floor-formula-1pass.jsonl`. No Stage 2
-latency was measured.
+the 15 rows of `docs/superpowers/vision-spike/a22-floor-formula-1pass.jsonl`. Stage 2's device run then measured four readings on the A22
+at 8,991, 9,403, 9,373 and 9,258 ms total (phone log; co-resident, no reload), inside that gate.
 
 ## Security inheritances honoured
 
@@ -392,13 +432,15 @@ The plan's Global Constraints and Security Assessment, each with where it lives 
   two-equation system.
 - **WebView memory beside the engine is unmeasured.** V2's decode-memory probe is the first
   reading.
-- **The device numbers are still Stage 0's.** No device run of Stage 1 or Stage 2 code exists.
+- **The device numbers are Stage 0's plus four Stage 2 readings.** The founder's run measured four
+  totals of 8,991–9,403 ms (see Device check); no larger sample exists yet.
 
 ## What did not run
 
-- **Every device step.** V1-V7 are the founder's. The camera, the picker, the sweep on a real
-  external folder, the foreground notification and the backup exclusion are all unproven on
-  a phone.
+- **The device steps ran after this record was first written** (see Device check): V1–V7 all
+  passed on the A22 on 2026-11-13. Still unprobed: HEIC input, decode memory at the largest camera
+  mode, one-thumb handles, Android back in each pane, a two-line problem, and the backup exclusion
+  on a real backup.
 - **A release build.** So the keep rules, including `CaptureHygiene`'s, are unexercised by R8,
   and `proguard-tauri.pro` is missing from this worktree.
 - **`check-mobile-build.sh` and `vision_bench`.** No engine code changed in Task 6.
