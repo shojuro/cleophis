@@ -14,8 +14,9 @@
 #   ADB=adbw SERIAL=R9WR50C0W1J docs/superpowers/mobile-tools/run-vision-probes.sh \
 #     --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
 #     --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
-#     --bench <path to the aarch64 vision_bench binary> \
 #     --out ~/cleophis-artifacts/vision/runs/a22-s3-v1.jsonl
+#   --bench defaults to ${CARGO_TARGET_DIR:-$HOME/cleophis-mobile-target}/aarch64-linux-android/release/examples/vision_bench
+#   (where run-vision-bench.sh finds it); pass --bench <path> for another build.
 #   Add --dry-run to print every adb command (and the score command) without a phone.
 #   Optional: --fixtures <dir> (default probes/vision/fixtures/v1 of this checkout),
 #   `-- extra vision_bench flags` after the script's own.
@@ -35,7 +36,9 @@
 #
 # Memory: the bench is a plain binary, so this script runs it in the BACKGROUND on the
 # device (nohup, via a small runner script), polls pidof vision_bench, takes one
-# `dumpsys meminfo <pid>` at ~MEM_AT seconds, then waits for the exit-code file. If the
+# `dumpsys meminfo <pid>` at ~MEM_AT seconds, then waits for the exit-code file. The pid
+# is the bench's OWN, written by the runner to $DEV/bench.pid; `pidof vision_bench` is
+# only a fallback when that file is absent (it could catch a leftover bench). If the
 # bench ends before the snapshot, the report says so and falls back to the VmHWM the
 # JSONL records carry (vmhwm_kb).
 #
@@ -52,6 +55,7 @@ ADB="${ADB:-adb}"
 SERIAL="${SERIAL:-}"
 NDK="${ANDROID_NDK_ROOT:-$HOME/android-ndk-r27c}"
 TARGET="${CARGO_TARGET_DIR:-$HOME/cleophis-mobile-target}"
+command -v python3 >/dev/null || { echo "FATAL: python3 is required (manifest parsing)" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LIBCXX="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
 DEV=/data/local/tmp/cleophis-vision-probes
@@ -123,6 +127,8 @@ host_path() {  # <wsl path> -> the path adb may read (copies into STAGE when sta
   if [ "$DRY" != 1 ]; then
     # Byte-compare, not size-compare: a stale staged copy of a same-sized file once reached the phone.
     if [ ! -f "$STAGE/$name" ] || ! cmp -s "$STAGE/$name" "$src"; then cp "$src" "$STAGE/$name"; fi
+    # A short drvfs copy must fail here, at the stage, not later on the device.
+    [ "$(sha256sum "$STAGE/$name" | cut -d' ' -f1)" = "$(sha256sum "$src" | cut -d' ' -f1)" ] || { echo "FATAL: staged copy of $name differs from its source" >&2; exit 1; }
     wslpath -w "$STAGE/$name"
   else
     printf 'C:\\<stage>\\%s' "$name"
@@ -175,41 +181,44 @@ adbs shell "chmod 755 $DEV/vision_bench" >/dev/null
 
 # Runner script on the device: the bench in the background needs its own exit-code file.
 # Extra flags are single-quoted into this LOCAL file, so multi-word values survive.
-DEVLOG="$DEV/bench.log"; DEVRC="$DEV/bench.rc"; DEVJSON="$DEV/out-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
+DEVLOG="$DEV/bench.log"; DEVRC="$DEV/bench.rc"; DEVPID="$DEV/bench.pid"; DEVJSON="$DEV/out-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
 EXTRA_Q=""
 for arg in "${EXTRA[@]+"${EXTRA[@]}"}"; do EXTRA_Q+=" '${arg//\'/\'\\\'\'}'"; done
-RUNNER_LOCAL="$(mktemp)"; trap 'rm -f "$RUNNER_LOCAL"' EXIT
+RUN_TMP="$(mktemp -d)"; trap 'rm -rf "$RUN_TMP"' EXIT
+RUNNER_NAME="run-bench.sh"; RUNNER_LOCAL="$RUN_TMP/$RUNNER_NAME"
 cat > "$RUNNER_LOCAL" <<RUN
 #!/system/bin/sh
 cd $DEV
-rm -f $DEVRC
+rm -f $DEVRC $DEVPID
 LD_LIBRARY_PATH=$DEV ${BENCH_ENV:-} ${NICE:-nice -n 0} ./vision_bench --via-engine --family docling \\
   --model $DEV/$(basename "$MODEL") --mmproj $DEV/$(basename "$MMPROJ") \\
   --items $DEV/fixtures/items.json --max-side 512 --threads 4 --one-pass \\
-  --json $DEVJSON$EXTRA_Q > $DEVLOG 2>&1
+  --json $DEVJSON$EXTRA_Q > $DEVLOG 2>&1 &
+echo \$! > $DEVPID
+wait \$!
 echo \$? > $DEVRC
 RUN
 echo "== runner script (pushed to $DEV/run-bench.sh) =="; sed 's/^/  | /' "$RUNNER_LOCAL"
-RUNNER_NAME="run-bench.sh"
-if [ "$STAGE_ON" = 1 ] && [ "$DRY" != 1 ]; then cp "$RUNNER_LOCAL" "$STAGE/$RUNNER_NAME"; RUNNER_PUSH="$(wslpath -w "$STAGE/$RUNNER_NAME")"
-elif [ "$STAGE_ON" = 1 ]; then RUNNER_PUSH="C:\\<stage>\\$RUNNER_NAME"
-else RUNNER_PUSH="$RUNNER_LOCAL"; fi
-adbs push "$RUNNER_PUSH" "$DEV/$RUNNER_NAME" >/dev/null || { echo "FATAL: adb push of the runner failed" >&2; exit 1; }
+push_verified "$RUNNER_LOCAL" "$DEV/$RUNNER_NAME"
 
 [ "$DRY" = 1 ] || { mkdir -p "$(dirname "$OUT")"; : > "$MEMFILE"; }
 echo "== running on the device in the background (log $LOG) =="
-adbs shell "rm -f $DEVLOG $DEVRC; nohup sh $DEV/$RUNNER_NAME >/dev/null 2>&1 &" >/dev/null
+adbs shell "rm -f $DEVLOG $DEVRC $DEVPID; nohup sh $DEV/$RUNNER_NAME >/dev/null 2>&1 &" >/dev/null
 MEM_NOTE=""
 if [ "$DRY" = 1 ]; then
-  echo "  (dry-run) poll: pidof vision_bench; at ~${MEM_AT}s: dumpsys meminfo <pid> > $MEMFILE; wait for $DEVRC (timeout ${BENCH_TIMEOUT}s)"
-  adbs shell "dumpsys meminfo \$(pidof vision_bench)" >/dev/null
+  echo "  (dry-run) poll: cat $DEVPID (fallback pidof vision_bench); at ~${MEM_AT}s: dumpsys meminfo <pid> > $MEMFILE; wait for $DEVRC (timeout ${BENCH_TIMEOUT}s)"
+  adbs shell "dumpsys meminfo \$(cat $DEVPID)" >/dev/null
   adbs shell "cat $DEVLOG" >/dev/null
   adbs pull "$DEVJSON" "$OUT" >/dev/null
   PIPE_RC=0
 else
   pid=""; t=0
   while [ -z "$pid" ] && [ "$t" -lt 60 ]; do
-    pid="$(adbs shell "pidof vision_bench" 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
+    pid="$(adbs shell "cat $DEVPID 2>/dev/null" | tr -d '\r[:space:]' || true)"
+    if [ -z "$pid" ] && [ "$t" -ge 10 ]; then
+      pid="$(adbs shell "pidof vision_bench" 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
+      [ -z "$pid" ] || echo "  (no $DEVPID; fell back to pidof)"
+    fi
     [ -n "$pid" ] || { adbs shell "test -f $DEVRC" >/dev/null 2>&1 && break; sleep 1; t=$((t+1)); }
   done
   if [ -n "$pid" ]; then
@@ -242,6 +251,9 @@ fi
 [ "${PIPE_RC:-0}" = 0 ] || { echo "FATAL: vision_bench exited $PIPE_RC on the device (log $LOG)" >&2; exit 1; }
 
 if [ "$DRY" != 1 ]; then
+  # Nothing from an earlier run may survive to be mistaken for this one.
+  rm -f "$OUT" "$MD" "$JSON"; [ "$STAGE_ON" = 0 ] || rm -f "$STAGE/pulled.jsonl"
+  touch "$RUN_TMP/start"
   if [ "$STAGE_ON" = 1 ]; then
     adbs pull "$DEVJSON" "$(wslpath -w "$STAGE/pulled.jsonl")" >/dev/null || { echo "FATAL: adb pull failed" >&2; exit 1; }
     cp "$STAGE/pulled.jsonl" "$OUT"
@@ -257,7 +269,7 @@ if [ "$DRY" = 1 ]; then printf '+'; printf ' %q' "${SCORE[@]}"; printf '\n'; ech
 set +e; "${SCORE[@]}"; SCORE_RC=$?; set -e
 
 # Memory into the report: the meminfo snapshot plus the records' VmHWM.
-if [ -f "$MD" ]; then
+if [ -f "$MD" ] && [ "$MD" -nt "$RUN_TMP/start" ]; then
   {
     printf '\n## Memory of the bench process\n\n'
     printf 'Snapshot: %s. The bench is a plain binary, so this is the number without a WebView.\n\n' "${MEM_NOTE:-n/a}"
