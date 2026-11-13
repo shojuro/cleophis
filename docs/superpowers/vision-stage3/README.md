@@ -20,7 +20,7 @@ pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged
 | `host-v1-cm-product.jsonl` | formula, 96, both flags explicit | Computer Modern, committed | `ba47bd4` | `main` | — | superseded by r2 |
 | `host-v1-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `b4b4131` | `83b8929` | `b4b4131` | yes, until round 2 |
 | `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | yes, until round 3 |
-| `host-v1-cm-product-r4.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | round 3's code commit | round 3 (S3-P16, the operator guard sees the Unicode operators) | `b4b4131` | **yes** |
+| `host-v1-cm-product-r4.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `dccd85e` | `dccd85e` (S3-P16, the operator guard sees the Unicode operators) | `b4b4131` | **yes** |
 | `host-v1-dejavu-fill-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling, byte-identical to the earlier render | `b4b4131` | `83b8929` | `b4b4131` | no |
 
 Round 3's `host-v1-cm-product-r4` scores PASS, and its 18 raws, its records apart from the
@@ -51,7 +51,7 @@ cargo run -p kpack-engine --features vision --release --example vision_bench -- 
   --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
   --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
   --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
-  --json docs/superpowers/vision-stage3/host-v1-cm-product-r2.jsonl
+  --json docs/superpowers/vision-stage3/host-v1-cm-product-r4.jsonl
 ```
 
 The host build also needs `BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/x86_64-linux-gnu/11/include`.

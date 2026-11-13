@@ -3,9 +3,9 @@
 Branch `vision/stage3` from `origin/main` `4aadcc9`. Plan:
 `docs/superpowers/plans/2026-11-13-vision-stage3-probes.md` (`e1a53fe`). Stage 2's record is
 `docs/superpowers/verification-vision-stage2.md`; Stage 0's is
-`docs/superpowers/verification-vision-spike.md`. The code under test is `f5bd4d3`: Task 6's
-`166ab9e` plus the fix wave's parser rule (`83b8929`, widened in round 2 by `f5bd4d3`) and scorer
-rules (`b4b4131`). The record's own
+`docs/superpowers/verification-vision-spike.md`. The code under test is `dccd85e`: Task 6's
+`166ab9e` plus the fix wave's parser rule (`83b8929`, widened in round 2 by `f5bd4d3`), its
+operator guard (`dccd85e`, round 3) and the scorer rules (`b4b4131`). The record's own
 commits change no code and no constant.
 
 Every number below is quoted from the file named beside it, or comes from a command run for this
@@ -19,16 +19,19 @@ marked.
 ## In short
 
 - **After the fix wave the gate run passes: exact 18/18, refusals 2/2, no accepted sign, operator
-  or symbol error** (`docs/superpowers/vision-stage3/host-v1-cm-product-r2.md`). The parser now
-  refuses a LaTeX block with no digit and no operator (S3-P9). Round 2 widened the operators to the
-  commands and Unicode signs that letters-only maths is written with (S3-P15), and its re-run,
-  `host-v1-cm-product-r3`, is identical to r2 apart from the timings. The diagram and the prose come back
-  `refuse` with `no_math_found`. All 18 raws are byte-identical to Task 6's CM run, and only q17's
-  and q18's verdicts changed (Fix wave).
+  or symbol error** (`docs/superpowers/vision-stage3/host-v1-cm-product-r4.md`, on `dccd85e`). The
+  parser now refuses a LaTeX block with no digit and no operator (S3-P9). Round 2 widened the
+  operators to the commands and Unicode signs that letters-only maths is written with (S3-P15).
+  Round 3 taught the operator guard those signs (S3-P16). The diagram and the prose come back
+  `refuse` with `no_math_found`. The r2, r3 and r4 raws are byte-identical to Task 6's CM run, and
+  only q17's and q18's verdicts changed (Fix wave). **The refusal gate is in-sample:** the parser
+  rule was derived from these two images. A diagram labelled with numbers, or prose holding a
+  digit, is untested and may still come back review.
 - **The scorer now counts look-alike swaps.** `x`/`X`, `1`/`l`, `0`/`O`, `5`/`S` and `2`/`Z` weigh ×5
   and fail the tutor gate when accepted (S3-P10). The crop-filling DejaVu run's two accepted `X`
   readings now fail it. The exact gate is total − 2 from 20 items and total − 1 below (S3-P11). The
-  device p50 gate is 10,000 ms, the accepted floor band (S3-P12).
+  device p50 gate is 10,000 ms, a regression guard, not the spec's floor gate of 8 s (S3-P12; The
+  device run).
 - **The brief's two host runs measured the page prompt, not the product's.** Up to `ba47bd4`,
   `vision_bench --via-engine` without `--prompt` fell back to granite-docling's page prompt, "Convert
   this page to docling.", and to a 256-token cap. No Stage 3 command passed either flag. The product
@@ -77,19 +80,21 @@ rows were scored before the fix wave. Re-scored with the scorer at `b4b4131`, ea
 verdict and its counts. The one change is that the DejaVu crop-filling run also fails the tutor
 gate on q08 and q13, two accepted symbol substitutions.
 
-## Fix wave (S3-P9 to S3-P13)
+## Fix wave (S3-P9 to S3-P16)
 
 Task 6's product-regime evidence found one parser gap and four scorer and gate corrections. The
-controller ruled on each, and three commits carry them:
+controller ruled on each, and the commits below carry them. Round 2 (S3-P15) followed the fix
+wave's own concerns, and round 3 (S3-P16) the whole-branch review:
 
 | Commit | Ruling | What |
 |---|---|---|
 | `83b8929` | S3-P9 | The parser refuses a "formula" with no digit and no operator. |
-| `b4b4131` | S3-P10, S3-P11, S3-P12 | The scorer counts look-alike swaps, the exact gate scales by the spec, and the device latency gate is the accepted floor band. |
+| `b4b4131` | S3-P10, S3-P11, S3-P12 | The scorer counts look-alike swaps, the exact gate scales by the spec, and the device latency gate is a 10 s regression guard inside lever 6's band, not the spec's 8 s floor gate. |
 | `d77f541` | S3-P13 | The evidence is committed under `docs/superpowers/vision-stage3/`, and the CM gate run and the DejaVu crop-filling run are re-run on `b4b4131`. |
 | `f5bd4d3` | S3-P15 | Round 2: letters-only maths with a command or a Unicode operator stays maths. |
 | `bb015aa` | S3-P15 | Round 2's docs: the plan's gate line, the Stage 4 items, the photo-join checklist and the r3 re-run. |
-| this commit | S3-P16 | Round 3: the operator guard sees the Unicode operators (final review I1), and the r4 re-run. |
+| `dccd85e` | S3-P16 | Round 3: the operator guard sees the Unicode operators (final review I1), and the r4 re-run. |
+| this commit | S3-P16 | Round 3's docs: the floor gate's reason (I2), the in-sample refusal gate and the held-out probes (I3), the review's docs minors. |
 
 ### The parser: no digit and no operator is not maths (S3-P9)
 
@@ -156,9 +161,13 @@ What the rule does not do:
   total − 2 from 20 items, and total − 1 below. That is 17 of 18 now and 18 of 20 once the
   founder's photographs join as q19 and q20. The Markdown names the rule that applied. The old
   ceil(17/18 × n) gave 19 of 20.
-- **The device latency gate is the accepted floor band.** `floorP50Ms` is 10,000 and `floorP95Ms`
-  12,000. Stage 0 went ahead under its lever 6 at 8.9 s p50 on the A22, and Stage 2's four device
-  readings were 8,991 to 9,403 ms. The spec's 8 s p50 is the mid-tier aspiration.
+- **The device latency gate is a regression guard.** `floorP50Ms` is 10,000 and `floorP95Ms` 12,000.
+  Stage 0 measured 8.9 s p50 on the A22, and Stage 2's four device readings were 8,991 to 9,403 ms.
+  The spec's floor gate is 8 s p50. Stage 0's GO took lever 6, which ships 8–12 s on the A22 behind
+  a staged progress state. 10 s is a regression guard inside that band. The strict 8 s waits on
+  runtime kernel dispatch (lever 4). The mid-tier gate is 2.0 s and has not been measured. The
+  memory gate is 1,258,291 KiB, which is 1.2 GiB; the spec says 1.2 GB, immaterial at the 0.40 GB
+  measured.
 
 ### The re-run (S3-P13)
 
@@ -317,7 +326,7 @@ probability, while `12x - 34 \ge 5678` comes back `review` with `OperatorUncerta
 glyph form had been text and refused. The spec's "zero sign errors accepted" path was blind to the
 glyphs.
 
-This commit fixes it in `vision_parse.rs`:
+`dccd85e` fixes it in `vision_parse.rs`:
 
 - `is_operator_piece` now also fires on a piece holding one of `≤ ≥ ≠ × ÷ ± −`.
 - That list is `OPERATOR_GLYPHS`, the one definition that `classify` and `holds_maths` share. The
@@ -339,7 +348,7 @@ null, with the minus at 0.8. A glyph whose bytes span two tokens reaches the sec
 whole, because `vision.rs` decodes with a stateful UTF-8 decoder. Only that token's probability is
 checked.
 
-Gates on this commit's code:
+Gates on `dccd85e`:
 
 ```
 cargo test -p kpack-engine:
@@ -357,8 +366,21 @@ byte-identical to r3, and all 18 records are identical apart from the timings. T
 score files are byte-identical to r3's. No product-regime raw in any of the committed runs holds a
 Unicode operator; the one raw that does is the page-prompt q12's `≥` in `host-v1.jsonl`. So the
 fix changes nothing in the evidence, and the risk it closes is unmeasured on photographs. Host
-`total_ms` ran from 8,479 to 15,989 ms. The aarch64 bench must be rebuilt from this commit for the
+`total_ms` ran from 8,479 to 15,989 ms. The aarch64 bench must be rebuilt from `dccd85e` for the
 device run.
+
+**Round 3's docs** (I2, I3 and the review's docs minors). They reword the 10 s gate's reason in
+`score.mjs` and here: 10 s is a regression guard inside lever 6's band, and the spec's floor gate
+of 8 s is not met. They state that the refusal gate is in-sample. Two held-out refusal probes, q21
+and q22, join the photo-join checklist with the counts at 22 items. The review's M2, M3, M5 and M7
+are folded in, and M1, M4 and M6 are deferred with a line each (Deferred minors). `npm test` on the
+docs commit's tree:
+
+```
+# tests 1331
+# pass 1331
+# fail 0
+```
 
 ### What the fix wave did not change
 
@@ -367,7 +389,8 @@ device run.
   calibration number on the printed items stands. q17 and q18 now have no LaTeX block. In the
   re-run no wrong reading remains, so no confidence or operator value is set against one.
 - **The device run and the CI job.** Neither has run.
-- **The aarch64 bench.** The controller builds it for the device run. It must be built from `f5bd4d3` or later to carry the parser rule.
+- **The aarch64 bench.** The controller builds it for the device run. It must be built from
+  `dccd85e` or later to carry the parser rule.
 
 ## What each task built
 
@@ -379,7 +402,7 @@ device run.
 | 4 | `dbcec3f`, `6085ad3` | `docs/superpowers/mobile-tools/run-vision-probes.sh`: sha-verified pushes of the bench, libc++, model, projector and fixtures, the device run, the pull, `score.mjs --device`, and one `dumpsys meminfo` of the running bench. The fix round set the executable bit, verified every push and removed stale pulls and reports. |
 | 5 | `ba47bd4` | `.github/workflows/vision-regression.yml`: the probe set on `ubuntu-latest` and `ubuntu-24.04-arm`, models from the public dist bucket verified by sha256 on cache hit and miss, an 18-record guard, the scorer's exit code passed through, the report uploaded. Its header says it gates transcription only. |
 | 6 | `087d1d9`, `2953552` | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
-| Fix wave | `83b8929`, `b4b4131`, `d77f541`; round 2 `f5bd4d3`, `bb015aa`; round 3 this commit | The parser refuses a "formula" with no digit and no operator (S3-P9), widened in round 2 to the commands and Unicode operators letters-only maths uses (S3-P15). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
+| Fix wave | `83b8929`, `b4b4131`, `d77f541`; round 2 `f5bd4d3`, `bb015aa`; round 3 `dccd85e` and this commit | The parser refuses a "formula" with no digit and no operator (S3-P9), widened in round 2 to the commands and Unicode operators letters-only maths uses (S3-P15). The scorer counts look-alike swaps, scales the exact gate by the spec and guards floor latency at 10 s, inside lever 6's band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
 
 Tasks 2, 3 (round 1), 4 and 5 were built in side worktrees and rebased onto `vision/stage3`; the
 commits above are the rebased ones. The originals were `9ba31d7`/`8e84a72` (Task 2), `4d2ef13` (Task 3
@@ -482,9 +505,9 @@ bb75a65aa3ec14ac4a002248d5ffa075183df369030b6ca09028463ede18b307  mmproj-granite
 ```
 
 They are the two files the CI job pins. In all five runs, and in the two fix-wave runs, every record
-has `error` null and `n_image_tokens` 64 (one encoder pass). Host timings are not a gate. The box ran other builds
-throughout (`total_ms` 9,784–28,787 on the CM product run, 6,579–149,490 on the DejaVu 28 pt
-product run, 12,369–23,856 on the crop-filling DejaVu run).
+has `error` null and `n_image_tokens` 64 (one encoder pass). Host timings are not a gate. The box
+ran other builds throughout (`total_ms` 9,784–28,787 on the CM product run, 6,579–149,490 on the
+DejaVu 28 pt product run, 12,369–23,856 on the crop-filling DejaVu run).
 
 ### Device script and CI
 
@@ -594,10 +617,10 @@ end of the page. q17 and q18 are byte-identical across every render. Their raws 
   counts only as a miss against the exact gate.
 - **Gates** (`GATES`): exact ≥ `GATES.exactMin(total)`, which is total − 2 from 20 items and
   total − 1 below (S3-P11): 17 of 18 now, 18 of 20 with the photographs. No accepted sign, operator
-  or symbol error; both refusals correct. With `--device`: p50 ≤ 10,000 ms and p95 ≤ 12,000 ms, the
-  accepted floor band (S3-P12; nearest rank, so over 18 records the p95 is the slowest record),
-  VmHWM ≤ 1,258,291 KiB. Before `b4b4131` the exact gate was ceil(17/18 × n), 19 at 20 items, and
-  the p50 gate was 8,000 ms.
+  or symbol error; both refusals correct. With `--device`: p50 ≤ 10,000 ms and p95 ≤ 12,000 ms, a
+  regression guard inside lever 6's 8–12 s band, not the spec's 8 s floor gate (S3-P12, S3-P16). The
+  p95 is nearest rank, so over 18 records it is the slowest record. VmHWM ≤ 1,258,291 KiB. Before
+  `b4b4131` the exact gate was ceil(17/18 × n), 19 at 20 items, and the p50 gate was 8,000 ms.
 - **CLI:** exit 0 on pass, 1 on a gate miss, 2 on a missing or duplicate record. The last repeat
   per id is scored.
 
@@ -658,22 +681,26 @@ The script writes the JSONL, a log, the device-mode score (`.md`, `.json`) and o
 of the running bench beside `--out`.
 
 What the scorer will judge against: since `b4b4131`, a p50 gate of 10,000 ms and a p95 gate of
-12,000 ms (S3-P12). Stage 0 measured 8.9 s p50 for this regime on this phone and went ahead under
-its lever 6 (the 8–12 s band). Stage 2's four readings were 8,991 to 9,403 ms. The gate is that
-accepted floor band, and the spec's 8 s p50 is the mid-tier aspiration. A p50 above 10,000 ms is a
-regression from Stage 0 and Stage 2; the lever for the aspiration is runtime kernel dispatch
-(Stage 0's lever 4). The bench pushed to the phone must be built from `f5bd4d3` or later, so that it
-carries the parser rule (S3-P9).
+12,000 ms (S3-P12). Stage 0 measured 8.9 s p50 for this regime on this phone, and Stage 2's four
+readings were 8,991 to 9,403 ms. The spec's floor gate is 8 s p50. Stage 0's GO took lever 6, which
+ships 8–12 s on the A22 behind a staged progress state. 10 s is a regression guard inside that band.
+The strict 8 s waits on runtime kernel dispatch (lever 4). The mid-tier gate is 2.0 s and has not
+been measured. A device score that passes at 10 s therefore does not meet the spec's floor gate; one
+above 10 s is a regression from Stage 0 and Stage 2. The bench pushed to the phone must be built
+from `dccd85e` or later, so that it carries the parser rule (S3-P9).
 
 ## CI
 
 `.github/workflows/vision-regression.yml` runs on pull requests and pushes to `main` that touch
-`crates/kpack-engine/**`, `third_party/llama-cpp-sys-2/**`, `probes/vision/**` or the workflow, weekly,
-and by hand. It builds the bench and runs the 18 items in the product's regime, with both flags
-explicit since `166ab9e`. It guards the record count, scores without `--device` and uploads the
-report. Before the fix wave the host runs of that regime failed the scorer's refusal gate
-(Calibration, last section). On `b4b4131` the host gate run passes (Fix wave), so the job is
-expected to pass on x86-64. Whether arm64 reads the same tokens is what its first run shows.
+`crates/kpack-engine/**`, `third_party/llama-cpp-sys-2/**`, `probes/vision/**` or the workflow,
+weekly, and by hand. It builds the bench and runs the 18 items in the product's regime, with both
+flags explicit since `166ab9e`. It guards the record count, scores without `--device` and uploads
+the report. Before the fix wave the host runs of that regime failed the scorer's refusal gate
+(Calibration, last section). Since `b4b4131` the host gate run passes (Fix wave), so the job is
+expected to pass on x86-64. Whether arm64 reads the same tokens is what its first run shows. The
+refusal gate is in-sample: the parser rule was derived from these two images. A diagram labelled
+with numbers, or prose holding a digit, is untested and may still come back review. The two held-out
+refusal probes join with the photographs (What Stage 4 inherits).
 
 First run: on the PR.
 
@@ -1022,10 +1049,11 @@ From the SDD ledger, one line each.
 | S3-P9 | A LaTeX block with no digit and no operator or relation token (`= < > \le \leq \ge \geq \ne \neq + - \times \cdot \div \frac \sqrt ^ _`) is not maths. A result with no other LaTeX block refuses with `NoMathFound`. |
 | S3-P10 | The scorer counts look-alike swaps (`x`/`X`, `1`/`l`, `0`/`O`, `5`/`S`, `2`/`Z`) as symbol substitutions, weighted ×5, and as surviving to the tutor when accepted. |
 | S3-P11 | The exact gate scales by the spec: total − 2 from 20 items (18/20), total − 1 below (17/18). The photographs join as q19 and q20, and the plan's q17/q18 ids are corrected. |
-| S3-P12 | The device gates encode the accepted floor regime: p50 ≤ 10,000 ms, p95 ≤ 12,000 ms. The spec's 8 s p50 is the mid-tier aspiration. |
+| S3-P12 | The device gates: p50 ≤ 10,000 ms, p95 ≤ 12,000 ms. Reworded by S3-P16: The spec's floor gate is 8 s p50. Stage 0's GO took lever 6, which ships 8–12 s on the A22 behind a staged progress state. 10 s is a regression guard inside that band. The strict 8 s waits on runtime kernel dispatch (lever 4). The mid-tier gate is 2.0 s and has not been measured. |
 | S3-P13 | The JSONL evidence is committed under `docs/superpowers/vision-stage3/`, the page-prompt runs labelled as such. |
 | S3-P14 | No separate task review for Task 6's record; the whole-branch review verifies it after the fix wave. |
 | S3-P15 | The maths-token set widens to the commands and Unicode operators letters-only maths is written with (`\pm`, `\dfrac`, `\int`, `\lim`, `\in`, `\cong`, `\angle`, `≤`, …), compared as whole tokens. |
+| S3-P16 | From the final review: the operator guard sees the Unicode operators `≤ ≥ ≠ × ÷ ± −` and the commands `\mp \leqslant \geqslant \lt \gt` (I1). The floor gate's reason is reworded (I2). The refusal gate is stated as in-sample, and two held-out probes join with the photographs (I3). |
 
 ## Deferred minors
 
@@ -1061,41 +1089,69 @@ From the SDD ledger and the reviews, per task.
   digit (`p{2cm}`) would count as maths and fall back to the old behaviour. The symbol pairs are
   the five the ruling names. Other case swaps (`a`/`A`, `n`/`N`) and look-alikes (`1`/`I`, `0`/`o`)
   are still plain edits. Round 2 corrected the plan's Task 2 interface line to the code's `GATES`.
+- **Final review, deferred** (`final-review-report.md`, Minor list):
+  - M1: the further letters-only commands that refuse are listed under What Stage 4 inherits.
+  - M4: the scorer does not count `\times` read as the letter `x` (`15\%x80=x` scores weight 1,
+    tutor false), nor `\cdot` against `.` or `\div`/`\pm` against `+`/`−`. One `LOOK_ALIKES` pair and
+    two sign pairs, with tests.
+  - M6: the bench's product prompt and cap (`vision_bench.rs`, `run-vision-probes.sh`,
+    `vision-regression.yml`) are not tied to `catalog.json` by a test. A node test in the style of
+    the thresholds test would keep S3-P8's trap shut if the catalog changes.
+  - M7: the ledger's S3-P9 text says `x+y` stays maths. It is text, as it was before this branch;
+    this record gives the measured behaviour.
 
 ## What Stage 4 inherits
 
 - **A prose-likeness heuristic.** The parser rule (S3-P9) refuses an array of letters. Prose with a
   digit, a hyphen or a dash, or a diagram labelled with numbers, still classifies by the word count
-  alone and lands in `review`, with "Use anyway" offered. The probe set has no such image. A
-  labelled diagram with side lengths and a prose page with a date are the next refusal probes to
-  add.
+  alone and lands in `review`, with "Use anyway" offered. Worse is possible and unmeasured: a
+  confident array of digits has no operator piece, so no operator probability, and could come back
+  `accept`. The Unicode markers (S3-P15) also promote short prose to LaTeX: `pages 3−5`,
+  `Temperature −5 °C`, `→ next page` and `Total × 2 items` were text on `main` and are LaTeX now.
+  The refusal gate is in-sample, and the two held-out probes in the photo-join checklist test it.
 - **Drop re-kinded junk rather than show it.** A block the rule re-kinds keeps its raw text, for
   example `\begin{array} { c c c } C & & …`, because text blocks are shown trimmed, not normalised.
   The app shows no block on a refusal, so this appears only when a real formula sits beside the
   junk, as a read-only text block. Dropping the block, or showing it normalised, is the fix.
 - **Letters-only maths outside the widened token set** (S3-P15) still refuses: Greek letters alone,
-  `\sinh`, `\vec`, `\overline`, `\triangle`, `\mid`. Each is one name in `MATHS_CMDS`
-  (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
+  `\sinh`, `\vec`, `\overline`, `\triangle`, `\mid`. The review measured more: `\sec`, `\csc`,
+  `\cot`, `\arcsin`, `\exp`, `\max`, `\binom`, `\leqslant`, `\geqslant`, `\lt`, `\Rightarrow`,
+  `\iff`, `\setminus`, `\lfloor`, `\overrightarrow`, `\pi r` (review M1, deferred). Each is one name
+  in `MATHS_CMDS` (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
+- **Letters-only expressions with only `+` or `−` are text,** on `main` and here: `(a+b)(a-b)`,
+  `ab+ac`, `xy - xz`, `a+b+c`. `classify` needs `\ = ^ _`, a Unicode glyph or a digit. "Expand
+  (a+b)(a−b)" is a staple printed exercise (review M2).
 - **Confident misreadings that reach the tutor.** The crop-filling DejaVu render's `x` read as `X`
   was accepted twice, above every threshold. The confirmation step, where the student reads the
   maths before using it, is the only guard in the product. Since `b4b4131` the scorer's tutor gate
   counts the five look-alike pairs, so that run now fails it. A letter swap outside the pairs, a
   digit misread as another digit, or a dropped exponent still fails no gate except the exact count.
-- **The device run** (The device run), and then the operator proposal of 0.86.
-  It needs at least one observed sign or operator error, or a deliberate check that the guard catches
-  one, before that guard is lowered. The aarch64 bench is the controller's build, from `f5bd4d3` or later.
+- **The device run** (The device run), and then the operator proposal of 0.86. It needs at least one
+  observed sign or operator error, or a deliberate check that the guard catches one, before that
+  guard is lowered. The aarch64 bench is the controller's build, from `dccd85e` or later.
 - **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
   operators. A per-piece field in the bench's record would let the sign guard be calibrated against
   signs.
 - **The founder's photographs: the join checklist.** They join as `q19-photo-upright` and
   `q20-photo-rotated` (S3-P11; the plan is corrected).
-  - [ ] The PNGs go under `probes/vision/fixtures/v1/photos/`, CC0, with entries in `manifest.json`
-    and `items.json`.
+  - [ ] The photographs go under `probes/vision/fixtures/v1/photos/`, CC0, a sheet printed from our
+    own typeset items, never a textbook page. Keep the camera JPEG if q20's rotation is its EXIF
+    Orientation tag (`vision_prep.rs` applies it; a PNG drops it). Strip GPS and device EXIF and
+    keep Orientation, because the repo is public.
+  - [ ] `gen.py` owns `items.json` and `manifest.json`: a plain run rewrites both without the
+    photos, and `gen.py --check` compares `items.json` with its own items. It needs a list of
+    photos that it hashes but does not render.
   - [ ] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
-    `items.length` of 18) move to 20.
-  - [ ] `.github/workflows/vision-regression.yml`: the 18-record guard moves to 20.
-  - [ ] Nothing in the scorer: at 20 items `GATES.exactMin` already gives 18 of 20, the spec's gate.
-  - [ ] Re-run the host gate run and the device run with the 20 items.
+    `items.length` of 18) move, and so do its ordered verdict and kind arrays (16 accepts, then two
+    refusals). A photo's kind is `printed` or a new `photo`.
+  - [ ] `.github/workflows/vision-regression.yml`: the 18-record guard moves.
+  - [ ] **Two held-out refusal probes join as q21 and q22** (review I3): a triangle labelled 3, 4
+    and 5, and a prose line holding a date. Both expect `refuse`, and `gen.py` typesets them like
+    q17 and q18. They test the refusal rule on images it was not derived from.
+  - [ ] **The counts with all four:** 22 items, of which 16 printed, 2 photographs and 4 refusals.
+    The exact gate is `GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is a fixed 2, so it moves
+    to 4, all four refusal items. The manifest test and the CI guard count 22.
+  - [ ] Re-run the host gate run and the device run with the 22 items.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
@@ -1115,9 +1171,10 @@ From the SDD ledger and the reviews, per task.
 
 - **The device run.** The founder has not run `run-vision-probes.sh`.
 - **The CI job.** Its first run is on the PR.
-- **The aarch64 build of the bench at `f5bd4d3` or later.** It is the controller's, and it comes
-  before the device run. A build from before `f5bd4d3` lacks the widened token set, and one from
-  before `83b8929` may lack the rule altogether.
+- **The aarch64 build of the bench at `dccd85e` or later.** It is the controller's, and it comes
+  before the device run. A build from before `dccd85e` lacks the operator guard on the Unicode
+  operators, one from before `f5bd4d3` the widened token set, and one from before `83b8929` may lack
+  the rule altogether.
 - **The host bench after a calibration change.** No threshold changed.
 - **The Windows desktop suite.** No `src-tauri` file changed on this branch.
 - **A repeat of any host run.** Each of the seven runs is one repeat. q17 and q18 are byte-identical

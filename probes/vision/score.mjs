@@ -15,10 +15,12 @@ export const GATES = {
   exactMin: (total) => (total >= 20 ? total - 2 : total - 1),
   acceptedSignErrorsMax: 0,
   refusalsMin: 2,
-  // The accepted floor regime (S3-P12), not the spec's 8 s p50: Stage 0 went
-  // ahead under its lever 6 (the 8-12 s band) at 8.9 s on the A22, and Stage 2's
-  // four device readings were 8,991-9,403 ms. The spec's 8 s p50 is the mid-tier
-  // aspiration.
+  // A regression guard, not the spec's gate (S3-P12, S3-P16). The spec's floor
+  // gate is 8 s p50. Stage 0's GO took lever 6, which ships 8-12 s on the A22
+  // behind a staged progress state; it measured 8.9 s, and Stage 2's four device
+  // readings were 8,991-9,403 ms. 10 s is a regression guard inside that band.
+  // The strict 8 s waits on runtime kernel dispatch (lever 4). The mid-tier gate
+  // is 2.0 s and has not been measured.
   floorP50Ms: 10_000,
   floorP95Ms: 12_000,
   floorVmHwmKb: 1_258_291, // 1.2 GiB in KiB
