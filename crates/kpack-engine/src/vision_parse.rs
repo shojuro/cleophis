@@ -30,9 +30,13 @@
 //! cannot exclude it. The confirmation gate is the check on top.
 //!
 //! `classify` also asks an element to hold maths: a digit, or an operator or
-//! relation token (`= < > + - ^ _`, or one of `\le \leq \ge \geq \ne \neq
-//! \times \cdot \div \frac \sqrt` as a whole command). One with neither is
-//! text, whatever its LaTeX syntax (S3-P9). The formula prompt writes a
+//! relation token (`= < > + - ^ _`, one of the Unicode operators `≤ ≥ ≠ × ÷ ±
+//! − → ∞ ∈`, or one of [`MATHS_CMDS`] as a whole command: the relations and
+//! operators, `\frac` and `\sqrt`, and the commands letters-only maths is
+//! written with, such as `\pm`, `\int`, `\lim`, `\in`, `\cong` and `\angle`).
+//! One with neither is text, whatever its LaTeX syntax (S3-P9, widened by
+//! S3-P15). The Unicode operators also mark an element as maths the way `\`
+//! and `=` do, so `a ≤ b` is maths while `a < b` is not. The formula prompt writes a
 //! diagram's labels and a page of letter-spaced prose as LaTeX arrays of
 //! letters, and a result with no other LaTeX block then refuses with
 //! `NoMathFound`. The rule refuses letters; prose holding a digit or a hyphen
@@ -352,34 +356,46 @@ fn count_words(s: &str) -> usize {
     n
 }
 
-/// LaTeX when the element looks like maths (a strong marker with at most two
-/// words, or a digit and an arithmetic sign with none) AND holds maths
-/// ([`holds_maths`]); text otherwise.
+/// LaTeX when the element looks like maths (a strong marker, `\ = ^ _` or a
+/// [`MATHS_GLYPHS`] character, with at most two words, or a digit and an
+/// arithmetic sign with none) AND holds maths ([`holds_maths`]); text
+/// otherwise.
 fn classify(s: &str) -> BlockKind {
-    let strong = s.contains(['\\', '=', '^', '_']);
+    let strong = s.contains(['\\', '=', '^', '_']) || s.contains(MATHS_GLYPHS);
     let weak = s.chars().any(|c| c.is_ascii_digit()) && s.contains(['+', '-', '*', '/']);
     let words = count_words(s);
     if ((strong && words <= 2) || (weak && words == 0)) && holds_maths(s) { BlockKind::Latex } else { BlockKind::Text }
 }
 
-/// Command names (without the backslash) that make an element maths (S3-P9):
-/// the relations, and the operators a school problem is built from.
-const MATHS_CMDS: &[&str] = &["le", "leq", "ge", "geq", "ne", "neq", "times", "cdot", "div", "frac", "sqrt"];
+/// Command names (without the backslash) that make an element maths: the
+/// relations and the operators a school problem is built from (S3-P9), and
+/// the commands letters-only maths is written with (S3-P15).
+const MATHS_CMDS: &[&str] = &[
+    "le", "leq", "ge", "geq", "ne", "neq", "times", "cdot", "div", "frac", "sqrt", // S3-P9
+    "pm", "mp", "dfrac", "tfrac", "int", "sum", "prod", "lim", "log", "ln", "sin", "cos", "tan", "in", "notin",
+    "cup", "cap", "subset", "subseteq", "to", "rightarrow", "infty", "equiv", "approx", "sim", "propto", "cong",
+    "angle", "perp", "parallel", "circ", "ldots", "cdots", // S3-P15
+];
 
-/// A digit, one of `= < > + - ^ _`, or one of [`MATHS_CMDS`] as a whole
-/// command (S3-P9). Without one, a "formula" is letters in LaTeX dress: the
-/// formula prompt writes a diagram's labels (`C & & \\ A & & \\ B`) and a
-/// page of letter-spaced prose as arrays, and neither is a problem the tutor
-/// could teach. The array syntax `&` and `\\` and the label's `\colon` are not
-/// operators. Linear in `s`.
+/// Unicode operators the transcriber can write instead of a command (the
+/// page-prompt raws carried `≥`). `−` is U+2212, the minus sign.
+const MATHS_GLYPHS: &[char] = &['≤', '≥', '≠', '×', '÷', '±', '−', '→', '∞', '∈'];
+
+/// A digit, one of `= < > + - ^ _`, a [`MATHS_GLYPHS`] character, or one of
+/// [`MATHS_CMDS`] as a whole command (S3-P9, S3-P15). Without one, a
+/// "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
+/// labels (`C & & \\ A & & \\ B`) and a page of letter-spaced prose as arrays,
+/// and neither is a problem the tutor could teach. The array syntax `&` and
+/// `\\` and the label's `\colon` are not operators. Linear in `s`.
 fn holds_maths(s: &str) -> bool {
-    s.chars().any(|c| c.is_ascii_digit() || matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_'))
+    s.chars().any(|c| c.is_ascii_digit() || matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_') || MATHS_GLYPHS.contains(&c))
         || holds_command(s, MATHS_CMDS)
 }
 
 /// `s` holds one of `names` as a whole command: the full letter run after a
-/// backslash, so `\leq` is `leq`, `\left` is `left` (not `le`) and `\cdots` is
-/// `cdots` (not `cdot`). Linear in `s`.
+/// backslash, compared whole, so `\leq` is `leq`, `\left` is `left` (not
+/// `le`), `\dfrac` is `dfrac` (not `frac`) and `\intertext` is `intertext`
+/// (not `int` or `in`). Linear in `s`.
 fn holds_command(s: &str, names: &[&str]) -> bool {
     let mut rest = s;
     while let Some(i) = rest.find('\\') {
@@ -1318,10 +1334,12 @@ mod tests {
             r"A \colon B",
             r"\alpha \beta",
             // A command is matched whole: `\left` is not `\le`, `\neg` is
-            // not `\ne`, `\cdots` is not `\cdot`.
+            // not `\ne`, `\intertext` is not `\int` or `\in`, `\toprule` is
+            // not `\to`.
             r"\left( A \right)",
             r"\neg A",
-            r"A , B , \cdots",
+            r"\intertext{AB}",
+            r"\toprule A",
         ] {
             assert_eq!(kinds_of(body), vec![BlockKind::Text], "{body}");
         }
@@ -1342,6 +1360,43 @@ mod tests {
         }
         for body in [r"\frac{\alpha}{\beta}", r"\sqrt{\alpha}", r"\alpha^\beta", r"\alpha_\beta", "a_n", "x^y", "a = b"] {
             assert_eq!(kinds_of(body), vec![BlockKind::Latex], "{body}");
+        }
+    }
+
+    // ---- S3-P15: letters-only maths with a command or a Unicode operator ----
+
+    #[test]
+    fn letters_only_maths_with_a_command_or_a_unicode_operator_stays_maths() {
+        for body in [
+            r"a \pm b",
+            r"\dfrac{a}{b}",
+            r"\int f(x)\,dx",
+            r"\angle A \cong \angle B",
+            r"x \in A",
+            "a ≤ b",
+            r"\lim_{x \to \infty} f(x)",
+            r"x \to \infty",
+        ] {
+            assert_eq!(kinds_of(body), vec![BlockKind::Latex], "{body}");
+            let a = assess(&toks(&format!("<formula>{LOC} {body}</formula>"), -0.01), false);
+            assert_ne!(a.verdict, Verdict::Refuse, "{body}: {a:?}");
+            assert!(!a.warnings.contains(&Warning::NoMathFound), "{body}: {a:?}");
+        }
+        for cmd in [
+            "pm", "mp", "int", "sum", "prod", "lim", "log", "ln", "sin", "cos", "tan", "in", "notin", "cup",
+            "cap", "subset", "subseteq", "to", "rightarrow", "infty", "equiv", "approx", "sim", "propto", "cong",
+            "angle", "perp", "parallel", "circ", "ldots", "cdots",
+        ] {
+            let body = format!(r"\alpha \{cmd} \beta");
+            assert_eq!(kinds_of(&body), vec![BlockKind::Latex], "{body}");
+        }
+        for cmd in ["dfrac", "tfrac"] {
+            let body = format!(r"\{cmd}{{\alpha}}{{\beta}}");
+            assert_eq!(kinds_of(&body), vec![BlockKind::Latex], "{body}");
+        }
+        for op in ['≤', '≥', '≠', '×', '÷', '±', '−', '→', '∞', '∈'] {
+            let body = format!("a {op} b");
+            assert_eq!(kinds_of(&body), vec![BlockKind::Latex], "{body}");
         }
     }
 
