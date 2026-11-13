@@ -11,10 +11,10 @@ import { pickHeroArtifacts, heroVariantFor, visionVariantFor } from './dist-pick
 // `confirmState` is aliased: triage-confirm.js already owns that name here.
 import { fitContain, defaultCrop, clampCrop, moveCrop, resizeCrop, cropToImagePixels, targetSize } from './vision-crop.js';
 import {
-  READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
+  OPENING_TEXT, READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
   REFUSE_NO_MATHS, confirmState as visionConfirmState, applyEdit, composeHandoff, attachmentFor,
 } from './vision-confirm.js';
-import { visionAvailability, visionDownloadPlan, VISION_DOWNLOAD_PROMPT } from './vision-download.js';
+import { visionAvailability, visionDownloadPlan, VISION_DOWNLOAD_PROMPT, DOWNLOAD_LABEL, DOWNLOADING_LABEL } from './vision-download.js';
 import { assembleMessages } from './prompt-assembly.js';
 import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
 // The product's contract on a supervised reply (Phase 2). Every use below is
@@ -3029,8 +3029,6 @@ async function maybeAutoTitle(chatId, userText, assistantText) {
 // the drawer's Downloading…).
 const CROP_USE_LABEL = 'Use selection';
 const VISION_CANCEL_LABEL = 'Cancel';
-const VISION_DOWNLOAD_LABEL = 'Download';
-const VISION_DOWNLOADING_LABEL = 'Downloading…';
 const VISION_PANES = ['visionMenu', 'visionCrop', 'visionReading', 'visionConfirm', 'visionRefuse'];
 // The crop preview never takes more than this share of the viewport's height,
 // so the buttons under it stay on screen.
@@ -3183,7 +3181,7 @@ async function renderVisionDownload() {
 
 function renderVisionDownloadButton() {
   const btn = $('visionDlBtn');
-  btn.textContent = visionDownloading ? VISION_DOWNLOADING_LABEL : VISION_DOWNLOAD_LABEL;
+  btn.textContent = visionDownloading ? DOWNLOADING_LABEL : DOWNLOAD_LABEL;
   // The Downloads registry has one slot. A hero install or tier switch that
   // holds it (`state.artDl`) would have its sequencing promise orphaned if
   // `downloadArtifact` were called over it.
@@ -3265,6 +3263,7 @@ async function startCrop(file) {
 }
 
 function setCropBusy(on) {
+  $('cropOpening').hidden = !on;
   $('cropFrame').hidden = on;
   $('cropUseBtn').disabled = on;
 }
@@ -3481,8 +3480,9 @@ function visionRetake() {
 }
 
 function visionTypeIt() {
+  const input = $('chatInput');
   hide($('visionModal'));
-  $('chatInput').focus();
+  if (!input.disabled) input.focus();
 }
 
 // Static labels, from the constants; nothing in the markup carries copy.
@@ -3490,6 +3490,7 @@ $('visionTakeBtn').textContent = TAKE_PHOTO_LABEL;
 $('visionPickBtn').textContent = CHOOSE_IMAGE_LABEL;
 $('cropUseBtn').textContent = CROP_USE_LABEL;
 $('cropRetakeBtn').textContent = RETAKE_LABEL;
+$('cropOpening').textContent = OPENING_TEXT;
 $('visionReadingText').textContent = READING_TEXT;
 $('visionCancel').textContent = VISION_CANCEL_LABEL;
 $('visionUse').textContent = USE_LABEL;

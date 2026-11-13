@@ -471,3 +471,13 @@ test('reset drops the queue and cancels the pending timer', () => {
   assert.deepEqual(rendered, ['loading']);
   assert.equal(s.current(), null);
 });
+
+test('the photo reader download names itself; the tutor model keeps its wording', () => {
+  const ev = (modelId, totalBytes = 4) => ({ download: { phase: 'downloading', modelId, bytesDownloaded: 1, totalBytes } });
+  const v = describeEngineState(ev('vision/granite-docling-258M/v1/x.gguf'));
+  assert.equal(v.label, 'Downloading the photo reader — 25%');
+  assert.equal(v.kind, 'downloading');
+  assert.ok(describeEngineState(ev('models/Qwen3-1.7B/v1/x.gguf')).label.startsWith('Downloading your model'));
+  assert.ok(describeEngineState(ev(undefined)).label.startsWith('Downloading your model'));
+  assert.equal(describeEngineState(ev('vision/granite-docling-258M/v1/x.gguf', 0)).detail, 'Fetching the photo reader files.');
+});

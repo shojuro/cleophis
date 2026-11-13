@@ -864,6 +864,13 @@ is not in the signed catalog
 
 5. Only with the size line and the Download button: with the catalog this
    build pins, the line reads "Photo input needs a one-time 269 MB download."
+   The button reads:
+
+<!-- expect: visionDownload.DOWNLOAD_LABEL -->
+```text
+Download
+```
+
    Tap Download, wait for it to finish, and go to step 7.
 6. Only with the "is not in the signed catalog" message: load the two files
    by hand, and write "sideloaded" in the note. The projector must be the
@@ -921,7 +928,14 @@ android.media.action.IMAGE_CAPTURE
 1. Tap the camera button, then Take a photo. The phone's own camera app
    opens. A file picker or a list of apps is a FAIL.
 2. Photograph the printed problem, one line of maths across about a third of
-   the frame, and accept the photo in the camera app.
+   the frame, and accept the photo in the camera app. While the photo
+   decodes, the crop pane says:
+
+<!-- expect: visionConfirm.OPENING_TEXT -->
+```text
+Opening the photo…
+```
+
 3. The app shows the photo with a selection frame over its middle, and two
    buttons:
 

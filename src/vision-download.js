@@ -4,6 +4,10 @@
 import { pickVisionArtifacts } from './dist-pick.js';
 import { formatBytes } from './download-policy.js';
 
+export const DOWNLOAD_LABEL = 'Download';
+export const DOWNLOADING_LABEL = 'Downloading…';
+export const NO_SIZE_TEXT = 'The signed catalog lists no size for the vision files — please update the app.';
+
 export const VISION_DOWNLOAD_PROMPT = (bytes) => `Photo input needs a one-time ${formatBytes(bytes)} download.`;
 
 /**
@@ -28,7 +32,7 @@ export function visionDownloadPlan(artifacts, variant) {
   const ok = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
   // Coercing a missing size to 0 would show the user a too-small number in the consent prompt.
   if (!ok(base.size) || !ok(mmproj.size)) {
-    throw new Error('The signed catalog lists no size for the vision files — please update the app.');
+    throw new Error(NO_SIZE_TEXT);
   }
   return { base, mmproj, totalBytes: base.size + mmproj.size };
 }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { VISION_DOWNLOAD_PROMPT, visionAvailability, visionDownloadPlan } from './vision-download.js';
+import { VISION_DOWNLOAD_PROMPT, DOWNLOAD_LABEL, DOWNLOADING_LABEL, NO_SIZE_TEXT, visionAvailability, visionDownloadPlan } from './vision-download.js';
 import { formatBytes } from './download-policy.js';
 
 const sha = (c) => c.repeat(64);
@@ -55,4 +55,11 @@ test('visionDownloadPlan refuses a missing or invalid size instead of coercing t
   assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: '100' }], VARIANT), msg);
   assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: -1 }], VARIANT), msg);
   assert.throws(() => visionDownloadPlan([VBASE, { ...VPROJ, size: NaN }], VARIANT), msg);
+});
+
+test('the download labels and the no-size text are pinned constants', () => {
+  assert.equal(DOWNLOAD_LABEL, 'Download');
+  assert.equal(DOWNLOADING_LABEL, 'Downloading…');
+  assert.equal(NO_SIZE_TEXT, 'The signed catalog lists no size for the vision files — please update the app.');
+  assert.throws(() => visionDownloadPlan([{ ...VBASE, size: undefined }, VPROJ], VARIANT), { message: NO_SIZE_TEXT });
 });

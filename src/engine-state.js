@@ -153,13 +153,16 @@ export function describeEngineState({
       const done = download.bytesDownloaded || 0;
       const total = download.totalBytes || 0;
       const r = rate(download.bytesPerSec);
+      // The photo reader's files are not the tutor's model; the artifact path
+      // in the progress event says which download this is.
+      const reader = typeof download.modelId === 'string' && download.modelId.startsWith('vision/');
       return {
         kind: 'downloading',
-        label: `Downloading your model — ${pct(done, total)}%`,
+        label: `${reader ? 'Downloading the photo reader' : 'Downloading your model'} — ${pct(done, total)}%`,
         short: `${pct(done, total)}%`,
         detail: total
           ? `${bytesIn(done, total)} of ${bytesIn(total)}${r ? ` · ${r}` : ''}`
-          : 'Fetching the model file.',
+          : (reader ? 'Fetching the photo reader files.' : 'Fetching the model file.'),
         tone: 'busy',
         prominent: true,
       };

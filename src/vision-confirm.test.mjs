@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
+  OPENING_TEXT, READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
   HANDOFF_PREFIX, REFUSE_NO_MATHS, REFUSE_LOW_CONFIDENCE, REVIEW_NOTE, WARNING_COPY, CONFIDENCE_FLAG, OPERATOR_FLAG,
   confirmState, applyEdit, composeHandoff, attachmentFor,
 } from './vision-confirm.js';
@@ -445,4 +445,8 @@ test('attachmentFor records no override without the button, or for an unknown on
   assert.equal(attachmentFor(r, s, 'use').override, false);
   assert.equal(attachmentFor(r, s, 'Anyway').override, false);
   assert.equal(typeof attachmentFor(r, s, 'anyway').override, 'boolean');
+});
+
+test('OPENING_TEXT is the busy crop pane copy', () => {
+  assert.equal(OPENING_TEXT, 'Opening the photo…');
 });
