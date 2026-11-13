@@ -130,7 +130,7 @@ export function scoreItem(item, record) {
     ...base, exact, cer, signSubstitutions, operatorSubstitutions,
     weightedErrors: SIGN_WEIGHT * (signSubstitutions + operatorSubstitutions) + otherEdits,
     verdictOk,
-    survivesToTutor: record.verdict === 'accept' && signSubstitutions > 0,
+    survivesToTutor: record.verdict === 'accept' && signSubstitutions + operatorSubstitutions > 0,
   };
 }
 
@@ -180,7 +180,7 @@ export function scoreRun(items, records, { device = false } = {}) {
   const failures = [];
   if (exact < exactRequired) failures.push(`exact ${exact}/${total} is below the gate of ${exactRequired}/${total}`);
   if (survivesToTutor > GATES.acceptedSignErrorsMax) {
-    failures.push(`${survivesToTutor} accepted transcription(s) with a sign error reach the tutor (max ${GATES.acceptedSignErrorsMax})`);
+    failures.push(`${survivesToTutor} accepted transcription(s) with a sign or operator error reach the tutor (max ${GATES.acceptedSignErrorsMax})`);
   }
   if (refusalsOk < GATES.refusalsMin) failures.push(`refusals ${refusalsOk} is below the gate of ${GATES.refusalsMin}`);
 

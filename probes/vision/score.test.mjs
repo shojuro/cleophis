@@ -104,6 +104,23 @@ test('survivesToTutor needs verdict accept', () => {
   assert.equal(scoreItem(item('a', '3x+7'), rec('a', '3x-7', 'refuse')).survivesToTutor, false);
 });
 
+test('an accepted operator swap survives to the tutor too; in review it does not', () => {
+  const acc = scoreItem(item('a', 'a\\le b'), rec('a', 'a\\ge b', 'accept'));
+  assert.equal(acc.signSubstitutions, 0);
+  assert.equal(acc.operatorSubstitutions, 1);
+  assert.equal(acc.survivesToTutor, true);
+  assert.equal(scoreItem(item('a', 'a\\le b'), rec('a', 'a\\ge b', 'review')).survivesToTutor, false);
+});
+
+test('an accepted run with an operator swap fails the gate', () => {
+  const { items, records } = fixture();
+  items[0] = item('q01', 'a\\le b');
+  records[0] = rec('q01', 'a\\ge b', 'accept');
+  const r = scoreRun(items, records);
+  assert.equal(r.survivesToTutor, 1);
+  assert.equal(r.pass, false);
+});
+
 test('refuse item: exact iff the verdict is refuse', () => {
   const ok = scoreItem(item('d', null, 'refuse', 'diagram'), rec('d', null, 'refuse'));
   assert.equal(ok.exact, true);

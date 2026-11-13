@@ -58,3 +58,30 @@ test('idempotent', () => {
   const s = '\\dfrac12 x \\leq 3';
   assert.equal(normalise(normalise(s)), normalise(s));
 });
+
+test('brace canonicalisation: single-char ^/_ arguments are bare', () => {
+  assert.equal(normalise('x^{2}'), normalise('x^2'));
+  assert.equal(normalise('a_{1}+a_{2}'), 'a_1+a_2');
+  assert.equal(normalise('2^{n+1}'), '2^{n+1}');
+});
+
+test('brace canonicalisation: \\frac12 equals \\frac{1}{2}', () => {
+  assert.equal(normalise('\\frac12'), normalise('\\frac{1}{2}'));
+  assert.equal(normalise('\\frac{1}{2}'), '\\frac{1}{2}');
+});
+
+test('brace canonicalisation: a non-argument grouping brace is unwrapped', () => {
+  assert.equal(normalise('{3x}-7'), normalise('3x-7'));
+  assert.equal(normalise('{3x}-7'), '3x-7');
+});
+
+test('brace canonicalisation: \\sqrt keeps its braces', () => {
+  assert.equal(normalise('\\sqrt{x + 1} = 3'), '\\sqrt{x+1}=3');
+});
+
+test('a truncated or stray-brace input still normalises without throwing', () => {
+  assert.doesNotThrow(() => normalise('\\frac{1}{2'));
+  assert.doesNotThrow(() => normalise('x}+{'));
+  assert.doesNotThrow(() => normalise('x\\'));
+  assert.equal(normalise('x}+1'), 'x+1');
+});
