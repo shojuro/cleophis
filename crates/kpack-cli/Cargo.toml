@@ -24,4 +24,4 @@ ed25519-dalek = "=2.2.0"
 [dev-dependencies]
 # Turns a test-built pack into a schema-v1 pack (no titles table) for the
 # `lookup` "unavailable" test. Same version and features as kpack-core's.
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
