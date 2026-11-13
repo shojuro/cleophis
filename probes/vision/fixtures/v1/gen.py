@@ -4,7 +4,8 @@
   python3 gen.py          write the 18 PNGs, items.json, manifest.json next to this file
   python3 gen.py --check  re-render to a temp dir and compare sha256s with the committed files (exit 1 on any difference)
 
-Rendered with matplotlib mathtext (no TeX needed), 512x160 px, white, DejaVu Sans 28 pt.
+Rendered with matplotlib mathtext in the Computer Modern fontset (the transcriber was trained on
+LaTeX-rendered formulas), 512x160 px, white, each formula scaled to fill ~78% of the width.
 """
 import hashlib
 import json
@@ -16,10 +17,14 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+matplotlib.rcParams["mathtext.fontset"] = "cm"
 import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-FS = 28
+FS = 36          # starting size; each item is rescaled to fill the crop
+FS_MIN, FS_MAX = 28.0, 72.0
+FILL_W = 0.78    # target share of the 512 px width
+FILL_H = 0.80    # all lines together must stay within this share of the 160 px height
 
 # (id-slug, kind, mathtext lines, expected latex, plain reading, notes)
 PRINTED = [
@@ -56,14 +61,27 @@ def mathtext(line):
     return re.sub(r"\\(le|ge)(?![a-z])", r"\\\1q", line)
 
 
+def _extent(fig, lines, fs, ys):
+    """Width and total height (px) of the rendered lines at size fs."""
+    r = fig.canvas.get_renderer()
+    texts = [fig.text(0.5, y, ln, fontsize=fs, ha="center", va="center") for y, ln in zip(ys, lines)]
+    boxes = [t.get_window_extent(r) for t in texts]
+    for t in texts:
+        t.remove()
+    return max(bx.width for bx in boxes), max(bx.y1 for bx in boxes) - min(bx.y0 for bx in boxes)
+
+
 def render_printed(path, lines):
     lines = [mathtext(ln) for ln in lines]
     fig = new_fig()
-    if len(lines) == 1:
-        fig.text(0.5, 0.5, lines[0], fontsize=FS, ha="center", va="center")
-    else:
-        for y, ln in zip((0.68, 0.32), lines):
-            fig.text(0.5, y, ln, fontsize=FS, ha="center", va="center")
+    ys = (0.5,) if len(lines) == 1 else (0.70, 0.30)
+    w, h = _extent(fig, lines, FS, ys)
+    scale = min(FILL_W * 512 / w, FILL_H * 160 / h)
+    fs = round(max(FS_MIN, min(FS_MAX, FS * scale)), 1)
+    w, h = _extent(fig, lines, fs, ys)
+    assert w <= 512 * 0.95 and h <= 160 * 0.95, (lines, fs, w, h)  # nothing clipped
+    for y, ln in zip(ys, lines):
+        fig.text(0.5, y, ln, fontsize=fs, ha="center", va="center")
     save(fig, path)
 
 
@@ -75,7 +93,7 @@ def render_diagram(path):
     ax.plot(xs, ys, color="black", linewidth=2)
     ax.plot([0, 0.15, 0.15], [0.15, 0.15, 0], color="black", linewidth=1.5)
     for label, (x, y), dx, dy in (("A", A, -0.18, -0.12), ("B", B, 0.1, -0.12), ("C", C, -0.18, 0.04)):
-        ax.text(x + dx, y + dy, label, fontsize=FS - 6, ha="center", va="center")
+        ax.text(x + dx, y + dy, label, fontsize=22, ha="center", va="center")
     ax.set_xlim(-0.4, 1.9)
     ax.set_ylim(-0.3, 1.2)
     ax.axis("off")
@@ -85,7 +103,7 @@ def render_diagram(path):
 def render_prose(path):
     fig = new_fig()
     for y, ln in zip((0.78, 0.5, 0.22), ("Shopping list for Saturday:", "milk, eggs, bread, butter,", "apples and a jar of honey.")):
-        fig.text(0.5, y, ln, fontsize=FS - 4, ha="center", va="center")
+        fig.text(0.5, y, ln, fontsize=24, ha="center", va="center")
     save(fig, path)
 
 
