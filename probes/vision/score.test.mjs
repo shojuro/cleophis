@@ -34,12 +34,16 @@ function fixture() {
 }
 
 test('GATES are pinned', () => {
-  assert.equal(GATES.exactMin, 17);
-  assert.equal(GATES.exactOf, 18);
+  // The spec's scaling (S3-P11): 18 of 20 once the photographs join, 17 of 18 now.
+  assert.equal(GATES.exactMin(20), 18);
+  assert.equal(GATES.exactMin(18), 17);
+  assert.equal(GATES.exactMin(19), 18);
+  assert.equal(GATES.exactMin(22), 20);
   assert.equal(GATES.acceptedSignErrorsMax, 0);
   assert.equal(GATES.refusalsMin, 2);
-  assert.equal(GATES.floorP50Ms, 8000);
-  assert.equal(GATES.floorP95Ms, 12000);
+  // The accepted floor regime (S3-P12).
+  assert.equal(GATES.floorP50Ms, 10_000);
+  assert.equal(GATES.floorP95Ms, 12_000);
   assert.equal(GATES.floorVmHwmKb, 1_258_291);
 });
 
@@ -121,6 +125,68 @@ test('an accepted run with an operator swap fails the gate', () => {
   assert.equal(r.pass, false);
 });
 
+// The crop-filling DejaVu render under the product prompt
+// (host-v1-dejavu-fill-product.jsonl, verbatim): the italic sans `x` read as `X`
+// and accepted at ~0.99, above every threshold.
+const DEJAVU_Q08 = {
+  item: item('q08', '\\frac{3}{4}x - \\frac{1}{2} = \\frac{5}{8}'),
+  rec: {
+    ...rec('q08', null, 'accept'),
+    blocks: [{ kind: 'latex', content: '\\frac{3}{4}X-\\frac{1}{2}=\\frac{5}{8}', confidence: 0.99353224, min_operator_prob: 0.99804217 }],
+  },
+};
+const DEJAVU_Q13 = {
+  item: item('q13', '\\left(\\frac{1}{2}\\right)^x = 8'),
+  rec: {
+    ...rec('q13', null, 'accept'),
+    blocks: [{ kind: 'latex', content: '\\left(\\frac{1}{2}\\right)^{X}=8', confidence: 0.9747802, min_operator_prob: 0.9933092 }],
+  },
+};
+
+test('the DejaVu x read as X is a symbol substitution, weighted x5, and survives to the tutor', () => {
+  for (const { item: it, rec: r } of [DEJAVU_Q08, DEJAVU_Q13]) {
+    const s = scoreItem(it, r);
+    assert.equal(s.exact, false, it.id);
+    assert.equal(s.symbolSubstitutions, 1, it.id);
+    assert.equal(s.signSubstitutions, 0, it.id);
+    assert.equal(s.operatorSubstitutions, 0, it.id);
+    assert.equal(s.weightedErrors, 5, it.id);
+    assert.equal(s.survivesToTutor, true, it.id);
+  }
+  // In review the student reads it first: it does not survive.
+  assert.equal(scoreItem(DEJAVU_Q08.item, { ...DEJAVU_Q08.rec, verdict: 'review' }).survivesToTutor, false);
+});
+
+test('every look-alike pair counts in both directions; any other letter swap is a plain edit', () => {
+  for (const [a, b] of [['x', 'X'], ['1', 'l'], ['0', 'O'], ['5', 'S'], ['2', 'Z']]) {
+    for (const [e, g] of [[a, b], [b, a]]) {
+      const s = scoreItem(item('a', `${e}+y=7`), rec('a', `${g}+y=7`));
+      assert.equal(s.symbolSubstitutions, 1, `${e}->${g}`);
+      assert.equal(s.weightedErrors, 5, `${e}->${g}`);
+      assert.equal(s.survivesToTutor, true, `${e}->${g}`);
+    }
+  }
+  const plain = scoreItem(item('a', 'x+1=2'), rec('a', 'y+1=2'));
+  assert.equal(plain.symbolSubstitutions, 0);
+  assert.equal(plain.weightedErrors, 1);
+  assert.equal(plain.survivesToTutor, false);
+});
+
+test('an accepted symbol substitution fails the run and is reported in its own column', () => {
+  const { items, records } = fixture();
+  items[7] = DEJAVU_Q08.item;
+  records[7] = DEJAVU_Q08.rec;
+  const r = scoreRun(items, records);
+  assert.equal(r.exact, 17);
+  assert.equal(r.survivesToTutor, 1);
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /symbol/.test(f)), r.failures.join('; '));
+  const md = toMarkdown(r);
+  assert.match(md, /\| id \| exact \| CER \| sign \| operator \| symbol \| weighted \|/);
+  assert.match(md, /\| q08 \| NO \| 0\.0\d\d \| 0 \| 0 \| 1 \| 5 \|/);
+  assert.equal(JSON.parse(toJson(r)).rows[7].symbolSubstitutions, 1);
+});
+
 test('refuse item: exact iff the verdict is refuse', () => {
   const ok = scoreItem(item('d', null, 'refuse', 'diagram'), rec('d', null, 'refuse'));
   assert.equal(ok.exact, true);
@@ -189,17 +255,27 @@ test('a missed refusal (diagram accepted) fails', () => {
   assert.ok(r.failures.some((f) => /refus/i.test(f)));
 });
 
-test('the exact gate scales when the set grows', () => {
+test('the exact gate scales by the spec: 18 of 20 with the photographs, 17 of 18 without', () => {
   const { items, records } = fixture();
   for (const id of ['q19', 'q20']) {
     items.push(item(id, 'x+1=2'));
     records.push(rec(id, 'x+1=2'));
   }
-  // 20 items: ceil(17/18*20) = 19 required.
   records[0] = rec('q01', '9x+9=9', 'review');
-  assert.equal(scoreRun(items, records).pass, true);
   records[1] = rec('q02', '9x+9=9', 'review');
-  assert.equal(scoreRun(items, records).pass, false);
+  const two = scoreRun(items, records);
+  assert.equal(two.exact, 18);
+  assert.equal(two.exactRequired, 18);
+  assert.equal(two.pass, true);
+  assert.match(toMarkdown(two), /total - 2/);
+  records[2] = rec('q03', '9x+9=9', 'review');
+  const three = scoreRun(items, records);
+  assert.equal(three.pass, false);
+  assert.match(three.failures.join('\n'), /17\/20 is below the gate of 18\/20/);
+
+  const eighteen = scoreRun(...Object.values(fixture()));
+  assert.equal(eighteen.exactRequired, 17);
+  assert.match(toMarkdown(eighteen), /total - 1/);
 });
 
 test('device mode: latency percentiles over the last repeat, nearest rank', () => {
@@ -216,12 +292,16 @@ test('device mode: latency percentiles over the last repeat, nearest rank', () =
   assert.equal(r.pass, true);
 });
 
-test('device mode: p50 over 8000, p95 over 12000, VmHWM over the floor each fail', () => {
+test('device mode: p50 over 10000, p95 over 12000, VmHWM over the floor each fail', () => {
   const { items, records } = fixture();
-  const slow50 = records.map((r) => ({ ...r, total_ms: 9000 }));
+  // Stage 2's A22 readings were 8,991-9,403 ms: inside the accepted floor band.
+  const floor = scoreRun(items, records.map((r) => ({ ...r, total_ms: 9500 })), { device: true });
+  assert.equal(floor.latency.p50, 9500);
+  assert.equal(floor.pass, true, floor.failures.join('; '));
+  const slow50 = records.map((r) => ({ ...r, total_ms: 10_500 }));
   const a = scoreRun(items, slow50, { device: true });
   assert.equal(a.pass, false);
-  assert.ok(a.failures.some((f) => /p50/.test(f)));
+  assert.ok(a.failures.some((f) => /p50 10500 ms is above the floor of 10000 ms/.test(f)), a.failures.join('; '));
 
   const slow95 = records.map((r, i) => ({ ...r, total_ms: i >= 16 ? 13000 : 1000 }));
   const b = scoreRun(items, slow95, { device: true });

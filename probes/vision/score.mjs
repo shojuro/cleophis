@@ -6,19 +6,31 @@ import { fileURLToPath } from 'node:url';
 
 import { normalise } from './normalise.mjs';
 
+// The exact-match gate scales by the spec (S3-P11): two misses allowed from 20
+// items (18 of 20, once the founder's photographs join as q19/q20), one below
+// (17 of 18 for the typeset set).
+const exactRule = (total) => (total >= 20 ? 'total - 2 (20 or more items)' : 'total - 1 (fewer than 20 items)');
+
 export const GATES = {
-  exactMin: 17,
-  exactOf: 18,
+  exactMin: (total) => (total >= 20 ? total - 2 : total - 1),
   acceptedSignErrorsMax: 0,
   refusalsMin: 2,
-  floorP50Ms: 8000,
-  floorP95Ms: 12000,
+  // The accepted floor regime (S3-P12), not the spec's 8 s p50: Stage 0 went
+  // ahead under its lever 6 (the 8-12 s band) at 8.9 s on the A22, and Stage 2's
+  // four device readings were 8,991-9,403 ms. The spec's 8 s p50 is the mid-tier
+  // aspiration.
+  floorP50Ms: 10_000,
+  floorP95Ms: 12_000,
   floorVmHwmKb: 1_258_291, // 1.2 GiB in KiB
 };
 
 const SIGN_WEIGHT = 5;
 const SIGNS = new Set(['+', '-']);
 const RELATIONS = new Set(['=', '<', '>', '\\le', '\\ge', '\\ne']);
+// Look-alike glyphs (S3-P10): a swap reads as confidently as the truth and
+// renames or changes the problem, so it weighs like a sign and fails the tutor
+// gate when accepted. Both directions.
+const LOOK_ALIKES = [['x', 'X'], ['1', 'l'], ['0', 'O'], ['5', 'S'], ['2', 'Z']];
 
 export class RecordsError extends Error {
   constructor(message) {
@@ -80,6 +92,10 @@ function isOperatorSub(e, g) {
   return RELATIONS.has(e) && RELATIONS.has(g);
 }
 
+function isSymbolSub(e, g) {
+  return LOOK_ALIKES.some(([a, b]) => (e === a && g === b) || (e === b && g === a));
+}
+
 export function recordLatex(record) {
   return (record.blocks ?? [])
     .filter((b) => b.kind === 'latex')
@@ -98,7 +114,7 @@ export function scoreItem(item, record) {
     const exact = !errored && record.verdict === 'refuse';
     return {
       ...base, exact, cer: exact ? 0 : 1,
-      signSubstitutions: 0, operatorSubstitutions: 0, weightedErrors: 0,
+      signSubstitutions: 0, operatorSubstitutions: 0, symbolSubstitutions: 0, weightedErrors: 0,
       verdictOk: exact, survivesToTutor: false,
     };
   }
@@ -109,7 +125,7 @@ export function scoreItem(item, record) {
   if (errored) {
     return {
       ...base, exact: false, cer: expected.length === 0 ? 0 : 1,
-      signSubstitutions: 0, operatorSubstitutions: 0,
+      signSubstitutions: 0, operatorSubstitutions: 0, symbolSubstitutions: 0,
       weightedErrors: tokens(expected).length, verdictOk, survivesToTutor: false,
     };
   }
@@ -121,16 +137,19 @@ export function scoreItem(item, record) {
   const { distance, subs } = align(tokens(expected), tokens(got));
   let signSubstitutions = 0;
   let operatorSubstitutions = 0;
+  let symbolSubstitutions = 0;
   for (const [e, g] of subs) {
     if (isSignSub(e, g)) signSubstitutions++;
     else if (isOperatorSub(e, g)) operatorSubstitutions++;
+    else if (isSymbolSub(e, g)) symbolSubstitutions++;
   }
-  const otherEdits = distance - signSubstitutions - operatorSubstitutions;
+  const weighted = signSubstitutions + operatorSubstitutions + symbolSubstitutions;
+  const otherEdits = distance - weighted;
   return {
-    ...base, exact, cer, signSubstitutions, operatorSubstitutions,
-    weightedErrors: SIGN_WEIGHT * (signSubstitutions + operatorSubstitutions) + otherEdits,
+    ...base, exact, cer, signSubstitutions, operatorSubstitutions, symbolSubstitutions,
+    weightedErrors: SIGN_WEIGHT * weighted + otherEdits,
     verdictOk,
-    survivesToTutor: record.verdict === 'accept' && signSubstitutions + operatorSubstitutions > 0,
+    survivesToTutor: record.verdict === 'accept' && weighted > 0,
   };
 }
 
@@ -173,14 +192,12 @@ export function scoreRun(items, records, { device = false } = {}) {
   const refuseIds = new Set(items.filter((it) => it.latex == null).map((it) => it.id));
   const refusalsOk = rows.filter((r) => refuseIds.has(r.id) && r.verdictOk).length;
   const survivesToTutor = rows.filter((r) => r.survivesToTutor).length;
-  const exactRequired = total === GATES.exactOf
-    ? GATES.exactMin
-    : Math.ceil((GATES.exactMin / GATES.exactOf) * total);
+  const exactRequired = GATES.exactMin(total);
 
   const failures = [];
   if (exact < exactRequired) failures.push(`exact ${exact}/${total} is below the gate of ${exactRequired}/${total}`);
   if (survivesToTutor > GATES.acceptedSignErrorsMax) {
-    failures.push(`${survivesToTutor} accepted transcription(s) with a sign or operator error reach the tutor (max ${GATES.acceptedSignErrorsMax})`);
+    failures.push(`${survivesToTutor} accepted transcription(s) with a sign, operator or symbol error reach the tutor (max ${GATES.acceptedSignErrorsMax})`);
   }
   if (refusalsOk < GATES.refusalsMin) failures.push(`refusals ${refusalsOk} is below the gate of ${GATES.refusalsMin}`);
 
@@ -199,15 +216,15 @@ export function scoreRun(items, records, { device = false } = {}) {
       if (vmHwmKbMax > GATES.floorVmHwmKb) failures.push(`VmHWM ${vmHwmKbMax} KiB is above the floor of ${GATES.floorVmHwmKb} KiB`);
     }
   }
-  return { rows, exact, total, exactRequired, refusalsOk, survivesToTutor, pass: failures.length === 0, latency, vmHwmKbMax, failures };
+  return { rows, exact, total, exactRequired, exactRule: exactRule(total), refusalsOk, survivesToTutor, pass: failures.length === 0, latency, vmHwmKbMax, failures };
 }
 
 export function toMarkdown(result) {
   const L = [];
   L.push(`# Vision probe score: ${result.pass ? 'PASS' : 'FAIL'}`, '');
   L.push('| Gate | Value | Requirement |', '|---|---|---|');
-  L.push(`| exact | ${result.exact}/${result.total} | >= ${result.exactRequired} |`);
-  L.push(`| accepted sign errors | ${result.survivesToTutor} | <= ${GATES.acceptedSignErrorsMax} |`);
+  L.push(`| exact | ${result.exact}/${result.total} | >= ${result.exactRequired}: ${result.exactRule} |`);
+  L.push(`| accepted sign, operator or symbol errors | ${result.survivesToTutor} | <= ${GATES.acceptedSignErrorsMax} |`);
   L.push(`| refusals correct | ${result.refusalsOk} | >= ${GATES.refusalsMin} |`);
   if (result.latency) {
     L.push(`| p50 total_ms | ${result.latency.p50} | <= ${GATES.floorP50Ms} |`);
@@ -218,9 +235,9 @@ export function toMarkdown(result) {
   if (result.failures.length) {
     L.push('## Failures', '', ...result.failures.map((f) => `- ${f}`), '');
   }
-  L.push('## Items', '', '| id | exact | CER | sign | operator | weighted | expected | got | tutor |', '|---|---|---|---|---|---|---|---|---|');
+  L.push('## Items', '', '| id | exact | CER | sign | operator | symbol | weighted | expected | got | tutor |', '|---|---|---|---|---|---|---|---|---|---|');
   for (const r of result.rows) {
-    L.push(`| ${r.id} | ${r.exact ? 'yes' : 'NO'} | ${r.cer.toFixed(3)} | ${r.signSubstitutions} | ${r.operatorSubstitutions} | ${r.weightedErrors} | ${r.verdictExpected} | ${r.verdictGot} | ${r.survivesToTutor ? 'YES' : 'no'} |`);
+    L.push(`| ${r.id} | ${r.exact ? 'yes' : 'NO'} | ${r.cer.toFixed(3)} | ${r.signSubstitutions} | ${r.operatorSubstitutions} | ${r.symbolSubstitutions} | ${r.weightedErrors} | ${r.verdictExpected} | ${r.verdictGot} | ${r.survivesToTutor ? 'YES' : 'no'} |`);
   }
   return L.join('\n') + '\n';
 }
