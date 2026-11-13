@@ -48,15 +48,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -961,17 +952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "derive_builder"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1117,14 +1097,12 @@ dependencies = [
 [[package]]
 name = "docx-rust"
 version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384002ebe1137c2602121f43e7c1329b88cb5d78074e4a13b041db360b4e57f1"
 dependencies = [
  "derive_more 0.99.20",
  "hard-xml",
  "log",
  "thiserror 1.0.69",
- "zip 4.6.1",
+ "zip",
 ]
 
 [[package]]
@@ -1295,7 +1273,7 @@ dependencies = [
  "regex",
  "thiserror 2.0.21",
  "xml-rs",
- "zip 9.5.1",
+ "zip",
 ]
 
 [[package]]
@@ -6389,20 +6367,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "zip"
-version = "4.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "zopfli",
 ]
 
 [[package]]

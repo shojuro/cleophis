@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+*.docx
+Cargo.lock
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Test
+tests/bbb
+tests/aaa/aa/
