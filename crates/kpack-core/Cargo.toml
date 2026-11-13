@@ -21,8 +21,7 @@ test-util = []
 # as of this pinned version, ships FTS5 enabled unconditionally (there is no
 # longer a separate `fts5` cargo feature — confirmed via crates.io/context7
 # for this exact version rather than assumed from memory).
-# 0.41.1 pulls libsqlite3-sys 0.39 (RUSTSEC-2026-0459).
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 # sqlite-vec's `vec0` virtual table, linked as a static C lib and registered
 # as a SQLite auto-extension (see format.rs) — no dynamic loading, no network.
 # NOTE: pinned to the latest STABLE release, not the newer 0.1.10-alpha.*

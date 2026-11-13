@@ -67,7 +67,7 @@ ed25519-dalek = "=2.2.0"
 # transitive dependency via kpack-core, so this adds zero new crates to the
 # resolved graph, it only makes an already-present version a direct,
 # named dependency (same rationale as kpack-core's own sha2 pin comment).
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 # §7 S7-1: local ISO-8601 `+TZ` timestamps for chats/messages
 # (`convstore::now_iso`). `clock` is the only feature needed — this reads
 # the system clock, nothing more.
