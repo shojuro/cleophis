@@ -3,17 +3,29 @@
 Branch `vision/stage3` from `origin/main` `4aadcc9`. Plan:
 `docs/superpowers/plans/2026-11-13-vision-stage3-probes.md` (`e1a53fe`). Stage 2's record is
 `docs/superpowers/verification-vision-stage2.md`; Stage 0's is
-`docs/superpowers/verification-vision-spike.md`. The code under test is `166ab9e`. This record's
-commit changes no code and no constant.
+`docs/superpowers/verification-vision-spike.md`. The code under test is `b4b4131`: Task 6's
+`166ab9e` plus the fix wave's parser rule (`83b8929`) and scorer rules (`b4b4131`). The record's own
+commits change no code and no constant.
 
 Every number below is quoted from the file named beside it, or comes from a command run for this
-record on 2026-11-13 (UTC, the WSL2 box's clock). The bench evidence is five JSONL files in the SDD
-workspace `.superpowers/sdd/2026-11-13-vision-stage3-probes/`, each with the scorer's `.md` and
-`.json` beside it. That workspace is git-excluded, so the tables here carry every number the
-calibration uses. Nothing is estimated unless marked.
+record on 2026-11-13 or, for the fix wave, 2026-11-14 (UTC, the WSL2 box's clock). The bench
+evidence is seven JSONL files committed under `docs/superpowers/vision-stage3/` (ruling S3-P13).
+That folder's README names each file's prompt, cap, render and commit. The five runs made before the
+fix wave were scored by the scorer of their day, and the tables below keep those scores. The two
+fix-wave runs have the current scorer's `.md` and `.json` beside them. Nothing is estimated unless
+marked.
 
 ## In short
 
+- **After the fix wave the gate run passes: exact 18/18, refusals 2/2, no accepted sign, operator
+  or symbol error** (`docs/superpowers/vision-stage3/host-v1-cm-product-r2.md`). The parser now
+  refuses a LaTeX block with no digit and no operator (S3-P9). The diagram and the prose come back
+  `refuse` with `no_math_found`. All 18 raws are byte-identical to Task 6's CM run, and only q17's
+  and q18's verdicts changed (Fix wave).
+- **The scorer now counts look-alike swaps.** `x`/`X`, `1`/`l`, `0`/`O`, `5`/`S` and `2`/`Z` weigh ×5
+  and fail the tutor gate when accepted (S3-P10). The crop-filling DejaVu run's two accepted `X`
+  readings now fail it. The exact gate is total − 2 from 20 items and total − 1 below (S3-P11). The
+  device p50 gate is 10,000 ms, the accepted floor band (S3-P12).
 - **The brief's two host runs measured the page prompt, not the product's.** Up to `ba47bd4`,
   `vision_bench --via-engine` without `--prompt` fell back to granite-docling's page prompt, "Convert
   this page to docling.", and to a 256-token cap. No Stage 3 command passed either flag. The product
@@ -27,31 +39,231 @@ calibration uses. Nothing is estimated unless marked.
 - **Task 6 ran the product's regime on three renders.** The committed Computer Modern set and the
   original 28 pt DejaVu set each read all 16 printed items exactly. A crop-filling DejaVu set read
   14: it took the variable `x` for a capital `X` in q08 and q13, and both misreadings were
-  accepted. All three renders fail the refusal gate. The diagram and the prose come back `review`
-  with a LaTeX block.
-- **The gate evidence is the product-regime CM run** (`host-v1-cm-product`, ruling S3-P8), on the
-  committed fixtures, which stay the gate set. It scores FAIL: exact 16/18 and refusals 0/2. Every
-  printed item is exact; the misses are the two refusal items. The two earlier runs are page-prompt
-  runs. Their tables are kept below, and they are not gate evidence.
+  accepted. Before the fix wave all three renders failed the refusal gate. The diagram and the
+  prose came back `review` with a LaTeX block.
+- **The gate evidence is the product-regime CM run** (ruling S3-P8), on the committed fixtures,
+  which stay the gate set. Task 6's run (`host-v1-cm-product`) scored FAIL: exact 16/18 and
+  refusals 0/2, with every printed item exact. Its re-run on `b4b4131`
+  (`host-v1-cm-product-r2`) scores PASS. The two earlier runs are page-prompt runs. Their tables
+  are kept below, and they are not gate evidence.
 - **Under the product's prompt, DejaVu loses by 2 of 16 at the crop-filling size and by 0 at 28 pt.**
   The original DejaVu finding (ruling S3-P6), 8/18, was the page prompt. The two remaining misses
   are `x` read as `X`, both accepted, at confidence 0.9935 and 0.9748.
 - **The thresholds stay 0.90 / 0.70 / 0.97.** No sign or operator error appears in any reading of
-  any run. The confidence pair pushes no exact reading into review. The operator threshold does, in
-  every run, but this evidence cannot set its floor (see Calibration). A lowered operator threshold
-  of 0.86 is recorded as a proposal pending the device run. The two accepted `X` readings sit above
-  every threshold, so no threshold value would have caught them.
+  any run, including the two fix-wave runs. The confidence pair pushes no exact reading into
+  review. The operator threshold does, in every run, but this evidence cannot set its floor (see
+  Calibration). A lowered operator threshold of 0.86 is recorded as a proposal pending the device
+  run. The two accepted `X` readings sit above
+  every threshold, so no threshold value would have caught them. The scorer now counts them, and
+  the product still accepts them.
 - **The device run and the CI job have not run.**
 
-| Run (workspace file) | Prompt, cap | Render | Exact | Printed exact | Refusals | Sign + operator substitutions | Scorer |
+| Run (`docs/superpowers/vision-stage3/`) | Prompt, cap | Render | Exact | Printed exact | Refusals | Sign + operator substitutions | Scorer |
 |---|---|---|---|---|---|---|---|
 | `host-v1` (Task 3) | page, 256 | DejaVu Sans 28 pt (`b53ab15`) | 8/18 | 6/16 | 2/2 | 0 | FAIL (exact) |
 | `host-v1-cm` (Task 1 round 2) | page, 256 | Computer Modern, committed | 17/18 | 15/16 | 2/2 | 0 | PASS |
 | `host-v1-product` (Task 6) | formula, 96 | DejaVu Sans 28 pt (`b53ab15`) | 16/18 | 16/16 | 0/2 | 0 | FAIL (exact, refusals) |
 | `host-v1-dejavu-fill-product` (Task 6) | formula, 96 | DejaVu Sans, crop-filling (`gen.py --fontset dejavusans`) | 14/18 | 14/16 | 0/2 | 0 | FAIL (exact, refusals) |
 | `host-v1-cm-product` (Task 6) | formula, 96 | Computer Modern, committed | 16/18 | 16/16 | 0/2 | 0 | FAIL (exact, refusals) |
+| `host-v1-cm-product-r2` (fix wave, `b4b4131`) | formula, 96 | Computer Modern, committed | 18/18 | 16/16 | 2/2 | 0 | **PASS** |
+| `host-v1-dejavu-fill-product-r2` (fix wave, `b4b4131`) | formula, 96 | DejaVu Sans, crop-filling | 16/18 | 14/16 | 2/2 | 0, and 2 symbol | FAIL (exact, tutor: q08, q13) |
 
-The exact count includes the two refusal items, which are exact only when refused.
+The exact count includes the two refusal items, which are exact only when refused. The first five
+rows were scored before the fix wave. Re-scored with the scorer at `b4b4131`, each keeps its
+verdict and its counts. The one change is that the DejaVu crop-filling run also fails the tutor
+gate on q08 and q13, two accepted symbol substitutions.
+
+## Fix wave (S3-P9 to S3-P13)
+
+Task 6's product-regime evidence found one parser gap and four scorer and gate corrections. The
+controller ruled on each, and three commits carry them:
+
+| Commit | Ruling | What |
+|---|---|---|
+| `83b8929` | S3-P9 | The parser refuses a "formula" with no digit and no operator. |
+| `b4b4131` | S3-P10, S3-P11, S3-P12 | The scorer counts look-alike swaps, the exact gate scales by the spec, and the device latency gate is the accepted floor band. |
+| this commit | S3-P13 | The evidence is committed under `docs/superpowers/vision-stage3/`, and the CM gate run and the DejaVu crop-filling run are re-run on `b4b4131`. |
+
+### The parser: no digit and no operator is not maths (S3-P9)
+
+`classify` (`crates/kpack-engine/src/vision_parse.rs`) now also asks an element to hold maths. It
+needs a digit, one of `= < > + - ^ _`, or one of `\le \leq \ge \geq \ne \neq \times \cdot \div
+\frac \sqrt` as a whole command. `\left` is not `\le`, `\neg` is not `\ne`, and `\cdots` is not
+`\cdot`. The array syntax `&` and `\\` and the label's `\colon` are not operators. An element
+without one is a text block. A result with no other LaTeX block then takes the existing no-LaTeX
+path: `NoMathFound` and `refuse`. A text block was already on the wire and is never handed to the
+tutor, so `vision_cmds.rs` and `src/vision-confirm.js` are unchanged.
+
+The two contents it refuses, verbatim from `host-v1-cm-product.jsonl`:
+
+```
+q17  C&& \\ && \\ A&& \\ B&& \\                                                  (0.7543, review)
+q18  &ShppinglistforSutardy\colon \\ &\,milk,eggs,bread,butter, \\ &\,applesand   (0.8497, review)
+```
+
+The rule reads the element's raw text, before the display normalisation. That matters for q18.
+Its display form joins the letter-spaced words, so the word count alone would already make it
+text. The raw is `S h p p i n g …`, letter by letter, so the word count saw no word, and only the
+new rule refuses it. q18 also loses `invalid_latex`, because the brace check runs only on LaTeX
+blocks. Its warnings are now `no_math_found, truncated`, the same shape as the page-prompt
+refusals.
+
+The four new tests: both raws and both contents refuse; an array of letters is text; `x+y=1`,
+`a_1`, `\frac{1}{2}`, `x^2`, `3x-7=2x+5` and each token of the set beside two Greek letters stay
+LaTeX; a formula beside an array of letters keeps the formula and its `accept`, with no
+`NoMathFound`. Three of the four failed before the change; the fourth guards what must not move.
+
+What the rule does not do:
+
+- **It refuses letters, not prose.** A diagram labelled with numbers ("5 cm", the sides 3, 4 and
+  5) or prose holding a digit, a hyphen or a dash still classifies by the word count alone. It
+  would come back `review`, as q17 and q18 did before. q17 and q18 refuse because their text
+  happens to hold neither.
+- **It refuses letters-only maths built from tokens outside the set.** Examples are `a \pm b`,
+  `\dfrac{a}{b}`, `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A` and a Unicode `≤`. These
+  fail closed: the student sees "I could not find any maths" and types it.
+- **A bare `x + y` was already text** before this rule, because `classify` needs a strong marker
+  (`\ = ^ _`) or a digit. The ruling's example holds with a marker: `x+y=1` stays LaTeX.
+
+### The scorer (S3-P10, S3-P11, S3-P12)
+
+- **Symbol substitutions.** On the token alignment, a swap between `x`/`X`, `1`/`l`, `0`/`O`,
+  `5`/`S` or `2`/`Z`, in either direction, is a symbol substitution. It has its own column, weighs
+  ×5 like a sign, and counts toward "survives to the tutor" when the verdict is `accept`. Any
+  other letter swap is still a plain edit. The crop-filling DejaVu run's q08 and q13 are the
+  fixtures.
+- **The exact gate scales by the spec.** `GATES.exactMin` is a function of the item count:
+  total − 2 from 20 items, and total − 1 below. That is 17 of 18 now and 18 of 20 once the
+  founder's photographs join as q19 and q20. The Markdown names the rule that applied. The old
+  ceil(17/18 × n) gave 19 of 20.
+- **The device latency gate is the accepted floor band.** `floorP50Ms` is 10,000 and `floorP95Ms`
+  12,000. Stage 0 went ahead under its lever 6 at 8.9 s p50 on the A22, and Stage 2's four device
+  readings were 8,991 to 9,403 ms. The spec's 8 s p50 is the mid-tier aspiration.
+
+### The re-run (S3-P13)
+
+The gate run's command on `b4b4131`, with no `--prompt` or `--max-tokens`:
+
+```
+cargo run -p kpack-engine --features vision --release --example vision_bench -- \
+  --via-engine --family docling \
+  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
+  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
+  --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
+  --json docs/superpowers/vision-stage3/host-v1-cm-product-r2.jsonl
+node probes/vision/score.mjs --items probes/vision/fixtures/v1/items.json \
+  --records docs/superpowers/vision-stage3/host-v1-cm-product-r2.jsonl \
+  --out-md docs/superpowers/vision-stage3/host-v1-cm-product-r2.md \
+  --out-json docs/superpowers/vision-stage3/host-v1-cm-product-r2.json
+```
+
+The bench logged the product regime:
+
+```
+[bench] via-engine regime: prompt="Convert formula to latex." max_tokens=96
+```
+
+The two model files were checked again: `b687245c…` and `bb75a65a…`, the CI pins. Every record has
+`error` null and `n_image_tokens` 64, and every raw opens with `<formula>`. The scorer's headline:
+
+```
+# Vision probe score: PASS
+| exact | 18/18 | >= 17: total - 1 (fewer than 20 items) |
+| accepted sign, operator or symbol errors | 0 | <= 0 |
+| refusals correct | 2 | >= 2 |
+```
+
+**What changed against Task 6's CM run.** All 18 raws are byte-identical. Apart from the timings,
+16 of the 18 records are identical too: q01 to q16 keep their blocks, confidences, operator
+probabilities, warnings and verdicts. Only q17 and q18 changed:
+
+| id | Task 6 (`host-v1-cm-product`) | fix wave (`host-v1-cm-product-r2`) |
+|---|---|---|
+| q17 | `review`, `low_confidence`, one LaTeX block at 0.7543 | `refuse`, `no_math_found`, one text block at 0.7543 |
+| q18 | `review`, `invalid_latex, low_confidence, truncated`, one LaTeX block at 0.8497 | `refuse`, `no_math_found, truncated`, one text block at 0.8497 |
+
+The verdicts are now 10 accept, 6 review and 2 refuse; they were 10, 8 and 0. The six reviews are
+the exact readings that `OperatorUncertain` alone holds: q01, q03, q04, q06, q10 and q14
+(Calibration). Host `total_ms` ran from 10,274 to 15,819 ms with another session's job on the box;
+it is not a gate.
+
+**The rule on the earlier evidence.** Applied to every LaTeX block of the five earlier runs, the
+rule re-kinds exactly q17 and q18 in each of the three product runs. It touches no printed item
+and nothing in the two page-prompt runs. This check reads the recorded display contents, which
+keep every digit and operator of the raw.
+
+**The DejaVu crop-filling set, re-run.** `gen.py --out <dir> --fontset dejavusans` rendered it
+again, and the 18 PNGs and `items.json` are byte-identical to Task 6's render. Its q17 and q18 are
+byte-identical to the committed ones. Same command, `--items` pointed at that render, output
+`host-v1-dejavu-fill-product-r2.jsonl`:
+
+```
+# Vision probe score: FAIL
+| exact | 16/18 | >= 17: total - 1 (fewer than 20 items) |
+| accepted sign, operator or symbol errors | 2 | <= 0 |
+| refusals correct | 2 | >= 2 |
+- exact 16/18 is below the gate of 17/18
+- 2 accepted transcription(s) with a sign, operator or symbol error reach the tutor (max 0)
+```
+
+The bench logged the same regime line. Its `items.json` is byte-identical to the committed one. All
+18 raws are byte-identical to Task 6's run, and q01 to q16 are identical apart from the timings.
+q17 and q18 now refuse, as on the CM set. q08 and q13 each count one symbol substitution, weighted
+5, and both reach the tutor. The scorer now fails the run on them, which is what S3-P10 asks. This
+render is not the gate set. Its failure is the finding: a sans-serif italic `x` can be read as `X`
+and accepted. Host `total_ms` ran from 9,597 to 21,522 ms.
+
+### Gates for the fix wave
+
+`cargo test -p kpack-engine` on `83b8929` (the default features, no native build):
+
+```
+test result: ok. 170 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+170 is Task 3's 166 plus the four new parser tests. Three of them failed before the change. The
+example's own tests, `cargo test --release -p kpack-engine --features vision --example
+vision_bench`, on `b4b4131`:
+
+```
+test tests::record_shape_matches_the_scorer ... ok
+test tests::via_engine_defaults_to_the_product_regime ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+The Android check, `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis
+--all-targets --release` from `src-tauri/` after `source ../.superpowers/ndk-env.sh`, on the tree
+of `83b8929`. It printed no warning:
+
+```
+    Checking kpack-engine v0.1.0 (…/crates/kpack-engine)
+    Checking kpack-embed v0.1.0 (…/crates/kpack-embed)
+    Checking cleophis v0.1.0 (…/src-tauri)
+    Finished `release` profile [optimized] target(s) in 7m 51s
+```
+
+`npm test` on the tree of `b4b4131`. The six new or changed scorer tests failed before the change:
+
+```
+# tests 1331
+# pass 1331
+# fail 0
+```
+
+1331 is the earlier 1328 plus three new scorer tests. Three existing ones changed: the pinned
+gates, the exact gate's scaling and the p50 gate.
+
+### What the fix wave did not change
+
+- **The thresholds and the operator finding.** 0.90 / 0.70 / 0.97 stay, and 0.86 stays a proposal
+  pending the device run (Calibration). q01 to q16 are identical in the re-run, so every
+  calibration number on the printed items stands. q17 and q18 now have no LaTeX block. In the
+  re-run no wrong reading remains, so no confidence or operator value is set against one.
+- **The device run and the CI job.** Neither has run.
+- **The aarch64 bench.** The controller builds it for the device run. It must be built from
+  `83b8929` or later to carry the parser rule.
 
 ## What each task built
 
@@ -62,7 +274,8 @@ The exact count includes the two refusal items, which are exact only when refuse
 | 3 | `1ac6b5a`, `166ab9e` | `vision_bench --via-engine --json` writes one JSONL record per item and repeat: the engine's own `assess` verdict, snake_case warnings, blocks with confidence and minimum operator probability, raw text, stop reason, timings, VmRSS and VmHWM. Round 1 (S3-P8) made `--via-engine` default to the product's prompt and 96-token cap, logged the regime at start, and made `vision-regression.yml` and `run-vision-probes.sh` pass both flags. |
 | 4 | `dbcec3f`, `6085ad3` | `docs/superpowers/mobile-tools/run-vision-probes.sh`: sha-verified pushes of the bench, libc++, model, projector and fixtures, the device run, the pull, `score.mjs --device`, and one `dumpsys meminfo` of the running bench. The fix round set the executable bit, verified every push and removed stale pulls and reports. |
 | 5 | `ba47bd4` | `.github/workflows/vision-regression.yml`: the probe set on `ubuntu-latest` and `ubuntu-24.04-arm`, models from the public dist bucket verified by sha256 on cache hit and miss, an 18-record guard, the scorer's exit code passed through, the report uploaded. Its header says it gates transcription only. |
-| 6 | this commit | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
+| 6 | `087d1d9`, `2953552` | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
+| Fix wave | `83b8929`, `b4b4131`, this commit | The parser refuses a "formula" with no digit and no operator (S3-P9). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
 
 Tasks 2, 3 (round 1), 4 and 5 were built in side worktrees and rebased onto `vision/stage3`; the
 commits above are the rebased ones. The originals were `9ba31d7`/`8e84a72` (Task 2), `4d2ef13` (Task 3
@@ -118,7 +331,10 @@ ba47bd4:  # tests 1328  # pass 1328  # fail 0
 
 ### The host bench
 
-The gate run's command, the product regime on the committed fixtures:
+Task 6's gate run's command, the product regime on the committed fixtures. The fix wave's re-run
+uses the same command with the flags left to their defaults (Fix wave). The `<workspace>` JSONL is
+now `docs/superpowers/vision-stage3/host-v1-cm-product.jsonl`. Its `.md` and `.json` are not
+committed, because the scorer changed after them:
 
 ```
 cargo run -p kpack-engine --features vision --release --example vision_bench -- \
@@ -161,8 +377,8 @@ b687245c212b59da938e411e2d4485596cbaeed1ae52706582ac38ed6a970f76  granite-doclin
 bb75a65aa3ec14ac4a002248d5ffa075183df369030b6ca09028463ede18b307  mmproj-granite-docling-258M-Q8_0.preproc512.gguf
 ```
 
-They are the two files the CI job pins. In all five runs every record has `error` null and
-`n_image_tokens` 64 (one encoder pass). Host timings are not a gate. The box ran other builds
+They are the two files the CI job pins. In all five runs, and in the two fix-wave runs, every record
+has `error` null and `n_image_tokens` 64 (one encoder pass). Host timings are not a gate. The box ran other builds
 throughout (`total_ms` 9,784–28,787 on the CM product run, 6,579–149,490 on the DejaVu 28 pt
 product run, 12,369–23,856 on the crop-filling DejaVu run).
 
@@ -214,9 +430,10 @@ formula prompt all three renders read it exactly. The CM run's raw is
 `S o l v e f o r x \colon 5 x = 3 5`, and the parser's label split (Stage 1's I2) puts the words in a
 text block and `5x=35` in the LaTeX block.
 
-### Scoreboard, all five runs
+### Scoreboard, the five runs before the fix wave
 
-Each cell is exact, CER, the product's verdict.
+Each cell is exact, CER, the product's verdict. In the fix wave's re-runs q17 and q18 are `yes 0.000
+refuse` in both product columns, and every other cell is unchanged (Fix wave).
 
 | id | page, DejaVu 28 pt | page, CM | product, DejaVu 28 pt | product, DejaVu fill | product, CM |
 |---|---|---|---|---|---|
@@ -265,15 +482,18 @@ end of the page. q17 and q18 are byte-identical across every render. Their raws 
   over the expected length, so a repeating reading can exceed 1. Substitutions come from a token
   alignment. `+`↔`-` and `\times` against `+`, `-` or `\div` are sign substitutions. A swap between
   `=`, `<`, `>`, `\le`, `\ge` and `\ne` is an operator substitution. Both weigh ×5, and any other edit
-  weighs 1. A refusal item is exact only when refused. A printed item's verdict is correct on
-  `accept` or `review`. "Survives to the tutor" is `accept` with any sign or operator substitution
-  (S3-P5). Any other accepted misreading reaches the tutor without failing a gate, such as `x` read
-  as `X`. It counts only as a miss against the exact gate.
-- **Gates** (`GATES`): exact ≥ 17 of 18; no accepted sign or operator error; both refusals correct.
-  With `--device`: p50 ≤ 8,000 ms, p95 ≤ 12,000 ms (nearest rank, so over 18 records the p95 is the
-  slowest record), VmHWM ≤ 1,258,291 KiB. When the item count is not 18 the exact gate scales to
-  ceil(17/18 × n). That is 19 at 20 items, not the 18 of 20 that S3-P2 and the spec name (see What
-  Stage 4 inherits).
+  weighs 1. Since `b4b4131` a swap between `x`/`X`, `1`/`l`, `0`/`O`, `5`/`S` or `2`/`Z`, either way,
+  is a symbol substitution, also ×5 (S3-P10). A refusal item is exact only when refused. A printed
+  item's verdict is correct on `accept` or `review`. "Survives to the tutor" is `accept` with any
+  sign, operator (S3-P5) or symbol substitution. Any other accepted misreading, such as a dropped
+  exponent or a letter swap outside the five pairs, reaches the tutor without failing a gate. It
+  counts only as a miss against the exact gate.
+- **Gates** (`GATES`): exact ≥ `GATES.exactMin(total)`, which is total − 2 from 20 items and
+  total − 1 below (S3-P11): 17 of 18 now, 18 of 20 with the photographs. No accepted sign, operator
+  or symbol error; both refusals correct. With `--device`: p50 ≤ 10,000 ms and p95 ≤ 12,000 ms, the
+  accepted floor band (S3-P12; nearest rank, so over 18 records the p95 is the slowest record),
+  VmHWM ≤ 1,258,291 KiB. Before `b4b4131` the exact gate was ceil(17/18 × n), 19 at 20 items, and
+  the p50 gate was 8,000 ms.
 - **CLI:** exit 0 on pass, 1 on a gate miss, 2 on a missing or duplicate record. The last repeat
   per id is scored.
 
@@ -333,10 +553,13 @@ script's own error message gives the command:
 The script writes the JSONL, a log, the device-mode score (`.md`, `.json`) and one `dumpsys meminfo`
 of the running bench beside `--out`.
 
-What the scorer will judge against: a p50 gate of 8,000 ms, where Stage 0 measured 8.9 s for this
-regime on this phone and went ahead under its lever 6 (the 8–12 s band). A device score that fails
-on p50 alone near that value repeats Stage 0's known miss; the lever for it is runtime kernel
-dispatch (Stage 0's lever 4).
+What the scorer will judge against: since `b4b4131`, a p50 gate of 10,000 ms and a p95 gate of
+12,000 ms (S3-P12). Stage 0 measured 8.9 s p50 for this regime on this phone and went ahead under
+its lever 6 (the 8–12 s band). Stage 2's four readings were 8,991 to 9,403 ms. The gate is that
+accepted floor band, and the spec's 8 s p50 is the mid-tier aspiration. A p50 above 10,000 ms is a
+regression from Stage 0 and Stage 2; the lever for the aspiration is runtime kernel dispatch
+(Stage 0's lever 4). The bench pushed to the phone must be built from `83b8929` or later, so that it
+carries the parser rule (S3-P9).
 
 ## CI
 
@@ -344,7 +567,9 @@ dispatch (Stage 0's lever 4).
 `crates/kpack-engine/**`, `third_party/llama-cpp-sys-2/**`, `probes/vision/**` or the workflow, weekly,
 and by hand. It builds the bench and runs the 18 items in the product's regime, with both flags
 explicit since `166ab9e`. It guards the record count, scores without `--device` and uploads the
-report. The host runs of that regime fail the scorer's refusal gate (Calibration, last section).
+report. Before the fix wave the host runs of that regime failed the scorer's refusal gate
+(Calibration, last section). On `b4b4131` the host gate run passes (Fix wave), so the job is
+expected to pass on x86-64. Whether arm64 reads the same tokens is what its first run shows.
 
 First run: on the PR.
 
@@ -671,6 +896,11 @@ founder:
 The Stage 2 device run refused one non-maths frame (15:33:38, `Refuse [NoMathFound]`), so the
 failure depends on the image.
 
+**Resolved by the parser (S3-P9).** The controller took the second direction: a LaTeX block with no
+digit and no operator is text. The refuse floor stays 0.70. On the re-run both items refuse with
+`no_math_found` (Fix wave). The parser check is wider than "an array of single letters". It
+refuses any block that lacks a digit and an operator token, whatever its layout.
+
 ## Rulings
 
 From the SDD ledger, one line each.
@@ -685,6 +915,12 @@ From the SDD ledger, one line each.
 | S3-P6 | Re-render the same 18 items in Computer Modern at a crop-filling size, and keep the DejaVu scoreboard as a font-sensitivity finding. The product-regime runs show the 8/18 was the page prompt; a crop-filling DejaVu render still misreads two items, `x` as `X`. |
 | S3-P7 | Task 6 starts on the host evidence. The device run is the founder's and is reported as not run. The CI job's first run is on the PR. |
 | S3-P8 | After Task 6's finding: `--via-engine` defaults to the product's regime ("Convert formula to latex.", 96 tokens) with a unit test, and both runners pass the flags explicitly. The two earlier scoreboards are page-prompt runs and are not the gate evidence; the product-regime CM run is. The font-sensitivity claim stands only if a DejaVu render reproduces it under the product's prompt, and `gen.py` gains `--out`/`--fontset` to render one. |
+| S3-P9 | A LaTeX block with no digit and no operator or relation token (`= < > \le \leq \ge \geq \ne \neq + - \times \cdot \div \frac \sqrt ^ _`) is not maths. A result with no other LaTeX block refuses with `NoMathFound`. |
+| S3-P10 | The scorer counts look-alike swaps (`x`/`X`, `1`/`l`, `0`/`O`, `5`/`S`, `2`/`Z`) as symbol substitutions, weighted ×5, and as surviving to the tutor when accepted. |
+| S3-P11 | The exact gate scales by the spec: total − 2 from 20 items (18/20), total − 1 below (17/18). The photographs join as q19 and q20, and the plan's q17/q18 ids are corrected. |
+| S3-P12 | The device gates encode the accepted floor regime: p50 ≤ 10,000 ms, p95 ≤ 12,000 ms. The spec's 8 s p50 is the mid-tier aspiration. |
+| S3-P13 | The JSONL evidence is committed under `docs/superpowers/vision-stage3/`, the page-prompt runs labelled as such. |
+| S3-P14 | No separate task review for Task 6's record; the whole-branch review verifies it after the fix wave. |
 
 ## Deferred minors
 
@@ -714,29 +950,40 @@ From the SDD ledger and the reviews, per task.
   saved only on job success. The path filters omit `Cargo.lock` and `Cargo.toml`. The 18-line guard
   does not read per-record `error`; the scorer does. The arm64 build time inside the 90-minute
   timeout is unverified, and `BINDGEN_EXTRA_CLANG_ARGS` is not set, which the host build needed.
-- **Task 6:** the five JSONL files live only in the git-excluded workspace. Stage 0 committed its
-  decisive JSONL under `docs/superpowers/vision-spike/`, and these could join it. The record has no
-  per-piece operator probabilities.
+- **Task 6:** the record has no per-piece operator probabilities. The five JSONL files are now
+  committed (S3-P13).
+- **Fix wave:** the S3-P9 rule reads the element's raw text, so an array column spec holding a
+  digit (`p{2cm}`) would count as maths and fall back to the old behaviour. A re-kinded block keeps
+  its raw text, `\begin{array} { c c c } C & & …`, because text blocks are shown trimmed, not
+  normalised. The app shows no block on a refusal, so this is seen only when a real formula sits
+  beside the junk. The symbol pairs are the five the ruling names. Other case swaps (`a`/`A`,
+  `n`/`N`) and look-alikes (`1`/`I`, `0`/`o`) are still plain edits. The plan's Task 2 interface
+  line keeps the original `GATES` it specified.
 
 ## What Stage 4 inherits
 
-- **The refusal failure** in the product's regime (Calibration, last section): a refuse-floor or
-  parser decision. Until one is made, the CI job's scorer fails the refusal gate on the host evidence.
+- **Non-maths images that hold a digit or a hyphen.** The parser rule (S3-P9) refuses an array of
+  letters. A diagram labelled with numbers, or prose with a digit, a hyphen or a dash, still
+  classifies by the word count alone and would come back `review`. The probe set has no such
+  image. A labelled diagram with side lengths is the next refusal probe to add.
+- **Letters-only maths outside the rule's token set** refuses: `a \pm b`, `\dfrac{a}{b}`,
+  `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A`, a Unicode `≤`. Each is one name in
+  `MATHS_CMDS` (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
 - **Confident misreadings that reach the tutor.** The crop-filling DejaVu render's `x` read as `X`
   was accepted twice, above every threshold. The confirmation step, where the student reads the
-  maths before using it, is the only guard. The scorer's tutor gate counts only sign and operator
-  errors, so a letter or digit misreading fails no gate except the exact count. Whether the gate
-  should count them is a scorer decision.
+  maths before using it, is the only guard in the product. Since `b4b4131` the scorer's tutor gate
+  counts the five look-alike pairs, so that run now fails it. A letter swap outside the pairs, a
+  digit misread as another digit, or a dropped exponent still fails no gate except the exact count.
 - **The device run** (The device run), and then the operator proposal of 0.86.
   It needs at least one observed sign or operator error, or a deliberate check that the guard catches
-  one, before that guard is lowered.
+  one, before that guard is lowered. The aarch64 bench is the controller's build, from `83b8929` or
+  later.
 - **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
   operators. A per-piece field in the bench's record would let the sign guard be calibrated against
   signs.
-- **The founder's photographs.** The plan names them `q17-photo-upright` and `q18-photo-rotated`, but q17
-  and q18 are the triangle and the prose, so q19 and q20 avoid the clash. At 20 items, `GATES` scales
-  the exact gate to 19 (ceil(17/18 × 20)); S3-P2 and the spec say 18 of 20, so `GATES` needs an
-  explicit 18 of 20.
+- **The founder's photographs** join as `q19-photo-upright` and `q20-photo-rotated` (S3-P11; the plan
+  is corrected). At 20 items `GATES.exactMin` gives 18 of 20, the spec's gate. The CI job's
+  18-record guard and the manifest test's count change with them.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
@@ -756,11 +1003,13 @@ From the SDD ledger and the reviews, per task.
 
 - **The device run.** The founder has not run `run-vision-probes.sh`.
 - **The CI job.** Its first run is on the PR.
-- **`cargo test -p kpack-engine` and the Android check, for Task 6.** Task 6 changed no code. Task 3's
-  lines cover `1ac6b5a` and `166ab9e`; the Android check last ran on `1ac6b5a`, and only the
-  host-side example changed after it.
-- **The aarch64 build of the bench at `166ab9e`.** It comes before the device run.
-- **The host bench after a calibration change.** No change was made.
+- **The aarch64 build of the bench at `83b8929` or later.** It is the controller's, and it comes
+  before the device run. A build that started before `83b8929` was committed may not carry the
+  parser rule.
+- **The host bench after a calibration change.** No threshold changed.
 - **The Windows desktop suite.** No `src-tauri` file changed on this branch.
-- **A repeat of any host run.** Each of the five runs is one repeat. q17 and q18 are byte-identical
-  across the renders, and they gave identical records in every product run.
+- **A repeat of any host run.** Each of the seven runs is one repeat. q17 and q18 are byte-identical
+  across the renders, and they gave identical raws in every product run. The fix-wave CM run's 18
+  raws are byte-identical to Task 6's.
+- **The page-prompt runs on the new parser.** They are not the product's regime. Applied to their
+  recorded blocks, the rule changes none of them (Fix wave).
