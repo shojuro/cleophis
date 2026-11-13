@@ -1,0 +1,767 @@
+# Vision input, Stage 3 (probe set, scorer, device run, CI, calibration): verification record
+
+Branch `vision/stage3` from `origin/main` `4aadcc9`. Plan:
+`docs/superpowers/plans/2026-11-13-vision-stage3-probes.md` (`e1a53fe`). Stage 2's record is
+`docs/superpowers/verification-vision-stage2.md`; Stage 0's is
+`docs/superpowers/verification-vision-spike.md`. The code under test is `166ab9e`. This record's
+commit changes no code and no constant.
+
+Every number below is quoted from the file named beside it, or comes from a command run for this
+record on 2026-11-13 (UTC, the WSL2 box's clock). The bench evidence is five JSONL files in the SDD
+workspace `.superpowers/sdd/2026-11-13-vision-stage3-probes/`, each with the scorer's `.md` and
+`.json` beside it. That workspace is git-excluded, so the tables here carry every number the
+calibration uses. Nothing is estimated unless marked.
+
+## In short
+
+- **The brief's two host runs measured the page prompt, not the product's.** Up to `ba47bd4`,
+  `vision_bench --via-engine` without `--prompt` fell back to granite-docling's page prompt, "Convert
+  this page to docling.", and to a 256-token cap. No Stage 3 command passed either flag. The product
+  sends "Convert formula to latex." with a cap of 96 (`src-tauri/resources/catalog.json`, every
+  tier; `src-tauri/src/catalog.rs:190`). Stage 0's decisive run used the same prompt
+  (`docs/superpowers/vision-spike/a22-floor-formula-1pass.jsonl`). All 36 raws of the two brief runs
+  open with `<doctag>`. Stage 1's record names that as the page prompt's output shape; the formula
+  prompt's is `<formula>…</formula>` alone.
+- **Ruling S3-P8 fixed the regime at `166ab9e`.** `--via-engine` now defaults to the product's prompt
+  and cap. The CI job and the device script pass both flags explicitly.
+- **Task 6 ran the product's regime on three renders.** The committed Computer Modern set and the
+  original 28 pt DejaVu set each read all 16 printed items exactly. A crop-filling DejaVu set read
+  14: it took the variable `x` for a capital `X` in q08 and q13, and both misreadings were
+  accepted. All three renders fail the refusal gate. The diagram and the prose come back `review`
+  with a LaTeX block.
+- **The original DejaVu finding (ruling S3-P6) does not survive the product's prompt.** The 8/18 on
+  the page prompt was the page prompt. A smaller font effect does survive: the two accepted `X`
+  readings, at confidence 0.9935 and 0.9748.
+- **The thresholds stay 0.90 / 0.70 / 0.97.** No sign or operator error appears in any reading of
+  any run. The confidence pair pushes no exact reading into review. The operator threshold does, in
+  every run, but this evidence cannot set its floor (see Calibration). A lowered operator threshold
+  of 0.86 is recorded as a proposal pending the device run. The two accepted `X` readings sit above
+  every threshold, so no threshold value would have caught them.
+- **The device run and the CI job have not run.**
+
+| Run (workspace file) | Prompt, cap | Render | Exact | Printed exact | Refusals | Sign + operator substitutions | Scorer |
+|---|---|---|---|---|---|---|---|
+| `host-v1` (Task 3) | page, 256 | DejaVu Sans 28 pt (`b53ab15`) | 8/18 | 6/16 | 2/2 | 0 | FAIL (exact) |
+| `host-v1-cm` (Task 1 round 2) | page, 256 | Computer Modern, committed | 17/18 | 15/16 | 2/2 | 0 | PASS |
+| `host-v1-product` (Task 6) | formula, 96 | DejaVu Sans 28 pt (`b53ab15`) | 16/18 | 16/16 | 0/2 | 0 | FAIL (exact, refusals) |
+| `host-v1-dejavu-fill-product` (Task 6) | formula, 96 | DejaVu Sans, crop-filling (`gen.py --fontset dejavusans`) | 14/18 | 14/16 | 0/2 | 0 | FAIL (exact, refusals) |
+| `host-v1-cm-product` (Task 6) | formula, 96 | Computer Modern, committed | 16/18 | 16/16 | 0/2 | 0 | FAIL (exact, refusals) |
+
+The exact count includes the two refusal items, which are exact only when refused.
+
+## What each task built
+
+| Task | Commit | What |
+|---|---|---|
+| 1 | `b53ab15`, `b6ad9dc`, `5fc68a4` | `probes/vision/fixtures/v1/gen.py` typesets 16 printed problems, a labelled triangle and a page of prose with matplotlib mathtext at 512×160 px. `items.json` carries each item's expected LaTeX and verdict. `manifest.json` pins the 18 PNGs by sha256, and `probes/vision/manifest.test.mjs` enforces the pins. `gen.py --check` re-renders to a temp dir and compares bytes. Round 2 (S3-P6) moved the maths to mathtext's Computer Modern fontset at a size that fills the crop; q17 and q18 are byte-identical to round 1. Round 3 (S3-P8) added `--out DIR --fontset NAME`, a scratch render that leaves the committed set untouched, and `--self-test`. |
+| 2 | `eb11f83`, `d90b668`, `a7ba471` | `normalise.mjs` ports Stage 0's normalisation, adds `EQUIVALENCES` and Stage 0's brace canonicalisation (S3-P4). `score.mjs` scores exact match, CER, sign and operator substitutions weighted ×5, verdict correctness and "survives to the tutor" with operator swaps counted (S3-P5). It holds the gates as `GATES`, writes Markdown and JSON reports, and exits 0, 1 or 2. Round 2 anchored the equivalence rewrites at a word boundary. |
+| 3 | `1ac6b5a`, `166ab9e` | `vision_bench --via-engine --json` writes one JSONL record per item and repeat: the engine's own `assess` verdict, snake_case warnings, blocks with confidence and minimum operator probability, raw text, stop reason, timings, VmRSS and VmHWM. Round 1 (S3-P8) made `--via-engine` default to the product's prompt and 96-token cap, logged the regime at start, and made `vision-regression.yml` and `run-vision-probes.sh` pass both flags. |
+| 4 | `dbcec3f`, `6085ad3` | `docs/superpowers/mobile-tools/run-vision-probes.sh`: sha-verified pushes of the bench, libc++, model, projector and fixtures, the device run, the pull, `score.mjs --device`, and one `dumpsys meminfo` of the running bench. The fix round set the executable bit, verified every push and removed stale pulls and reports. |
+| 5 | `ba47bd4` | `.github/workflows/vision-regression.yml`: the probe set on `ubuntu-latest` and `ubuntu-24.04-arm`, models from the public dist bucket verified by sha256 on cache hit and miss, an 18-record guard, the scorer's exit code passed through, the report uploaded. Its header says it gates transcription only. |
+| 6 | this commit | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
+
+Tasks 2, 3 (round 1), 4 and 5 were built in side worktrees and rebased onto `vision/stage3`; the
+commits above are the rebased ones. The originals were `9ba31d7`/`8e84a72` (Task 2), `4d2ef13` (Task 3
+round 1), `e8b8611`/`651cef0` (Task 4) and `9913a99` (Task 5), from the SDD ledger.
+
+## Gates
+
+### Engine (Task 3, on `1ac6b5a` and `166ab9e`)
+
+After `1ac6b5a` the only Rust file that changed is the bench example, in `166ab9e`. No other file
+under `crates/`, `src/` or `src-tauri/` changed, and neither did `Cargo.toml` or `Cargo.lock`. Verbatim
+from `task-3-report.md`, first for `1ac6b5a`:
+
+```
+test result: ok. 166 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+android check:
+    Checking kpack-engine v0.1.0 (/home/penguinzyue/cleophis-wt/vision-s3/crates/kpack-engine)
+    Checking kpack-embed v0.1.0 (/home/penguinzyue/cleophis-wt/vision-s3/crates/kpack-embed)
+    Finished `release` profile [optimized] target(s) in 10m 00s
+release example build: Finished, no warnings outside llama-cpp-sys-2 C++ build output
+```
+
+Then for round 1 (`4d2ef13`, rebased as `166ab9e`):
+
+```
+- Gates: example test 2 passed; cargo test -p kpack-engine 166, 4, 0 passed; no kpack warnings in the build. Android check not run (host-only example). Host bench not re-run (Task 6).
+```
+
+The three `test result` lines are `cargo test -p kpack-engine`. The example's own tests run only
+under `cargo test -p kpack-engine --features vision --example vision_bench`. At `1ac6b5a` that was one
+test, given as "GREEN: 1 passed" after a deliberate key rename turned it red. At `166ab9e` it is two,
+with `via_engine_defaults_to_the_product_regime` added. The Task 3 reviewer could not run them (no
+libclang on that box). The Android check does not build the example. The aarch64 build of the
+example happens before the device run, and it has not been made at `166ab9e`. The Android check is
+`RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release`
+from `src-tauri/` after `source ../.superpowers/ndk-env.sh`. The host build also needs
+`BINDGEN_EXTRA_CLANG_ARGS=-I/usr/lib/gcc/x86_64-linux-gnu/11/include` (bindgen could not find
+`stdbool.h`).
+
+The Windows desktop suite is not required: no `src-tauri` file changed on this branch.
+
+### `npm test`
+
+Task 1 round 2, on `b6ad9dc` (`task-1-report.md`): "full `npm test` 1328 tests, 1328 pass, 0 fail".
+Run again for this record, on `ba47bd4` and then on `166ab9e`:
+
+```
+ba47bd4:  # tests 1328  # pass 1328  # fail 0
+166ab9e:  # tests 1328  # pass 1328  # fail 0
+```
+
+### The host bench
+
+The brief's command (plan, Task 3 Step 3), as the two brief runs used it on the bench as of
+`1ac6b5a`, where it meant the page prompt and 256 tokens:
+
+```
+cargo run -p kpack-engine --features vision --release --example vision_bench -- \
+  --via-engine --family docling \
+  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
+  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
+  --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
+  --json <workspace>/host-v1-cm.jsonl
+node probes/vision/score.mjs --items probes/vision/fixtures/v1/items.json \
+  --records <workspace>/host-v1-cm.jsonl --out-md <workspace>/host-v1-cm.md --out-json <workspace>/host-v1-cm.json
+```
+
+Task 6's first two product-regime runs used the `ba47bd4` bench and passed the catalog's prompt and
+cap explicitly, which `166ab9e` makes the default. One ran the committed CM set. The other ran
+`b53ab15`'s DejaVu renders, the images behind the original finding, extracted with `git show`. All
+18 sha256s match that commit's `manifest.json`, and its 18 items carry the same ids, files, LaTeX
+and verdicts as the committed set:
+
+```
+cargo run -p kpack-engine --features vision --release --example vision_bench -- \
+  --via-engine --family docling \
+  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
+  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
+  --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
+  --prompt "Convert formula to latex." --max-tokens 96 \
+  --json <workspace>/host-v1-cm-product.jsonl
+```
+
+The third ran the `166ab9e` bench with neither flag, on the crop-filling DejaVu scratch set that
+`gen.py --out <dir> --fontset dejavusans` wrote (ruling S3-P8). Its 18 items match the committed
+set's ids, files, LaTeX and verdicts, and its q17 and q18 are byte-identical to the committed ones.
+The bench's log line confirms the default:
+
+```
+[bench] via-engine regime: prompt="Convert formula to latex." max_tokens=96
+```
+
+All 18 raws of each product run open with `<formula>`, and none with `<doctag>`.
+
+The two model files, checked for this record:
+
+```
+b687245c212b59da938e411e2d4485596cbaeed1ae52706582ac38ed6a970f76  granite-docling-258M-Q8_0.gguf
+bb75a65aa3ec14ac4a002248d5ffa075183df369030b6ca09028463ede18b307  mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+```
+
+They are the two files the CI job pins. In all five runs every record has `error` null and
+`n_image_tokens` 64 (one encoder pass). Host timings are not a gate. The box ran other builds
+throughout (`total_ms` 9,784–28,787 on the CM product run, 6,579–149,490 on the DejaVu 28 pt
+product run, 12,369–23,856 on the crop-filling DejaVu run).
+
+### Device script and CI
+
+- **Task 4:** `bash -n` OK; `--dry-run` exits 0 on both adb routes and writes nothing
+  (`task-4-report.md`, fix round 1). shellcheck is not installed.
+- **Task 3 round 1:** "bash -n ok, YAML parses, dry-run exits 0 with and without ADB=adbw and prints
+  the flags in the runner listing" (`task-3-report.md`). A `--dry-run` on `166ab9e` for this record
+  exited 0 and printed the runner's lines
+  `--prompt 'Convert formula to latex.' --max-tokens 96 \` and
+  `--json /data/local/tmp/cleophis-vision-probes/out-20261113T173313Z.jsonl …`.
+- **Task 5:** the YAML parses under `yaml.safe_load`; actionlint is not installed. All four action
+  pins resolve to the commits named in their comments (`task-5-review.md`). At `166ab9e` the bench
+  step passes `--prompt 'Convert formula to latex.' --max-tokens 96` (`vision-regression.yml:115`).
+
+## The probe set
+
+`gen.py` typesets each item from LaTeX written for this repo, so the set is licence-clean. It is
+deterministic: Agg backend, `figsize` 5.12×1.6 in, 100 dpi, no PNG metadata, and `--check` reproduces
+all 18 PNGs and `items.json` byte for byte (`task-1-report.md`, both rounds). The 16 printed items
+are the plan's list: q01–q16. q17 is a labelled right triangle with no equation. q18 is three lines
+of a shopping list. Both refusal items expect `refuse`.
+
+**Round 1 (DejaVu Sans, `b53ab15`)** typeset at 28 pt in mathtext's default font. On the page prompt
+it read 6 of the 16 printed items exactly.
+
+**Round 2 (Computer Modern, `b6ad9dc`, committed).** Ruling S3-P6 re-rendered the same 18 items in
+mathtext's `cm` fontset, scaled to about 78% of the crop width (`task-1-report.md`). The reason given
+was that the transcriber's training data and Stage 0's renders are Computer Modern. On the page
+prompt it read 15 of the 16 printed items exactly.
+
+**The finding that does not stand, and the one that does.** S3-P6 kept the DejaVu scoreboard as
+evidence of font sensitivity. In the product's regime the same 28 pt DejaVu images read 16 of 16
+printed items exactly (table below). The 10 DejaVu misses on the page prompt were layout readings
+that prompt invites: the formula split into `<text>` or `<page_header>` rows, a `<picture>`, or a loop
+to the token cap. Stage 0 measured the same thing: "page, page prompt, one pass: 1/5 (host),
+fractions and exponents flattened to plain text" (`verification-vision-spike.md`).
+
+S3-P8 also asked for a DejaVu render at the committed set's crop-filling size. In the product's
+regime it read 14 of 16. The two misses are one character each: q08 `\frac{3}{4}X-…` and q13
+`(\frac{1}{2})^X=8`, the italic sans-serif `x` read as `X`. Both were accepted (Calibration). The
+committed Computer Modern set stays. The 28 pt DejaVu renders remain at `b53ab15`, and `gen.py --out
+<dir> --fontset dejavusans` reproduces the crop-filling ones.
+
+**q15**, "Solve for x: 5x = 35", keeps its prose in DejaVu in both rounds, because mathtext sets plain
+text in the default font. On the page prompt both renders read the line as a `<picture>`. On the
+formula prompt all three renders read it exactly. The CM run's raw is
+`S o l v e f o r x \colon 5 x = 3 5`, and the parser's label split (Stage 1's I2) puts the words in a
+text block and `5x=35` in the LaTeX block.
+
+### Scoreboard, all five runs
+
+Each cell is exact, CER, the product's verdict.
+
+| id | page, DejaVu 28 pt | page, CM | product, DejaVu 28 pt | product, DejaVu fill | product, CM |
+|---|---|---|---|---|---|
+| q01 | yes 0.000 accept | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 review |
+| q02 | NO 0.962 review | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q03 | yes 0.000 accept | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 review |
+| q04 | yes 0.000 review | yes 0.000 review | yes 0.000 review | yes 0.000 review | yes 0.000 review |
+| q05 | NO 1.000 refuse | yes 0.000 accept | yes 0.000 review | yes 0.000 accept | yes 0.000 accept |
+| q06 | yes 0.000 accept | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 review |
+| q07 | yes 0.000 review | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q08 | NO 0.944 refuse | yes 0.000 accept | yes 0.000 accept | NO 0.028 accept | yes 0.000 accept |
+| q09 | NO 5.917 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q10 | NO 5.909 review | yes 0.000 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 review |
+| q11 | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q12 | NO 1.375 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q13 | NO 1.000 refuse | yes 0.000 accept | yes 0.000 accept | NO 0.059 accept | yes 0.000 accept |
+| q14 | NO 1.000 refuse | yes 0.000 review | yes 0.000 accept | yes 0.000 review | yes 0.000 review |
+| q15 | NO 1.000 refuse | NO 1.000 refuse | yes 0.000 accept | yes 0.000 accept | yes 0.000 accept |
+| q16 | NO 9.143 review | yes 0.000 accept | yes 0.000 accept | yes 0.000 review | yes 0.000 accept |
+| q17 | yes 0.000 refuse | yes 0.000 refuse | NO 1.000 review | NO 1.000 review | NO 1.000 review |
+| q18 | yes 0.000 refuse | yes 0.000 refuse | NO 1.000 review | NO 1.000 review | NO 1.000 review |
+
+| | page, DejaVu 28 pt | page, CM | product, DejaVu 28 pt | product, DejaVu fill | product, CM |
+|---|---|---|---|---|---|
+| mean CER over the 16 printed items | 1.766 | 0.063 | 0.000 | 0.005 | 0.000 |
+| sign and operator substitutions | 0 | 0 | 0 | 0 | 0 |
+| accepted sign or operator errors (gate 0) | 0 | 0 | 0 | 0 | 0 |
+| accepted wrong readings of any kind | 0 | 0 | 0 | 2 (q08, q13) | 0 |
+| verdicts accept / review / refuse | 4 / 7 / 7 | 7 / 8 / 3 | 14 / 4 / 0 | 13 / 5 / 0 | 10 / 8 / 0 |
+| records stopped at the token cap | 8 | 1 (q17) | 1 (q18) | 1 (q18) | 1 (q18) |
+
+CER exceeds 1 where the page prompt looped: q09, q10 and q16 repeat a reading until the cap or the
+end of the page. q17 and q18 are byte-identical across every render. Their raws and confidences
+(0.7543155 and 0.849663) are identical in all three product runs, as Stage 0's determinism predicts.
+
+## The scorer
+
+`probes/vision/score.mjs` with `normalise.mjs`, pure apart from the CLI.
+
+- **Normalisation**, in order: strip `<loc_N>`; drop `\begin{array}{…}` and every `\end{…}`; drop
+  `\left`, `\right`, `\displaystyle` and the thin spaces; `\dfrac`/`\tfrac` become `\frac`; drop
+  `\text{…}`; `\colon` becomes `:`; strip a leading label; join lines; apply `EQUIVALENCES`
+  (`\cdot`→`\times`, `\leq`→`\le`, `\geq`→`\ge`, `\neq`→`\ne`, `\frac12`→`\frac{1}{2}`, each anchored
+  at a word boundary); canonicalise braces as Stage 0 did (S3-P4); remove all whitespace.
+- **Per item:** exact is equality after normalisation. CER is the character Levenshtein distance
+  over the expected length, so a repeating reading can exceed 1. Substitutions come from a token
+  alignment. `+`↔`-` and `\times` against `+`, `-` or `\div` are sign substitutions. A swap between
+  `=`, `<`, `>`, `\le`, `\ge` and `\ne` is an operator substitution. Both weigh ×5, and any other edit
+  weighs 1. A refusal item is exact only when refused. A printed item's verdict is correct on
+  `accept` or `review`. "Survives to the tutor" is `accept` with any sign or operator substitution
+  (S3-P5). Any other accepted misreading reaches the tutor without failing a gate, such as `x` read
+  as `X`. It counts only as a miss against the exact gate.
+- **Gates** (`GATES`): exact ≥ 17 of 18; no accepted sign or operator error; both refusals correct.
+  With `--device`: p50 ≤ 8,000 ms, p95 ≤ 12,000 ms (nearest rank, so over 18 records the p95 is the
+  slowest record), VmHWM ≤ 1,258,291 KiB. When the item count is not 18 the exact gate scales to
+  ceil(17/18 × n). That is 19 at 20 items, not the 18 of 20 that S3-P2 and the spec name (see What
+  Stage 4 inherits).
+- **CLI:** exit 0 on pass, 1 on a gate miss, 2 on a missing or duplicate record. The last repeat
+  per id is scored.
+
+## The bench writer
+
+`vision_bench --via-engine --json <path>` creates the file fresh and writes one line per item and
+repeat: `id`, `file`, `rep`, `verdict`, `warnings`, `blocks` (`kind`, `content`, `confidence`,
+`min_operator_prob`, null when the block has no operator piece), `raw`, `n_image_tokens`, `stop`,
+`prep_ms`, `prefill_ms`, `decode_ms`, `total_ms`, `vmrss_kb`, `vmhwm_kb`, `error`. The verdict is the
+engine's own `kpack_engine::assess(&tr.tokens, tr.stop == StopReason::MaxTokens)`, the call the
+product makes (`task-3-review.md`, against `src-tauri/src/engine_inproc.rs:574-575`). Warnings are
+snake_case. The app's wire format is camelCase, so the wire must not be fed to the scorer. `stop`
+is Rust `Debug` casing (`Eos`, `MaxTokens`). VmHWM is the process peak, so a run's records share it
+(399,928 KiB on every page-CM record).
+
+**Two settings diverged from the product until `166ab9e`.** At `1ac6b5a`, `--via-engine` took its
+prompt from `--prompt`, else from the family default, which is "Convert this page to docling." for
+docling. Its cap came from `--max-tokens`, else 256. The product passes the catalog variant's
+prompt, "Convert formula to latex.", and a cap of 96 (`src-tauri/src/engine_inproc.rs:525-531`). The
+thresholds, the parser and `single_formula` were shared, so `assess` was the product's, but the
+tokens it judged came from another prompt.
+
+Ruling S3-P8 changed the defaults. `--via-engine` now runs "Convert formula to latex." and 96 tokens
+unless a flag overrides them (`PRODUCT_FORMULA_PROMPT`, `PRODUCT_MAX_TOKENS`, `Args::via_engine_regime`
+in `vision_bench.rs`). It logs `[bench] via-engine regime: prompt=… max_tokens=…` at start. The
+non-engine path keeps the page prompt and 256, which Stage 0 measured. The unit test
+`via_engine_defaults_to_the_product_regime` pins both. The record does not carry the prompt; the
+log line and the raw shape do.
+
+## The device run
+
+**Not run yet.** The founder has not run `run-vision-probes.sh`. Until then, the latency and memory
+numbers are Stage 0's and Stage 2's.
+
+- Stage 0, floor build, formula crop, one pass, A22: p50 8.9 s, p95 9.4 s, VmHWM 389 MB, 15/15 exact
+  (`verification-vision-spike.md`).
+- Stage 2, the founder's A22 run: four transcription totals of 8,991, 9,403, 9,373 and 9,258 ms. Two
+  of them came back review: 11:06:31 `[LowConfidence, OperatorUncertain]` and 15:34:30
+  `[OperatorUncertain]` (`verification-vision-stage2.md`). Those photos have no expected LaTeX, so
+  whether those readings were exact is unknown.
+
+The founder's command, from the script's header:
+
+```
+ADB=adbw SERIAL=R9WR50C0W1J docs/superpowers/mobile-tools/run-vision-probes.sh \
+  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
+  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
+  --out ~/cleophis-artifacts/vision/runs/a22-s3-v1.jsonl
+```
+
+At `166ab9e` the script's device runner passes `--prompt 'Convert formula to latex.' --max-tokens 96`
+itself, so this command measures the product's regime. The script pushes the aarch64 bench from
+`${CARGO_TARGET_DIR:-$HOME/cleophis-mobile-target}/aarch64-linux-android/release/examples/vision_bench`.
+Build it from this branch first, so it carries the JSONL writer and the product defaults. The
+script's own error message gives the command:
+`cargo ndk -t arm64-v8a -P 24 build --release -p kpack-engine --features vision --example vision_bench`.
+The script writes the JSONL, a log, the device-mode score (`.md`, `.json`) and one `dumpsys meminfo`
+of the running bench beside `--out`.
+
+What the scorer will judge against: a p50 gate of 8,000 ms, where Stage 0 measured 8.9 s for this
+regime on this phone and went ahead under its lever 6 (the 8–12 s band). A device score that fails
+on p50 alone near that value repeats Stage 0's known miss; the lever for it is runtime kernel
+dispatch (Stage 0's lever 4).
+
+## CI
+
+`.github/workflows/vision-regression.yml` runs on pull requests and pushes to `main` that touch
+`crates/kpack-engine/**`, `third_party/llama-cpp-sys-2/**`, `probes/vision/**` or the workflow, weekly,
+and by hand. It builds the bench and runs the 18 items in the product's regime, with both flags
+explicit since `166ab9e`. It guards the record count, scores without `--device` and uploads the
+report. The host runs of that regime fail the scorer's refusal gate (Calibration, last section).
+
+First run: on the PR.
+
+## Calibration
+
+### The thresholds as they stand
+
+`crates/kpack-engine/src/vision_parse.rs:52-54` holds `ACCEPT_MIN_CONFIDENCE` 0.90,
+`REVIEW_MIN_CONFIDENCE` 0.70 and `OPERATOR_MIN_PROB` 0.97. For each LaTeX block, `assess`
+(`vision_parse.rs:611`) does three checks:
+
+- a confidence below 0.70 refuses;
+- a confidence below 0.90 adds `LowConfidence`;
+- a minimum operator probability below 0.97 adds `OperatorUncertain`.
+
+A cut at the token cap adds `Truncated`. Any warning turns `accept` into `review`. Text blocks never
+move the verdict. Confidence is exp(mean log-probability) over the block's tokens. The operator
+probability is the lowest over pieces holding any of `+ - = < > ^ _` or an operator command, so `^`
+and `_` count as operators.
+
+`src/vision-confirm.js:28-31` holds the amber flag's copies, `CONFIDENCE_FLAG` 0.9 and `OPERATOR_FLAG`
+0.97. A node test ties the two homes: "the gate thresholds equal the engine constants in
+vision_parse.rs" (`src/vision-confirm.test.mjs:414`). It reads the Rust source and asserts both
+pairs equal. It came with Stage 2's fix wave (`3cd142d`, S2-P16) and is on `main` and on this branch.
+`REVIEW_MIN_CONFIDENCE` has no JavaScript twin.
+
+### What is compared
+
+A reading clears a threshold only if its weakest LaTeX block does, because `assess` flags the reading
+when any one block is below. So a reading's values here are the minima over its LaTeX blocks. A
+reading is wrong when it is not exact: a printed item misread, or a refusal item not refused.
+Re-deriving every verdict and warning set from the recorded blocks with `assess`'s rule reproduces
+all 90 records of the five runs at the current values. That re-derivation is what the "at 0.86"
+columns below use.
+
+### Evidence: the product's regime, Computer Modern (`host-v1-cm-product.jsonl`)
+
+| id | expected | got | exact | verdict | warnings | confidence | min op prob | stop | image tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| q01 | `3x-7=2x+5` | `3x-7=2x+5` | yes | review | operator_uncertain | 0.9836 | 0.8292 | Eos | 64 |
+| q02 | `\frac{2x}{3}+\frac{x}{6}=5` | `\frac{2x}{3}+\frac{x}{6}=5` | yes | accept | — | 0.9864 | 0.9835 | Eos | 64 |
+| q03 | `x^2-5x+6=0` | `x^2-5x+6=0` | yes | review | operator_uncertain | 0.9624 | 0.5484 | Eos | 64 |
+| q04 | `2^{n+1}\timesa_n\le10` | `2^{n+1}\timesa_n\le10` | yes | review | operator_uncertain | 0.9924 | 0.9152 | Eos | 64 |
+| q05 | `x+y=7\\x-y=1` | `x+y=7\\x-y=1` | yes | accept | — | 0.9533 | 0.9996 | Eos | 64 |
+| q06 | `\sqrt{x+1}=3` | `\sqrt{x+1}=3` | yes | review | operator_uncertain | 0.9022 | 0.7492 | Eos | 64 |
+| q07 | `-4x+9=-7` | `-4x+9=-7` | yes | accept | — | 0.9981 | 0.9839 | Eos | 64 |
+| q08 | `\frac{3}{4}x-\frac{1}{2}=\frac{5}{8}` | `\frac{3}{4}x-\frac{1}{2}=\frac{5}{8}` | yes | accept | — | 0.9893 | 0.9958 | Eos | 64 |
+| q09 | `a_1+a_2=2a_3` | `a_1+a_2=2a_3` | yes | accept | — | 0.9997 | 0.9968 | Eos | 64 |
+| q10 | `0.5x+1.25=3` | `0.5x+1.25=3` | yes | review | operator_uncertain | 0.9574 | 0.5043 | Eos | 64 |
+| q11 | `2(x-3)=4(x+1)` | `2(x-3)=4(x+1)` | yes | accept | — | 0.9858 | 0.9857 | Eos | 64 |
+| q12 | `3x-2\ge7` | `3x-2\ge7` | yes | accept | — | 0.9974 | 0.9988 | Eos | 64 |
+| q13 | `(\frac{1}{2})^x=8` | `(\frac{1}{2})^x=8` | yes | accept | — | 0.9833 | 0.9709 | Eos | 64 |
+| q14 | `15\%\times80=x` | `15\%\times80=x` | yes | review | operator_uncertain | 0.9916 | 0.9193 | Eos | 64 |
+| q15 | `5x=35` | `5x=35` | yes | accept | — | 0.9980 | 0.9960 | Eos | 64 |
+| q16 | `x^3-x=0` | `x^3-x=0` | yes | accept | — | 0.9987 | 0.9916 | Eos | 64 |
+| q17 | (refuse) | `C&&\\&&\\A&&\\B&&\\` | NO | review | low_confidence | 0.7543 | — | Eos | 64 |
+| q18 | (refuse) | `&ShppinglistforSutardy:\\&milk,eggs,brea…` | NO | review | invalid_latex, low_confidence, truncated | 0.8497 | — | MaxTokens | 64 |
+
+Expected and got are both normalised by `normalise.mjs`. q15 also has a text block, "S o l v e f o r x"
+(0.9674), which does not count.
+
+### Evidence: the product's regime, DejaVu Sans crop-filling (`host-v1-dejavu-fill-product.jsonl`)
+
+| id | got (first 40 characters) | exact | verdict | warnings | LaTeX blocks | min confidence | min op prob | stop |
+|---|---|---|---|---|---|---|---|---|
+| q01 | `3x-7=2x+5` | yes | accept | — | 1 | 0.9992 | 0.9999 | Eos |
+| q02 | `\frac{2x}{3}+\frac{x}{6}=5` | yes | accept | — | 1 | 0.9865 | 0.9839 | Eos |
+| q03 | `x^2-5x+6=0` | yes | accept | — | 1 | 0.9999 | 0.9997 | Eos |
+| q04 | `2^{n+1}\timesa_n\le10` | yes | review | operator_uncertain | 1 | 0.9898 | 0.8272 | Eos |
+| q05 | `x+y=7\\x-y=1` | yes | accept | — | 1 | 0.9283 | 0.9991 | Eos |
+| q06 | `\sqrt{x+1}=3` | yes | accept | — | 1 | 0.9567 | 0.9875 | Eos |
+| q07 | `-4x+9=-7` | yes | accept | — | 1 | 0.9983 | 0.9862 | Eos |
+| q08 | `\frac{3}{4}X-\frac{1}{2}=\frac{5}{8}` | NO | accept | — | 1 | 0.9935 | 0.9980 | Eos |
+| q09 | `a_1+a_2=2a_3` | yes | accept | — | 1 | 0.9997 | 0.9999 | Eos |
+| q10 | `0.5x+1.25=3` | yes | accept | — | 1 | 0.9991 | 0.9998 | Eos |
+| q11 | `2(x-3)=4(x+1)` | yes | accept | — | 1 | 0.9996 | 0.9999 | Eos |
+| q12 | `3x-2\ge7` | yes | accept | — | 1 | 0.9920 | 0.9998 | Eos |
+| q13 | `(\frac{1}{2})^X=8` | NO | accept | — | 1 | 0.9748 | 0.9933 | Eos |
+| q14 | `15\%\times80=x` | yes | review | operator_uncertain | 1 | 0.9948 | 0.9636 | Eos |
+| q15 | `5x=35` | yes | accept | — | 1 | 0.9990 | 0.9996 | Eos |
+| q16 | `x^3-x=0` | yes | review | operator_uncertain | 1 | 0.9684 | 0.9663 | Eos |
+| q17 | `C&&\\&&\\A&&\\B&&\\` | NO | review | low_confidence | 1 | 0.7543 | — | Eos |
+| q18 | `&ShppinglistforSutardy:\\&milk,eggs,brea…` | NO | review | invalid_latex, low_confidence, truncated | 1 | 0.8497 | — | MaxTokens |
+
+### Evidence: the product's regime, DejaVu Sans 28 pt (`host-v1-product.jsonl`)
+
+| id | got (first 40 characters) | exact | verdict | warnings | LaTeX blocks | min confidence | min op prob | stop |
+|---|---|---|---|---|---|---|---|---|
+| q01 | `3x-7=2x+5` | yes | accept | — | 1 | 0.9988 | 0.9999 | Eos |
+| q02 | `\frac{2x}{3}+\frac{x}{6}=5` | yes | accept | — | 1 | 0.9739 | 0.9974 | Eos |
+| q03 | `x^2-5x+6=0` | yes | accept | — | 1 | 0.9999 | 0.9999 | Eos |
+| q04 | `2^{n+1}\timesa_n\le10` | yes | review | operator_uncertain | 1 | 0.9859 | 0.7570 | Eos |
+| q05 | `x+y=7\\x-y=1` | yes | review | operator_uncertain | 1 | 0.9809 | 0.9119 | Eos |
+| q06 | `\sqrt{x+1}=3` | yes | accept | — | 1 | 0.9970 | 0.9988 | Eos |
+| q07 | `-4x+9=-7` | yes | accept | — | 1 | 0.9985 | 0.9885 | Eos |
+| q08 | `\frac{3}{4}x-\frac{1}{2}=\frac{5}{8}` | yes | accept | — | 1 | 0.9936 | 0.9886 | Eos |
+| q09 | `a_1+a_2=2a_3` | yes | accept | — | 1 | 0.9993 | 0.9997 | Eos |
+| q10 | `0.5x+1.25=3` | yes | accept | — | 1 | 0.9991 | 0.9999 | Eos |
+| q11 | `2(x-3)=4(x+1)` | yes | accept | — | 1 | 0.9997 | 0.9999 | Eos |
+| q12 | `3x-2\ge7` | yes | accept | — | 1 | 0.9975 | 0.9996 | Eos |
+| q13 | `(\frac{1}{2})^x=8` | yes | accept | — | 1 | 0.9647 | 0.9962 | Eos |
+| q14 | `15\%\times80=x` | yes | accept | — | 1 | 0.9976 | 0.9995 | Eos |
+| q15 | `5x=35` | yes | accept | — | 1 | 0.9989 | 0.9997 | Eos |
+| q16 | `x^3-x=0` | yes | accept | — | 1 | 0.9996 | 0.9996 | Eos |
+| q17 | `C&&\\&&\\A&&\\B&&\\` | NO | review | low_confidence | 1 | 0.7543 | — | Eos |
+| q18 | `&ShppinglistforSutardy:\\&milk,eggs,brea…` | NO | review | invalid_latex, low_confidence, truncated | 1 | 0.8497 | — | MaxTokens |
+
+### Evidence: the brief's run, page prompt, Computer Modern (`host-v1-cm.jsonl`)
+
+| id | expected | got | exact | verdict | warnings | confidence | min op prob | stop | image tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| q01 | `3x-7=2x+5` | `3x-7=2x+5` | yes | review | operator_uncertain | 0.9887 | 0.8808 | Eos | 64 |
+| q02 | `\frac{2x}{3}+\frac{x}{6}=5` | `\frac{2x}{3}+\frac{x}{6}=5` | yes | review | operator_uncertain | 0.9904 | 0.8776 | Eos | 64 |
+| q03 | `x^2-5x+6=0` | `x^2-5x+6=0` | yes | review | operator_uncertain | 0.9717 | 0.6378 | Eos | 64 |
+| q04 | `2^{n+1}\timesa_n\le10` | `2^{n+1}\timesa_n\le10` | yes | review | operator_uncertain | 0.9877 | 0.9364 | Eos | 64 |
+| q05 | `x+y=7\\x-y=1` | `x+y=7\\x-y=1` | yes | accept | — | 0.9483 | 0.9954 | Eos | 64 |
+| q06 | `\sqrt{x+1}=3` | `\sqrt{x+1}=3` | yes | review | operator_uncertain | 0.9601 | 0.8998 | Eos | 64 |
+| q07 | `-4x+9=-7` | `-4x+9=-7` | yes | review | operator_uncertain | 0.9867 | 0.8699 | Eos | 64 |
+| q08 | `\frac{3}{4}x-\frac{1}{2}=\frac{5}{8}` | `\frac{3}{4}x-\frac{1}{2}=\frac{5}{8}` | yes | accept | — | 0.9928 | 0.9785 | Eos | 64 |
+| q09 | `a_1+a_2=2a_3` | `a_1+a_2=2a_3` | yes | accept | — | 0.9995 | 0.9960 | Eos | 64 |
+| q10 | `0.5x+1.25=3` | `0.5x+1.25=3` | yes | review | operator_uncertain | 0.9801 | 0.7338 | Eos | 64 |
+| q11 | `2(x-3)=4(x+1)` | `2(x-3)=4(x+1)` | yes | accept | — | 0.9775 | 0.9862 | Eos | 64 |
+| q12 | `3x-2\ge7` | `3x-2\ge7` | yes | accept | — | 0.9980 | 0.9984 | Eos | 64 |
+| q13 | `(\frac{1}{2})^x=8` | `(\frac{1}{2})^x=8` | yes | accept | — | 0.9763 | 0.9881 | Eos | 64 |
+| q14 | `15\%\times80=x` | `15\%\times80=x` | yes | review | operator_uncertain | 0.9923 | 0.9283 | Eos | 64 |
+| q15 | `5x=35` | (empty) | NO | refuse | no_math_found | no block | — | Eos | 64 |
+| q16 | `x^3-x=0` | `x^3-x=0` | yes | accept | — | 0.9988 | 0.9923 | Eos | 64 |
+| q17 | (refuse) | (no LaTeX) | yes | refuse | no_math_found, truncated | no LaTeX block (1 text) | — | MaxTokens | 64 |
+| q18 | (refuse) | (no LaTeX) | yes | refuse | no_math_found | no LaTeX block (2 text) | — | Eos | 64 |
+
+### Evidence: the brief's run, page prompt, DejaVu Sans 28 pt (`host-v1.jsonl`)
+
+| id | got (first 40 characters) | exact | verdict | warnings | LaTeX blocks | min confidence | min op prob | stop |
+|---|---|---|---|---|---|---|---|---|
+| q01 | `3x-7=2x+5` | yes | accept | — | 1 | 0.9979 | 0.9945 | Eos |
+| q02 | `<loc_49` | NO | review | truncated | 1 | 0.9986 | 1.0000 | MaxTokens |
+| q03 | `x^2-5x+6=0` | yes | accept | — | 1 | 0.9994 | 0.9958 | Eos |
+| q04 | `2^{n+1}\timesa_n\le10` | yes | review | operator_uncertain | 1 | 0.9951 | 0.9389 | Eos |
+| q05 | (no LaTeX) | NO | refuse | no_math_found, truncated | 0 | — | — | MaxTokens |
+| q06 | `\sqrt{x+1}=3` | yes | accept | — | 1 | 0.9935 | 0.9790 | Eos |
+| q07 | `-4x+9=-7` | yes | review | operator_uncertain | 1 | 0.9938 | 0.9430 | Eos |
+| q08 | `=\\=` | NO | refuse | low_confidence, operator_uncertain, truncated | 2 | 0.5282 | 0.5282 | MaxTokens |
+| q09 | `a$_1$\\a$_2$\\a$_3$\\a$_4$\\a$_5$\\a$_6$…` | NO | review | low_confidence, operator_uncertain, truncated | 11 | 0.7527 | 0.6484 | MaxTokens |
+| q10 | `0.5x+1.25=3\\0.5x+1.25=3\\0.5x+1.25=3\\0…` | NO | review | low_confidence, operator_uncertain | 6 | 0.8130 | 0.8311 | Eos |
+| q11 | `2(x-3)=4(x+1)` | yes | accept | — | 1 | 0.9993 | 0.9956 | Eos |
+| q12 | `3x-2≥7\\<loc_441` | NO | review | low_confidence, operator_uncertain, truncated | 2 | 0.8065 | 0.6663 | MaxTokens |
+| q13 | (no LaTeX) | NO | refuse | no_math_found, truncated | 0 | — | — | MaxTokens |
+| q14 | (no LaTeX) | NO | refuse | no_math_found | 0 | — | — | Eos |
+| q15 | (no LaTeX) | NO | refuse | no_math_found | 0 | — | — | Eos |
+| q16 | `x3-x=0\\x3-x=0\\x3-x=0\\x3-x=0\\x3-x=0\\…` | NO | review | low_confidence, operator_uncertain, truncated | 9 | 0.7396 | 0.7016 | MaxTokens |
+| q17 | (no LaTeX) | yes | refuse | no_math_found, truncated | 0 | — | — | MaxTokens |
+| q18 | (no LaTeX) | yes | refuse | no_math_found | 0 | — | — | Eos |
+
+Two of these wrong readings are fragments of a tag cut at the 256-token cap: q02's `<loc_49`, and
+q12's second block `<loc_441` (0.9102, 0.9999). The parser classifies them as LaTeX.
+
+### The calibration numbers
+
+| | product, CM | product, DejaVu fill | product, DejaVu 28 pt | page, CM | page, DejaVu 28 pt |
+|---|---|---|---|---|---|
+| lowest confidence, exact printed reading | 0.9022 (q06) | 0.9283 (q05) | 0.9647 (q13) | 0.9483 (q05) | 0.9935 (q06) |
+| highest confidence, wrong reading | 0.8497 (q18) | 0.9935 (q08, accepted); then 0.9748 (q13, accepted) | 0.8497 (q18) | none: q15 has no LaTeX block | 0.9986 (q02, the `<loc_49` fragment); next 0.8130 (q10) |
+| lowest min op prob, exact printed reading | 0.5043 (q10) | 0.8272 (q04) | 0.7570 (q04) | 0.6378 (q03) | 0.9389 (q04) |
+| highest min op prob, wrong reading | none: q17 and q18 have no operator piece | 0.9980 (q08, accepted); then 0.9933 (q13) | none | none | 1.0000 (q02, 0.99999994); next 0.8311 (q10) |
+| sign or operator errors | 0 | 0 | 0 | 0 | 0 |
+| exact printed readings below 0.90 confidence | 0 | 0 | 0 | 0 | 0 |
+| exact printed readings below 0.70 confidence | 0 | 0 | 0 | 0 | 0 |
+| exact printed readings below 0.97 min op prob | 6 | 3 | 2 | 8 | 2 |
+
+There are no sign or operator errors to compare `min_operator_prob` against, accepted or not. The
+lowest operator probability on an exact reading is 0.5043 (q10, product regime, CM). The same item's
+weakest operator token moves a long way while the reading stays exact. q10 runs from 0.5043 (CM) to
+0.9999 (DejaVu 28 pt) under the product's prompt. q03 runs from 0.9958 (page, DejaVu) to 0.5484
+(product, CM). The record carries only the minimum, so which piece is weak is not known; it may be a
+`^` as easily as a `-`.
+
+The two accepted `X` readings sit above every exact reading's minimum in their own run, on both
+confidence (0.9935 and 0.9748, against 0.9283) and operator probability (0.9980 and 0.9933, against
+0.8272). A threshold high enough to send them to review would send most of that run's correct
+readings there too.
+
+### Which threshold put each exact reading in review
+
+Every exact printed reading in review, in every run, is there for `OperatorUncertain` alone. Its
+confidence is at least 0.90, and it has no other warning.
+
+| run | id | confidence | min op prob |
+|---|---|---|---|
+| product, CM | q01 | 0.9836 | 0.8292 |
+| product, CM | q03 | 0.9624 | 0.5484 |
+| product, CM | q04 | 0.9924 | 0.9152 |
+| product, CM | q06 | 0.9022 | 0.7492 |
+| product, CM | q10 | 0.9574 | 0.5043 |
+| product, CM | q14 | 0.9916 | 0.9193 |
+| product, DejaVu fill | q04 | 0.9898 | 0.8272 |
+| product, DejaVu fill | q14 | 0.9948 | 0.9636 |
+| product, DejaVu fill | q16 | 0.9684 | 0.9663 |
+| product, DejaVu 28 pt | q04 | 0.9859 | 0.7570 |
+| product, DejaVu 28 pt | q05 | 0.9809 | 0.9119 |
+| page, CM | q01 | 0.9887 | 0.8808 |
+| page, CM | q02 | 0.9904 | 0.8776 |
+| page, CM | q03 | 0.9717 | 0.6378 |
+| page, CM | q04 | 0.9877 | 0.9364 |
+| page, CM | q06 | 0.9601 | 0.8998 |
+| page, CM | q07 | 0.9867 | 0.8699 |
+| page, CM | q10 | 0.9801 | 0.7338 |
+| page, CM | q14 | 0.9923 | 0.9283 |
+| page, DejaVu | q04 | 0.9951 | 0.9389 |
+| page, DejaVu | q07 | 0.9938 | 0.9430 |
+
+### What holds each wrong reading out of `accept`
+
+| run | id | what the model wrote | min confidence | min op prob | held by |
+|---|---|---|---|---|---|
+| product, DejaVu fill | q08 | `\frac{3}{4}X-\frac{1}{2}=\frac{5}{8}` | 0.9935 | 0.9980 | nothing: accepted |
+| product, DejaVu fill | q13 | `\left(\frac{1}{2}\right)^{X}=8` | 0.9748 | 0.9933 | nothing: accepted |
+| product, all three | q17 | the triangle's labels as a LaTeX array | 0.7543 | — | `low_confidence` |
+| product, all three | q18 | the prose letter by letter in a LaTeX array, cut at 96 tokens | 0.8497 | — | `low_confidence`, `invalid_latex`, `truncated` |
+| page, CM | q15 | a `<picture>` | — | — | no maths (refuse) |
+| page, DejaVu | q02 | eleven `n x` text rows, then `<loc_49` at the cap | 0.9986 | 1.0000 | `truncated` |
+| page, DejaVu | q05, q13 | no LaTeX block, cut at the cap | — | — | no maths (refuse), `truncated` |
+| page, DejaVu | q08 | two `=` fragments among the fraction's pieces | 0.5282 | 0.5282 | below 0.70 (refuse), `low_confidence`, `operator_uncertain`, `truncated` |
+| page, DejaVu | q09 | `a$_1$` … `a$_{10}$`, a counting loop | 0.7527 | 0.6484 | `low_confidence`, `operator_uncertain`, `truncated` |
+| page, DejaVu | q10 | the right formula six times | 0.8130 | 0.8311 | `low_confidence`, `operator_uncertain` |
+| page, DejaVu | q12 | `3x-2≥7`, page-number rows, `<loc_441` | 0.8065 | 0.6663 | `low_confidence`, `operator_uncertain`, `truncated` |
+| page, DejaVu | q14, q15 | a `<picture>` | — | — | no maths (refuse) |
+| page, DejaVu | q16 | `x3-x=0` nine times, the exponent lost | 0.7396 | 0.7016 | `low_confidence`, `operator_uncertain`, `truncated` |
+
+No wrong reading in any run is held by the operator threshold alone. Two are held by nothing: the
+`X` readings. In each, `X` is the problem's only unknown, so the tutor would get the same problem
+under another name. The same failure on a problem with both `x` and `X`, or on a digit, would teach
+a different one. The page prompt's highest-confidence wrong reading, q02's `<loc_49` at 0.9986 and
+1.0000, is held only by `truncated`.
+
+### The decision, by the brief's rule
+
+The rule: keep 0.90 / 0.70 / 0.97 unless (a) a threshold would let a sign error through as `accept`
+(then raise), or (b) a threshold pushes at least two exact readings into `review` with no wrong
+reading between (then consider lowering, never below the highest wrong reading + 0.02).
+
+- **(a) does not fire.** There is no sign or operator substitution in any of the 90 readings, so no
+  threshold lets one through. Nothing is raised. The two accepted `X` readings are not sign errors,
+  and raising a threshold would not catch them (above).
+- **(b), `ACCEPT_MIN_CONFIDENCE` 0.90: does not fire.** No exact printed reading in any run is below
+  0.90. In the product's CM and 28 pt DejaVu runs the highest wrong reading is q18 at 0.8497, and the
+  lowest exact readings are 0.9022 (CM q06) and 0.9647 (DejaVu q13), so 0.90 sits between them. In
+  the crop-filling run the `X` readings sit above every exact reading. Kept.
+- **`REVIEW_MIN_CONFIDENCE` 0.70: does not fire.** No exact reading in any run is below 0.70. The one
+  reading it refuses is page-DejaVu q08 (0.5282). Kept.
+- **(b), `OPERATOR_MIN_PROB` 0.97: fires on the count, but the floor cannot be set.** It puts 6, 3, 2,
+  8 and 2 exact readings into review in the five runs (product CM, product DejaVu fill, product
+  DejaVu 28 pt, page CM, page DejaVu). The rule allows considering a lower value, never below the
+  highest wrong reading + 0.02. This evidence cannot fix that floor, for three reasons:
+  1. The threshold exists to catch sign and operator errors, and none occurs in any run.
+  2. In the product's regime, the only wrong readings with an operator probability are the
+     accepted `X` readings, at 0.9980 and 0.9933, above the current threshold. q17's and q18's
+     LaTeX blocks hold no operator piece. A floor set against q08's 0.9980 would be 1.0180, which is
+     not a probability.
+  3. Across all runs the highest wrong reading is page-DejaVu q02 at 1.0000. No value can sit 0.02
+     above every wrong reading, so the condition for making the change in this task fails.
+
+  **Kept at 0.97. No constant or test changes.** The host bench was not re-run, because nothing
+  changed.
+
+### The proposal, pending the device run
+
+Set aside the wrong readings that sit above 0.97, because no lower threshold changes them: q02's
+fragment, held by `truncated`, and the two `X` readings, already accepted. The highest remaining wrong
+reading with an operator probability is page-DejaVu q10 at 0.8311. Adding 0.02 gives
+0.8511, and the constants' two-decimal grid makes that 0.86. That is the only floor this evidence can
+compute, and it comes from the page prompt, a regime the product does not run.
+
+**Proposed: `OPERATOR_MIN_PROB` and `OPERATOR_FLAG` 0.97 → 0.86, pending the device run.** Adopt it
+only if three conditions hold:
+
+- The device JSONL, run in the product's regime with the founder's two photographs added, goes
+  through this same rule.
+- 0.86 still stays at least 0.02 above every wrong reading there whose weakest operator token is
+  below 0.97.
+- The change lands as one commit with both homes and their tests.
+
+What 0.86 would do here, re-derived from the recorded blocks:
+
+| run | exact readings in review at 0.97 | at 0.86 | still in review at 0.86 | wrong readings that become `accept` |
+|---|---|---|---|---|
+| product, CM | 6 | 4 | q01 (0.8292), q03, q06, q10 | none |
+| product, DejaVu fill | 3 | 1 | q04 (0.8272) | none (q08 and q13 are accepted already) |
+| product, DejaVu 28 pt | 2 | 1 | q04 (0.7570) | none |
+| page, CM | 8 | 2 | q03, q10 | none |
+| page, DejaVu | 2 | 0 | — | none |
+
+**The trade.** A lower threshold saves the student a tap. Each exact reading the operator threshold
+sends to review costs a "Use anyway", or an edit, before the tutor starts. The cost is the risk that
+a wrong problem gets taught. A sign or operator error whose weakest operator token sits between
+0.86 and 0.97 would pass this guard. If its confidence were at least 0.90 and it were not truncated,
+it would be accepted, and the tutor would teach the wrong problem. This evidence contains no sign
+error, so that risk is unmeasured, not shown to be zero. The `X` readings show that a confident
+misreading can come with a strong operator probability. In the product's CM run, the gap between the
+exact readings that would come out of review (0.9152, 0.9193) and those that stay (0.8292 and
+below) is wide. The page-DejaVu wrong reading that sets the floor sits only 0.029 below it.
+
+**The sample.** 18 typeset items, one x86-64 host, one repeat per run, three renders, two prompts.
+No photograph, no device run. The founder's two photographs and the A22 run are still owed, and
+the device run should use the product's prompt and cap.
+
+### Outside the rule: the refusals fail in the product's regime
+
+In all three product runs the diagram and the prose come back `review`, not `refuse`. The formula prompt
+makes the model write them as LaTeX arrays, and `classify` accepts both arrays as LaTeX. Their
+confidences, 0.7543 (q17) and 0.8497 (q18), clear the 0.70 floor. The spec's "correct refusal" gate
+fails: the scorer reports refusals 0 of 2. The student would see amber maths with "Use anyway"
+offered, which Stage 2 allows whenever a non-blank LaTeX block exists (S2-P10).
+
+The brief's rule covers only raising for a sign error and lowering for exact readings in review, so
+this task changes nothing for it. Two directions are open, and both are for the controller or the
+founder:
+
+- **A higher refuse floor.** On the three product runs, a floor of 0.87 or 0.88 would refuse both
+  items and keep every exact printed reading with a margin of at least 0.02. The bounds are
+  0.8497 + 0.02 = 0.8697 and 0.9022 − 0.02 = 0.8822. That leaves `LowConfidence` a review band of
+  only 0.88–0.90, and it rests on two items.
+- **A parser check.** An array whose cells are single letters or letter-spaced words is not maths.
+
+The Stage 2 device run refused one non-maths frame (15:33:38, `Refuse [NoMathFound]`), so the
+failure depends on the image.
+
+## Rulings
+
+From the SDD ledger, one line each.
+
+| Ruling | What was decided |
+|---|---|
+| S3-P1 | Stage 3 executes after the copy pass and the dependency PRs are opened. It was amended three times so that Tasks 1–2, then 3, then 4 started early, each sharing no surface with the other branches. |
+| S3-P2 | 18 items now, with the exact gate scaled to ≥ 17/18. The founder's two photographs join later, with the gate restored to ≥ 18/20. |
+| S3-P3 | Task 2 ran in a side worktree in parallel with Task 1, on disjoint files, and was rebased and fast-forwarded after both landed. |
+| S3-P4 | The scorer ports Stage 0's brace canonicalisation (`x^{2}` ≡ `x^2`, `\frac12` ≡ `\frac{1}{2}`, grouping braces unwrapped, argument braces kept). |
+| S3-P5 | Operator substitutions count toward "survives to the tutor" (fail closed: an accepted `\le`→`\ge` teaches the wrong problem). |
+| S3-P6 | Re-render the same 18 items in Computer Modern at a crop-filling size, and keep the DejaVu scoreboard as a font-sensitivity finding. The product-regime runs show the 8/18 was the page prompt; a crop-filling DejaVu render still misreads two items, `x` as `X`. |
+| S3-P7 | Task 6 starts on the host evidence. The device run is the founder's and is reported as not run. The CI job's first run is on the PR. |
+| S3-P8 | After Task 6's finding: `--via-engine` defaults to the product's regime ("Convert formula to latex.", 96 tokens) with a unit test, and both runners pass the flags explicitly. The two earlier scoreboards are page-prompt runs and are not the gate evidence; the product-regime CM run is. The font-sensitivity claim stands only if a DejaVu render reproduces it under the product's prompt, and `gen.py` gains `--out`/`--fontset` to render one. |
+
+## Deferred minors
+
+From the SDD ledger and the reviews, per task.
+
+- **Task 1:** the PNGs are RGBA, which is harmless because the engine composites alpha over white;
+  changing it would re-pin 18 hashes. The manifest test pins the files, not the 16 LaTeX strings,
+  which only `gen.py --check` guards. q17 carries a right-angle mark, and q18's prose is 24 pt to fit.
+  Round 1's small mathtext fractions were replaced by round 2's crop-filling size. Rounds 2 and 3
+  were approved on re-review. Round 3: an unknown `--fontset` fails with a raw traceback.
+- **Task 2:** the refusal gate needs at least two refusal items, so a hand-made set needs two to exit
+  0. Refusal items count toward the exact total, and operator swaps weigh ×5 like signs. Alignment
+  ties follow a fixed backtrace order, so an equal-cost alignment could count substitutions
+  differently. `\nu` and `\neg` tokenise as `\ne` plus a letter, which is harmless to the score.
+- **Task 3:** the unit test pins the field mapping, not the whole 16-key record (a Python check over
+  `host-v1.jsonl` did). An error mid-transcription leaves `verdict` null and `warnings` empty, and the
+  scorer keys off `error`. `stop` is `Debug` casing. `--repeat 0` writes an empty file. The ledger asked
+  for the token cap to be re-judged on the CM run. On the page-prompt CM run only q17 reached the cap,
+  and in the product's regime only q18 reached the product's 96. The product's cap stands, and since
+  `166ab9e` the bench uses it. Round 1's test was written with the code, with no separate red run.
+- **Task 4:** the default `STAGE` hard-codes one Windows profile path; the override is documented.
+  Untested on hardware: `pidof`, `kill -0` and `dumpsys` as the shell user, and `nohup` under
+  `adb.exe`. If the bench finishes in under about 20 s, the meminfo snapshot is skipped and VmHWM is
+  the fallback.
+- **Task 5:** a guard failure writes no step summary, though the artifact still uploads. The cache key
+  uses 12-character sha prefixes, which is safe because verification is separate. The model cache is
+  saved only on job success. The path filters omit `Cargo.lock` and `Cargo.toml`. The 18-line guard
+  does not read per-record `error`; the scorer does. The arm64 build time inside the 90-minute
+  timeout is unverified, and `BINDGEN_EXTRA_CLANG_ARGS` is not set, which the host build needed.
+- **Task 6:** the five JSONL files live only in the git-excluded workspace. Stage 0 committed its
+  decisive JSONL under `docs/superpowers/vision-spike/`, and these could join it. The record has no
+  per-piece operator probabilities.
+
+## What Stage 4 inherits
+
+- **The refusal failure** in the product's regime (Calibration, last section): a refuse-floor or
+  parser decision. Until one is made, the CI job's scorer fails the refusal gate on the host evidence.
+- **Confident misreadings that reach the tutor.** The crop-filling DejaVu render's `x` read as `X`
+  was accepted twice, above every threshold. The confirmation step, where the student reads the
+  maths before using it, is the only guard. The scorer's tutor gate counts only sign and operator
+  errors, so a letter or digit misreading fails no gate except the exact count. Whether the gate
+  should count them is a scorer decision.
+- **The device run** (The device run), and then the operator proposal of 0.86.
+  It needs at least one observed sign or operator error, or a deliberate check that the guard catches
+  one, before that guard is lowered.
+- **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
+  operators. A per-piece field in the bench's record would let the sign guard be calibrated against
+  signs.
+- **The founder's photographs.** The plan names them `q17-photo-upright` and `q18-photo-rotated`, but q17
+  and q18 are the triangle and the prose, so q19 and q20 avoid the clash. At 20 items, `GATES` scales
+  the exact gate to 19 (ceil(17/18 × 20)); S3-P2 and the spec say 18 of 20, so `GATES` needs an
+  explicit 18 of 20.
+- **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
+  label split. They are still unproven on photographs, where the prose and the maths share a font.
+- **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
+  page-prompt DejaVu run.
+  - `classify` promotes a `<text>` element's content to LaTeX by its content (q10's six copies of the
+    right formula were all LaTeX blocks). A repetition guard is still missing.
+  - A tag cut at the cap becomes a LaTeX block at high confidence (q02 `<loc_49`, q12 `<loc_441`).
+  - The scorer has no equivalence for Unicode relations: q12 wrote `≥`.
+  - A dropped exponent (q16, `x^3` read as `x3`) changes the problem but is not a sign or operator
+    error to the scorer.
+- **HEIC input**, unprobed since Stage 2.
+- **Handwriting and the two-photo case**, the spec's v0.2: ≥ 80% line-level exact on the handwritten
+  items, line order preserved, crossed-out lines excluded or flagged
+  (`docs/superpowers/specs/2026-10-31-vision-input-spec-v0.1.md`).
+
+## What did not run
+
+- **The device run.** The founder has not run `run-vision-probes.sh`.
+- **The CI job.** Its first run is on the PR.
+- **`cargo test -p kpack-engine` and the Android check, for Task 6.** Task 6 changed no code. Task 3's
+  lines cover `1ac6b5a` and `166ab9e`; the Android check last ran on `1ac6b5a`, and only the
+  host-side example changed after it.
+- **The aarch64 build of the bench at `166ab9e`.** It comes before the device run.
+- **The host bench after a calibration change.** No change was made.
+- **The Windows desktop suite.** No `src-tauri` file changed on this branch.
+- **A repeat of any host run.** Each of the five runs is one repeat. q17 and q18 are byte-identical
+  across the renders, and they gave identical records in every product run.
