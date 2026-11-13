@@ -522,3 +522,67 @@ One line per task, from the SDD ledger, plus Task 6's.
 - **From the plan:** the share-sheet target (ACTION_SEND) and a Tauri mobile plugin for
   capture (v0.2); a LaTeX renderer in the confirm modal (v0.1 shows monospace source);
   desktop drag-and-drop and paste, after the phone.
+
+## Copy pass (2026-11-13, branch vision/copy-pass)
+
+Two small tasks closed the copy items deferred from Stage 2 (Task 4 copy items, the notification
+title, and the final review's M8 strings). Reviewed on the branch at 484e58c and 813beba.
+
+### What changed
+
+**Task 1 (484e58c), the strings the checklist did not cite.**
+
+| String | Text | Lives in |
+|---|---|---|
+| `OPENING_TEXT` | `Opening the photo…` (one ellipsis character) | `src/vision-confirm.js`, shown in `#cropOpening` by `app.js` |
+| `DOWNLOAD_LABEL` | `Download` | `src/vision-download.js` |
+| `DOWNLOADING_LABEL` | `Downloading…` | `src/vision-download.js` |
+| `NO_SIZE_TEXT` | the former no-size literal, byte-identical | `src/vision-download.js` (thrown by `visionDownloadPlan`) |
+| photo-reader download label | `Downloading the photo reader — N%` | `src/engine-state.js`, keyed on a progress event whose `modelId` starts with `vision/`; a `models/` path still says `Downloading your model — N%` |
+
+Also in Task 1: `#cropOpening` in `index.html` (hidden, no text in markup, shown while the crop
+pane decodes the photo and hidden when the frame appears); `visionTypeIt` no longer acts on a
+disabled input (the Type-it guard); `phone-journey.test.mjs` resolves `visionDownload`; the V1
+step 5 and V2 pins in `phone-journey.md` cite the constants.
+
+**Task 2 (813beba), the foreground notification.** `TITLE_VISION = "Reading an image"` in
+`InferenceService.kt`, chosen through `start(context, title)` and an intent extra that defaults
+to `TITLE_REPLY`. `mobile_native.rs` gains `ServiceKind { Reply, Vision }` with `title()`;
+`inference_service(running, kind)` passes it over JNI (`(Context;String)V`). `chat_cmds.rs` calls
+with Reply, `vision_cmds.rs` with Vision. `phone-journey.md` V5 keeps the `Writing a reply` pin and
+adds a `Reading an image` pin.
+
+### Gates (verbatim from the task reports)
+
+- `npm test` (Task 1): `# pass 1286`, `# fail 0`. Task 2 re-run: tests 1286, pass 1286, fail 0.
+- Android (Task 2): `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` finished the `release` profile in 11m 04s, exit 0, zero warnings.
+- Windows desktop on 813beba (Task 2): `test result: ok. 460 passed; 0 failed; 10 ignored`, exit 0.
+
+### The debug APK (tutor variant, built from 813beba)
+
+| Fact | Value |
+|---|---|
+| Commit | `813beba5f553600813a08595ba4075168140a4ca`, tree clean at PRE and POST |
+| Build log | `~/cleophis-mobile-logs/apk-debug-20261113-214724.log` |
+| Provenance | `~/cleophis-mobile-logs/apk-debug-20261113-214724.provenance`, `tauri_exit 0` |
+| Built path | `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` |
+| Archived | `~/cleophis-artifacts/cleophis-vision-copy-813beba.apk` |
+| sha256 | `538291a40eea262d0306115fa9522927c6f0631a8cb313b48df7c51d4692b421` (rechecked on both copies) |
+| Size | 380,322,318 bytes (362.7 MiB) |
+| `verify-apk.py` | `VERDICT: PASS`; entries 970; unaccounted 178,268 (0.05%); largest `lib/arm64-v8a/libcleophis_lib.so` (370,693,768), `classes.dex` (10,260,852), `classes9.dex` (4,164,264) |
+| `libcleophis_lib.so` sha256 | `e1659853d934489e01dfefa7c386b82f227d301b7a8b0b7d677ac415e6fbadc7` |
+| Arch audit | `audit-arch-floor.sh` PASS: nothing above the floor outside 8 outline-atomics helper(s) |
+| Dex check | `Reading an image` occurs once in `classes8.dex` (the dex that holds `InferenceService`) and in no other dex; the new title is compiled in. It also occurs once in the `.so`, from `ServiceKind::title()`. |
+| Frontend strings | Not greppable from the APK. The only file under `assets/` is `tauri.conf.json`; the frontend is embedded in the `.so`, where `Opening the photo` and `Downloading the photo reader` do not appear as plain text. The JS strings are covered by the 1286 tests, not by the APK. |
+
+### What the founder re-checks on this APK
+
+- **V1, the Download button.** The menu button reads `Download`. Pin: `visionDownload.DOWNLOAD_LABEL`.
+- **V2, the opening text.** After the camera returns, the crop pane says `Opening the photo…` until the frame appears. Pin: `visionConfirm.OPENING_TEXT`. During the vision download the engine row reads `Downloading the photo reader — N%`.
+- **V5, the notification title.** During a reading, the shade shows `Reading an image`; a chat reply still shows `Writing a reply`. Pin: `expect-source` on `InferenceService.kt`.
+
+### Deferred and open
+
+- **Explicit hide on the error path (Task 1 review, minor).** `startCrop`'s error path does not call `setCropBusy(false)` to hide `#cropOpening`. It works today because `showVisionError` switches to the refuse pane, which hides the whole crop pane, and the next `startCrop` sets busy again. A one-line explicit hide would survive a future change that shows the crop pane after an error.
+- **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the APK build above, which passed with `tauri_exit 0`, and the dex check confirms the title string is present.
+- **The concurrent Windows run (Task 2 concern).** Task 2's red run checked out a branch in the shared Windows worktree while another branch's run may have been mid-compile; that run finished ok, so treat its result as probably unaffected.
