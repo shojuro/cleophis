@@ -3243,6 +3243,7 @@ async function startCrop(file) {
     // `from-image` applies the EXIF orientation, so a portrait photo is upright.
     bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch (e) {
+    $('cropOpening').hidden = true;
     if (session === visionSession) showVisionError(visionErrorText(e));
     return;
   } finally {
