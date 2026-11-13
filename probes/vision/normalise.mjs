@@ -5,11 +5,11 @@
 
 // Spellings that mean the same thing; applied after the Stage 0 rules.
 export const EQUIVALENCES = [
-  [/\\cdot/g, '\\times'],
-  [/\\leq/g, '\\le'],
-  [/\\geq/g, '\\ge'],
+  [/\\cdot(?![A-Za-z])/g, '\\times'],
+  [/\\leq(?![A-Za-z])/g, '\\le'],
+  [/\\geq(?![A-Za-z])/g, '\\ge'],
   [/\\frac(\d)(\d)/g, '\\frac{$1}{$2}'],
-  [/\\neq/g, '\\ne'],
+  [/\\neq(?![A-Za-z])/g, '\\ne'],
 ];
 
 // Brace canonicalisation, ported from Stage 0's tokenize / strip_ws / render.

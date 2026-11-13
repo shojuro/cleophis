@@ -85,3 +85,13 @@ test('a truncated or stray-brace input still normalises without throwing', () =>
   assert.doesNotThrow(() => normalise('x\\'));
   assert.equal(normalise('x}+1'), 'x+1');
 });
+
+test('equivalence rewrites stop at a word boundary', () => {
+  assert.equal(normalise('a \\cdots b'), 'a\\cdotsb');
+  assert.equal(normalise('a \\leqslant b'), 'a\\leqslantb');
+  assert.equal(normalise('a \\geqslant b'), 'a\\geqslantb');
+  assert.equal(normalise('a \\neqq b'), 'a\\neqqb');
+  assert.equal(normalise('a\\leq b'), normalise('a\\le b'));
+  assert.equal(normalise('2\\cdot 3'), normalise('2\\times 3'));
+  assert.equal(normalise('2\\cdot3'), '2\\times3');
+});
