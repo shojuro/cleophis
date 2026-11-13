@@ -400,6 +400,30 @@ fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static st
     }
 }
 
+/// What the foreground service is protecting, which decides the notification's
+/// title: a reply is "Writing a reply", a photo reading "Reading an image".
+/// Unconditional so every `cfg` of [`inference_service`] shares one signature.
+// Only the Android `inference_service` reads a kind; elsewhere it is accepted
+// and ignored, and the unit test is the one desktop reader.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceKind {
+    Reply,
+    Vision,
+}
+
+impl ServiceKind {
+    /// The notification title; mirrors `InferenceService.TITLE_REPLY` and
+    /// `TITLE_VISION` in Kotlin, and the pins in phone-journey.md V5.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            ServiceKind::Reply => "Writing a reply",
+            ServiceKind::Vision => "Reading an image",
+        }
+    }
+}
+
 /// Promote or demote the inference foreground service around a turn or a
 /// transcription (spec §8, hazards H4/H5).
 ///
@@ -430,7 +454,7 @@ fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static st
 /// transcript. A failed `start` still counts its holder, so the next attempt
 /// is the next 0 to 1, after every current holder has ended.
 #[cfg(all(mobile, target_os = "android"))]
-pub(crate) fn inference_service(running: bool) {
+pub(crate) fn inference_service(running: bool, kind: ServiceKind) {
     static USERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
     let mut users = USERS.lock().unwrap_or_else(|p| p.into_inner());
     let (after, method) = service_transition(*users, running);
@@ -441,12 +465,24 @@ pub(crate) fn inference_service(running: bool) {
     let outcome = crate::android_bridge::with_app_class(
         "com.cleophis.app.InferenceService",
         |env, class, activity| {
-            env.call_static_method(
-                class,
-                method,
-                "(Landroid/content/Context;)V",
-                &[activity.into()],
-            )
+            if method == "start" {
+                let title = env
+                    .new_string(kind.title())
+                    .map_err(|e| format!("{method}: title: {e}"))?;
+                env.call_static_method(
+                    class,
+                    method,
+                    "(Landroid/content/Context;Ljava/lang/String;)V",
+                    &[activity.into(), (&title).into()],
+                )
+            } else {
+                env.call_static_method(
+                    class,
+                    method,
+                    "(Landroid/content/Context;)V",
+                    &[activity.into()],
+                )
+            }
             .map(|_| ())
             .map_err(|e| format!("{method}: {e}"))
         },
@@ -461,7 +497,7 @@ pub(crate) fn inference_service(running: bool) {
 /// rather than a `cfg` at the call site, where the risk is forgetting one of a
 /// matched pair.
 #[cfg(all(mobile, not(target_os = "android")))]
-pub(crate) fn inference_service(_running: bool) {}
+pub(crate) fn inference_service(_running: bool, _kind: ServiceKind) {}
 
 /// Delete the JPEGs the WebView's camera capture leaves in the app's pictures
 /// directory (`CaptureHygiene.sweep`). Called after every transcription and
@@ -504,7 +540,13 @@ pub(crate) fn sweep_capture_files() {}
 
 #[cfg(test)]
 mod service_tests {
-    use super::service_transition;
+    use super::{service_transition, ServiceKind};
+
+    #[test]
+    fn each_service_kind_names_what_it_is_doing() {
+        assert_eq!(ServiceKind::Reply.title(), "Writing a reply");
+        assert_eq!(ServiceKind::Vision.title(), "Reading an image");
+    }
 
     #[test]
     fn the_service_starts_with_the_first_holder_and_stops_with_the_last() {

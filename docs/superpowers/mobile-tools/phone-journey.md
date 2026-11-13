@@ -1038,11 +1038,18 @@ Reading the image…
 1. Start a reading: the camera button, Choose an image, any problem, Use
    selection.
 2. While "Reading the image…" shows, pull down the notification shade. The
-   app's notification is there; a reading uses the same one a reply does:
+   app's notification is there. A chat reply titles it:
 
 <!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
 ```text
 Writing a reply
+```
+
+During a reading the notification's title is this string instead:
+
+<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
+```text
+Reading an image
 ```
 
 3. Back in the app, tap:

@@ -70,7 +70,11 @@ class InferenceService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureChannel(this)
-        val notification = buildNotification(this)
+        val notification = buildNotification(
+            this,
+            // A null intent (a system restart) keeps the reply title.
+            intent?.getStringExtra(EXTRA_TITLE) ?: TITLE_REPLY,
+        )
 
         // The type argument is required from API 34 and must match the
         // manifest's `foregroundServiceType`, or the promotion throws. Below 34
@@ -101,13 +105,19 @@ class InferenceService : Service() {
         /** Stable, so a second `start` updates the existing notification. */
         private const val NOTIFICATION_ID = 1001
 
+        /** Intent extra carrying the notification title from `start`. */
+        const val EXTRA_TITLE = "title"
+        const val TITLE_REPLY = "Writing a reply"
+        const val TITLE_VISION = "Reading an image"
+
         /**
          * Begin protecting a turn. Idempotent -- a second call re-promotes with
-         * the same id and simply refreshes the notification.
+         * the same id and simply refreshes the notification, with [title].
          */
         @JvmStatic
-        fun start(context: Context) {
+        fun start(context: Context, title: String) {
             val intent = Intent(context, InferenceService::class.java)
+                .putExtra(EXTRA_TITLE, title)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
@@ -146,7 +156,7 @@ class InferenceService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        private fun buildNotification(context: Context): Notification {
+        private fun buildNotification(context: Context, title: String): Notification {
             // Tapping returns to the conversation rather than launching a
             // second task. FLAG_IMMUTABLE is mandatory from API 31 and correct
             // everywhere: nothing needs to rewrite this intent.
@@ -169,7 +179,7 @@ class InferenceService : Service() {
             }
 
             return builder
-                .setContentTitle("Writing a reply")
+                .setContentTitle(title)
                 // Says the true and reassuring thing in one line. "On this
                 // device" is the product's whole claim, and the status bar is
                 // one of the few places the user sees it unprompted.
