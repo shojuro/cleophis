@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "count": 18,
+  "files": {
+    "q01-linear.png": "d6fa341c8cafdcf7c25f633e117b33a4ad5de706d1653f00fc62de9ce24e11c1",
+    "q02-fraction.png": "ac3d8fc364ebf15a9ced32efb32eb9eec0c3b02877be0ecf27f664b553334751",
+    "q03-quadratic.png": "441c424d72c9fed9a0d0e15a0f401df26d5398f9f7a66b6cb657e90c522913f0",
+    "q04-exponent-times.png": "f348c95b63283a41ce802fc84940e8193a83749ddced44d8fe2ce10859b774a6",
+    "q05-system.png": "fc725d2b44ed10565128ad2bafb4cbc83e01fd4ba4507754fd99d880021efdca",
+    "q06-sqrt.png": "25a1a3592b28a1a104bb5f4f03fcc511bfa35c81228246e664826641d92a01dd",
+    "q07-negative-coeff.png": "3c6cfc95997d5c0d2d8c6cfe62ba71c418b49ae7a85cdd2c6d60b351565dc7ef",
+    "q08-mixed-fraction.png": "e05557f70a788e45d2106400141cfc84fe11ca0bbed316217d07412217ef87ff",
+    "q09-subscripts.png": "0a9e17f972dc0c3e1c43a55c7c5c1912b1bf16ab21124b601568940bb716e51a",
+    "q10-decimal.png": "fec15e73397852f85c64971284d47fac04318e8332fc9f17c46b4537fcb90ac1",
+    "q11-parentheses.png": "a11cb808169c07d211480103f4022cf4f3cbd28822034ea74a39edc21c2c370e",
+    "q12-inequality.png": "d57998e46f8749e517ac0de973a490df9b7b928164ee3d756a104c0111e75a60",
+    "q13-power-of-fraction.png": "d04074e57bd201ec3f0ccbc81f88a9465ee69cd3455f29c18dfc233ef6af7cf3",
+    "q14-percent.png": "916f0028672cba006c7dab00bdf591983c7cad2a392df8760da8215e4796e7a7",
+    "q15-text-and-formula.png": "e5f11d4ac903c8bf8d253abf858afe3c7943debec01c2ac19dc91c81aadca314",
+    "q16-cubic.png": "ab30c4a464fa962e14647cd8c3d87d8847e221742aba9e064fa5a9986e2578c6",
+    "q17-diagram-only.png": "c98942b50bfb3a65ddd29517d3ebbad5f2211ea8068fd0febe12de99164714d6",
+    "q18-prose.png": "355888406c9e70946c81a6d25c843cc92ba1ca845a3f83623c8065a2b3f5c4e9"
+  }
+}
