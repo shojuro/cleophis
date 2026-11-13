@@ -563,7 +563,7 @@ adds a `Reading an image` pin. Both pins cite `mobile_native.rs`: Rust owns the 
 
 ### The debug APK of record (tutor variant, built from 09a96e3)
 
-Install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk`. The build predates the two docs-only and JS-pin commits after 09a96e3; the code is the same.
+Install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk`. The two commits after 09a96e3 (8402ff7, 10ef9fa) are docs-only; the code in the APK is HEAD's.
 
 | Fact | Value |
 |---|---|
@@ -601,7 +601,7 @@ once in `classes8.dex`.
 
 ### Deferred and open
 
-- **Explicit hide on the error path: DONE in 2b5c31e.** `startCrop`'s error path now hides `#cropOpening` explicitly. The commit is JS-only and postdates the 813beba APK, so HEAD is one commit past it. It cannot be seen on the device, because the refuse pane replaces the crop pane either way.
+- **Explicit hide on the error path: DONE in 2b5c31e.** `startCrop`'s error path now hides `#cropOpening` explicitly. The commit is JS-only and postdates the 813beba APK, it is inside the 09a96e3 APK of record (the refuse pane replaces the crop pane either way, so it is not visible on the device). It cannot be seen on the device, because the refuse pane replaces the crop pane either way.
 - **The title follows the latest holder: fixed after the final review (I3).** Before the fix the counted service called Kotlin only on 0 to 1, so a reply sent while a cancelled reading was still finishing was titled "Reading an image"; `service_transition` now returns `start` on every begin and the shade names the latest holder. The 813beba APK predates this fix; the APK of record (09a96e3) carries it.
 - **Minor items deferred (final review).** M1: the `ServiceKind` test cannot catch Rust/Kotlin drift and `TITLE_VISION` is unread; delete it with the next Kotlin change or add a comparing probe. M2: the notification channel name "Writing replies" and its description also cover readings. M3: during the photo-reader download the `requesting` phase still says "Asking for your copy of the model." and the percentage runs twice from 0%. M4: the picture moves up one line when `#cropOpening` hides. M5: the Kotlin comment about a null intent names a case `START_NOT_STICKY` all but rules out. `NO_SIZE_TEXT` is an error the pinned catalog cannot produce, so only its unit test pins it.
 - **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the 813beba build (and again in 09a96e3), which passed with `tauri_exit 0`, and the dex check confirms the title string is present.

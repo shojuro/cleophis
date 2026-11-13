@@ -781,6 +781,7 @@ left behind. The build is recorded in
 |---|---|
 | commit | `3cd142d230f1731958a09deef7be32b60f31d046` (`mobile/vision-p2`) |
 | APK file | `~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk` (tutor variant, debug) |
+| Newer build | for the copy-pass re-checks (V1 Download, V2 opening text, V5 the notification titles) install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk` instead — see the Stage 2 record's "Copy pass" section |
 | APK sha256 | `cc4f6386ba91187394811d161e1c9d827ba83e5a0b42e7d8fa4882126e124f6d` |
 | APK size (bytes) | 380,312,110 |
 
