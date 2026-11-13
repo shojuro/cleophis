@@ -558,23 +558,33 @@ adds a `Reading an image` pin. Both pins cite `mobile_native.rs`: Rust owns the 
 - `npm test` (Task 1): `# pass 1286`, `# fail 0`. Task 2 re-run: tests 1286, pass 1286, fail 0.
 - Android (Task 2): `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` finished the `release` profile in 11m 04s, exit 0, zero warnings.
 - Windows desktop on 813beba (Task 2): `test result: ok. 460 passed; 0 failed; 10 ignored`, exit 0.
+- Fix wave (09a96e3, the title follows the latest holder): Android `-D warnings` check `Finished` with zero warnings on 09a96e3. Windows desktop 460 passed, 0 failed on 09a96e3 after one rerun. The first run's single failure was `cloud::session::tests::restore_refresh_400_purges_everything`, a real-credential-store test that collided with another branch's concurrent run.
+- `npm test` on 8402ff7: `# tests 1286`, `# pass 1286`, `# fail 0`.
 
-### The debug APK (tutor variant, built from 813beba)
+### The debug APK of record (tutor variant, built from 09a96e3)
+
+Install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk`. The build predates the two docs-only and JS-pin commits after 09a96e3; the code is the same.
 
 | Fact | Value |
 |---|---|
-| Commit | `813beba5f553600813a08595ba4075168140a4ca`, tree clean at PRE and POST |
-| Build log | `~/cleophis-mobile-logs/apk-debug-20261113-214724.log` |
-| Provenance | `~/cleophis-mobile-logs/apk-debug-20261113-214724.provenance`, `tauri_exit 0` |
+| Commit | `09a96e37b5f82a7dbf6f700d59f632e409b6304f`, tree clean at PRE and POST |
+| Build log | `~/cleophis-mobile-logs/apk-debug-20261113-232020.log` |
+| Provenance | `~/cleophis-mobile-logs/apk-debug-20261113-232020.provenance`, `tauri_exit 0` |
 | Built path | `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` |
-| Archived | `~/cleophis-artifacts/cleophis-vision-copy-813beba.apk` |
-| sha256 | `538291a40eea262d0306115fa9522927c6f0631a8cb313b48df7c51d4692b421` (rechecked on both copies) |
-| Size | 380,322,318 bytes (362.7 MiB) |
-| `verify-apk.py` | `VERDICT: PASS`; entries 970; unaccounted 178,268 (0.05%); largest `lib/arm64-v8a/libcleophis_lib.so` (370,693,768), `classes.dex` (10,260,852), `classes9.dex` (4,164,264) |
-| `libcleophis_lib.so` sha256 | `e1659853d934489e01dfefa7c386b82f227d301b7a8b0b7d677ac415e6fbadc7` |
+| Archived | `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk` |
+| sha256 | `227e3eb35b801fc7a0f4a8c4c0d265c805f5c8fd51dbe4b0c4ba1472b7df5fa4` (rechecked on both copies) |
+| Size | 380,267,262 bytes (362.65 MiB) |
+| `verify-apk.py` | `VERDICT: PASS`; entries 970; unaccounted 178,268 (0.05%); largest `lib/arm64-v8a/libcleophis_lib.so` (370,638,712), `classes.dex` (10,260,852), `classes9.dex` (4,164,264) |
+| `libcleophis_lib.so` sha256 | `ea45baf4426514dca82bf5953bf2477434a9b6f2edc37421af15d347c6289adb` |
 | Arch audit | `audit-arch-floor.sh` PASS: nothing above the floor outside 8 outline-atomics helper(s) |
-| Dex check | `Reading an image` occurs once in `classes8.dex` (the dex that holds `InferenceService`) and in no other dex; the new title is compiled in. It also occurs once in the `.so`, from `ServiceKind::title()`. |
-| Frontend strings | Not greppable from the APK. The only file under `assets/` is `tauri.conf.json`; the frontend is embedded in the `.so`, where `Opening the photo` and `Downloading the photo reader` do not appear as plain text. The JS strings are covered by the 1286 tests, not by the APK. |
+| Dex check | `Reading an image` occurs once in `classes8.dex` (the dex that holds `InferenceService`) and in no other dex. |
+| Frontend strings | Not greppable from the APK: the frontend is embedded in the `.so`. The JS strings are covered by the 1286 tests, not by the APK. |
+
+**Superseded: the 813beba build.** `~/cleophis-artifacts/cleophis-vision-copy-813beba.apk`
+(sha256 `538291a40eea262d0306115fa9522927c6f0631a8cb313b48df7c51d4692b421`, 380,322,318 bytes,
+log `apk-debug-20261113-214724.log`) lacks the title-refresh fix. Do not install it. Its checks
+at the time were `verify-apk.py` PASS, the arch audit PASS with 8 helpers, and `Reading an image`
+once in `classes8.dex`.
 
 ### What the founder re-checks on this APK
 
@@ -592,7 +602,7 @@ adds a `Reading an image` pin. Both pins cite `mobile_native.rs`: Rust owns the 
 ### Deferred and open
 
 - **Explicit hide on the error path: DONE in 2b5c31e.** `startCrop`'s error path now hides `#cropOpening` explicitly. The commit is JS-only and postdates the 813beba APK, so HEAD is one commit past it. It cannot be seen on the device, because the refuse pane replaces the crop pane either way.
-- **The title follows the latest holder: fixed after the final review (I3).** Before the fix the counted service called Kotlin only on 0 to 1, so a reply sent while a cancelled reading was still finishing was titled "Reading an image"; `service_transition` now returns `start` on every begin and the shade names the latest holder. The APK above predates this fix.
+- **The title follows the latest holder: fixed after the final review (I3).** Before the fix the counted service called Kotlin only on 0 to 1, so a reply sent while a cancelled reading was still finishing was titled "Reading an image"; `service_transition` now returns `start` on every begin and the shade names the latest holder. The 813beba APK predates this fix; the APK of record (09a96e3) carries it.
 - **Minor items deferred (final review).** M1: the `ServiceKind` test cannot catch Rust/Kotlin drift and `TITLE_VISION` is unread; delete it with the next Kotlin change or add a comparing probe. M2: the notification channel name "Writing replies" and its description also cover readings. M3: during the photo-reader download the `requesting` phase still says "Asking for your copy of the model." and the percentage runs twice from 0%. M4: the picture moves up one line when `#cropOpening` hides. M5: the Kotlin comment about a null intent names a case `START_NOT_STICKY` all but rules out. `NO_SIZE_TEXT` is an error the pinned catalog cannot produce, so only its unit test pins it.
-- **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the APK build above, which passed with `tauri_exit 0`, and the dex check confirms the title string is present.
+- **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the 813beba build (and again in 09a96e3), which passed with `tauri_exit 0`, and the dex check confirms the title string is present.
 - **The concurrent Windows run (Task 2 concern).** Task 2's red run checked out a branch in the shared Windows worktree while another branch's run may have been mid-compile; that run finished ok, so treat its result as probably unaffected.
