@@ -29,9 +29,13 @@ calibration uses. Nothing is estimated unless marked.
   14: it took the variable `x` for a capital `X` in q08 and q13, and both misreadings were
   accepted. All three renders fail the refusal gate. The diagram and the prose come back `review`
   with a LaTeX block.
-- **The original DejaVu finding (ruling S3-P6) does not survive the product's prompt.** The 8/18 on
-  the page prompt was the page prompt. A smaller font effect does survive: the two accepted `X`
-  readings, at confidence 0.9935 and 0.9748.
+- **The gate evidence is the product-regime CM run** (`host-v1-cm-product`, ruling S3-P8), on the
+  committed fixtures, which stay the gate set. It scores FAIL: exact 16/18 and refusals 0/2. Every
+  printed item is exact; the misses are the two refusal items. The two earlier runs are page-prompt
+  runs. Their tables are kept below, and they are not gate evidence.
+- **Under the product's prompt, DejaVu loses by 2 of 16 at the crop-filling size and by 0 at 28 pt.**
+  The original DejaVu finding (ruling S3-P6), 8/18, was the page prompt. The two remaining misses
+  are `x` read as `X`, both accepted, at confidence 0.9935 and 0.9748.
 - **The thresholds stay 0.90 / 0.70 / 0.97.** No sign or operator error appears in any reading of
   any run. The confidence pair pushes no exact reading into review. The operator threshold does, in
   every run, but this evidence cannot set its floor (see Calibration). A lowered operator threshold
@@ -114,25 +118,7 @@ ba47bd4:  # tests 1328  # pass 1328  # fail 0
 
 ### The host bench
 
-The brief's command (plan, Task 3 Step 3), as the two brief runs used it on the bench as of
-`1ac6b5a`, where it meant the page prompt and 256 tokens:
-
-```
-cargo run -p kpack-engine --features vision --release --example vision_bench -- \
-  --via-engine --family docling \
-  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
-  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
-  --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
-  --json <workspace>/host-v1-cm.jsonl
-node probes/vision/score.mjs --items probes/vision/fixtures/v1/items.json \
-  --records <workspace>/host-v1-cm.jsonl --out-md <workspace>/host-v1-cm.md --out-json <workspace>/host-v1-cm.json
-```
-
-Task 6's first two product-regime runs used the `ba47bd4` bench and passed the catalog's prompt and
-cap explicitly, which `166ab9e` makes the default. One ran the committed CM set. The other ran
-`b53ab15`'s DejaVu renders, the images behind the original finding, extracted with `git show`. All
-18 sha256s match that commit's `manifest.json`, and its 18 items carry the same ids, files, LaTeX
-and verdicts as the committed set:
+The gate run's command, the product regime on the committed fixtures:
 
 ```
 cargo run -p kpack-engine --features vision --release --example vision_bench -- \
@@ -142,9 +128,22 @@ cargo run -p kpack-engine --features vision --release --example vision_bench -- 
   --items probes/vision/fixtures/v1/items.json --max-side 512 --threads 4 --one-pass \
   --prompt "Convert formula to latex." --max-tokens 96 \
   --json <workspace>/host-v1-cm-product.jsonl
+node probes/vision/score.mjs --items probes/vision/fixtures/v1/items.json \
+  --records <workspace>/host-v1-cm-product.jsonl \
+  --out-md <workspace>/host-v1-cm-product.md --out-json <workspace>/host-v1-cm-product.json
 ```
 
-The third ran the `166ab9e` bench with neither flag, on the crop-filling DejaVu scratch set that
+It ran on the `ba47bd4` bench with both flags explicit; `166ab9e` makes them the default. The
+DejaVu 28 pt run used the same command on `b53ab15`'s DejaVu renders, the images behind the
+original finding, extracted with `git show`. All 18 sha256s match that commit's `manifest.json`,
+and its 18 items carry the same ids, files, LaTeX and verdicts as the committed set.
+
+The two page-prompt runs used the brief's command (plan, Task 3 Step 3) on the bench as of
+`1ac6b5a`. That command is the one above without `--prompt` and `--max-tokens`, which there meant
+the page prompt and 256 tokens.
+
+The crop-filling DejaVu run (`host-v1-dejavu-fill-product`) used the `166ab9e` bench with neither
+flag, on the scratch set that
 `gen.py --out <dir> --fontset dejavusans` wrote (ruling S3-P8). Its 18 items match the committed
 set's ids, files, LaTeX and verdicts, and its q17 and q18 are byte-identical to the committed ones.
 The bench's log line confirms the default:
@@ -381,7 +380,7 @@ Re-deriving every verdict and warning set from the recorded blocks with `assess`
 all 90 records of the five runs at the current values. That re-derivation is what the "at 0.86"
 columns below use.
 
-### Evidence: the product's regime, Computer Modern (`host-v1-cm-product.jsonl`)
+### Evidence: the gate run, product regime, Computer Modern (`host-v1-cm-product.jsonl`)
 
 | id | expected | got | exact | verdict | warnings | confidence | min op prob | stop | image tokens |
 |---|---|---|---|---|---|---|---|---|---|
@@ -453,7 +452,7 @@ Expected and got are both normalised by `normalise.mjs`. q15 also has a text blo
 | q17 | `C&&\\&&\\A&&\\B&&\\` | NO | review | low_confidence | 1 | 0.7543 | — | Eos |
 | q18 | `&ShppinglistforSutardy:\\&milk,eggs,brea…` | NO | review | invalid_latex, low_confidence, truncated | 1 | 0.8497 | — | MaxTokens |
 
-### Evidence: the brief's run, page prompt, Computer Modern (`host-v1-cm.jsonl`)
+### Evidence: page-prompt run, Computer Modern (`host-v1-cm.jsonl`, not gate evidence)
 
 | id | expected | got | exact | verdict | warnings | confidence | min op prob | stop | image tokens |
 |---|---|---|---|---|---|---|---|---|---|
@@ -476,7 +475,7 @@ Expected and got are both normalised by `normalise.mjs`. q15 also has a text blo
 | q17 | (refuse) | (no LaTeX) | yes | refuse | no_math_found, truncated | no LaTeX block (1 text) | — | MaxTokens | 64 |
 | q18 | (refuse) | (no LaTeX) | yes | refuse | no_math_found | no LaTeX block (2 text) | — | Eos | 64 |
 
-### Evidence: the brief's run, page prompt, DejaVu Sans 28 pt (`host-v1.jsonl`)
+### Evidence: page-prompt run, DejaVu Sans 28 pt (`host-v1.jsonl`, not gate evidence)
 
 | id | got (first 40 characters) | exact | verdict | warnings | LaTeX blocks | min confidence | min op prob | stop |
 |---|---|---|---|---|---|---|---|---|
