@@ -580,3 +580,55 @@ footer{border-top:1px solid var(--line);color:var(--faint);font-size:12px;text-a
 .msg.lookup-error{color:var(--amber)}
 .lookup-footer{margin-top:8px;font-size:11.5px;color:var(--muted)}
 .cite-url{display:block;font-size:12px;color:var(--teal);word-break:break-all}
+
+/* Vision Stage 2: the camera button, the crop, the reading, the confirmation.
+   Scoped to #photoBtn rather than redefining `.iconbtn`, which the chat bar's
+   own buttons already use. `height:auto` lets the composer's default stretch
+   make it as tall as #sendBtn, whatever padding each platform gives that. */
+.composer #photoBtn{flex:none;width:46px;height:auto;padding:0;display:grid;place-items:center;font-size:18px;line-height:1}
+.composer #photoBtn[hidden]{display:none}
+/* A backdrop, unlike the small modals: this one holds a picture to work on,
+   and the conversation behind it should not compete with it. */
+#visionModal{background:rgba(6,9,13,.6)}
+#visionModal .box{width:min(560px,100%);max-height:calc(var(--app-h,100dvh) - 40px);overflow-y:auto}
+#visionModal .vpane{margin-top:22px}
+#visionMenu .btn.block + .btn.block{margin-top:10px}
+#visionDl{margin:14px 0 10px}
+.vactions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.vactions .btn{flex:1 1 auto}
+/* The frame's 9999px shadow dims everything outside the selection; the wrapper
+   clips it to the picture so it cannot darken the buttons below. */
+.cropwrap{position:relative;overflow:hidden;width:max-content;max-width:100%;margin:0 auto;border-radius:8px;touch-action:none}
+#cropCanvas{max-width:100%;display:block}
+#cropFrame{position:absolute;border:2px solid var(--teal);box-shadow:0 0 0 9999px rgba(0,0,0,.45);touch-action:none;cursor:move}
+#cropFrame i{position:absolute;width:22px;height:22px;border:0 solid var(--teal)}
+/* A wider invisible hit area; a pointer on the pseudo-element targets the <i>. */
+#cropFrame i::before{content:"";position:absolute;inset:-8px}
+#cropFrame i[data-h="nw"]{left:-2px;top:-2px;border-left-width:4px;border-top-width:4px;cursor:nwse-resize}
+#cropFrame i[data-h="ne"]{right:-2px;top:-2px;border-right-width:4px;border-top-width:4px;cursor:nesw-resize}
+#cropFrame i[data-h="sw"]{left:-2px;bottom:-2px;border-left-width:4px;border-bottom-width:4px;cursor:nesw-resize}
+#cropFrame i[data-h="se"]{right:-2px;bottom:-2px;border-right-width:4px;border-bottom-width:4px;cursor:nwse-resize}
+#cropFrame i[data-h="n"]{top:-2px;left:50%;margin-left:-11px;border-top-width:4px;cursor:ns-resize}
+#cropFrame i[data-h="s"]{bottom:-2px;left:50%;margin-left:-11px;border-bottom-width:4px;cursor:ns-resize}
+#cropFrame i[data-h="e"]{right:-2px;top:50%;margin-top:-11px;border-right-width:4px;cursor:ew-resize}
+#cropFrame i[data-h="w"]{left:-2px;top:50%;margin-top:-11px;border-left-width:4px;cursor:ew-resize}
+.is-mobile #cropFrame i{width:28px;height:28px}
+.is-mobile #cropFrame i[data-h="n"],.is-mobile #cropFrame i[data-h="s"]{margin-left:-14px}
+.is-mobile #cropFrame i[data-h="e"],.is-mobile #cropFrame i[data-h="w"]{margin-top:-14px}
+#visionReadingText{margin:0;font-size:15px}
+#visionReading .prog{display:block}
+#visionReading .prog>i{width:35%;transition:none;animation:vreading 1.2s ease-in-out infinite}
+@keyframes vreading{0%{transform:translateX(-100%)}100%{transform:translateX(290%)}}
+#visionThumb{display:block;max-width:100%;max-height:120px;margin:0 auto 12px;border-radius:8px;border:1px solid var(--line)}
+.vblock{display:block;width:100%;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--surface2);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;white-space:pre-wrap;resize:vertical;outline:none}
+.vblock:focus{border-color:var(--teal)}
+.vblock.flag{border-color:#d99a2b;background:rgba(217,154,43,.12)}
+.vblock.text{color:var(--muted)}
+#visionNotes{margin:4px 0 0}
+#visionNotes:empty{display:none}
+#visionRefuseText{margin:0;font-size:14.5px;line-height:1.45}
+.is-mobile #visionModal{padding:12px}
+.is-mobile #visionModal .box{padding:20px 14px 16px}
+/* Last, so it outranks every display rule above (`.btn.block` is display:flex). */
+#visionModal [hidden]{display:none}

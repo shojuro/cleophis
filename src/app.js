@@ -5,7 +5,16 @@ import { createTransport, isAndroid } from './transport.js';
 import { describeEngineState, createReadableSequence, PREFILL_EXPLAIN_MS, THERMAL_PROMINENT_MS } from './engine-state.js';
 import { windowMessages, engineWindow, REPLY_RESERVE } from './context-window.js';
 import { decideDownload, meteredPromptText } from './download-policy.js';
-import { pickHeroArtifacts, heroVariantFor } from './dist-pick.js';
+import { pickHeroArtifacts, heroVariantFor, visionVariantFor } from './dist-pick.js';
+// Vision Stage 2: the photo -> crop -> read -> confirm flow. The rules live in
+// these three modules (tested); the section "photo input" below draws them.
+// `confirmState` is aliased: triage-confirm.js already owns that name here.
+import { fitContain, defaultCrop, clampCrop, moveCrop, resizeCrop, cropToImagePixels, targetSize } from './vision-crop.js';
+import {
+  READING_TEXT, TAKE_PHOTO_LABEL, CHOOSE_IMAGE_LABEL, USE_LABEL, USE_ANYWAY_LABEL, RETAKE_LABEL, TYPE_IT_LABEL,
+  REFUSE_NO_MATHS, confirmState as visionConfirmState, applyEdit, composeHandoff, attachmentFor,
+} from './vision-confirm.js';
+import { visionAvailability, visionDownloadPlan, VISION_DOWNLOAD_PROMPT } from './vision-download.js';
 import { assembleMessages } from './prompt-assembly.js';
 import { belowMinTier, minTierNotice, tierSelectorApplies } from './min-tier.js';
 // The product's contract on a supervised reply (Phase 2). Every use below is
@@ -113,6 +122,15 @@ const state = {
   // overlap complete_tier_switch → engine restart), and a once-per-session
   // latch so the first chat fires a single mark_tier_committed round-trip.
   tierSwitching: false, tierCommitted: false,
+  // Vision Stage 2. `info` is `vision_state()` (null on desktop, or when the
+  // tier has no transcriber) and outlives a photo; everything else belongs to
+  // ONE photo and is cleared by `resetVision` on every close and retake.
+  // `inFlight` counts `transcribe_image` calls the engine has not answered yet
+  // (a cancelled one included), so it is never reset by a close.
+  vision: {
+    info: null, requestId: null, file: null, bmp: null, fit: null, crop: null, drag: null,
+    result: null, confirm: null, plan: null, menuMode: null, relayoutPending: false, inFlight: 0,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -183,7 +201,7 @@ function heroAdapterId(m) {
 
 /* ---------------- boot ---------------- */
 async function boot() {
-  await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); refreshEngineState(); });
+  await listen('engine-ready', (e) => { state.engine = e.payload; hideEngineBanner(); setComposerEnabled(true); refreshEngineState(); refreshVisionState(); });
   await listen('engine-restarting', () => { showEngineBanner('Local engine restarting…'); setComposerEnabled(false); state.engine = { ...state.engine, status: 'Restarting' }; refreshEngineState(); });
   await listen('engine-failed', async (e) => {
     setComposerEnabled(false);
@@ -647,6 +665,9 @@ async function downloadHeroPair(baseModel, btn) {
   if (prog) prog.style.display = 'block';
   if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
   state.dl.active = true;
+  // The artifact paths this install started, so the `finally` frees only a
+  // slot it owns (see releaseArtDl).
+  const mine = [];
   try {
     // The pinned identity comes from the BUNDLED catalog (tiers entry, or the
     // flat entry's own fields); an empty or unknown baseModel means this build
@@ -660,6 +681,8 @@ async function downloadHeroPair(baseModel, btn) {
     // Throws a user-facing reason when a pinned sha is not in the signed
     // catalog or its record's kind / base_model disagree.
     const { base, adapter, contract } = pickHeroArtifacts(cat && cat.artifacts, variant);
+    mine.push(base.path, adapter.path);
+    if (contract) mine.push(contract.path);
     // Totalled across everything this install will pull, including the
     // contract adapter when the variant declares one — the user is being asked
     // about their data allowance, and a figure that undercounts what will
@@ -679,7 +702,7 @@ async function downloadHeroPair(baseModel, btn) {
     // Always clear the in-flight flag + progress bar, even on a missing-artifact
     // throw or a download rejection — otherwise the button sticks on "Downloading…".
     state.dl.active = false;
-    state.artDl = null;
+    releaseArtDl(mine);
     if (prog) prog.style.display = 'none';
   }
 }
@@ -693,7 +716,8 @@ async function heroDownload(m, btn) {
   const el = $('errMsg');
   const fail = (msg) => {
     state.dl.active = false;
-    state.artDl = null;
+    // No `state.artDl` reset here: downloadHeroPair's `finally` has already
+    // freed any slot of its own, and the one left may be another download's.
     const prog = $('prog'); if (prog) prog.style.display = 'none';
     if (btn) { btn.disabled = false; btn.textContent = 'Retry download'; }
     if (el) { el.style.display = 'block'; el.style.color = ''; el.textContent = msg; }
@@ -719,8 +743,14 @@ async function selectTier(m, mode) {
   state.tierSwitching = true;
   const el = $('errMsg');
   const btn = $('dlBtn');
+  // Looked up at call time: `openDrawer` rebuilds the drawer, #errMsg included.
+  // Every drawer has an #errMsg, so the message is written only while THIS
+  // model's drawer is the open one; if the user has moved to another model's
+  // drawer (or closed it) mid-switch, it is dropped rather than shown there.
   const showErr = (msg, muted) => {
-    if (el) { el.style.display = 'block'; el.style.color = muted ? 'var(--muted)' : ''; el.textContent = msg; }
+    if (state.drawerId !== m.id) return;
+    const e = $('errMsg');
+    if (e) { e.style.display = 'block'; e.style.color = muted ? 'var(--muted)' : ''; e.textContent = msg; }
   };
   if (el) { el.style.display = 'none'; el.textContent = ''; }
   try {
@@ -742,9 +772,13 @@ async function selectTier(m, mode) {
     if (state.drawerId === m.id) openDrawer(m.id);
     renderGrid();
   } catch (err) {
-    showErr(String(err && err.message ? err.message : err));
+    const msg = String(err && err.message ? err.message : err);
     try { state.tierSel = await invoke('get_tier_selection'); } catch (_) {}
     if (state.drawerId === m.id) openDrawer(m.id);
+    // AFTER the re-render, which empties #errMsg: shown before it, every
+    // download error on this path (a busy download slot included) vanished
+    // as soon as get_tier_selection answered.
+    showErr(msg);
   } finally {
     state.tierSwitching = false;
   }
@@ -759,7 +793,13 @@ async function selectTier(m, mode) {
 // An "Already installed." rejection means this artifact's file is already on
 // disk (e.g. resuming after the base landed but the adapter failed) — treat
 // it as success so the sequence proceeds to the next artifact.
+//
+// The Downloads registry has ONE slot. While another artifact holds it this
+// rejects at once, with the engine's own refusal, and leaves the slot alone:
+// overwriting it would orphan the holder's promise (a vision download stuck on
+// "Downloading…" because a tier switch started over it).
 function downloadArtifact(artifact) {
+  if (state.artDl) return Promise.reject(new Error('A download is already in progress.'));
   return new Promise((resolve, reject) => {
     state.artDl = { path: artifact.path, resolve, reject };
     invoke('download_artifact', { artifact }).catch((err) => {
@@ -772,6 +812,12 @@ function downloadArtifact(artifact) {
       else reject(new Error(msg));
     });
   });
+}
+
+// Free the download slot only when one of `paths` holds it: a sequencer that
+// stopped must not release a slot another download is still using.
+function releaseArtDl(paths) {
+  if (state.artDl && paths.includes(state.artDl.path)) state.artDl = null;
 }
 
 async function finishInstalled(m, btn) {
@@ -1374,6 +1420,7 @@ async function openChat(id) {
   rebuildChatDom();
   updateGroundPill();
   updateLookupEntry();
+  refreshVisionState();
   closeSidebarDrawer(); // mobile: picking a chat is what the drawer is for
   await refreshChatList(); // active-row highlight moves to this chat
 }
@@ -1443,6 +1490,7 @@ function enterChat(m) {
   rebuildChatDom();
   updateGroundPill();
   updateLookupEntry();
+  refreshVisionState();
   refreshChatList();
   closeDrawer();
   const views = $('views');
@@ -1822,6 +1870,10 @@ function renderConfirm(bubbleEl, msg, supervised) {
 function setComposerEnabled(on) {
   $('chatInput').disabled = !on;
   $('sendBtn').disabled = !on || state.chat.streaming;
+  // A photo turn ends in a tutor turn, so the camera is off whenever typing is,
+  // and so are the confirm pane's Use buttons.
+  renderPhotoButton();
+  if (state.vision.confirm && isVisionPaneShown('visionConfirm')) renderVisionGate();
 }
 
 // The engine banner is normally a plain status line. `action` (optional) turns
@@ -2076,6 +2128,13 @@ async function ensureTurnChat(m, userText) {
 // call sendCompletion() bare to replay an already-pushed/already-persisted
 // user turn, which must NOT be persisted a second time.
 async function sendCompletion(userText) {
+  // Vision Stage 2: the provenance of a photo turn, set by `visionHandoff` just
+  // before it calls here. Taken and cleared FIRST, synchronously, so that no
+  // exit below (a refused permit, a chat that failed to save) can leave it for
+  // the next typed turn to inherit. A retry chip (no `userText`) persists no
+  // user row, so it takes nothing.
+  const turnAttachment = userText != null ? pendingAttachment : null;
+  pendingAttachment = null;
   // BEFORE ANY INVOKE, and before the streaming latch below, so a refusal
   // leaves no composer state to restore. The retry chips reach this function
   // directly, which is why the check is here as well as in `sendMessage`.
@@ -2089,7 +2148,7 @@ async function sendCompletion(userText) {
   // switch (openChat/newChat) can abort THIS turn even if the switch
   // happens while create_chat is still in flight.
   state.chat.streaming = true;
-  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  $('sendBtn').hidden = true; $('stopBtn').hidden = false; renderPhotoButton();
   state.chat.aborter = new AbortController();
   markTurnStarted(); // starts the prefill clock; see engine-state.js
 
@@ -2153,7 +2212,11 @@ async function sendCompletion(userText) {
   if (userText != null) {
     turnChatId = await ensureTurnChat(m, userText);
     if (turnChatId != null) {
-      invoke('append_message', { chatId: turnChatId, role: 'user', content: userText }).catch(() => {});
+      // A typed turn sends exactly the payload it always did: the key is
+      // ABSENT, not null, when no photo is behind the turn.
+      invoke('append_message', turnAttachment
+        ? { chatId: turnChatId, role: 'user', content: userText, attachments: turnAttachment }
+        : { chatId: turnChatId, role: 'user', content: userText }).catch(() => {});
     }
   }
 
@@ -2188,7 +2251,7 @@ async function sendCompletion(userText) {
         // instead, same shape as the existing fetch-failure retry chip.
         bubble.remove();
         state.chat.streaming = false;
-        $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+        $('sendBtn').hidden = false; $('stopBtn').hidden = true; renderPhotoButton();
         $('sendBtn').disabled = false;
         const retry = document.createElement('button');
         retry.className = 'retrychip';
@@ -2232,7 +2295,7 @@ async function sendCompletion(userText) {
               .then(refreshChatList).catch(() => {});
           }
           state.chat.streaming = false;
-          $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+          $('sendBtn').hidden = false; $('stopBtn').hidden = true; renderPhotoButton();
           $('sendBtn').disabled = false;
           if (isActive) {
             const pill = $('groundPill');
@@ -2367,7 +2430,7 @@ async function sendCompletion(userText) {
     bubble.remove();
     state.chat.streaming = false;
     markTurnEnded();
-    $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+    $('sendBtn').hidden = false; $('stopBtn').hidden = true; renderPhotoButton();
     // A supervised entry whose system prompt is not the one its catalog
     // fingerprint was cut from never reached the model — `assembleMessages`
     // threw before the send. That is not a transport failure, so it gets no
@@ -2506,7 +2569,7 @@ function finishStream(bubble, acc, citations, calculations, turnChatId, autoTitl
     }
   }
   state.chat.streaming = false;
-  $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+  $('sendBtn').hidden = false; $('stopBtn').hidden = true; renderPhotoButton();
   $('sendBtn').disabled = false;
   pulseCost();
   // §7 S7-4: re-check the context-window divider now that the turn is
@@ -2760,7 +2823,7 @@ function renderLookupCitations(afterEl, citations) {
 
 function restoreComposer() {
   state.chat.streaming = false;
-  $('sendBtn').hidden = false; $('stopBtn').hidden = true;
+  $('sendBtn').hidden = false; $('stopBtn').hidden = true; renderPhotoButton();
   $('sendBtn').disabled = false;
 }
 
@@ -2771,7 +2834,7 @@ async function sendLookup(userText, { persistUser = true } = {}) {
   if (!permit.allowed) { showEngineBanner(permit.message); return; }
   // Latched synchronously, before any await, for sendCompletion's reasons.
   state.chat.streaming = true;
-  $('sendBtn').hidden = true; $('stopBtn').hidden = false;
+  $('sendBtn').hidden = true; $('stopBtn').hidden = false; renderPhotoButton();
   state.chat.aborter = new AbortController();
   const signal = state.chat.aborter.signal;
   document.querySelectorAll('.retrychip').forEach((el) => el.remove());
@@ -2943,6 +3006,548 @@ async function maybeAutoTitle(chatId, userText, assistantText) {
   }
 }
 
+/* ---------------- photo input (vision Stage 2) ----------------
+
+   A phone photo of a printed problem -> crop -> "Reading the image…" -> the
+   confirmation gate -> the confirmed LaTeX handed to the tutor as a USER turn.
+   The rules live in vision-crop.js, vision-confirm.js and vision-download.js
+   (pure, tested); this section only draws their answers and wires commands.
+   Three invariants, each one thing to grep for if this is changed:
+     - Model text reaches the DOM only through `textarea.value` and
+       `textContent`. Nothing in this section builds DOM from a string.
+     - Only `composeHandoff`'s output reaches the tutor: the latex blocks, as
+       the user left them. The buttons are drawn from the gate's own
+       `canUse` / `canUseAnyway` / `flagged`, never from a rule restated here.
+     - The image goes to `transcribe_image` and nowhere else. The crop is
+       re-encoded on a canvas (which also drops the file's EXIF block, GPS
+       included), kept as a data: URL for the thumbnail, and dropped with the
+       rest of `state.vision` on close.                                      */
+
+// Copy the Task 3 constants do not carry. 'Use selection' is the crop button's
+// name in the Stage 2 plan; the other three are words the app already uses
+// for the same actions (the packs modal's Cancel, the engine row's Download,
+// the drawer's Downloading…).
+const CROP_USE_LABEL = 'Use selection';
+const VISION_CANCEL_LABEL = 'Cancel';
+const VISION_DOWNLOAD_LABEL = 'Download';
+const VISION_DOWNLOADING_LABEL = 'Downloading…';
+const VISION_PANES = ['visionMenu', 'visionCrop', 'visionReading', 'visionConfirm', 'visionRefuse'];
+// The crop preview never takes more than this share of the viewport's height,
+// so the buttons under it stay on screen.
+const CROP_MAX_VH = 0.6;
+
+// The provenance of the photo turn about to be sent; `sendCompletion` takes it
+// (and clears it) before anything else, so no other turn can inherit it.
+let pendingAttachment = null;
+// One vision download at a time, across modal opens: closing the modal does
+// not stop a download, and reopening must not start a second.
+let visionDownloading = false;
+// Bumped by every reset, so an await that resolves after a close or retake (a
+// bitmap decode, a catalog fetch) can tell that its flow is gone.
+let visionSession = 0;
+// `openVision` awaits a state refresh before it opens, so a double tap would
+// otherwise open twice and send two prewarms.
+let visionOpening = false;
+
+// Same shape as transport.js's request ids (not exported there).
+function newVisionRequestId() {
+  return globalThis.crypto?.randomUUID?.() ?? `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+function visionErrorText(e) { return String(e && e.message ? e.message : e); }
+
+// The photo turn is a tutor feature. A triage build's hero is flat (no tiers,
+// so `visionVariantFor` is already null), but which entry may take a photo is
+// said here rather than left to that coincidence.
+function enteredIsHero() {
+  const m = state.chat.model;
+  const hero = heroEntry();
+  return !!(m && hero && m.id === hero.id && m.supervised !== true);
+}
+
+function photoAvailability() {
+  return visionAvailability({
+    variant: visionVariantFor(heroEntry(), effectiveTier()),
+    visionState: state.vision.info,
+  });
+}
+
+async function refreshVisionState() {
+  renderPhotoButton(); // the entered entry may have changed; the files cannot have yet
+  // Desktop: the command refuses, and null is what that refusal means.
+  state.vision.info = IS_MOBILE ? await invoke('vision_state').catch(() => null) : null;
+  renderPhotoButton();
+  // A download that finished (or a tier switch) while the menu is open.
+  if (isVisionPaneShown('visionMenu') && photoAvailability() !== state.vision.menuMode) renderVisionMenu();
+}
+
+function renderPhotoButton() {
+  const btn = $('photoBtn');
+  btn.hidden = !enteredIsHero() || photoAvailability() === 'unavailable';
+  // One transcription at a time, none while the tutor answers, and none while
+  // the composer is off (a photo turn ends in a tutor turn).
+  btn.disabled = state.chat.streaming || state.vision.inFlight > 0 || $('chatInput').disabled;
+}
+
+function showVisionPane(id) {
+  for (const p of VISION_PANES) $(p).hidden = p !== id;
+}
+function isVisionPaneShown(id) {
+  return $('visionModal').classList.contains('show') && !$(id).hidden;
+}
+
+// Delete the camera's capture files (`JPEG_*.jpg` in the app's external
+// Pictures folder, which is not private on Android 10 and lower). Fire and
+// forget: a missed sweep is retried at the next one. Mobile only; desktop has
+// no capture folder and the command would only return.
+function sweepCaptures() {
+  if (IS_MOBILE) invoke('sweep_captures').catch(() => {});
+}
+
+// Everything but `info` (a fact about the device) and `inFlight` (a fact about
+// the engine). Runs on every dismissal of the modal, through `hide`, and on
+// Retake. A transcription still running is cancelled and its id forgotten, so
+// a late `done` for it lands nowhere. An abandoned capture is swept: the page
+// is leaving the flow, so no file in that folder is still needed.
+function resetVision() {
+  const v = state.vision;
+  visionSession += 1;
+  if (v.requestId) invoke('chat_cancel', { requestId: v.requestId }).catch(() => {});
+  sweepCaptures();
+  if (v.bmp) v.bmp.close();
+  Object.assign(v, {
+    requestId: null, file: null, bmp: null, fit: null, crop: null, drag: null,
+    result: null, confirm: null, plan: null, menuMode: null, relayoutPending: false,
+  });
+  const canvas = $('cropCanvas');
+  canvas.width = 0; canvas.height = 0; // releases the preview's backing store
+  $('visionBlocks').replaceChildren();
+  $('visionThumb').removeAttribute('src');
+  showVisionPane(null);
+}
+
+async function openVision() {
+  if (visionOpening || $('visionModal').classList.contains('show')) return;
+  if (!enteredIsHero() || state.chat.streaming || state.vision.inFlight > 0) return;
+  visionOpening = true;
+  try {
+    await refreshVisionState(); // the freshest answer, coresident included
+    if (photoAvailability() === 'unavailable') return;
+    resetVision();
+    show($('visionModal'));
+    renderVisionMenu();
+  } finally {
+    visionOpening = false;
+  }
+}
+
+function renderVisionMenu() {
+  const avail = photoAvailability();
+  if (avail === 'unavailable') { hide($('visionModal')); return; }
+  state.vision.menuMode = avail;
+  showVisionPane('visionMenu');
+  const ready = avail === 'ready';
+  $('visionTakeBtn').hidden = !ready;
+  $('visionPickBtn').hidden = !ready;
+  $('visionDl').hidden = ready;
+  $('visionDlBtn').hidden = true;
+  if (ready) {
+    // Advisory, and only where the transcriber can stay beside the tutor: on
+    // the sequential path a prewarm would end the tutor's session for nothing.
+    if (state.vision.info && state.vision.info.coresident) invoke('prewarm_vision').catch(() => {});
+    return;
+  }
+  renderVisionDownload();
+}
+
+// The size line is the signed catalog's total for the two files, the same
+// number the metered gate is then asked about.
+async function renderVisionDownload() {
+  const session = visionSession;
+  const line = $('visionDl');
+  line.textContent = '';
+  if (!state.vision.plan) {
+    try {
+      const variant = visionVariantFor(heroEntry(), effectiveTier());
+      const cat = await invoke('fetch_dist_catalog');
+      if (session !== visionSession) return;
+      state.vision.plan = visionDownloadPlan(cat && cat.artifacts, variant);
+    } catch (e) {
+      if (session === visionSession) line.textContent = visionErrorText(e);
+      return;
+    }
+  }
+  line.textContent = VISION_DOWNLOAD_PROMPT(state.vision.plan.totalBytes);
+  $('visionDlBtn').hidden = false;
+  renderVisionDownloadButton();
+}
+
+function renderVisionDownloadButton() {
+  const btn = $('visionDlBtn');
+  btn.textContent = visionDownloading ? VISION_DOWNLOADING_LABEL : VISION_DOWNLOAD_LABEL;
+  // The Downloads registry has one slot. A hero install or tier switch that
+  // holds it (`state.artDl`) would have its sequencing promise orphaned if
+  // `downloadArtifact` were called over it.
+  btn.disabled = visionDownloading || !!state.artDl || state.dl.active;
+}
+
+async function downloadVision() {
+  const plan = state.vision.plan;
+  if (!plan || visionDownloading || state.artDl || state.dl.active) return;
+  visionDownloading = true;
+  renderVisionDownloadButton();
+  let failure = null;
+  try {
+    // A declined prompt is a cancellation, not a failure: no message.
+    if (!(await meteredGate(plan.totalBytes))) return;
+    await downloadArtifact(plan.base);
+    await downloadArtifact(plan.mmproj);
+  } catch (e) {
+    failure = visionErrorText(e);
+  } finally {
+    visionDownloading = false;
+    // `onDownloadProgress` books these events as the HERO's download: it marks
+    // `state.dl.active` and leaves a failed payload in `state.dlProgress`. Left
+    // in place, the engine-state row would offer the hero's Resume for a
+    // vision file, so both are put back to "no hero download".
+    releaseArtDl([plan.base.path, plan.mmproj.path]);
+    state.dl.active = false;
+    state.dlProgress = null;
+    refreshEngineState();
+    renderVisionDownloadButton();
+  }
+  await refreshVisionState(); // turns an open menu into the ready menu
+  if (failure && isVisionPaneShown('visionMenu') && state.vision.menuMode === 'needs-download') {
+    $('visionDl').textContent = failure;
+  }
+}
+
+function onPhotoFile(e) {
+  const input = e.target;
+  const file = input.files && input.files[0];
+  // Cleared before anything else: the same photo can be chosen twice, and the
+  // input keeps no handle on it once it has been read.
+  input.value = '';
+  if (!file || !isVisionPaneShown('visionMenu')) return;
+  startCrop(file);
+}
+
+async function startCrop(file) {
+  const session = visionSession;
+  // Leave the menu NOW, before the decode. A large photo can take a while to
+  // decode, and while the menu stayed up a second pick was admitted (by
+  // onPhotoFile's menu check), decoded beside the first, and overwrote it
+  // unclosed. The crop pane waits with its frame hidden and Use disabled until
+  // the picture is drawn; Retake works throughout.
+  showVisionPane('visionCrop'); // visible BEFORE layout: a hidden pane has no width
+  setCropBusy(true);
+  let bmp;
+  try {
+    // `from-image` applies the EXIF orientation, so a portrait photo is upright.
+    bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (e) {
+    if (session === visionSession) showVisionError(visionErrorText(e));
+    return;
+  } finally {
+    // Decoded or not, the page never reads the file again (the crop is drawn
+    // from the bitmap), so a camera capture is swept now rather than left on
+    // the phone until a reading or a cold start.
+    sweepCaptures();
+  }
+  if (session !== visionSession) { bmp.close(); return; }
+  // One decoded photo at a time, whatever path got here: each is tens of MB.
+  if (state.vision.bmp) state.vision.bmp.close();
+  state.vision.file = file;
+  state.vision.bmp = bmp;
+  layoutCrop();
+  state.vision.crop = defaultCrop(state.vision.fit);
+  placeCropFrame();
+  setCropBusy(false);
+}
+
+function setCropBusy(on) {
+  $('cropFrame').hidden = on;
+  $('cropUseBtn').disabled = on;
+}
+
+// Sizes the canvas to the picture as drawn (no letterbox to crop into), and
+// draws it. `fit`, the crop rect and the frame are all CSS pixels; only the
+// canvas's backing store is scaled to device pixels, for a sharp preview. The
+// canvas is drawn on, never hit-tested (the pointer handlers are on the frame
+// and read deltas), so that scale goes no further than the drawImage below.
+function layoutCrop() {
+  const v = state.vision;
+  const boxW = Math.max(1, $('visionCrop').clientWidth);
+  const boxH = Math.max(1, Math.round(window.innerHeight * CROP_MAX_VH));
+  const drawn = fitContain(v.bmp.width, v.bmp.height, boxW, boxH);
+  const cw = Math.max(1, Math.floor(drawn.w));
+  const ch = Math.max(1, Math.floor(drawn.h));
+  v.fit = fitContain(v.bmp.width, v.bmp.height, cw, ch);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const canvas = $('cropCanvas');
+  canvas.width = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  canvas.style.width = `${cw}px`;
+  canvas.style.height = `${ch}px`;
+  const ctx = canvas.getContext('2d');
+  // White under the picture: a transparent PNG of dark print would otherwise
+  // be dark on the dark modal here, and dark on black in the JPEG below.
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(v.bmp, v.fit.x * dpr, v.fit.y * dpr, v.fit.w * dpr, v.fit.h * dpr);
+}
+
+function placeCropFrame() {
+  const r = state.vision.crop;
+  const f = $('cropFrame').style;
+  f.left = `${r.x}px`;
+  f.top = `${r.y}px`;
+  f.width = `${r.w}px`;
+  f.height = `${r.h}px`;
+}
+
+// A rotation resizes the box; the selection keeps its place on the picture.
+function relayoutCrop() {
+  const v = state.vision;
+  if (!isVisionPaneShown('visionCrop') || !v.bmp || !v.fit || !v.crop) return;
+  // Not under a finger: the drag's start rect would no longer match the
+  // layout. Remembered, and run by endCropDrag (pointerup or pointercancel).
+  if (v.drag) { v.relayoutPending = true; return; }
+  v.relayoutPending = false;
+  const { fit: f, crop: r } = v;
+  const rel = { x: (r.x - f.x) / f.w, y: (r.y - f.y) / f.h, w: r.w / f.w, h: r.h / f.h };
+  layoutCrop();
+  const g = v.fit;
+  v.crop = clampCrop({ x: g.x + rel.x * g.w, y: g.y + rel.y * g.h, w: rel.w * g.w, h: rel.h * g.h }, g);
+  placeCropFrame();
+}
+
+function useCrop() {
+  const v = state.vision;
+  if (!v.bmp || !v.fit || !v.crop) return;
+  const { sx, sy, sw, sh } = cropToImagePixels(v.crop, v.fit);
+  const { w, h } = targetSize(sw, sh);
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  // From the full-resolution bitmap, never the preview, so the crop is only
+  // ever scaled down (targetSize caps the longest edge and never upscales).
+  ctx.drawImage(v.bmp, sx, sy, sw, sh, 0, 0, w, h);
+  const dataUrl = out.toDataURL('image/jpeg', 0.92);
+  out.width = 0; out.height = 0;
+  // The preview is not shown again for this photo; free its device-pixel store.
+  const preview = $('cropCanvas');
+  preview.width = 0; preview.height = 0;
+  v.bmp.close();
+  v.bmp = null;
+  v.file = null;
+  transcribe(dataUrl.slice(dataUrl.indexOf(',') + 1), dataUrl);
+}
+
+async function transcribe(imageBase64, thumb) {
+  const v = state.vision;
+  const requestId = newVisionRequestId();
+  v.requestId = requestId;
+  v.inFlight += 1;
+  renderPhotoButton();
+  showVisionPane('visionReading');
+  $('visionReadingText').textContent = READING_TEXT;
+  // Exactly one outcome per request. On a failure that reaches the engine the
+  // command BOTH sends an `error` event and rejects with the same message, and
+  // a request that is no longer current (cancelled, closed, retaken) is
+  // ignored whatever it says.
+  let settled = false;
+  const settle = (fn) => {
+    if (settled) return;
+    settled = true;
+    if (v.requestId !== requestId) return;
+    v.requestId = null;
+    fn();
+  };
+  const events = new Channel();
+  events.onmessage = (e) => {
+    if (e && e.event === 'done') settle(() => showVisionConfirm(e.data, thumb));
+    else settle(() => showVisionError(visionErrorText(e && e.data && e.data.message)));
+  };
+  try {
+    await invoke('transcribe_image', { requestId, imageBase64, onEvent: events });
+  } catch (err) {
+    // The early refusals ("A transcription is already in progress.", an image
+    // that is too large, the engine not running) arrive only here, verbatim.
+    settle(() => showVisionError(visionErrorText(err)));
+  } finally {
+    v.inFlight -= 1;
+    renderPhotoButton();
+  }
+}
+
+// The error pane IS the refuse pane, with the message as its text: Retake and
+// Type it are the two ways on from either.
+function showVisionError(message) {
+  showVisionPane('visionRefuse');
+  $('visionRefuseText').textContent = message;
+}
+
+function showVisionConfirm(result, thumb) {
+  const v = state.vision;
+  v.result = result;
+  v.confirm = visionConfirmState(result);
+  if (v.confirm.mode === 'refuse') { showVisionError(v.confirm.refuseText); return; }
+  showVisionPane('visionConfirm');
+  $('visionThumb').src = thumb; // a data: URL (CSP img-src allows data:)
+  const box = $('visionBlocks');
+  box.replaceChildren();
+  for (const b of v.confirm.blocks) {
+    const ta = document.createElement('textarea');
+    ta.className = 'vblock';
+    ta.dataset.id = String(b.id);
+    // `.value` is text: the model's output is never parsed as markup.
+    ta.value = b.content == null ? '' : String(b.content);
+    ta.rows = Math.min(6, Math.max(2, ta.value.split('\n').length));
+    // LaTeX is not prose: a keyboard's autocorrect would "fix" \frac.
+    ta.spellcheck = false;
+    ta.setAttribute('autocapitalize', 'off');
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    // Text blocks are context only (never handed off), so not editable.
+    if (b.kind === 'text') ta.readOnly = true;
+    box.appendChild(ta);
+  }
+  renderVisionGate();
+}
+
+// Everything the gate decides, re-read from its state after every edit.
+function renderVisionGate() {
+  const c = state.vision.confirm;
+  for (const ta of $('visionBlocks').children) {
+    const b = c.blocks.find((x) => String(x.id) === ta.dataset.id);
+    if (!b) continue;
+    ta.classList.toggle('flag', !!b.flagged);
+    ta.classList.toggle('text', b.kind === 'text');
+  }
+  $('visionNotes').textContent = c.notes.join(' ');
+  // Use is always on the pane and pressable only when the gate says so (in
+  // review it reads as "edit first"); Use anyway is there exactly when the
+  // gate offers the override. Both also wait for the composer: a handoff is a
+  // tutor turn, and while the engine is restarting or failed there is none to
+  // send (setComposerEnabled re-renders this; visionHandoff re-checks it).
+  const composerOff = $('chatInput').disabled;
+  $('visionUse').disabled = !c.canUse || composerOff;
+  $('visionUseAnyway').hidden = !c.canUseAnyway;
+  $('visionUseAnyway').disabled = composerOff;
+}
+
+function onVisionEdit(e) {
+  const ta = e.target.closest('textarea.vblock');
+  if (!ta || ta.readOnly || !state.vision.confirm) return;
+  // A NEW state each time; the textarea is not re-created, so the caret stays.
+  state.vision.confirm = applyEdit(state.vision.confirm, Number(ta.dataset.id), ta.value);
+  renderVisionGate();
+}
+
+// `how` is the button pressed; each is honoured only when the gate allows it.
+function visionHandoff(how) {
+  const v = state.vision;
+  const c = v.confirm;
+  if (!c || !v.result) return;
+  if (how === 'use' ? !c.canUse : !c.canUseAnyway) return;
+  // From here, what `sendMessage` does for typed text, in its order. A disabled
+  // composer (the engine restarting or failed: the engine banner says which)
+  // holds the handoff too, with the confirm pane left up for when it is back.
+  if (state.chat.streaming || $('chatInput').disabled) return;
+  let text;
+  try {
+    text = composeHandoff(c);
+  } catch (_) {
+    // No latex left to hand off; the gate's own copy for "no maths".
+    showVisionError(REFUSE_NO_MATHS);
+    return;
+  }
+  const attachment = attachmentFor(v.result, c, how);
+  hide($('visionModal'));
+  const permit = sendPermit();
+  if (!permit.allowed) { showEngineBanner(permit.message); return; }
+  pendingAttachment = attachment;
+  state.chat.messages.push({ role: 'user', content: text });
+  appendBubble('user', text);
+  sendCompletion(text);
+}
+
+function visionRetake() {
+  resetVision();
+  renderVisionMenu();
+}
+
+function visionTypeIt() {
+  hide($('visionModal'));
+  $('chatInput').focus();
+}
+
+// Static labels, from the constants; nothing in the markup carries copy.
+$('visionTakeBtn').textContent = TAKE_PHOTO_LABEL;
+$('visionPickBtn').textContent = CHOOSE_IMAGE_LABEL;
+$('cropUseBtn').textContent = CROP_USE_LABEL;
+$('cropRetakeBtn').textContent = RETAKE_LABEL;
+$('visionReadingText').textContent = READING_TEXT;
+$('visionCancel').textContent = VISION_CANCEL_LABEL;
+$('visionUse').textContent = USE_LABEL;
+$('visionUseAnyway').textContent = USE_ANYWAY_LABEL;
+$('visionRetake').textContent = RETAKE_LABEL;
+$('visionTypeIt').textContent = TYPE_IT_LABEL;
+$('visionRefuseRetake').textContent = RETAKE_LABEL;
+$('visionRefuseTypeIt').textContent = TYPE_IT_LABEL;
+
+$('photoBtn').addEventListener('click', () => { openVision(); });
+$('visionTakeBtn').addEventListener('click', () => $('photoCapture').click());
+$('visionPickBtn').addEventListener('click', () => $('photoPick').click());
+$('photoCapture').addEventListener('change', onPhotoFile);
+$('photoPick').addEventListener('change', onPhotoFile);
+$('visionDlBtn').addEventListener('click', () => { downloadVision(); });
+$('cropUseBtn').addEventListener('click', useCrop);
+$('cropRetakeBtn').addEventListener('click', visionRetake);
+// Cancel = close: `hide` -> resetVision sends `chat_cancel` for the current id.
+$('visionCancel').addEventListener('click', () => hide($('visionModal')));
+$('visionBlocks').addEventListener('input', onVisionEdit);
+$('visionUse').addEventListener('click', () => visionHandoff('use'));
+$('visionUseAnyway').addEventListener('click', () => visionHandoff('anyway'));
+$('visionRetake').addEventListener('click', visionRetake);
+$('visionTypeIt').addEventListener('click', visionTypeIt);
+$('visionRefuseRetake').addEventListener('click', visionRetake);
+$('visionRefuseTypeIt').addEventListener('click', visionTypeIt);
+window.addEventListener('resize', relayoutCrop);
+
+// The crop frame: drag the body to move, a handle to resize. Every move is
+// computed from the rect at pointerdown plus the total delta, so rounding never
+// accumulates; capture keeps the drag alive when the finger leaves the frame.
+$('cropFrame').addEventListener('pointerdown', (e) => {
+  const v = state.vision;
+  if (!v.crop || !v.fit || v.drag) return; // a second finger is ignored
+  e.preventDefault();
+  $('cropFrame').setPointerCapture(e.pointerId);
+  v.drag = { id: e.pointerId, x: e.clientX, y: e.clientY, rect: v.crop, handle: e.target.dataset.h || null };
+});
+$('cropFrame').addEventListener('pointermove', (e) => {
+  const v = state.vision;
+  const d = v.drag;
+  if (!d || d.id !== e.pointerId) return;
+  const dx = e.clientX - d.x;
+  const dy = e.clientY - d.y;
+  v.crop = d.handle ? resizeCrop(d.rect, d.handle, dx, dy, v.fit) : moveCrop(d.rect, dx, dy, v.fit);
+  placeCropFrame();
+});
+function endCropDrag(e) {
+  const d = state.vision.drag;
+  if (!d || d.id !== e.pointerId) return;
+  state.vision.drag = null;
+  if ($('cropFrame').hasPointerCapture(e.pointerId)) $('cropFrame').releasePointerCapture(e.pointerId);
+  // A rotation that landed mid-drag (see relayoutCrop).
+  if (state.vision.relayoutPending) relayoutCrop();
+}
+$('cropFrame').addEventListener('pointerup', endCropDrag);
+$('cropFrame').addEventListener('pointercancel', endCropDrag);
+
 /* ---------------- signed-out nudge ---------------- */
 let toastTimer = null;
 function showToast(text) {
@@ -2985,6 +3590,10 @@ function hide(el) {
     err.textContent = '';
   } else if (el.id === 'attachModal') {
     $('attachList').innerHTML = '';
+  } else if (el.id === 'visionModal') {
+    // The photo, its crop, its reading and any edits; and a transcription
+    // still running is cancelled (see resetVision).
+    resetVision();
   }
 }
 
@@ -3062,7 +3671,7 @@ $('scrim').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeDrawer(); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); closeProfileMenu();
+    closeDrawer(); hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); hide($('visionModal')); closeProfileMenu();
     if (state.sidebar.moveMenuFor != null || state.sidebar.folderMenuFor != null) {
       state.sidebar.moveMenuFor = null; state.sidebar.folderMenuFor = null; renderSidebar();
     }
@@ -3078,7 +3687,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('#profileWrap')) return;
   closeProfileMenu();
 });
-document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); }));
+document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => { hide($('loginModal')); hide($('createModal')); hide($('packsModal')); hide($('attachModal')); hide($('removeAccountModal')); hide($('visionModal')); }));
 $('packsBtn').addEventListener('click', () => openPacksModal());
 $('attachPacksBtn').addEventListener('click', () => openAttachModal());
 $('attachDoneBtn').addEventListener('click', async () => {

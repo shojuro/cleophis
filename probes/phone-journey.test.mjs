@@ -35,18 +35,21 @@ import * as lookupGuard from '../src/triage/lookup-guard.js';
 import * as lookupTurn from '../src/lookup-turn.js';
 import * as confirm from '../src/triage-confirm.js';
 import * as triageTurn from '../src/triage-turn.js';
+import * as visionConfirm from '../src/vision-confirm.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const CHECKLIST = new URL('../docs/superpowers/mobile-tools/phone-journey.md', import.meta.url);
 const catalog = JSON.parse(readFileSync(new URL('../src-tauri/resources/catalog.triage.json', import.meta.url), 'utf8'));
 const entry = catalog.find((e) => e.real);
 
-/** The steps the TC1 brief lists, in the order the founder runs them. */
+/** The steps the TC1 brief lists, in the order the founder runs them, then the
+ * photo-input steps of vision Stage 2 (Task 6), run on the tutor build. */
 export const STEP_IDS = Object.freeze([
   'S1', 'S2', 'S3', 'S4',
   'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8',
   'L1', 'L2', 'L3', 'L4', 'L5', 'L6',
   'E1', 'R1', 'C1',
+  'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7',
 ]);
 const EXPORT_STEPS = STEP_IDS.filter((id) => /^[TL]\d$/.test(id));
 
@@ -95,9 +98,9 @@ function evaluate(expr) {
   // name the shipped modules' exports; `Function` keeps them to exactly those
   // names.
   // eslint-disable-next-line no-new-func
-  const f = new Function('guard', 'lookupGuard', 'lookupTurn', 'confirm', 'triageTurn', 'entry',
+  const f = new Function('guard', 'lookupGuard', 'lookupTurn', 'confirm', 'triageTurn', 'visionConfirm', 'entry',
     `"use strict"; return (${expr});`);
-  return f(guard, lookupGuard, lookupTurn, confirm, triageTurn, entry);
+  return f(guard, lookupGuard, lookupTurn, confirm, triageTurn, visionConfirm, entry);
 }
 
 test('the checklist exists where the plan names it', () => {

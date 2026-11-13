@@ -389,11 +389,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tier_without_vision_still_parses_and_resolves_none() {
+    fn every_tier_declares_the_same_transcriber_with_pinned_hashes() {
+        const MODEL_SHA: &str = "b687245c212b59da938e411e2d4485596cbaeed1ae52706582ac38ed6a970f76";
+        const MMPROJ_SHA: &str = "bb75a65aa3ec14ac4a002248d5ffa075183df369030b6ca09028463ede18b307";
         let raw = include_str!("../resources/catalog.json");
         let v = parse_catalog(raw).unwrap();
         let h = hero(&v).unwrap();
-        assert!(hero_variant(h, "low").vision.is_none());
+        for tier in ["low", "mid", "high"] {
+            let vis = hero_variant(h, tier)
+                .vision
+                .unwrap_or_else(|| panic!("tier {tier} must declare vision"));
+            for s in [&vis.sha256, &vis.mmproj_sha256] {
+                assert!(s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()), "{tier}: {s}");
+            }
+            assert_eq!(vis.sha256, MODEL_SHA, "{tier}");
+            assert_eq!(vis.mmproj_sha256, MMPROJ_SHA, "{tier}");
+            assert!(vis.model_file.ends_with("granite-docling-258M-Q8_0.gguf"), "{tier}");
+            assert!(
+                vis.mmproj_file.ends_with("mmproj-granite-docling-258M-Q8_0.preproc512.gguf"),
+                "{tier}"
+            );
+            assert_eq!(vis.family, "docling", "{tier}");
+            assert_eq!(vis.prompt, "Convert formula to latex.", "{tier}");
+            assert_eq!(vis.max_side, 512, "{tier}");
+            assert_eq!(vis.threads, 4, "{tier}");
+            assert!(vis.one_pass, "{tier}");
+            assert_eq!(vis.max_tokens, 96, "{tier}");
+        }
     }
 
     #[test]
@@ -412,9 +434,11 @@ mod tests {
         let mut v = parse_catalog(include_str!("../resources/catalog.json")).unwrap();
         let h = v.iter_mut().find(|e| e.real && e.model_file.is_some()).unwrap();
         let vis: VisionVariant = serde_json::from_str(r#"{"baseModel":"granite-docling-258M","modelFile":"models/g.gguf","sha256":"aa","fileBytes":1,"mmprojFile":"models/m.gguf","mmprojSha256":"bb","mmprojBytes":1,"family":"docling"}"#).unwrap();
+        let mid_before = hero_variant(h, "mid").vision;
         h.tiers.as_mut().unwrap().low.vision = Some(vis.clone());
         assert_eq!(hero_variant(h, "low").vision, Some(vis));
-        assert_eq!(hero_variant(h, "mid").vision, None);
+        // Overriding one tier leaves the others' (real, bundled) block alone.
+        assert_eq!(hero_variant(h, "mid").vision, mid_before);
     }
 
     #[test]

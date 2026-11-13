@@ -7,6 +7,9 @@ catalog rollback. The release gate (Task TC2) reads the export this journey
 produces; nothing here is scored by hand except the steps that leave no export
 row, and those carry a screenshot.
 
+The last section, "Photo input (Stage 2)", is a separate run on the tutor
+build of the vision branch, with its own APK and its own evidence folder.
+
 Every quoted screen string below is the product's own text. Each sits under an
 `expect` comment naming the constant or file that produces it, and
 `probes/phone-journey.test.mjs` fails if the two ever differ. If a screen shows
@@ -764,3 +767,444 @@ python3 -m pipeline.analysis.device_journey \
   --served-dir work/gate-17b-m11/results-served --stack Qwen3-1.7B-armb-v3.pB \
   --out artifacts/device-journey-r0.json
 ```
+
+## Photo input (Stage 2)
+
+This part is a separate run, on the TUTOR build of the vision branch, not on
+the triage build above. It walks the photo flow on the phone: the camera
+button, the system camera, the picker, a photo stored sideways, Cancel, the
+confirmation gate and the handoff to the tutor, and that no captured photo is
+left behind. The build is recorded in
+`docs/superpowers/verification-vision-stage2.md`, under "The debug APK".
+
+| field | value |
+|---|---|
+| commit | `3cd142d230f1731958a09deef7be32b60f31d046` (`mobile/vision-p2`) |
+| APK file | `~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk` (tutor variant, debug) |
+| APK sha256 | `cc4f6386ba91187394811d161e1c9d827ba83e5a0b42e7d8fa4882126e124f6d` |
+| APK size (bytes) | 380,312,110 |
+
+This build replaces the one at `010fd60`
+(`cleophis-vision-s2-debug-010fd60.apk`, sha256 `c4ad4c06…`). That build does
+not sweep a photo abandoned on the crop pane, so V7 fails on it. Install this
+one.
+
+Before you start:
+
+- Install it over whatever is on the phone (the same debug key, so the app's
+  data stays): `adb install -r ~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk`.
+  Sign in, open the Socratic Math Tutor tile and download its model as in S3,
+  so the tutor chat opens. When you are done, reinstall the triage APK from the
+  build record above if the phone goes back to the triage journey.
+- Make a laptop folder `device-vision-s2/` with a `screenshots/` sub-folder.
+  Record each V step in `device-vision-s2/founder-steps.json`, in the same
+  shape as the triage steps:
+  `{"steps": {"V1": {"result": "PASS", "evidence": "screenshots/V1.png", "note": ""}}}`.
+  Keep it apart from `device-journey-r0/`: the triage reader does not read V
+  steps.
+- Write the phone's API level into V1's note
+  (`adb shell getprop ro.build.version.sdk`). What Android back does depends on it.
+- Some checks read the page. Open the laptop's Chrome at `chrome://inspect`;
+  the debug build lets it attach to the app's WebView.
+- Have a printed maths problem to hand: a worksheet, or the five Stage 0 items
+  in `~/cleophis-artifacts/vision/spike-images-formula/` printed on one page.
+- Lines marked **Probe** are observations, not pass criteria. Write what you
+  saw into the step's `note` as `probe <name>: …`; they feed Stage 3.
+
+| step | what | expected text comes from | evidence |
+|---|---|---|---|
+| V1 | the camera button, on the tutor only, once the build declares a transcriber | `index.html`, `vision-download.js`, `vision-confirm.js` | screenshots, `vision_state` |
+| V2 | "Take a photo" opens the system camera | `AndroidManifest.xml`, `app.js`, `vision-confirm.js` | screenshots |
+| V3 | "Choose an image" picks a screenshot | `vision-confirm.js` | screenshot |
+| V4 | a photo stored sideways reads upright | `vision-confirm.js` `READING_TEXT` | screenshots |
+| V5 | Cancel mid-reading closes the modal, the notification goes | `app.js`, `InferenceService.kt` | screenshots |
+| V6 | the confirmation gate, then the handoff | `vision-confirm.js` | screenshots |
+| V7 | no captured photo is left on the phone | `CaptureHygiene.kt`, `mobile_native.rs` | `adb` listings |
+
+### V1 — the camera button, on the tutor only, once the build declares a transcriber
+
+1. Open the Socratic Math Tutor chat. A camera button sits at the left of the
+   composer, before the message box. Its accessible name (TalkBack reads it;
+   in `chrome://inspect`, `document.getElementById('photoBtn').getAttribute('aria-label')`)
+   is:
+
+<!-- expect-source: src/index.html -->
+```text
+Add a photo of a problem
+```
+
+2. In `chrome://inspect`, `await window.__TAURI__.core.invoke('vision_state')`
+   returns `declared: true`. Before the vision files are on the phone it also
+   returns `installed: false`. Paste the whole object into the note; its
+   `coresident` matters for V5.
+3. Go back to the home screen. No other tile in this build opens a chat, so
+   the button appears nowhere else. The triage half is optional: in a
+   `--variant=triage` build of the same commit the triage chat has no camera
+   button. Note whether you ran it.
+4. Tap the camera button. Before the vision files are on the phone the menu
+   shows ONE of two things. Either it shows a size line and a Download
+   button, and the line begins:
+
+<!-- expect-source: src/vision-download.js -->
+```text
+Photo input needs a one-time
+```
+
+   Or the signed catalog does not list the two vision files yet (the founder
+   publishes them; see the Stage 1 record, "How the vision files reach
+   `models/`"). Then the line is a message containing the text below, and
+   there is NO Download button. Until the catalog that lists the vision files
+   (v13) is published, this second menu is the one you will see. In that case
+   skip step 5 and go to step 6.
+
+<!-- expect-source: src/dist-pick.js -->
+```text
+is not in the signed catalog
+```
+
+5. Only with the size line and the Download button: with the catalog this
+   build pins, the line reads "Photo input needs a one-time 269 MB download."
+   Tap Download, wait for it to finish, and go to step 7.
+6. Only with the "is not in the signed catalog" message: load the two files
+   by hand, and write "sideloaded" in the note. The projector must be the
+   `preproc512` file: the unpatched one has the same size and a different
+   sha. The last command must print `b687245c…` for the model and
+   `bb75a65a…` for the projector.
+
+<!-- literal -->
+```text
+adb push ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf /data/local/tmp/
+adb push ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf /data/local/tmp/
+adb shell chmod 644 /data/local/tmp/granite-docling-258M-Q8_0.gguf /data/local/tmp/mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+adb shell run-as ${PKG:-com.cleophis.app} cp /data/local/tmp/granite-docling-258M-Q8_0.gguf models/
+adb shell run-as ${PKG:-com.cleophis.app} cp /data/local/tmp/mmproj-granite-docling-258M-Q8_0.preproc512.gguf models/
+adb shell rm /data/local/tmp/granite-docling-258M-Q8_0.gguf /data/local/tmp/mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+adb shell run-as ${PKG:-com.cleophis.app} sha256sum models/granite-docling-258M-Q8_0.gguf models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+```
+
+7. Close the menu and tap the camera button again. With the files in, the
+   menu shows two buttons:
+
+<!-- expect: visionConfirm.TAKE_PHOTO_LABEL -->
+```text
+Take a photo
+```
+
+<!-- expect: visionConfirm.CHOOSE_IMAGE_LABEL -->
+```text
+Choose an image
+```
+
+- **Probe (back, menu):** press Android back with the menu open. On API 31
+  and later the app goes to the background, and the menu is still there when
+  you return. On API 24 to 30 the activity finishes and the flow is gone;
+  nothing was saved. Note which you saw.
+
+**Evidence:** screenshot `screenshots/V1.png` of the chat with the camera
+button and `screenshots/V1-menu.png` of the two-button menu; the
+`vision_state` object, the API level and the APK sha256 in the note.
+
+- [ ] PASS
+- [ ] FAIL
+
+### V2 — "Take a photo" opens the system camera, not the file picker
+
+The WebView reaches the camera only because the manifest says the app may ask
+for it. Without this entry Android 11 and later hide the camera from the app,
+and the WebView silently opens the file picker instead:
+
+<!-- expect-source: src-tauri/gen/android/app/src/main/AndroidManifest.xml -->
+```text
+android.media.action.IMAGE_CAPTURE
+```
+
+1. Tap the camera button, then Take a photo. The phone's own camera app
+   opens. A file picker or a list of apps is a FAIL.
+2. Photograph the printed problem, one line of maths across about a third of
+   the frame, and accept the photo in the camera app.
+3. The app shows the photo with a selection frame over its middle, and two
+   buttons:
+
+<!-- expect-source: src/app.js -->
+```text
+Use selection
+```
+
+<!-- expect: visionConfirm.RETAKE_LABEL -->
+```text
+Retake
+```
+
+4. Drag the frame and its corner and edge handles around the problem. The
+   frame never leaves the picture. Tap Use selection and wait for the result;
+   V6 may use it.
+
+- **Probe (one thumb):** holding the phone in one hand, resize the frame from
+  each corner with the thumb. The handles are 28 px on a phone. Note any
+  handle you could not grab.
+- **Probe (rotation mid-drag):** with auto-rotate on, start dragging the
+  frame, turn the phone while the finger is still down, then lift it. The crop
+  re-lays out when the finger lifts: the frame sits on the same part of the
+  picture, inside it.
+- **Probe (decode memory):** set the camera to its largest picture size and
+  take the photo with the tutor loaded. While the crop pane shows, run
+  `adb shell dumpsys meminfo | grep -iE 'cleophis|sandboxed'` (the WebView's
+  renderer is usually a separate `sandboxed_process` entry) and
+  `adb logcat -d | grep -iE 'lowmemorykiller|lmkd'`. Note the figures and any
+  kill.
+- **Probe (back, crop):** press Android back in the crop pane. Same
+  expectation as V1's back probe.
+
+**Evidence:** screenshots `screenshots/V2-camera.png` (the camera app open)
+and `screenshots/V2-crop.png` (the crop pane).
+
+- [ ] PASS
+- [ ] FAIL
+
+### V3 — "Choose an image" picks a screenshot
+
+1. Put a problem on the phone's screen and screenshot it: push a Stage 0 item,
+   open it in the gallery, and take a screenshot (power and volume down).
+   `adb push ~/cleophis-artifacts/vision/spike-images-formula/p01-linear.png /sdcard/Pictures/`
+2. Tap the camera button, then Choose an image. An image picker opens (the
+   gallery or Files). Pick the screenshot.
+3. The crop pane shows the screenshot. Frame the equation and tap Use
+   selection.
+4. The confirm pane shows the equation as LaTeX (the item is
+   `3x - 7 = 2x + 5`).
+
+- **Probe (HEIC):** if the camera can save HEIC ("high efficiency pictures"),
+  choose a HEIC photo. The WebView may fail to decode it. If it does, the
+  refuse pane shows the decoder's message with Retake and Type it instead,
+  and nothing reaches the tutor. Note the message shown.
+
+**Evidence:** screenshot `screenshots/V3.png` of the confirm pane.
+
+- [ ] PASS
+- [ ] FAIL
+
+### V4 — a photo stored sideways (EXIF orientation 6) reads upright
+
+A phone camera usually stores a portrait photo sideways, with a tag saying
+"turn this 90° clockwise to show it". The crop must show it upright, and the
+engine must be sent it upright.
+
+1. On the laptop, make a test picture stored sideways with that tag, and push
+   it to the phone:
+
+<!-- literal -->
+```text
+python3 -c "from PIL import Image; im = Image.open('$HOME/cleophis-artifacts/vision/spike-images-formula/p03-quadratic.png').convert('RGB'); e = Image.Exif(); e[0x0112] = 6; im.rotate(90, expand=True).save('device-vision-s2/p03-orient6.jpg', quality=95, exif=e)"
+adb push device-vision-s2/p03-orient6.jpg /sdcard/Pictures/
+```
+
+2. Tap the camera button, Choose an image, and pick `p03-orient6.jpg`. The
+   crop pane shows the equation upright, reading left to right. Sideways is a
+   FAIL.
+3. Frame it and tap Use selection. While the device reads, the pane says:
+
+<!-- expect: visionConfirm.READING_TEXT -->
+```text
+Reading the image…
+```
+
+4. The confirm pane shows the quadratic. Stage 1 read this item as
+   `x^{2}-5x+6=0`; a different but upright reading still passes here, since V4
+   checks the orientation and V6 checks the gate.
+5. Take a portrait photo with Take a photo. The crop pane shows it upright.
+
+**Evidence:** screenshots `screenshots/V4-crop.png` (the upright preview),
+`screenshots/V4-reading.png` and `screenshots/V4-confirm.png`.
+
+- [ ] PASS
+- [ ] FAIL
+
+### V5 — Cancel mid-reading closes the modal and the foreground notification disappears
+
+1. Start a reading: the camera button, Choose an image, any problem, Use
+   selection.
+2. While "Reading the image…" shows, pull down the notification shade. The
+   app's notification is there; a reading uses the same one a reply does:
+
+<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
+```text
+Writing a reply
+```
+
+3. Back in the app, tap:
+
+<!-- expect-source: src/app.js -->
+```text
+Cancel
+```
+
+4. The modal closes at once. No photo message and no reply appear in the
+   chat.
+5. The camera button stays disabled until the engine lets go. The image's
+   prefill cannot be interrupted, only the decoding after it. In Stage 0 the
+   A22's prefill took 7.6 s per image (`prefill_ms` 7,609 to 7,653 in
+   `docs/superpowers/vision-spike/a22-floor-formula-1pass.jsonl`). On a phone
+   whose `vision_state` said `coresident: false`, the engine also reloads the
+   tutor before it lets go, so allow longer and note the time.
+6. When the engine lets go, the notification is gone from the shade and the
+   camera button is enabled again.
+
+- **Probe (Cancel before the id registers):** tap Cancel the instant the
+  reading pane appears. If the tap beats the engine's registration of the
+  request, the reading runs to its end unseen: the modal is closed, nothing
+  reaches the chat, and the camera button stays disabled until the reading
+  finishes. The window is about the time the base64 decode of a crop at most
+  512 px on its longest edge takes, so it is hard to hit. Note whether the button took a full
+  reading's time to come back.
+- **Probe (back, reading):** press Android back while the device reads. On API
+  31 and later the app goes to the background, the reading goes on, and the
+  confirm pane is there when you return. On API 24 to 30 the activity
+  finishes and the flow is lost; nothing was saved. Either way the
+  notification must go once the engine finishes.
+
+**Evidence:** screenshots `screenshots/V5-reading.png` (the shade with the
+notification, during the reading) and `screenshots/V5-after.png` (the shade
+after, without it).
+
+- [ ] PASS
+- [ ] FAIL
+
+### V6 — the confirmation gate, then the handoff
+
+Nothing reaches the tutor until a person has accepted a confident reading or
+corrected an uncertain one. Only maths blocks can turn amber. A text block is
+shown grey and read-only, and is never sent.
+
+1. Read photos until one comes back uncertain. Handwriting, glare, a slight
+   tilt or a small minus sign usually do it; when a reading counts as
+   uncertain is calibrated in Stage 3, so it may take a few tries. The
+   confirm pane shows at least one maths block outlined in amber and, under
+   the blocks, the note:
+
+<!-- expect: visionConfirm.REVIEW_NOTE -->
+```text
+Check the parts marked in amber before you continue.
+```
+
+2. In that state the pane shows both of these buttons. The first is shown but
+   greyed out:
+
+<!-- expect: visionConfirm.USE_LABEL -->
+```text
+Use this
+```
+
+<!-- expect: visionConfirm.USE_ANYWAY_LABEL -->
+```text
+Use anyway
+```
+
+3. Retake and this button are there too:
+
+<!-- expect: visionConfirm.TYPE_IT_LABEL -->
+```text
+Type it instead
+```
+
+4. Any grey text block cannot be edited. Correct the amber maths block,
+   typing the maths as it should read. The amber goes, Use this becomes
+   pressable, and Use anyway disappears. Blanking a maths block never makes
+   Use this pressable.
+5. Tap Use this. The modal closes and the chat shows your message. It begins:
+
+<!-- expect: visionConfirm.HANDOFF_PREFIX -->
+```text
+Problem from photo:
+```
+
+6. Under that line come the maths lines exactly as you left them, and no text
+   block. The tutor answers it.
+7. Read a clean, confident photo: no amber, no note, Use this pressable at
+   once, and no Use anyway. Any reading that shows amber behaves as in steps 1
+   to 4, whatever the engine's verdict: Use this greyed, the note shown, and
+   Use anyway offered.
+
+- **Probe (back, confirm):** press Android back on the confirm pane. Same
+  expectation as V1's back probe.
+- **Probe (export):** export the chat as JSON from its menu. The photo
+  message's row carries `attachments` with `kind` `vision`, the model, the
+  verdict, `edited`, `override` and the block counts, and no image and no
+  block text. `override` is `true` only for a handoff by Use anyway, so after
+  step 5's Use this it is `false`.
+  The typed turns carry no `attachments`.
+
+**Evidence:** screenshots `screenshots/V6-review.png` (amber block, note,
+both buttons), `screenshots/V6-edited.png` (after the edit) and
+`screenshots/V6-handoff.png` (the message in the chat).
+
+- [ ] PASS
+- [ ] FAIL
+
+### V7 — no captured photo is left on the phone
+
+For every photo it takes for the app, the camera app writes a full-size file,
+location tag included, into the app's own pictures folder. Its name begins:
+
+<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/CaptureHygiene.kt -->
+```text
+JPEG_
+```
+
+The app creates that file, empty, as the camera app opens, and the camera app
+fills it. The app deletes those files when it starts, after every reading, as
+soon as the crop pane has drawn the photo, and whenever the photo flow is left
+(Retake, the × close, a photo it cannot open). This step checks each of
+those. It first checks that the folder is the right one, because an empty
+listing of the wrong folder proves nothing. The file is only there while the
+camera app is in front, so that is when step 1 lists it.
+
+1. Tap the camera button, then Take a photo. While the camera app is in
+   front, before you press its shutter, list the folder on the laptop:
+   `adb shell ls -l /sdcard/Android/data/${PKG:-com.cleophis.app}/files/Pictures/`
+   One `JPEG_….jpg` is listed, probably 0 bytes long. If the shell is
+   refused, list the same folder through the app:
+   `adb shell run-as ${PKG:-com.cleophis.app} ls -l /storage/emulated/0/Android/data/${PKG:-com.cleophis.app}/files/Pictures/`
+   If neither lists a `JPEG_` file here, the path is wrong for this phone:
+   paste what `adb shell ls /sdcard/Android/data/${PKG:-com.cleophis.app}/files/`
+   shows into the note and tick FAIL.
+2. Take the photo and accept it in the camera app. Once the crop pane shows
+   the photo, list again: no `JPEG_` file. The device log names the sweep.
+   `adb logcat -d | grep 'swept'` shows a line of this form, with the count in
+   place of `{n}`:
+
+<!-- expect-source: src-tauri/src/mobile_native.rs -->
+```text
+[vision] swept {n} capture file(s)
+```
+
+3. Retake: take another photo, and on the crop pane tap Retake. List again:
+   no `JPEG_` file.
+4. A photo never taken: tap Take a photo, then leave the camera app without
+   taking one (its back or cancel). The menu is back. List: a `JPEG_` file of
+   0 bytes is usually there, because the camera app never filled it; note
+   what you saw. Close the menu with its × at the top right. List again: no
+   `JPEG_` file.
+5. A reading: take a photo, tap Use selection and wait for the confirm pane.
+   List again: no `JPEG_` file.
+6. The start-up sweep: tap Take a photo, and while the camera app is in front
+   force-stop the app from the laptop:
+   `adb shell am force-stop ${PKG:-com.cleophis.app}`
+   List: the `JPEG_` file is still there, because nothing ran to delete it
+   (if it is gone, note it: the camera app removed it, and this step then
+   cannot show the start-up sweep). Press Home, then open the app from its
+   icon. List again: no `JPEG_` file.
+7. After V1 to V6, list once more: no `JPEG_` file.
+
+- **Probe (process death under the camera):** tap Take a photo, and while the
+  camera app is in front, kill the app's process from the laptop:
+  `adb shell am kill ${PKG:-com.cleophis.app}` (check with
+  `adb shell pidof ${PKG:-com.cleophis.app}`, which prints nothing once it is
+  gone). Take the photo and go back to the app. The capture is lost, because
+  the restarted app has no crop pane waiting for it, and the start-up sweep
+  removes the file the camera wrote: the listing shows no `JPEG_` file. Note
+  what the app showed on return.
+
+**Evidence:** the listings of steps 1 to 7 and the logcat line pasted into the note.
+
+- [ ] PASS
+- [ ] FAIL

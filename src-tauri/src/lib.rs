@@ -24,8 +24,10 @@ mod catalog_dist;
 /// module doc for why that beats maintaining two lists.
 mod chat_cmds;
 /// The mobile image-transcription commands (`transcribe_image` /
-/// `prewarm_vision` / `vision_state`). Compiled on every platform for the same
-/// reason as `chat_cmds`: bodies cfg-gated, desktop ones refuse.
+/// `prewarm_vision` / `vision_state` / `sweep_captures`). Compiled on every
+/// platform for the same reason as `chat_cmds`: bodies cfg-gated, desktop ones
+/// refuse (except `sweep_captures`, which has nothing to sweep there and
+/// returns `Ok`).
 mod vision_cmds;
 mod cloud;
 mod convstore;
@@ -428,6 +430,7 @@ pub fn run() {
             chat_cmds::chat_thermal_selftest,
             chat_cmds::chat_stage5_probe,
             vision_cmds::transcribe_image,
+            vision_cmds::sweep_captures,
             vision_cmds::prewarm_vision,
             vision_cmds::vision_state,
             mobile_native::network_state,

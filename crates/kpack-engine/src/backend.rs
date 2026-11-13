@@ -281,6 +281,11 @@ pub struct VisionConfig {
     pub one_pass: bool,
     /// Upper bound on image tokens the projector may emit for one image.
     pub max_image_tokens: usize,
+    /// The crop regime expects exactly one formula: when true, generation stops
+    /// after the first `</formula>` token is sampled and rendered (the parser
+    /// still sees the closer). The page regime, which legitimately holds many
+    /// formulas, sets this false.
+    pub single_formula: bool,
 }
 
 impl Default for VisionConfig {
@@ -293,6 +298,7 @@ impl Default for VisionConfig {
             prompt: "Convert formula to latex.".to_string(),
             one_pass: true,
             max_image_tokens: 320,
+            single_formula: true,
         }
     }
 }
@@ -356,6 +362,11 @@ pub trait VisionHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vision_config_defaults_to_the_single_formula_crop_regime() {
+        assert!(VisionConfig::default().single_formula);
+    }
 
     /// The precedence rule, stated once and tested here because its two
     /// production callers (`llama.rs` and `mock.rs`) are a native backend and a

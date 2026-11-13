@@ -27,6 +27,11 @@
 //!   transcribing at that point, and nothing it writes afterwards should exist.
 //!   Only page output emits it. The formula-crop regime ends with `</formula>`
 //!   and end-of-text, so there the closer is the only guard.
+//! - With `VisionConfig::single_formula` (the default, the crop regime) generation
+//!   also stops at the first `</formula>` token, looked up the same way. The
+//!   closer is rendered first, so the parser still ends the element on it; what
+//!   the model might say after its one formula is never generated. The page
+//!   regime sets the flag false because it holds many formulas.
 
 use std::ffi::CString;
 use std::num::NonZeroU32;
@@ -48,6 +53,9 @@ use crate::backend::{StopReason, Transcription, VisionBackend, VisionConfig, Vis
 use crate::error::EngineError;
 use crate::llama::shared_backend;
 use crate::vision_parse::{GenToken, DOC_END_TAG};
+
+/// The formula closer; see [`formula_end_token`].
+const FORMULA_END_TAG: &str = "</formula>";
 use crate::vision_prep::PreparedImage;
 
 extern "C" {
@@ -100,12 +108,15 @@ impl VisionBackend for LlamaVision {
             .chat_template(None)
             .map_err(|e| EngineError::Backend(format!("vision chat template: {e}")))?;
         let doc_end = document_end_token(&model);
+        let formula_end = formula_end_token(&model);
         eprintln!(
-            "[vision] loaded model {load_model_ms} ms, projector {load_mmproj_ms} ms, one_pass={}, doc_end_token={:?}",
+            "[vision] loaded model {load_model_ms} ms, projector {load_mmproj_ms} ms, one_pass={}, single_formula={}, doc_end_token={:?}, formula_end_token={:?}",
             req.config.one_pass,
-            doc_end.map(|t| t.0)
+            req.config.single_formula,
+            doc_end.map(|t| t.0),
+            formula_end.map(|t| t.0)
         );
-        Ok(Box::new(LlamaVisionHandle { model, mtmd, template, cfg: req.config, doc_end }))
+        Ok(Box::new(LlamaVisionHandle { model, mtmd, template, cfg: req.config, doc_end, formula_end }))
     }
 }
 
@@ -120,6 +131,15 @@ fn document_end_token(model: &LlamaModel) -> Option<LlamaToken> {
     }
 }
 
+/// The vocabulary's `</formula>` token, under the same exactly-one-token rule as
+/// [`document_end_token`]. Armed only when `VisionConfig::single_formula` is set.
+fn formula_end_token(model: &LlamaModel) -> Option<LlamaToken> {
+    match model.str_to_token(FORMULA_END_TAG, AddBos::Never) {
+        Ok(t) if t.len() == 1 => Some(t[0]),
+        _ => None,
+    }
+}
+
 struct LlamaVisionHandle {
     model: LlamaModel,
     mtmd: MtmdContext,
@@ -127,6 +147,8 @@ struct LlamaVisionHandle {
     cfg: VisionConfig,
     /// See [`document_end_token`].
     doc_end: Option<LlamaToken>,
+    /// See [`formula_end_token`].
+    formula_end: Option<LlamaToken>,
 }
 
 impl VisionHandle for LlamaVisionHandle {
@@ -214,6 +236,7 @@ impl LlamaVisionHandle {
         let mut logits_tracked = false;
         // Which Eos it was: the `</doctag>` token, or end-of-text. Logged only.
         let mut at_doc_end = false;
+        let mut at_formula_end = false;
         let t = Instant::now();
         loop {
             let token = sampler.sample(&ctx, -1);
@@ -242,6 +265,15 @@ impl LlamaVisionHandle {
             // be the last allowed token is not reported as `MaxTokens`.
             if Some(token) == self.doc_end {
                 at_doc_end = true;
+                break;
+            }
+            // The single-formula stop (crop regime): the closer is already in
+            // `raw` and `tokens`, so `vision_parse` ends the element on it, and
+            // the model's one formula is complete. Same outcome and the same
+            // reason as the document end, and checked before the cap for the
+            // same reason.
+            if self.cfg.single_formula && Some(token) == self.formula_end {
+                at_formula_end = true;
                 break;
             }
             if tokens.len() >= self.cfg.max_tokens {
@@ -273,7 +305,13 @@ impl LlamaVisionHandle {
             image.width,
             image.height,
             tokens.len(),
-            if at_doc_end { " (document end)" } else { "" }
+            if at_doc_end {
+                " (document end)"
+            } else if at_formula_end {
+                " (formula end)"
+            } else {
+                ""
+            }
         );
         Ok(Transcription {
             raw,

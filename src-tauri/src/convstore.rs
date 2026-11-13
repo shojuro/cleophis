@@ -223,7 +223,8 @@ CREATE TABLE IF NOT EXISTS messages (
   partial INTEGER NOT NULL DEFAULT 0,
   guard TEXT,
   confirmed_route TEXT,
-  confirmed_at TEXT
+  confirmed_at TEXT,
+  attachments TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(title, content);
 ";
@@ -238,7 +239,7 @@ const CHAT_COLUMNS: &str = "id, folder_id, title, created_at, updated_at, pinned
 /// `CHAT_COLUMNS`.
 const MESSAGE_COLUMNS: &str =
     "id, role, content, citations, tool_calls, created_at, partial, guard, confirmed_route, \
-     confirmed_at";
+     confirmed_at, attachments";
 
 /// Where a fresh per-account database is opened from — see
 /// [`ConvStore::conn_for`].
@@ -440,6 +441,12 @@ impl ConvStore {
             (
                 "confirmed_at",
                 "ALTER TABLE messages ADD COLUMN confirmed_at TEXT",
+            ),
+            // Vision provenance for a photo turn (counts and verdict only,
+            // never bytes or text). Nullable, so an old row reads `None`.
+            (
+                "attachments",
+                "ALTER TABLE messages ADD COLUMN attachments TEXT",
             ),
         ] {
             if !existing.contains(name) {
@@ -868,6 +875,7 @@ impl ConvStore {
         citations: Option<Value>,
         tool_calls: Option<Value>,
         guard: Option<Value>,
+        attachments: Option<Value>,
     ) -> Result<MessageInfo, String> {
         let conn = self.conn_for(user_id)?;
         let conn = conn.lock().unwrap();
@@ -875,6 +883,7 @@ impl ConvStore {
         let citations_json = citations.as_ref().map(|v| v.to_string());
         let tool_calls_json = tool_calls.as_ref().map(|v| v.to_string());
         let guard_json = guard.as_ref().map(|v| v.to_string());
+        let attachments_json = attachments.as_ref().map(|v| v.to_string());
 
         // The mobile checkpointer may already hold this turn as a partial row.
         // Upgrade it rather than writing a second assistant row (the front end
@@ -896,8 +905,15 @@ impl ConvStore {
             if let Some((id, created_at)) = partial {
                 conn.execute(
                     "UPDATE messages SET content = ?1, citations = ?2, tool_calls = ?3, \
-                     guard = ?4, partial = 0 WHERE id = ?5",
-                    params![content, citations_json, tool_calls_json, guard_json, id],
+                     guard = ?4, attachments = ?5, partial = 0 WHERE id = ?6",
+                    params![
+                        content,
+                        citations_json,
+                        tool_calls_json,
+                        guard_json,
+                        attachments_json,
+                        id
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
 
@@ -924,13 +940,14 @@ impl ConvStore {
                     guard,
                     confirmed_route: None,
                     confirmed_at: None,
+                    attachments,
                 });
             }
         }
 
         conn.execute(
-            "INSERT INTO messages (chat_id, role, content, citations, tool_calls, created_at, guard)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (chat_id, role, content, citations, tool_calls, created_at, guard, attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 chat_id,
                 role,
@@ -938,7 +955,8 @@ impl ConvStore {
                 citations_json,
                 tool_calls_json,
                 now,
-                guard_json
+                guard_json,
+                attachments_json
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -971,6 +989,7 @@ impl ConvStore {
             // `confirm_route` — never at append time.
             confirmed_route: None,
             confirmed_at: None,
+            attachments,
         })
     }
 
@@ -1518,6 +1537,7 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
     let citations_json: Option<String> = row.get(3)?;
     let tool_calls_json: Option<String> = row.get(4)?;
     let guard_json: Option<String> = row.get(7)?;
+    let attachments_json: Option<String> = row.get(10)?;
     Ok(MessageInfo {
         id: row.get(0)?,
         role: row.get(1)?,
@@ -1531,6 +1551,7 @@ fn message_from_row(row: &rusqlite::Row) -> rusqlite::Result<MessageInfo> {
         guard: guard_json.and_then(|s| serde_json::from_str(&s).ok()),
         confirmed_route: row.get(8)?,
         confirmed_at: row.get(9)?,
+        attachments: attachments_json.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -1749,6 +1770,12 @@ pub struct MessageInfo {
     /// [`ConvStore::confirm_route`] alongside `confirmed_route`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_at: Option<String>,
+    /// Provenance of a turn made from a photo: `{kind, model, verdict,
+    /// edited, blocks}`. Counts and labels only, never image bytes or block
+    /// text. `None` (and skipped on the wire) for every ordinary message, so
+    /// existing payloads stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1979,12 +2006,20 @@ pub async fn append_message(
     citations: Option<Value>,
     tool_calls: Option<Value>,
     guard: Option<Value>,
+    attachments: Option<Value>,
     app: AppHandle,
 ) -> Result<MessageInfo, String> {
     let user_id = current_user_id(&app).ok_or_else(sign_in_required)?;
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<ConvStore>().append_message(
-            &user_id, chat_id, &role, &content, citations, tool_calls, guard,
+            &user_id,
+            chat_id,
+            &role,
+            &content,
+            citations,
+            tool_calls,
+            guard,
+            attachments,
         )
     })
     .await
@@ -2131,7 +2166,7 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "2+2?", None, None, None)
+            .append_message(USER, chat.id, "user", "2+2?", None, None, None, None)
             .unwrap();
 
         // Generation streams; each checkpoint advances the same row.
@@ -2170,7 +2205,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "sore throat", None, None, None)
+            .append_message(USER, chat.id, "user", "sore throat", None, None, None, None)
             .unwrap();
         store.checkpoint_partial(USER, chat.id, "").unwrap();
         assert_eq!(
@@ -2235,7 +2270,7 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "keep me", None, None, None)
+            .append_message(USER, chat.id, "user", "keep me", None, None, None, None)
             .unwrap();
         store.checkpoint_partial(USER, chat.id, "throw me away").unwrap();
 
@@ -2255,7 +2290,7 @@ mod tests {
             .create_chat(USER, "c", None, None, "hero", vec![])
             .unwrap();
         let m = store
-            .append_message(USER, chat.id, "assistant", "done", None, None, None)
+            .append_message(USER, chat.id, "assistant", "done", None, None, None, None)
             .unwrap();
         assert!(!m.partial);
         assert!(!store.get_chat(USER, chat.id).unwrap().messages[0].partial);
@@ -2280,7 +2315,7 @@ mod tests {
             "timeframeStripped": ["today"]
         });
         let plain = store
-            .append_message(USER, chat.id, "user", "hello", None, None, None)
+            .append_message(USER, chat.id, "user", "hello", None, None, None, None)
             .unwrap();
         let guarded = store
             .append_message(
@@ -2291,6 +2326,7 @@ mod tests {
                 None,
                 None,
                 Some(guard.clone()),
+                None,
             )
             .unwrap();
         assert_eq!(guarded.guard, Some(guard));
@@ -2316,7 +2352,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "q", None, None, None)
+            .append_message(USER, chat.id, "user", "q", None, None, None, None)
             .unwrap();
         let partial_id = store
             .checkpoint_partial(USER, chat.id, "See your GP tod")
@@ -2330,6 +2366,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "CLINICIAN"})),
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -2344,6 +2381,42 @@ mod tests {
         assert_eq!(msgs[1].guard.as_ref().unwrap()["route"], "CLINICIAN");
     }
 
+    /// The partial-row UPGRADE is a separate SQL path from the INSERT; it must
+    /// write `attachments` too, and must not grow the row count.
+    #[test]
+    fn partial_row_upgrade_writes_attachments() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "t", None, None, "hero", vec![])
+            .unwrap();
+        store
+            .append_message(USER, chat.id, "user", "q", None, None, None, None)
+            .unwrap();
+        let partial_id = store.checkpoint_partial(USER, chat.id, "par").unwrap();
+        let before = store.get_chat(USER, chat.id).unwrap().messages.len();
+        let att = json!({"kind":"vision","verdict":"accept","edited":false,"blocks":{"latex":1,"text":0}});
+        let info = store
+            .append_message(
+                USER,
+                chat.id,
+                "assistant",
+                "done",
+                None,
+                None,
+                None,
+                Some(att.clone()),
+            )
+            .unwrap();
+        assert_eq!(info.id, partial_id, "upgrade, not insert");
+        assert_eq!(info.attachments, Some(att.clone()));
+        let msgs = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(msgs.len(), before, "row count did not grow");
+        let row = msgs.iter().find(|m| m.id == partial_id).unwrap();
+        assert_eq!(row.attachments, Some(att));
+        assert_eq!(row.content, "done");
+        assert!(!row.partial);
+    }
+
     /// A USER append must never be diverted onto the in-flight assistant
     /// row — the upgrade is an assistant-only path.
     #[test]
@@ -2354,7 +2427,7 @@ mod tests {
             .unwrap();
         let partial_id = store.checkpoint_partial(USER, chat.id, "half").unwrap();
         let user = store
-            .append_message(USER, chat.id, "user", "next question", None, None, None)
+            .append_message(USER, chat.id, "user", "next question", None, None, None, None)
             .unwrap();
         assert_ne!(user.id, partial_id);
 
@@ -2373,7 +2446,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
         // Exactly what `chat_cmds`'s stream does: checkpoint, then finalize
         // BEFORE the front end ever hears about the turn.
@@ -2416,7 +2489,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
         let row = store
             .checkpoint_partial(USER, chat.id, "Call 999 within")
@@ -2482,6 +2555,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -2513,6 +2587,7 @@ mod tests {
                 chat.id,
                 "assistant",
                 "Call 999 now.",
+                None,
                 None,
                 None,
                 None,
@@ -2556,7 +2631,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         let u = store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
 
         let err = store
@@ -2590,6 +2665,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "CLINICIAN"})),
+                None,
             )
             .unwrap();
 
@@ -2623,7 +2699,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         let u = store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
         let err = store.confirm_route(USER, u.id, "EMERGENCY").unwrap_err();
         assert!(err.contains(&u.id.to_string()), "{err}");
@@ -2651,6 +2727,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let a = store
@@ -2674,6 +2751,7 @@ mod tests {
                     "modelSha": "25162bff",
                     "adapterSha": "5304e464"
                 })),
+                None,
             )
             .unwrap();
         store.confirm_route(USER, a.id, "EMERGENCY").unwrap();
@@ -2688,6 +2766,7 @@ mod tests {
                 chat.id,
                 "user",
                 "when should I see someone?",
+                None,
                 None,
                 None,
                 None,
@@ -2709,6 +2788,7 @@ mod tests {
                     "timeframeUnlocated": true,
                     "detectorsSha": "abc"
                 })),
+                None,
             )
             .unwrap();
         store.confirm_route(USER, b.id, "CLINICIAN").unwrap();
@@ -2779,7 +2859,7 @@ mod tests {
         // An assistant row with no guard — what `settle` leaves behind when
         // `attach_guard` never lands.
         let bare = store
-            .append_message(USER, chat.id, "assistant", "See your GP.", None, None, None)
+            .append_message(USER, chat.id, "assistant", "See your GP.", None, None, None, None)
             .unwrap();
         let err = store.confirm_route(USER, bare.id, "EMERGENCY").unwrap_err();
         assert!(err.contains(&bare.id.to_string()), "{err}");
@@ -2824,6 +2904,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"kind": "lookup", "role": "query"})),
+                None,
             )
             .unwrap();
         let reference_pack = json!({
@@ -2855,6 +2936,7 @@ mod tests {
                     "adapterSha": "5304e464",
                     "referencePack": reference_pack.clone()
                 })),
+                None,
             )
             .unwrap();
         // The store refuses a confirmation on the lookup reply (M6).
@@ -2863,7 +2945,7 @@ mod tests {
         assert_eq!(store.get_chat(USER, chat.id).unwrap().messages[1].confirmed_route, None);
 
         store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
         let triage = store
             .append_message(
@@ -2874,6 +2956,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "EMERGENCY", "banner": "emergency", "detectorsSha": "abc"})),
+                None,
             )
             .unwrap();
         store.confirm_route(USER, triage.id, "EMERGENCY").unwrap();
@@ -2933,6 +3016,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         store
@@ -2950,6 +3034,7 @@ mod tests {
                     "modelSha": "25162bff", "adapterSha": "5304e464",
                     "catalogSha256": "c0ffee", "appBuild": "abc123"
                 })),
+                None,
             )
             .unwrap();
         store
@@ -2961,6 +3046,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"kind": "lookup", "role": "query"})),
+                None,
             )
             .unwrap();
         store
@@ -2977,10 +3063,11 @@ mod tests {
                     "citations": [], "withheld": [], "detectorsSha": "abc",
                     "catalogSha256": "c0ffee", "appBuild": "abc123"
                 })),
+                None,
             )
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "chest pain", None, None, None)
+            .append_message(USER, chat.id, "user", "chest pain", None, None, None, None)
             .unwrap();
         store
             .append_message(
@@ -2991,6 +3078,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "EMERGENCY", "banner": "emergency", "detectorsSha": "abc"})),
+                None,
             )
             .unwrap();
 
@@ -3033,7 +3121,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "I want to end my life", None, None, None)
+            .append_message(USER, chat.id, "user", "I want to end my life", None, None, None, None)
             .unwrap();
         store
             .append_message(
@@ -3051,6 +3139,7 @@ mod tests {
                     "crisisOnInput": true,
                     "referencePack": null
                 })),
+                None,
             )
             .unwrap();
         let log = store.export_triage_log(USER, Some(chat.id)).unwrap();
@@ -3082,6 +3171,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"kind": "lookup", "role": "query"})),
+                None,
             )
             .unwrap();
         let reference_pack = json!({
@@ -3115,6 +3205,7 @@ mod tests {
                     "adapterSha": "5304e464",
                     "referencePack": reference_pack.clone()
                 })),
+                None,
             )
             .unwrap();
 
@@ -3149,10 +3240,10 @@ mod tests {
             .create_chat(USER, "Tutor", None, None, "socratic-tutor", vec![])
             .unwrap();
         store
-            .append_message(USER, plain.id, "user", "teach me", None, None, None)
+            .append_message(USER, plain.id, "user", "teach me", None, None, None, None)
             .unwrap();
         store
-            .append_message(USER, plain.id, "assistant", "sure", None, None, None)
+            .append_message(USER, plain.id, "assistant", "sure", None, None, None, None)
             .unwrap();
         assert_eq!(store.export_triage_log(USER, Some(plain.id)).unwrap(), "");
 
@@ -3160,7 +3251,7 @@ mod tests {
             .create_chat(USER, "Triage", None, None, "med-triage", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "sore throat", None, None, None)
+            .append_message(USER, chat.id, "user", "sore throat", None, None, None, None)
             .unwrap();
         let a = store
             .append_message(
@@ -3171,6 +3262,7 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "SELF_CARE", "banner": "self-care"})),
+                None,
             )
             .unwrap();
         store.confirm_route(USER, a.id, "CLINICIAN").unwrap();
@@ -3206,7 +3298,7 @@ mod tests {
             .unwrap();
 
         let m1 = store
-            .append_message(USER, chat.id, "user", "hello", None, None, None)
+            .append_message(USER, chat.id, "user", "hello", None, None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc"}]);
         let m2 = store
@@ -3216,6 +3308,7 @@ mod tests {
                 "assistant",
                 "hi there",
                 Some(citations.clone()),
+                None,
                 None,
                 None,
             )
@@ -3255,6 +3348,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let tool_calls = json!([
@@ -3269,6 +3363,7 @@ mod tests {
                 "2+2 is 4; 1/0 is undefined.",
                 None,
                 Some(tool_calls.clone()),
+                None,
                 None,
             )
             .unwrap();
@@ -3335,7 +3430,7 @@ mod tests {
             .create_chat(USER, "Doomed chat", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "unique_marker_xyz", None, None, None)
+            .append_message(USER, chat.id, "user", "unique_marker_xyz", None, None, None, None)
             .unwrap();
 
         assert_eq!(
@@ -3382,6 +3477,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let gone = store
@@ -3415,14 +3511,14 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         store
-            .append_message(USER, chat.id, "user", "first", None, None, None)
+            .append_message(USER, chat.id, "user", "first", None, None, None, None)
             .unwrap();
         let after_first = store.get_chat(USER, chat.id).unwrap().chat;
         assert!(after_first.updated_at > chat.updated_at);
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         store
-            .append_message(USER, chat.id, "assistant", "second", None, None, None)
+            .append_message(USER, chat.id, "assistant", "second", None, None, None, None)
             .unwrap();
         let after_second = store.get_chat(USER, chat.id).unwrap().chat;
         assert!(after_second.updated_at > after_first.updated_at);
@@ -3541,12 +3637,111 @@ mod tests {
                 None,
                 None,
                 Some(json!({"route": "EMERGENCY"})),
+                None,
             )
             .unwrap();
         store.confirm_route(USER, m.id, "EMERGENCY").unwrap();
         let after = store.get_chat(USER, 1).unwrap().messages;
         assert_eq!(after[1].guard.as_ref().unwrap()["route"], "EMERGENCY");
         assert_eq!(after[1].confirmed_route.as_deref(), Some("EMERGENCY"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stage 2 provenance: a photo turn's `attachments` JSON round-trips, and an
+    /// absent one never appears on the wire (existing payloads stay identical).
+    #[test]
+    fn attachments_round_trip_and_are_omitted_when_absent() {
+        let store = ConvStore::new_in_memory();
+        let chat = store
+            .create_chat(USER, "t", None, None, "hero", vec![])
+            .unwrap();
+        let att = json!({"kind":"vision","model":{"id":"granite-docling-258M","family":"docling"},"verdict":"accept","edited":false,"blocks":1});
+        let with = store
+            .append_message(
+                USER,
+                chat.id,
+                "user",
+                "Problem from photo: x=2",
+                None,
+                None,
+                None,
+                Some(att.clone()),
+            )
+            .unwrap();
+        assert_eq!(with.attachments, Some(att.clone()));
+        store
+            .append_message(USER, chat.id, "assistant", "ok", None, None, None, None)
+            .unwrap();
+        let rows = store.get_chat(USER, chat.id).unwrap().messages;
+        assert_eq!(rows[0].attachments, Some(att));
+        assert_eq!(rows[1].attachments, None);
+        let json = serde_json::to_value(&rows[1]).unwrap();
+        assert!(
+            json.get("attachments").is_none(),
+            "absent attachments are not on the wire"
+        );
+        let json0 = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(json0["attachments"]["blocks"], 1);
+    }
+
+    /// A database whose `messages` table predates the column gains it on open.
+    #[test]
+    fn an_old_database_gains_the_attachments_column() {
+        let dir = std::env::temp_dir().join(format!(
+            "cleophis-convstore-attachments-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join(format!("{USER}.db"));
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE folders (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE chats (
+                    id INTEGER PRIMARY KEY, folder_id INTEGER REFERENCES folders(id),
+                    title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0,
+                    mounted_packs TEXT
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY,
+                    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL, content TEXT NOT NULL,
+                    citations TEXT, tool_calls TEXT,
+                    created_at TEXT NOT NULL,
+                    partial INTEGER NOT NULL DEFAULT 0,
+                    guard TEXT, confirmed_route TEXT, confirmed_at TEXT
+                );
+                INSERT INTO chats (id, title, created_at, updated_at, pinned, archived)
+                    VALUES (1, 'Old chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0);
+                INSERT INTO messages (chat_id, role, content, created_at)
+                    VALUES (1, 'user', 'before attachments', '2026-01-01T00:00:01Z');",
+            )
+            .unwrap();
+        }
+
+        let store = ConvStore::new(dir.clone());
+        let old = store.get_chat(USER, 1).unwrap();
+        assert_eq!(old.messages[0].content, "before attachments");
+        assert!(old.messages[0].attachments.is_none());
+        drop(store);
+
+        let conn = Connection::open(&db_path).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect();
+        assert!(cols.contains(&"attachments".to_string()), "columns: {cols:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3588,6 +3783,7 @@ mod tests {
                 a_chat.id,
                 "user",
                 "a_secret_marker_only_a_should_see",
+                None,
                 None,
                 None,
                 None,
@@ -3688,6 +3884,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let citations = json!([{
@@ -3701,6 +3898,7 @@ mod tests {
                 "assistant",
                 "It helps blood clot.",
                 Some(citations),
+                None,
                 None,
                 None,
             )
@@ -3727,7 +3925,7 @@ mod tests {
             .create_chat(USER, "JSON export", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "hi", None, None, None)
+            .append_message(USER, chat.id, "user", "hi", None, None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc"}]);
         store
@@ -3737,6 +3935,7 @@ mod tests {
                 "assistant",
                 "hello",
                 Some(citations.clone()),
+                None,
                 None,
                 None,
             )
@@ -3762,7 +3961,7 @@ mod tests {
             .create_chat(USER, "Txt export", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "hi", None, None, None)
+            .append_message(USER, chat.id, "user", "hi", None, None, None, None)
             .unwrap();
         let citations = json!([{"n": 1, "docTitle": "Doc", "locator": "p.1"}]);
         store
@@ -3772,6 +3971,7 @@ mod tests {
                 "assistant",
                 "hello",
                 Some(citations),
+                None,
                 None,
                 None,
             )
@@ -3794,10 +3994,10 @@ mod tests {
             .create_chat(USER, "Deterministic", None, None, "hero-llama", vec![])
             .unwrap();
         store
-            .append_message(USER, chat.id, "user", "one", None, None, None)
+            .append_message(USER, chat.id, "user", "one", None, None, None, None)
             .unwrap();
         store
-            .append_message(USER, chat.id, "assistant", "two", None, None, None)
+            .append_message(USER, chat.id, "assistant", "two", None, None, None, None)
             .unwrap();
 
         for format in [ExportFormat::Markdown, ExportFormat::Json, ExportFormat::Txt] {
@@ -3827,6 +4027,7 @@ mod tests {
                 a_chat.id,
                 "user",
                 "a_secret_marker_only_a_should_see",
+                None,
                 None,
                 None,
                 None,

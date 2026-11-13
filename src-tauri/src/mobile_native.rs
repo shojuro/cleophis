@@ -463,6 +463,45 @@ pub(crate) fn inference_service(running: bool) {
 #[cfg(all(mobile, not(target_os = "android")))]
 pub(crate) fn inference_service(_running: bool) {}
 
+/// Delete the JPEGs the WebView's camera capture leaves in the app's pictures
+/// directory (`CaptureHygiene.sweep`). Called after every transcription and
+/// from the `sweep_captures` command (the page has decoded the capture, or has
+/// left the photo flow), so the page never needs the file again. Never panics:
+/// a JNI failure is logged and swallowed, since a missed sweep is retried at
+/// the next sweep or activity start.
+#[cfg(all(mobile, target_os = "android"))]
+pub(crate) fn sweep_capture_files() {
+    let outcome = crate::android_bridge::with_app_class(
+        "com.cleophis.app.CaptureHygiene",
+        |env, class, activity| {
+            env.call_static_method(
+                class,
+                "sweep",
+                "(Landroid/content/Context;)I",
+                &[activity.into()],
+            )
+            .and_then(|v| v.i())
+            .map_err(|e| format!("sweep: {e}"))
+        },
+    );
+    match outcome {
+        // No `log` crate in this app: stderr is the device log (logcat). The
+        // zero-file line is debug-build only so a clean release stays quiet.
+        Ok(n) if n > 0 => eprintln!("[vision] swept {n} capture file(s)"),
+        Ok(n) => {
+            if cfg!(debug_assertions) {
+                eprintln!("[vision] swept {n} capture file(s)");
+            }
+        }
+        Err(e) => eprintln!("[vision] CaptureHygiene.sweep failed: {e}"),
+    }
+}
+
+/// iOS has no capture-file leftovers to sweep; present so the caller has one
+/// unconditional call, as with `inference_service`.
+#[cfg(all(mobile, not(target_os = "android")))]
+pub(crate) fn sweep_capture_files() {}
+
 #[cfg(test)]
 mod service_tests {
     use super::service_transition;
