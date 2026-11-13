@@ -193,6 +193,7 @@ rm -f $DEVRC $DEVPID
 LD_LIBRARY_PATH=$DEV ${BENCH_ENV:-} ${NICE:-nice -n 0} ./vision_bench --via-engine --family docling \\
   --model $DEV/$(basename "$MODEL") --mmproj $DEV/$(basename "$MMPROJ") \\
   --items $DEV/fixtures/items.json --max-side 512 --threads 4 --one-pass \\
+  --prompt 'Convert formula to latex.' --max-tokens 96 \\
   --json $DEVJSON$EXTRA_Q > $DEVLOG 2>&1 &
 echo \$! > $DEVPID
 wait \$!

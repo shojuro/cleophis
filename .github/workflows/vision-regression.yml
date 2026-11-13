@@ -112,6 +112,7 @@ jobs:
             --mmproj "$HOME/cleophis-vision-models/$MMPROJ" \
             --items probes/vision/fixtures/v1/items.json \
             --max-side 512 --threads 4 --one-pass \
+            --prompt 'Convert formula to latex.' --max-tokens 96 \
             --json "$RUNNER_TEMP/vision-v1.jsonl"
 
       # Why this guard exists: the scorer reports a missing record as its own
