@@ -6,21 +6,25 @@ Plan: `docs/superpowers/plans/2026-11-13-deps-advisories.md`. Alerts read on 202
 
 ## The alerts and their outcome
 
-| Alert | Package | Range, fix | Outcome |
-|---|---|---|---|
-| RUSTSEC-2026-0459 | libsqlite3-sys 0.38.1 | needs 0.39 or later | **Accepted** (see below). Held at rusqlite 0.40.1 / libsqlite3-sys 0.38.1; ignored in `.cargo/audit.toml`. |
-| RUSTSEC-2026-0414, -0433 | pulldown-cmark 0.13.4 | 0.13.6 or later | **Fixed** in cca47b7: 0.13.4 to 0.13.6 (`kpack-core` pin `=0.13.6`). |
-| RUSTSEC-2026-0347/-0348/-0349 (Dependabot low, medium) | rustls 0.23.45 | 0.23.46 or later | **Fixed** in cca47b7: 0.23.45 to 0.23.46. |
-| RUSTSEC-2026-0382 | rustls-webpki 0.103.15 | 0.103.17 | **Fixed** in 031b451: 0.103.15 to 0.103.17 (ruling DA-4). Not in the plan table; found by `cargo-audit` after the first bump. |
-| RUSTSEC-2026-0381 | webpki-roots 1.0.8 | 1.0.12 | **Fixed** in 031b451: 1.0.8 to 1.0.12 (ruling DA-4). The 0.26.11 line on the ureq side is untouched. |
-| CVE-2026-115909 (high), -115906 (medium) | zip 3.0.0 | 9.0.0 or later | **Fixed** in cca47b7: epub 2.1.5 to 2.1.6 moves the chain to zip 9.5.1; zip 3.0.0 is gone from the lock. |
-| CVE-2026-115905 (critical), -115909, -115906 | zip 4.6.1 | 9.0.5 or later | **Vendored** in 4da54e7: docx-rust 0.1.11 on zip 9. |
-| GHSA-wrw7-89jp-8q8g (medium), Dependabot alert #1 | glib 0.18.5 | 0.20 or later | **Accepted** (see below). Dismissal is the founder's command, printed below. |
-| 3 x high | sharp 0.33.5 (`tools/covers`) | 0.35.5 or later | **Fixed** in cca47b7: `sharp@^0.35.5`; `npm audit` reports 0. |
+Alert numbers are the live Dependabot alerts read on 2026-11-13; all eleven are open and each
+maps to a row. After this branch merges, every alert except glib (#1) should close on
+Dependabot's next scan. Alert #1 is the founder's dismissal (below).
+
+| Dependabot alert # | Advisory | Package | Range, fix | Outcome |
+|---|---|---|---|---|
+| none (cargo-audit only) | RUSTSEC-2026-0459 (CVE-2026-119375) | libsqlite3-sys 0.38.1 | needs 0.39 or later | **Accepted** (see below). Held at rusqlite 0.40.1 / libsqlite3-sys 0.38.1; ignored in `.cargo/audit.toml`. |
+| none (cargo-audit only) | RUSTSEC-2026-0414, -0433 | pulldown-cmark 0.13.4 | 0.13.6 or later | **Fixed** in cca47b7: 0.13.4 to 0.13.6 (`kpack-core` pin `=0.13.6`). |
+| #4, #5, #6, #8 | RUSTSEC-2026-0346 (medium, #4 GHSA-c8m5-c952-6cm4), -0347 (#8), -0348 (#6), -0349 (#5) | rustls 0.23.45 | 0.23.46 or later | **Fixed** in cca47b7: 0.23.45 to 0.23.46. |
+| none (cargo-audit only) | RUSTSEC-2026-0382 | rustls-webpki 0.103.15 | 0.103.17 | **Fixed** in 031b451: 0.103.15 to 0.103.17 (ruling DA-4). Found by `cargo-audit` after the first bump. |
+| none (cargo-audit only) | RUSTSEC-2026-0381 | webpki-roots 1.0.8 | 1.0.12 | **Fixed** in 031b451: 1.0.8 to 1.0.12 (ruling DA-4). The 0.26.11 line on the ureq side is a shim over 1.0.12. |
+| #9, #10 | CVE-2026-115909 (high), CVE-2026-115906 (medium) | zip 3.0.0 | 9.0.0 or later | **Fixed** in cca47b7: epub 2.1.5 to 2.1.6 moves the chain to zip 9.5.1; zip 3.0.0 is gone from the lock. |
+| #7, #9, #10 | CVE-2026-115905 (critical), -115909, -115906 | zip 4.6.1 | 9.0.5 or later | **Vendored** in 4da54e7: docx-rust 0.1.11 on zip 9. The same three alerts cover zip 3 and zip 4; they clear once neither remains. |
+| #1 | GHSA-wrw7-89jp-8q8g (medium) | glib 0.18.5 | 0.20 or later | **Accepted** (see below). Dismissal is the founder's command, printed below. |
+| #2, #3, #11 | GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w (high) | sharp 0.33.5 (`tools/covers`) | 0.35.5 or later | **Fixed** in cca47b7: `sharp@^0.35.5`; `npm audit` reports 0. |
 
 ### The two id schemes for zip
 
-Dependabot reports the zip 4.6.1 findings under CVE ids (CVE-2026-115905, -115909, -115906).
+Dependabot reports the zip findings under CVE ids (CVE-2026-115905, -115909, -115906).
 `cargo-audit` reports the same crate under four RUSTSEC ids: RUSTSEC-2026-0367, -0368, -0369
 and -0429. Both lists describe the zip 4.6.1 chain that the vendoring removes. The webpki pair
 is likewise RUSTSEC-2026-0382 (rustls-webpki) and RUSTSEC-2026-0381 (webpki-roots), found by
@@ -68,15 +72,16 @@ its comment.
 Ruling DA-1. GHSA-wrw7-89jp-8q8g, "Unsoundness in `Iterator` and `DoubleEndedIterator` impls
 for `glib::VariantStrIter`". Dependabot alert **#1**.
 
-`glib 0.18.5` comes from `gtk 0.18`, which comes from `tauri 2.11.5`. That is the latest
-stable Tauri; Tauri 3 is alpha. The GTK stack is used only by the Linux desktop build, which
+`glib 0.18.5` comes from `gtk 0.18`, which Tauri 2.11.5 pulls in. The current stable Tauri,
+2.12.5 (checked on crates.io on 2026-11-13), still depends on `gtk ^0.18`, so no stable Tauri
+bump fixes it. Tauri 3 is alpha. The GTK stack is used only by the Linux desktop build, which
 is not shipped. Revisit when Tauri's stable line moves to gtk 0.20 (glib 0.20 or later).
 
 The dismissal is **not** run by this branch. It writes to GitHub, so it is the founder's
 command (ruling DA-5):
 
 ```
-gh api -X PATCH repos/shojuro/cleophis/dependabot/alerts/1 -f state=dismissed -f dismissed_reason=tolerable_risk -f dismissed_comment='Linux desktop only (gtk 0.18 via Tauri 2.11.5, latest stable); not shipped; see docs/superpowers/deps-advisories-2026-11.md'
+gh api -X PATCH repos/shojuro/cleophis/dependabot/alerts/1 -f state=dismissed -f dismissed_reason=tolerable_risk -f dismissed_comment='Linux desktop only (GTK 0.18 under Tauri 2.11.5; current stable Tauri 2.12.5 still depends on gtk 0.18); not shipped; see docs/superpowers/deps-advisories-2026-11.md'
 ```
 
 Reopen, if the decision changes:
