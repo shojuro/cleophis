@@ -19,10 +19,13 @@ pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged
 | `host-v1-dejavu-fill-product.jsonl` | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling (`gen.py --out <dir> --fontset dejavusans`, `5fc68a4`) | `166ab9e` | `main` | — | no |
 | `host-v1-cm-product.jsonl` | formula, 96, both flags explicit | Computer Modern, committed | `ba47bd4` | `main` | — | superseded by r2 |
 | `host-v1-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `b4b4131` | `83b8929` | `b4b4131` | yes, until round 2 |
-| `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | **yes** |
+| `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | yes, until round 3 |
+| `host-v1-cm-product-r4.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | round 3's code commit | round 3 (S3-P16, the operator guard sees the Unicode operators) | `b4b4131` | **yes** |
 | `host-v1-dejavu-fill-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling, byte-identical to the earlier render | `b4b4131` | `83b8929` | `b4b4131` | no |
 
-Round 2's `host-v1-cm-product-r3` scores PASS like r2. Its 18 raws, and all 18 records apart
+Round 3's `host-v1-cm-product-r4` scores PASS, and its 18 raws, its records apart from the
+timings, and its `.md` and `.json` are identical to r3's. Round 2's `host-v1-cm-product-r3` scores
+PASS like r2. Its 18 raws, and all 18 records apart
 from the timings, are identical to r2's.
 
 The two round-1 fix-wave runs score as follows with the scorer at `b4b4131`. The CM gate run passes: exact

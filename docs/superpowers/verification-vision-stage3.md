@@ -88,7 +88,8 @@ controller ruled on each, and three commits carry them:
 | `b4b4131` | S3-P10, S3-P11, S3-P12 | The scorer counts look-alike swaps, the exact gate scales by the spec, and the device latency gate is the accepted floor band. |
 | `d77f541` | S3-P13 | The evidence is committed under `docs/superpowers/vision-stage3/`, and the CM gate run and the DejaVu crop-filling run are re-run on `b4b4131`. |
 | `f5bd4d3` | S3-P15 | Round 2: letters-only maths with a command or a Unicode operator stays maths. |
-| this commit | S3-P15 | Round 2's docs: the plan's gate line, the Stage 4 items, the photo-join checklist and the r3 re-run. |
+| `bb015aa` | S3-P15 | Round 2's docs: the plan's gate line, the Stage 4 items, the photo-join checklist and the r3 re-run. |
+| this commit | S3-P16 | Round 3: the operator guard sees the Unicode operators (final review I1), and the r4 re-run. |
 
 ### The parser: no digit and no operator is not maths (S3-P9)
 
@@ -307,6 +308,58 @@ byte-identical to r2, and all 18 records are identical apart from the timings. T
 maths tokens, and none of the probe set's readings turned on one. Applied to every recorded block
 of the seven runs, the widened set changes no kind. Host `total_ms` ran from 10,131 to 17,559 ms.
 
+### Round 3 (S3-P16)
+
+The final review (`final-review-report.md`, I1) found that round 2 opened a hole in the sign guard.
+A Unicode operator made a formula LaTeX, but `is_operator_piece` knew only `+ - = < > ^ _` and its
+command list. So `12x − 34 ≥ 5678`, with U+2212 and `≥`, came back `accept` with no operator
+probability, while `12x - 34 \ge 5678` comes back `review` with `OperatorUncertain`. On `main` the
+glyph form had been text and refused. The spec's "zero sign errors accepted" path was blind to the
+glyphs.
+
+This commit fixes it in `vision_parse.rs`:
+
+- `is_operator_piece` now also fires on a piece holding one of `≤ ≥ ≠ × ÷ ± −`.
+- That list is `OPERATOR_GLYPHS`, the one definition that `classify` and `holds_maths` share. The
+  other maths glyphs, `→ ∞ ∈`, mark an element as maths, and the guard does not watch them.
+- `OPERATOR_CMDS` gains `\mp \leqslant \geqslant \lt \gt`.
+
+There are two new tests:
+
+- **A glyph-only formula is reviewed like an ASCII one.** `12x − 34 ≥ 5678` with the minus at
+  probability 0.8 comes back `review` with `OperatorUncertain` alone, the same as the ASCII form.
+  The block's confidence stays above 0.90, so the operator guard alone decides. With every glyph at
+  0.99 it is `accept`, and the relation alone weak is `review`.
+- **Every Unicode operator carries an operator probability.** `12x − 34 ≥ 5678`, `2x ≤ 9`, `3 × 4`,
+  `x ± 2`, `8 ÷ 2` and `x ≠ 2` each get a non-null `min_operator_prob` and `OperatorUncertain` at
+  0.8. So do the five added commands.
+
+Both tests failed first, and the failure reproduced the review: `accept`, `min_operator_prob`
+null, with the minus at 0.8. A glyph whose bytes span two tokens reaches the second token's piece
+whole, because `vision.rs` decodes with a stateful UTF-8 decoder. Only that token's probability is
+checked.
+
+Gates on this commit's code:
+
+```
+cargo test -p kpack-engine:
+test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Android check (no warning printed):
+    Finished `release` profile [optimized] target(s) in 3m 16s
+```
+
+**The r4 re-run.** The gate run's command again, output
+`docs/superpowers/vision-stage3/host-v1-cm-product-r4.jsonl`, with the same regime line. It scores
+PASS: exact 18/18, refusals 2/2, no accepted sign, operator or symbol error. All 18 raws are
+byte-identical to r3, and all 18 records are identical apart from the timings. The `.md` and `.json`
+score files are byte-identical to r3's. No product-regime raw in any of the committed runs holds a
+Unicode operator; the one raw that does is the page-prompt q12's `≥` in `host-v1.jsonl`. So the
+fix changes nothing in the evidence, and the risk it closes is unmeasured on photographs. Host
+`total_ms` ran from 8,479 to 15,989 ms. The aarch64 bench must be rebuilt from this commit for the
+device run.
+
 ### What the fix wave did not change
 
 - **The thresholds and the operator finding.** 0.90 / 0.70 / 0.97 stay, and 0.86 stays a proposal
@@ -326,7 +379,7 @@ of the seven runs, the widened set changes no kind. Host `total_ms` ran from 10,
 | 4 | `dbcec3f`, `6085ad3` | `docs/superpowers/mobile-tools/run-vision-probes.sh`: sha-verified pushes of the bench, libc++, model, projector and fixtures, the device run, the pull, `score.mjs --device`, and one `dumpsys meminfo` of the running bench. The fix round set the executable bit, verified every push and removed stale pulls and reports. |
 | 5 | `ba47bd4` | `.github/workflows/vision-regression.yml`: the probe set on `ubuntu-latest` and `ubuntu-24.04-arm`, models from the public dist bucket verified by sha256 on cache hit and miss, an 18-record guard, the scorer's exit code passed through, the report uploaded. Its header says it gates transcription only. |
 | 6 | `087d1d9`, `2953552` | The three product-regime host runs, the calibration decision (no constant changed) and this record. |
-| Fix wave | `83b8929`, `b4b4131`, `d77f541`; round 2 `f5bd4d3` and this commit | The parser refuses a "formula" with no digit and no operator (S3-P9), widened in round 2 to the commands and Unicode operators letters-only maths uses (S3-P15). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
+| Fix wave | `83b8929`, `b4b4131`, `d77f541`; round 2 `f5bd4d3`, `bb015aa`; round 3 this commit | The parser refuses a "formula" with no digit and no operator (S3-P9), widened in round 2 to the commands and Unicode operators letters-only maths uses (S3-P15). The scorer counts look-alike swaps, scales the exact gate by the spec and takes the floor latency band (S3-P10 to S3-P12). The evidence is committed and the gate run re-run (S3-P13). See Fix wave. |
 
 Tasks 2, 3 (round 1), 4 and 5 were built in side worktrees and rebased onto `vision/stage3`; the
 commits above are the rebased ones. The originals were `9ba31d7`/`8e84a72` (Task 2), `4d2ef13` (Task 3
@@ -638,8 +691,8 @@ First run: on the PR.
 
 A cut at the token cap adds `Truncated`. Any warning turns `accept` into `review`. Text blocks never
 move the verdict. Confidence is exp(mean log-probability) over the block's tokens. The operator
-probability is the lowest over pieces holding any of `+ - = < > ^ _` or an operator command, so `^`
-and `_` count as operators.
+probability is the lowest over pieces holding any of `+ - = < > ^ _`, a Unicode operator
+`≤ ≥ ≠ × ÷ ± −` (since round 3, S3-P16) or an operator command, so `^` and `_` count as operators.
 
 `src/vision-confirm.js:28-31` holds the amber flag's copies, `CONFIDENCE_FLAG` 0.9 and `OPERATOR_FLAG`
 0.97. A node test ties the two homes: "the gate thresholds equal the engine constants in

@@ -47,11 +47,14 @@
 //! with no tracked token has confidence 0.0). Operator tokens also report their
 //! minimum probability, because a flipped sign is the error that teaches the
 //! wrong problem with a straight face. A piece is an operator token when ANY of
-//! its characters is one of `+ - = < > ^ _` (the tokenizer merges pieces such
-//! as `=-`, `^{` and `}=`), when it holds one of the commands `\frac \times \le
-//! \ge \leq \geq \ne \neq \div \cdot \pm` as a whole command (`\left` is not
+//! its characters is one of `+ - = < > ^ _` or a Unicode operator `≤ ≥ ≠ × ÷ ±
+//! −` (S3-P16; the tokenizer merges pieces such as `=-`, `^{` and `}=`), when it
+//! holds one of the commands `\frac \times \le \ge \leq \geq \ne \neq \div \cdot
+//! \pm \mp \leqslant \geqslant \lt \gt` as a whole command (`\left` is not
 //! `\le`), or when the whole piece is one of those names without its backslash
-//! (a subword split of `\` + `frac`). Only the part of a piece INSIDE the
+//! (a subword split of `\` + `frac`). A glyph whose UTF-8 bytes span two tokens
+//! reaches the second token's piece whole (the decoder in `vision.rs` is
+//! stateful), so only that token's probability is checked. Only the part of a piece INSIDE the
 //! block's span is tested: BPE merges a tag's closing `>` with the first
 //! character of the maths (`>\` on the formula crops), and that `>` is tag
 //! syntax, not a comparison. Otherwise the test fails strict: a piece that only
@@ -357,11 +360,12 @@ fn count_words(s: &str) -> usize {
 }
 
 /// LaTeX when the element looks like maths (a strong marker, `\ = ^ _` or a
-/// [`MATHS_GLYPHS`] character, with at most two words, or a digit and an
-/// arithmetic sign with none) AND holds maths ([`holds_maths`]); text
-/// otherwise.
+/// Unicode maths glyph ([`is_maths_glyph`]), with at most two words, or a
+/// digit and an arithmetic sign with none) AND holds maths ([`holds_maths`]);
+/// text otherwise. A glyph that marks a block as maths is also one the
+/// operator guard sees, when it is an operator ([`OPERATOR_GLYPHS`]).
 fn classify(s: &str) -> BlockKind {
-    let strong = s.contains(['\\', '=', '^', '_']) || s.contains(MATHS_GLYPHS);
+    let strong = s.contains(['\\', '=', '^', '_']) || s.chars().any(is_maths_glyph);
     let weak = s.chars().any(|c| c.is_ascii_digit()) && s.contains(['+', '-', '*', '/']);
     let words = count_words(s);
     if ((strong && words <= 2) || (weak && words == 0)) && holds_maths(s) { BlockKind::Latex } else { BlockKind::Text }
@@ -378,17 +382,26 @@ const MATHS_CMDS: &[&str] = &[
 ];
 
 /// Unicode operators the transcriber can write instead of a command (the
-/// page-prompt raws carried `≥`). `−` is U+2212, the minus sign.
-const MATHS_GLYPHS: &[char] = &['≤', '≥', '≠', '×', '÷', '±', '−', '→', '∞', '∈'];
+/// page-prompt raws carried `≥`). `−` is U+2212, the minus sign. Each is a
+/// sign or a relation, so [`is_operator_piece`] checks its probability
+/// (S3-P16), and each makes an element maths (S3-P15).
+const OPERATOR_GLYPHS: &[char] = &['≤', '≥', '≠', '×', '÷', '±', '−'];
+/// Unicode maths glyphs that are not a sign or a relation: they make an
+/// element maths, and the operator guard does not watch them.
+const OTHER_MATHS_GLYPHS: &[char] = &['→', '∞', '∈'];
 
-/// A digit, one of `= < > + - ^ _`, a [`MATHS_GLYPHS`] character, or one of
+fn is_maths_glyph(c: char) -> bool {
+    OPERATOR_GLYPHS.contains(&c) || OTHER_MATHS_GLYPHS.contains(&c)
+}
+
+/// A digit, one of `= < > + - ^ _`, a Unicode maths glyph, or one of
 /// [`MATHS_CMDS`] as a whole command (S3-P9, S3-P15). Without one, a
 /// "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
 /// labels (`C & & \\ A & & \\ B`) and a page of letter-spaced prose as arrays,
 /// and neither is a problem the tutor could teach. The array syntax `&` and
 /// `\\` and the label's `\colon` are not operators. Linear in `s`.
 fn holds_maths(s: &str) -> bool {
-    s.chars().any(|c| c.is_ascii_digit() || matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_') || MATHS_GLYPHS.contains(&c))
+    s.chars().any(|c| c.is_ascii_digit() || matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_') || is_maths_glyph(c))
         || holds_command(s, MATHS_CMDS)
 }
 
@@ -644,11 +657,14 @@ fn braces_balanced(s: &str) -> bool {
 }
 
 /// Command names (without the backslash) that the operator floor watches.
-const OPERATOR_CMDS: &[&str] = &["frac", "times", "le", "ge", "leq", "geq", "ne", "neq", "div", "cdot", "pm"];
+const OPERATOR_CMDS: &[&str] = &[
+    "frac", "times", "le", "ge", "leq", "geq", "ne", "neq", "div", "cdot", "pm", //
+    "mp", "leqslant", "geqslant", "lt", "gt", // S3-P16
+];
 
 /// See the module doc. Linear in the piece.
 fn is_operator_piece(piece: &str) -> bool {
-    if piece.contains(['+', '-', '=', '<', '>', '^', '_']) {
+    if piece.contains(['+', '-', '=', '<', '>', '^', '_']) || piece.contains(OPERATOR_GLYPHS) {
         return true;
     }
     // A whole command anywhere in the piece (`\left` is not `\le`).
@@ -1397,6 +1413,66 @@ mod tests {
         for op in ['≤', '≥', '≠', '×', '÷', '±', '−', '→', '∞', '∈'] {
             let body = format!("a {op} b");
             assert_eq!(kinds_of(&body), vec![BlockKind::Latex], "{body}");
+        }
+    }
+
+    // ---- S3-P16: the operator guard sees the Unicode operators ----
+
+    /// `<formula>` + the pieces, one token each, every logprob ln 0.99 except
+    /// `weak`, which gets `weak_p`; the first token untracked.
+    fn glyph_tokens(pieces: &[&str], weak: &str, weak_p: f32) -> Vec<GenToken> {
+        let mut out = vec![GenToken { piece: format!("<formula>{LOC}"), logprob: None }];
+        for p in pieces {
+            let lp = if *p == weak { weak_p.ln() } else { (0.99f32).ln() };
+            out.push(GenToken { piece: p.to_string(), logprob: Some(lp) });
+        }
+        out.push(GenToken { piece: "</formula>".to_string(), logprob: Some((0.99f32).ln()) });
+        out
+    }
+
+    #[test]
+    fn a_glyph_only_formula_is_reviewed_like_an_ascii_one() {
+        let pieces = ["12x", " −", " 34", " ≥", " 5678"];
+        // The weakest glyph below the floor (0.8 keeps the block's confidence
+        // above 0.90, so the operator guard alone decides): review, as
+        // `12x - 34 \ge 5678` is.
+        let weak = assess(&glyph_tokens(&pieces, " −", 0.8), false);
+        assert_eq!(weak.verdict, Verdict::Review, "{weak:?}");
+        assert_eq!(weak.warnings, vec![Warning::OperatorUncertain], "{weak:?}");
+        assert!((weak.blocks[0].min_operator_prob.unwrap() - 0.8).abs() < 1e-4, "{weak:?}");
+        let ascii = assess(&glyph_tokens(&["12x", " -", " 34", r" \ge", " 5678"], " -", 0.8), false);
+        assert_eq!((ascii.verdict, ascii.warnings.clone()), (weak.verdict, weak.warnings.clone()), "{ascii:?}");
+        // Every glyph above the floor: accept.
+        let sure = assess(&glyph_tokens(&pieces, " −", 0.99), false);
+        assert_eq!(sure.verdict, Verdict::Accept, "{sure:?}");
+        assert!(sure.blocks[0].min_operator_prob.is_some_and(|p| p >= OPERATOR_MIN_PROB), "{sure:?}");
+        // The relation alone weak.
+        let rel = assess(&glyph_tokens(&pieces, " ≥", 0.8), false);
+        assert_eq!(rel.warnings, vec![Warning::OperatorUncertain], "{rel:?}");
+    }
+
+    #[test]
+    fn every_unicode_operator_carries_an_operator_probability() {
+        for (pieces, glyph) in [
+            (&["12x", " −", " 34", " ≥", " 5678"][..], " −"),
+            (&["2x", " ≤", " 9"][..], " ≤"),
+            (&["3", " ×", " 4"][..], " ×"),
+            (&["x", " ±", " 2"][..], " ±"),
+            (&["8", " ÷", " 2"][..], " ÷"),
+            (&["x", " ≠", " 2"][..], " ≠"),
+        ] {
+            let a = assess(&glyph_tokens(pieces, glyph, 0.8), false);
+            assert_eq!(a.blocks.len(), 1, "{pieces:?}: {a:?}");
+            assert_eq!(a.blocks[0].kind, BlockKind::Latex, "{pieces:?}");
+            assert!(a.blocks[0].min_operator_prob.is_some(), "{pieces:?}: {a:?}");
+            assert!(a.warnings.contains(&Warning::OperatorUncertain), "{pieces:?}: {a:?}");
+        }
+        // The commands that spell the same operators are guarded too.
+        for cmd in [r"\mp", r"\leqslant", r"\geqslant", r"\lt", r"\gt"] {
+            let piece = format!(" {cmd}");
+            let a = assess(&glyph_tokens(&["x", &piece, " 2"], &piece, 0.8), false);
+            assert!(a.blocks[0].min_operator_prob.is_some(), "{cmd}: {a:?}");
+            assert!(a.warnings.contains(&Warning::OperatorUncertain), "{cmd}: {a:?}");
         }
     }
 
