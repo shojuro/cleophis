@@ -40,3 +40,4 @@ members = [
 # upstream llama-cpp-rs PR exposing a GGML cmake-define passthrough.
 [patch.crates-io]
 llama-cpp-sys-2 = { path = "third_party/llama-cpp-sys-2" }
+docx-rust = { path = "third_party/docx-rust" }
