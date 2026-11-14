@@ -1,0 +1,28 @@
+# dumpsys meminfo 5020 (vision_bench, ~20s into the run)
+Applications Memory Usage (in Kilobytes):
+Uptime: 273322485 Realtime: 287510098
+                   Pss  Private  Private     Swap      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap   206224   206224        0        0   206224        0        0        0
+  Dalvik Heap        0        0        0        0        0        0        0        0
+        Stack      108      108        0        0      108                           
+    Other dev        0        0        0        0      388                           
+     .so mmap     1269      144     1112        0     2916                           
+   Other mmap   174773      180   174572        0   175464                           
+      Unknown      848      848        0        0      848                           
+        TOTAL   383222   207504   175684        0   385948        0        0        0
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:        0                              0
+         Native Heap:   206224                         206224
+                Code:     1256                           2916
+               Stack:      108                            108
+            Graphics:        0                              0
+       Private Other:   175600
+              System:       34
+             Unknown:                                  176700
+ 
+           TOTAL PSS:   383222            TOTAL RSS:   385948      TOTAL SWAP (KB):        0
