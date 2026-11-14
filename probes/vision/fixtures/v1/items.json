@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "q01",
+      "file": "q01-linear.png",
+      "kind": "printed",
+      "latex": "3x - 7 = 2x + 5",
+      "plain": "three x minus seven equals two x plus five",
+      "verdict": "accept",
+      "notes": "plain linear equation"
+    },
+    {
+      "id": "q02",
+      "file": "q02-fraction.png",
+      "kind": "printed",
+      "latex": "\\frac{2x}{3} + \\frac{x}{6} = 5",
+      "plain": "two x over three plus x over six equals five",
+      "verdict": "accept",
+      "notes": "stacked fractions"
+    },
+    {
+      "id": "q03",
+      "file": "q03-quadratic.png",
+      "kind": "printed",
+      "latex": "x^2 - 5x + 6 = 0",
+      "plain": "x squared minus five x plus six equals zero",
+      "verdict": "accept",
+      "notes": "superscript"
+    },
+    {
+      "id": "q04",
+      "file": "q04-exponent-times.png",
+      "kind": "printed",
+      "latex": "2^{n+1} \\times a_n \\le 10",
+      "plain": "two to the n plus one times a sub n is at most ten",
+      "verdict": "accept",
+      "notes": "braced exponent, subscript, times, le"
+    },
+    {
+      "id": "q05",
+      "file": "q05-system.png",
+      "kind": "printed",
+      "latex": "x + y = 7 \\\\ x - y = 1",
+      "plain": "x plus y equals seven, and x minus y equals one",
+      "verdict": "accept",
+      "notes": "two stacked lines; expected latex joins with a double backslash"
+    },
+    {
+      "id": "q06",
+      "file": "q06-sqrt.png",
+      "kind": "printed",
+      "latex": "\\sqrt{x + 1} = 3",
+      "plain": "square root of x plus one equals three",
+      "verdict": "accept",
+      "notes": "radical"
+    },
+    {
+      "id": "q07",
+      "file": "q07-negative-coeff.png",
+      "kind": "printed",
+      "latex": "-4x + 9 = -7",
+      "plain": "negative four x plus nine equals negative seven",
+      "verdict": "accept",
+      "notes": "leading minus"
+    },
+    {
+      "id": "q08",
+      "file": "q08-mixed-fraction.png",
+      "kind": "printed",
+      "latex": "\\frac{3}{4}x - \\frac{1}{2} = \\frac{5}{8}",
+      "plain": "three quarters x minus one half equals five eighths",
+      "verdict": "accept",
+      "notes": "three fractions"
+    },
+    {
+      "id": "q09",
+      "file": "q09-subscripts.png",
+      "kind": "printed",
+      "latex": "a_1 + a_2 = 2a_3",
+      "plain": "a sub one plus a sub two equals two a sub three",
+      "verdict": "accept",
+      "notes": "subscripts"
+    },
+    {
+      "id": "q10",
+      "file": "q10-decimal.png",
+      "kind": "printed",
+      "latex": "0.5x + 1.25 = 3",
+      "plain": "zero point five x plus one point two five equals three",
+      "verdict": "accept",
+      "notes": "decimals"
+    },
+    {
+      "id": "q11",
+      "file": "q11-parentheses.png",
+      "kind": "printed",
+      "latex": "2(x - 3) = 4(x + 1)",
+      "plain": "two times x minus three equals four times x plus one",
+      "verdict": "accept",
+      "notes": "parentheses"
+    },
+    {
+      "id": "q12",
+      "file": "q12-inequality.png",
+      "kind": "printed",
+      "latex": "3x - 2 \\ge 7",
+      "plain": "three x minus two is at least seven",
+      "verdict": "accept",
+      "notes": "ge"
+    },
+    {
+      "id": "q13",
+      "file": "q13-power-of-fraction.png",
+      "kind": "printed",
+      "latex": "\\left(\\frac{1}{2}\\right)^x = 8",
+      "plain": "one half to the x equals eight",
+      "verdict": "accept",
+      "notes": "sized parentheses, power of a fraction"
+    },
+    {
+      "id": "q14",
+      "file": "q14-percent.png",
+      "kind": "printed",
+      "latex": "15\\% \\times 80 = x",
+      "plain": "fifteen percent times eighty equals x",
+      "verdict": "accept",
+      "notes": "percent sign"
+    },
+    {
+      "id": "q15",
+      "file": "q15-text-and-formula.png",
+      "kind": "printed",
+      "latex": "5x = 35",
+      "plain": "solve for x: five x equals thirty-five",
+      "verdict": "accept",
+      "notes": "prose outside the maths; expected latex is the formula only"
+    },
+    {
+      "id": "q16",
+      "file": "q16-cubic.png",
+      "kind": "printed",
+      "latex": "x^3 - x = 0",
+      "plain": "x cubed minus x equals zero",
+      "verdict": "accept",
+      "notes": "cubic"
+    },
+    {
+      "id": "q17",
+      "file": "q17-diagram-only.png",
+      "kind": "diagram",
+      "latex": null,
+      "plain": "a labelled right triangle with vertices A, B and C; no equation",
+      "verdict": "refuse",
+      "notes": "diagram only; nothing to transcribe"
+    },
+    {
+      "id": "q18",
+      "file": "q18-prose.png",
+      "kind": "prose",
+      "latex": null,
+      "plain": "three lines of plain English: a shopping list",
+      "verdict": "refuse",
+      "notes": "prose only; no mathematics"
+    }
+  ]
+}
