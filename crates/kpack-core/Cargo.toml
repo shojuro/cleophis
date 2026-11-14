@@ -51,7 +51,9 @@ ed25519-dalek = "=2.2.0"
 # levels, TagEnd variant shapes, OffsetIter byte ranges), not through a
 # small stable surface, so an unplanned minor/patch bump is a potential
 # silent behavior change rather than a routine update.
-pulldown-cmark = "=0.13.4"
+# 0.13.6 (2026-11-13) fixes RUSTSEC-2026-0414 and RUSTSEC-2026-0433, both about
+# ENABLE_WIKILINKS; still an exact pin for the reason above.
+pulldown-cmark = "=0.13.6"
 # TOML parsing for the versioned prompt contract (K7, spec §4.2, plan D5) —
 # parses the byte-pinned `contracts/prompt-contract.v1.toml`, baked into the
 # binary via `include_str!` in contract.rs. Confirmed via context7/docs.rs
@@ -106,9 +108,10 @@ docx-rust = "=0.1.11"
 # EPUB parsing (formats slice) — pure Rust (`zip` + `xml-rs`), no native/
 # network dependency (confirmed via `cargo tree -p kpack-core`). An EPUB is
 # "a zip of XHTML chapters"; src/epub.rs reuses `html::html_to_document` per
-# chapter rather than re-implementing HTML parsing. EXACT pin (`=2.1.5`):
+# chapter rather than re-implementing HTML parsing. EXACT pin (`=2.1.6`, 2026-11-13;
+# moves to zip 9, fixing CVE-2026-115909 and CVE-2026-115906 in zip 3):
 # same rationale as the other format-parser pins in this file.
-epub = "=2.1.5"
+epub = "=2.1.6"
 
 [dev-dependencies]
 # Reads the contract golden's input fixture
