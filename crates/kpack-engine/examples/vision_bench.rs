@@ -65,6 +65,13 @@ enum Family {
     Qwen,
 }
 
+/// The prompt the product sends for a formula. Mirrors `prompt` in
+/// `src-tauri/resources/catalog.json`; the page prompt in `default_prompt` stays
+/// the non-engine bench's default (Stage 0 measured that regime).
+const PRODUCT_FORMULA_PROMPT: &str = "Convert formula to latex.";
+/// The product's `maxTokens` (catalog.json, every tier).
+const PRODUCT_MAX_TOKENS: usize = 96;
+
 impl Family {
     fn parse(s: &str) -> Result<Self, String> {
         match s {
@@ -97,6 +104,8 @@ impl Family {
 
 struct Item {
     id: String,
+    /// The `file` value as items.json spells it (relative to the json), for the record.
+    file: String,
     path: PathBuf,
 }
 
@@ -190,13 +199,14 @@ fn run_via_engine(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
         VisionBackend, VisionConfig, VisionLoadRequest,
     };
     let items = a.items()?;
-    let prompt = a.prompt.clone().unwrap_or_else(|| a.family.default_prompt().to_string());
+    let (prompt, max_tokens) = a.via_engine_regime();
+    eprintln!("[bench] via-engine regime: prompt={prompt:?} max_tokens={max_tokens}");
     let req = VisionLoadRequest {
         base: ModelSpec::new(&a.model),
         mmproj: ProjectorSpec::new(&a.mmproj),
         config: VisionConfig {
             n_threads: a.threads,
-            max_tokens: a.max_tokens,
+            max_tokens,
             one_pass: a.one_pass,
             single_formula: !a.multi_formula,
             prompt,
@@ -205,16 +215,136 @@ fn run_via_engine(a: &Args) -> Result<(), Box<dyn std::error::Error>> {
         n_gpu_layers: 0,
     };
     let mut handle = kpack_engine::LlamaVision::new().load(req)?;
-    for item in &items {
-        let bytes = std::fs::read(&item.path)?;
-        let img = prepare_product_image(&bytes, a.max_side)?;
-        let tr = handle.transcribe(&img, &mut || false)?;
-        let assessment = assess(&tr.tokens, tr.stop == StopReason::MaxTokens);
-        eprintln!("[{}] img_tok {} stop {:?}", item.id, tr.n_image_tokens, tr.stop);
-        eprintln!("    raw: {}", tr.raw.replace('\n', "\\n"));
-        eprintln!("    verdict: {:?} warnings {:?}", assessment.verdict, assessment.warnings);
+    let mut out = match &a.json_out {
+        Some(p) => Some(BufWriter::new(File::create(p)?)),
+        None => None,
+    };
+    for rep in 0..a.repeat {
+        for item in &items {
+            let t = Instant::now();
+            let mut rec = serde_json::json!({
+                "id": item.id, "file": item.file, "rep": rep,
+                "verdict": null, "warnings": [], "blocks": [], "raw": null,
+                "n_image_tokens": null, "stop": null,
+                "prep_ms": null, "prefill_ms": null, "decode_ms": null,
+                "total_ms": null, "vmrss_kb": null, "vmhwm_kb": null, "error": null,
+            });
+            let res: Result<(), Box<dyn std::error::Error>> = (|| {
+                let tp = Instant::now();
+                let bytes = std::fs::read(&item.path)?;
+                let img = prepare_product_image(&bytes, a.max_side)?;
+                rec["prep_ms"] = serde_json::json!(tp.elapsed().as_millis() as u64);
+                let tr = handle.transcribe(&img, &mut || false)?;
+                let assessment = assess(&tr.tokens, tr.stop == StopReason::MaxTokens);
+                eprintln!("[{}] img_tok {} stop {:?}", item.id, tr.n_image_tokens, tr.stop);
+                eprintln!("    raw: {}", tr.raw.replace('\n', "\\n"));
+                eprintln!("    verdict: {:?} warnings {:?}", assessment.verdict, assessment.warnings);
+                rec["verdict"] = serde_json::json!(verdict_wire(assessment.verdict));
+                rec["warnings"] = serde_json::json!(assessment.warnings.iter().copied().map(warning_wire).collect::<Vec<_>>());
+                rec["blocks"] = blocks_wire(&assessment.blocks);
+                rec["raw"] = serde_json::json!(tr.raw);
+                rec["n_image_tokens"] = serde_json::json!(tr.n_image_tokens);
+                rec["stop"] = serde_json::json!(format!("{:?}", tr.stop));
+                rec["prefill_ms"] = serde_json::json!(tr.timings.prefill_ms);
+                rec["decode_ms"] = serde_json::json!(tr.timings.decode_ms);
+                Ok(())
+            })();
+            if let Err(e) = res {
+                eprintln!("[{}] rep {} ERROR {e}", item.id, rep);
+                rec["error"] = serde_json::json!(e.to_string());
+            }
+            let (r, h) = rss_kb();
+            rec["total_ms"] = serde_json::json!(t.elapsed().as_millis() as u64);
+            rec["vmrss_kb"] = serde_json::json!(r);
+            rec["vmhwm_kb"] = serde_json::json!(h);
+            if let Some(f) = out.as_mut() {
+                writeln!(f, "{}", rec)?;
+                f.flush()?;
+            }
+        }
     }
     Ok(())
+}
+
+/// Same shortest-decimal widening as `src-tauri/src/vision_cmds.rs::f32_wire`
+/// (that one lives in the Tauri crate, so it is repeated here).
+fn f32_wire(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(f64::from(x))
+}
+
+fn verdict_wire(v: kpack_engine::Verdict) -> &'static str {
+    match v {
+        kpack_engine::Verdict::Accept => "accept",
+        kpack_engine::Verdict::Review => "review",
+        kpack_engine::Verdict::Refuse => "refuse",
+    }
+}
+
+fn warning_wire(w: kpack_engine::Warning) -> &'static str {
+    use kpack_engine::Warning::*;
+    match w {
+        LowConfidence => "low_confidence",
+        OperatorUncertain => "operator_uncertain",
+        NoMathFound => "no_math_found",
+        InvalidLatex => "invalid_latex",
+        Truncated => "truncated",
+    }
+}
+
+fn blocks_wire(blocks: &[kpack_engine::Block]) -> serde_json::Value {
+    blocks
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "kind": match b.kind {
+                    kpack_engine::BlockKind::Latex => "latex",
+                    kpack_engine::BlockKind::Text => "text",
+                },
+                "content": b.content,
+                "confidence": f32_wire(b.confidence),
+                "min_operator_prob": b.min_operator_prob.map(f32_wire),
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kpack_engine::{Block, BlockKind, Verdict, Warning};
+
+    fn args(extra: &[&str]) -> Args {
+        let mut v: Vec<String> = ["--model", "m", "--mmproj", "p", "--image", "i.png", "--via-engine"].map(String::from).to_vec();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        Args::parse_from(v).unwrap()
+    }
+
+    #[test]
+    fn via_engine_defaults_to_the_product_regime() {
+        assert_eq!(args(&[]).via_engine_regime(), ("Convert formula to latex.".to_string(), 96));
+        assert_eq!(args(&["--prompt", "X", "--max-tokens", "10"]).via_engine_regime(), ("X".to_string(), 10));
+        assert_eq!(args(&[]).bench_max_tokens(), 256);
+    }
+
+    #[test]
+    fn record_shape_matches_the_scorer() {
+        let blocks = vec![
+            Block { kind: BlockKind::Latex, content: "3x-7=2x+5".into(), confidence: 0.99, min_operator_prob: Some(0.995), n_tokens: 9 },
+            Block { kind: BlockKind::Text, content: "hi".into(), confidence: 0.5, min_operator_prob: None, n_tokens: 1 },
+        ];
+        let b = blocks_wire(&blocks);
+        assert_eq!(b[0]["kind"], "latex");
+        assert_eq!(b[0]["confidence"], 0.99);
+        assert_eq!(b[0]["min_operator_prob"], 0.995);
+        assert!(b[1]["min_operator_prob"].is_null());
+        assert!(b[1].as_object().unwrap().contains_key("min_operator_prob"));
+        assert_eq!(b[1]["kind"], "text");
+        assert_eq!(verdict_wire(Verdict::Review), "review");
+        let w: Vec<_> = [Warning::LowConfidence, Warning::OperatorUncertain, Warning::NoMathFound, Warning::InvalidLatex, Warning::Truncated]
+            .into_iter().map(warning_wire).collect();
+        assert_eq!(w, ["low_confidence", "operator_uncertain", "no_math_found", "invalid_latex", "truncated"]);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -256,10 +386,10 @@ fn run_item(
         .map(|c| c.n_tokens())
         .sum();
     let total_tokens = chunks.total_tokens();
-    if total_tokens + a.max_tokens > a.n_ctx as usize {
+    if total_tokens + a.bench_max_tokens() > a.n_ctx as usize {
         return Err(format!(
             "prompt ({total_tokens} tokens, {n_image_tokens} image) + max_tokens ({}) exceeds n_ctx ({})",
-            a.max_tokens, a.n_ctx
+            a.bench_max_tokens(), a.n_ctx
         ).into());
     }
 
@@ -322,7 +452,7 @@ fn run_item(
         }
         n_gen += 1;
         raw.push_str(&model.token_to_piece(token, &mut decoder, false, None).unwrap_or_default());
-        if n_gen >= a.max_tokens {
+        if n_gen >= a.bench_max_tokens() {
             stop = "max_tokens";
             break;
         }
@@ -444,7 +574,8 @@ struct Args {
     threads: i32,
     n_ctx: u32,
     n_batch: u32,
-    max_tokens: usize,
+    /// `None` = not given: the non-engine path uses 256, `--via-engine` the product's 96.
+    max_tokens: Option<usize>,
     repeat: u32,
     json_out: Option<String>,
     raw_stb: bool,
@@ -457,6 +588,10 @@ struct Args {
 
 impl Args {
     fn parse() -> Result<Args, String> {
+        Args::parse_from(std::env::args().skip(1))
+    }
+
+    fn parse_from(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
         let mut a = Args {
             model: String::new(),
             mmproj: String::new(),
@@ -468,7 +603,7 @@ impl Args {
             threads: 4,
             n_ctx: 2048,
             n_batch: 1024,
-            max_tokens: 256,
+            max_tokens: None,
             repeat: 1,
             json_out: None,
             raw_stb: false,
@@ -477,7 +612,7 @@ impl Args {
             via_engine: false,
             multi_formula: false,
         };
-        let mut it = std::env::args().skip(1);
+        let mut it = argv.into_iter();
         while let Some(f) = it.next() {
             let mut v = || it.next().ok_or_else(|| format!("{f} needs a value"));
             match f.as_str() {
@@ -491,7 +626,7 @@ impl Args {
                 "--threads" => a.threads = v()?.parse().map_err(|e| format!("--threads: {e}"))?,
                 "--n-ctx" => a.n_ctx = v()?.parse().map_err(|e| format!("--n-ctx: {e}"))?,
                 "--n-batch" => a.n_batch = v()?.parse().map_err(|e| format!("--n-batch: {e}"))?,
-                "--max-tokens" => a.max_tokens = v()?.parse().map_err(|e| format!("--max-tokens: {e}"))?,
+                "--max-tokens" => a.max_tokens = Some(v()?.parse().map_err(|e| format!("--max-tokens: {e}"))?),
                 "--repeat" => a.repeat = v()?.parse().map_err(|e| format!("--repeat: {e}"))?,
                 "--json" => a.json_out = Some(v()?),
                 "--raw-stb" => a.raw_stb = true,
@@ -512,6 +647,19 @@ impl Args {
         Ok(a)
     }
 
+    /// The non-engine bench's cap.
+    fn bench_max_tokens(&self) -> usize {
+        self.max_tokens.unwrap_or(256)
+    }
+
+    /// `--via-engine` runs the PRODUCT regime unless a flag says otherwise.
+    fn via_engine_regime(&self) -> (String, usize) {
+        (
+            self.prompt.clone().unwrap_or_else(|| PRODUCT_FORMULA_PROMPT.to_string()),
+            self.max_tokens.unwrap_or(PRODUCT_MAX_TOKENS),
+        )
+    }
+
     fn items(&self) -> Result<Vec<Item>, Box<dyn std::error::Error>> {
         let mut out = Vec::new();
         if let Some(p) = &self.items_file {
@@ -520,12 +668,12 @@ impl Args {
             for it in doc["items"].as_array().ok_or("items.json: no items array")? {
                 let id = it["id"].as_str().ok_or("item without id")?.to_string();
                 let file = it["file"].as_str().ok_or("item without file")?;
-                out.push(Item { id, path: base.join(file) });
+                out.push(Item { id, file: file.to_string(), path: base.join(file) });
             }
         }
         for p in &self.images {
             let id = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "image".into());
-            out.push(Item { id, path: p.clone() });
+            out.push(Item { id, file: p.to_string_lossy().to_string(), path: p.clone() });
         }
         Ok(out)
     }

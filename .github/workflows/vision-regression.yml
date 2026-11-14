@@ -1,0 +1,155 @@
+# Vision regression: runs the pinned probe set (probes/vision/fixtures/v1, 18
+# items) through the engine's vision bench with granite-docling-258M on x86_64
+# and arm64 Linux, then scores the transcriptions.
+# Gates: transcription regression only. The exact-match thresholds live in
+# probes/vision/score.mjs (GATES); this workflow reports that verdict as is.
+# Never gates: latency or memory. Those belong to the on-device run.
+# Public repo: no secrets, read-only token, SHA-pinned actions.
+name: vision-regression
+
+on:
+  schedule:
+    - cron: '17 4 * * 3'   # weekly, Wednesday 04:17 UTC
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/kpack-engine/**'
+      - 'third_party/llama-cpp-sys-2/**'
+      - 'probes/vision/**'
+      - '.github/workflows/vision-regression.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/kpack-engine/**'
+      - 'third_party/llama-cpp-sys-2/**'
+      - 'probes/vision/**'
+      - '.github/workflows/vision-regression.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vision-regression:
+    name: vision-regression (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    env:
+      # Cached target dir across runs: incremental artifacts bloat it for no gain.
+      CARGO_INCREMENTAL: 0
+      DIST: https://cleophis-dist.s3.us-east-005.backblazeb2.com/vision/granite-docling-258M/v1
+      BASE: granite-docling-258M-Q8_0.gguf
+      BASE_SHA: b687245c212b59da938e411e2d4485596cbaeed1ae52706582ac38ed6a970f76
+      MMPROJ: mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+      MMPROJ_SHA: bb75a65aa3ec14ac4a002248d5ffa075183df369030b6ca09028463ede18b307
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '20.19.2'
+
+      - name: Install Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev clang cmake
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: vision-regression-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            vision-regression-${{ runner.os }}-${{ runner.arch }}-1.97.1-
+
+      - name: Cache vision models
+        id: models-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/cleophis-vision-models
+          key: vision-models-granite-docling-258M-v1-b687245c212b-bb75a65aa3ec
+
+      - name: Fetch vision models (cache miss)
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/cleophis-vision-models"
+          curl -fL --retry 3 -o "$HOME/cleophis-vision-models/$BASE" "$DIST/$BASE"
+          curl -fL --retry 3 -o "$HOME/cleophis-vision-models/$MMPROJ" "$DIST/$MMPROJ"
+
+      # Always verified, cache hit or not: a wrong or truncated model would
+      # score as a transcription regression that is not one.
+      - name: Verify model sha256
+        run: |
+          set -euo pipefail
+          cd "$HOME/cleophis-vision-models"
+          printf '%s  %s\n%s  %s\n' "$BASE_SHA" "$BASE" "$MMPROJ_SHA" "$MMPROJ" | sha256sum -c -
+
+      - name: Build vision_bench
+        run: cargo build -p kpack-engine --features vision --release --example vision_bench --locked
+
+      - name: Run probe set through the engine
+        run: |
+          set -euo pipefail
+          target/release/examples/vision_bench --via-engine --family docling \
+            --model "$HOME/cleophis-vision-models/$BASE" \
+            --mmproj "$HOME/cleophis-vision-models/$MMPROJ" \
+            --items probes/vision/fixtures/v1/items.json \
+            --max-side 512 --threads 4 --one-pass \
+            --prompt 'Convert formula to latex.' --max-tokens 96 \
+            --json "$RUNNER_TEMP/vision-v1.jsonl"
+
+      # Why this guard exists: the scorer reports a missing record as its own
+      # failure (exit 2), but a short file must stop the run before any
+      # partial result is read as a verdict.
+      - name: Guard record count
+        run: |
+          set -euo pipefail
+          N=$(wc -l < "$RUNNER_TEMP/vision-v1.jsonl")
+          if [ "$N" -ne 18 ]; then
+            echo "FAIL: expected 18 records, got $N"; exit 1
+          fi
+
+      # The scorer's exit code is the verdict: 0 pass, 1 gate miss, 2 missing
+      # record. The summary is written first, then the code is passed through.
+      - name: Score
+        run: |
+          set +e
+          node probes/vision/score.mjs \
+            --items probes/vision/fixtures/v1/items.json \
+            --records "$RUNNER_TEMP/vision-v1.jsonl" \
+            --out-md "$RUNNER_TEMP/vision-v1.md" \
+            --out-json "$RUNNER_TEMP/vision-v1.json"
+          RC=$?
+          set -e
+          if [ -f "$RUNNER_TEMP/vision-v1.md" ]; then
+            { echo "### vision-regression (${{ runner.arch }})"; cat "$RUNNER_TEMP/vision-v1.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $RC
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vision-v1-${{ runner.arch }}
+          path: |
+            ${{ runner.temp }}/vision-v1.jsonl
+            ${{ runner.temp }}/vision-v1.md
+            ${{ runner.temp }}/vision-v1.json
+          if-no-files-found: warn
