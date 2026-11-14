@@ -1040,8 +1040,7 @@ exact readings that would come out of review (0.9152, 0.9193) and those that sta
 below) is wide. The page-DejaVu wrong reading that sets the floor sits only 0.029 below it.
 
 **The sample.** 18 typeset items, one x86-64 host, one repeat per run, three renders, two prompts.
-No photograph, no device run. The founder's two photographs and the A22 run are still owed, and
-the device run should use the product's prompt and cap.
+No photograph, no device run. (The photo-join round later added the photographs; the A22 run is still owed.) The device run should use the product's prompt and cap.
 
 ### Outside the rule: the refusals fail in the product's regime
 
@@ -1068,6 +1067,66 @@ failure depends on the image.
 digit and no operator is text. The refuse floor stays 0.70. On the re-run both items refuse with
 `no_math_found` (Fix wave). The parser check is wider than "an array of single letters". It
 refuses any block that lacks a digit and an operator token, whatever its layout.
+
+## Photo-join round (2026-11-14)
+
+**What joined.** Four items, taking the set from 18 to 22 (`c5b3908`, branch `vision/stage3-photos`):
+
+- `q19-photo-upright` and `q20-photo-rotated`, kind `photo`, expected `accept`, the formula of q03
+  (`x^2 - 5x + 6 = 0`). Each is a crop of one of the founder's two photographs of the sheet printed
+  from our own typeset items, one photograph per orientation. q19 is 480x140 with EXIF orientation 1.
+  q20 is 170x520 raw pixels with EXIF orientation 6, so it is upright only after the orientation is
+  applied, which is the point of the probe. The EXIF holds only the orientation tag. The full
+  photographs stay outside the repo. The crops are CC0 and are never re-encoded: `gen.py` hashes them
+  into `manifest.json` and lists them in `items.json`, and its `--check` compares both.
+- `q21-diagram-345` (a right triangle drawn with lines, its sides labelled 3, 4 and 5, no equation)
+  and `q22-dated-prose` (one line, "Dentist on 14 November 2026 at 3 pm"), typeset like q17 and q18,
+  expected `refuse`. They are held-out: the refusal rule was derived from q17 and q18 only.
+
+**The counts that moved.** 22 items: 16 printed, 2 photographs, 4 refusals. The exact gate is
+`GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is now a function of the items, the number whose
+expected verdict is `refuse`, so 4 here, and the Markdown prints the applied value. The manifest test
+counts 22 files and 22 items, adds `photo` to the kind domain and pins the id, verdict and kind order.
+The CI guard reads the record count from `items.json` instead of a constant. Thresholds, parser and
+scorer logic are unchanged.
+
+**The run.** The host bench in the product's regime (`host-v2-cm-product.jsonl`, engine and parser
+at `512fc75`, formula prompt, cap 96, the explicit `--via-engine` flags, one pass). Scorer at the
+round's tree. Timings are host timings and not a gate.
+
+**Scoreboard: PASS.**
+
+| Gate | Value | Requirement |
+|---|---|---|
+| exact | 22/22 | >= 20: total - 2 (20 or more items) |
+| accepted sign, operator or symbol errors | 0 | <= 0 |
+| refusals correct | 4 | >= 4 (every refuse item) |
+
+Items q01 to q18 read as in round 4: all exact, verdicts unchanged (accept for q02, q05, q07 to q09,
+q11 to q13, q15, q16, and review for q01, q03, q04, q06, q10, q14; q17 and q18 refuse).
+
+| Item | Verdict | Block, confidence, min operator prob | Raw head |
+|---|---|---|---|
+| q19 photo upright | accept (expected accept), exact | 1 latex block `x^{2}-5x+6=0`, 0.9999, 0.9988 | `<formula>...x ^ { 2 } - 5 x + 6 = 0</formula>` |
+| q20 photo rotated | accept (expected accept), exact | 1 latex block `x^{2}-5x+6=0`, 0.9983, 0.9980 | `<formula>...x ^ { 2 } - 5 x + 6 = 0</formula>` |
+| q21 diagram 3-4-5 | refuse (expected refuse) | 1 latex block `3`, 0.6945, none; warning `low_confidence` | `<formula>...\begin{array} { l } { 3 } \end{array}</formula>` |
+| q22 dated prose | refuse (expected refuse) | 1 text block (the array-wrapped words), 0.8869, none; warning `no_math_found` | `<formula>...\begin{array} { l } { D e n t i s t o n \, 1 4 \, November \, 2 0 2 6 \, a t \, 3 \, p m } \end{array}</formula>` |
+
+**Reading it.** Every gate passes and nothing was changed to make it so. Three observations:
+
+- The photographs were read better than their typeset source. q03 sits in review on this run
+  (operator probability 0.548, `operator_uncertain`), while q19 and q20 are accepted with a minimum
+  operator probability above 0.99. The orientation tag is applied: q20 reads the same as q19.
+  Two photographs of one formula are a thin sample, not a claim about photographs in general.
+- q21 is refused only by the confidence floor. Its block confidence is 0.6945 and the review floor
+  (`REVIEW_MIN_CONFIDENCE`) is 0.70, a margin of 0.006. The model emitted a one-cell array holding
+  `3`, not nothing. A re-render with a different label size could land on the other side. The refusal
+  gate is still in-sample for the parser's wording, and q21 is the weakest of the four.
+- q22 is refused through `no_math_found`: the words came back as a text block inside a formula tag,
+  which the parser's prose guard catches. The date digits did not turn it into maths.
+
+**Still owed.** The device run with the 22 items (no Rust change this round, so no Android or Windows
+run was made here).
 
 ## Rulings
 
@@ -1169,26 +1228,27 @@ From the SDD ledger and the reviews, per task.
 - **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
   operators. A per-piece field in the bench's record would let the sign guard be calibrated against
   signs.
-- **The founder's photographs: the join checklist.** They join as `q19-photo-upright` and
-  `q20-photo-rotated` (S3-P11; the plan is corrected).
-  - [ ] The photographs go under `probes/vision/fixtures/v1/photos/`, CC0, a sheet printed from our
+- **The founder's photographs: the join checklist.** They joined on 2026-11-14 as `q19-photo-upright` and
+  `q20-photo-rotated` (S3-P11; see the Photo-join round).
+  - [x] The photographs go under `probes/vision/fixtures/v1/photos/`, CC0, a sheet printed from our
     own typeset items, never a textbook page. Keep the camera JPEG if q20's rotation is its EXIF
     Orientation tag (`vision_prep.rs` applies it; a PNG drops it). Strip GPS and device EXIF and
     keep Orientation, because the repo is public.
-  - [ ] `gen.py` owns `items.json` and `manifest.json`: a plain run rewrites both without the
+  - [x] `gen.py` owns `items.json` and `manifest.json`: a plain run rewrites both without the
     photos, and `gen.py --check` compares `items.json` with its own items. It needs a list of
     photos that it hashes but does not render.
-  - [ ] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
+  - [x] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
     `items.length` of 18) move, and so do its ordered verdict and kind arrays (16 accepts, then two
     refusals). A photo's kind is `printed` or a new `photo`.
-  - [ ] `.github/workflows/vision-regression.yml`: the 18-record guard moves.
-  - [ ] **Two held-out refusal probes join as q21 and q22** (review I3): a triangle labelled 3, 4
+  - [x] `.github/workflows/vision-regression.yml`: the 18-record guard moves.
+  - [x] **Two held-out refusal probes join as q21 and q22** (review I3): a triangle labelled 3, 4
     and 5, and a prose line holding a date. Both expect `refuse`, and `gen.py` typesets them like
     q17 and q18. They test the refusal rule on images it was not derived from.
-  - [ ] **The counts with all four:** 22 items, of which 16 printed, 2 photographs and 4 refusals.
+  - [x] **The counts with all four:** 22 items, of which 16 printed, 2 photographs and 4 refusals.
     The exact gate is `GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is a fixed 2, so it moves
     to 4, all four refusal items. The manifest test and the CI guard count 22.
-  - [ ] Re-run the host gate run and the device run with the 22 items.
+  - [x] The host gate run with the 22 items: PASS, 22/22 and 4 of 4 (Photo-join round, 2026-11-14).
+  - [ ] The device run with the 22 items is still owed.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
