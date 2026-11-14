@@ -36,6 +36,7 @@ import * as lookupTurn from '../src/lookup-turn.js';
 import * as confirm from '../src/triage-confirm.js';
 import * as triageTurn from '../src/triage-turn.js';
 import * as visionConfirm from '../src/vision-confirm.js';
+import * as visionDownload from '../src/vision-download.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const CHECKLIST = new URL('../docs/superpowers/mobile-tools/phone-journey.md', import.meta.url);
@@ -98,9 +99,9 @@ function evaluate(expr) {
   // name the shipped modules' exports; `Function` keeps them to exactly those
   // names.
   // eslint-disable-next-line no-new-func
-  const f = new Function('guard', 'lookupGuard', 'lookupTurn', 'confirm', 'triageTurn', 'visionConfirm', 'entry',
+  const f = new Function('guard', 'lookupGuard', 'lookupTurn', 'confirm', 'triageTurn', 'visionConfirm', 'visionDownload', 'entry',
     `"use strict"; return (${expr});`);
-  return f(guard, lookupGuard, lookupTurn, confirm, triageTurn, visionConfirm, entry);
+  return f(guard, lookupGuard, lookupTurn, confirm, triageTurn, visionConfirm, visionDownload, entry);
 }
 
 test('the checklist exists where the plan names it', () => {

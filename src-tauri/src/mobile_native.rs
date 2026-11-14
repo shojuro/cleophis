@@ -386,17 +386,43 @@ mod imp {
 /// let whichever ended first stop the service under the other (final review
 /// I4). Given the holders before a call and whether it begins (`true`) or ends
 /// (`false`) a hold, this returns the holders after and the `InferenceService`
-/// method to call: `start` only on 0 to 1, `stop` only on 1 to 0. An end with
+/// method to call: `start` on every begin, `stop` only on 1 to 0. Kotlin's
+/// `start` is idempotent and re-delivers `onStartCommand`, so a later begin
+/// refreshes the notification with its own title: the shade names the latest
+/// holder, not the first (a reply sent after a cancelled reading is a reply). An end with
 /// no holder is a pairing bug; it stays at 0 and calls nothing, so it can never
 /// stop a service another caller holds.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))] // only production caller is the Android `inference_service`
 fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static str>) {
     match (begin, holders) {
-        (true, 0) => (1, Some("start")),
-        (true, n) => (n.saturating_add(1), None),
+        (true, n) => (n.saturating_add(1), Some("start")),
         (false, 0) => (0, None),
         (false, 1) => (0, Some("stop")),
         (false, n) => (n - 1, None),
+    }
+}
+
+/// What the foreground service is protecting, which decides the notification's
+/// title: a reply is "Writing a reply", a photo reading "Reading an image".
+/// Unconditional so every `cfg` of [`inference_service`] shares one signature.
+// Only the Android `inference_service` reads a kind; elsewhere it is accepted
+// and ignored, and the unit test is the one desktop reader.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceKind {
+    Reply,
+    Vision,
+}
+
+impl ServiceKind {
+    /// The notification title; mirrors `InferenceService.TITLE_REPLY` and
+    /// `TITLE_VISION` in Kotlin, and the pins in phone-journey.md V5.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            ServiceKind::Reply => "Writing a reply",
+            ServiceKind::Vision => "Reading an image",
+        }
     }
 }
 
@@ -406,7 +432,7 @@ fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static st
 /// Called from `chat_stream` and `transcribe_image`, whose lifetimes *are* the
 /// condition being signalled. `true` on the way in, `false` on the way out, on
 /// every exit path including cancel and error. The calls are counted
-/// ([`service_transition`]): the service starts with the first holder and stops
+/// ([`service_transition`]): the service starts with each holder (retitling it) and stops
 /// with the last.
 ///
 /// # A lock, not a bare atomic
@@ -430,7 +456,7 @@ fn service_transition(holders: usize, begin: bool) -> (usize, Option<&'static st
 /// transcript. A failed `start` still counts its holder, so the next attempt
 /// is the next 0 to 1, after every current holder has ended.
 #[cfg(all(mobile, target_os = "android"))]
-pub(crate) fn inference_service(running: bool) {
+pub(crate) fn inference_service(running: bool, kind: ServiceKind) {
     static USERS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
     let mut users = USERS.lock().unwrap_or_else(|p| p.into_inner());
     let (after, method) = service_transition(*users, running);
@@ -441,12 +467,24 @@ pub(crate) fn inference_service(running: bool) {
     let outcome = crate::android_bridge::with_app_class(
         "com.cleophis.app.InferenceService",
         |env, class, activity| {
-            env.call_static_method(
-                class,
-                method,
-                "(Landroid/content/Context;)V",
-                &[activity.into()],
-            )
+            if method == "start" {
+                let title = env
+                    .new_string(kind.title())
+                    .map_err(|e| format!("{method}: title: {e}"))?;
+                env.call_static_method(
+                    class,
+                    method,
+                    "(Landroid/content/Context;Ljava/lang/String;)V",
+                    &[activity.into(), (&title).into()],
+                )
+            } else {
+                env.call_static_method(
+                    class,
+                    method,
+                    "(Landroid/content/Context;)V",
+                    &[activity.into()],
+                )
+            }
             .map(|_| ())
             .map_err(|e| format!("{method}: {e}"))
         },
@@ -461,7 +499,7 @@ pub(crate) fn inference_service(running: bool) {
 /// rather than a `cfg` at the call site, where the risk is forgetting one of a
 /// matched pair.
 #[cfg(all(mobile, not(target_os = "android")))]
-pub(crate) fn inference_service(_running: bool) {}
+pub(crate) fn inference_service(_running: bool, _kind: ServiceKind) {}
 
 /// Delete the JPEGs the WebView's camera capture leaves in the app's pictures
 /// directory (`CaptureHygiene.sweep`). Called after every transcription and
@@ -504,12 +542,22 @@ pub(crate) fn sweep_capture_files() {}
 
 #[cfg(test)]
 mod service_tests {
-    use super::service_transition;
+    use super::{service_transition, ServiceKind};
+
+    #[test]
+    fn each_service_kind_names_what_it_is_doing() {
+        assert_eq!(ServiceKind::Reply.title(), "Writing a reply");
+        assert_eq!(ServiceKind::Vision.title(), "Reading an image");
+    }
 
     #[test]
     fn the_service_starts_with_the_first_holder_and_stops_with_the_last() {
         assert_eq!(service_transition(0, true), (1, Some("start")));
-        assert_eq!(service_transition(1, true), (2, None), "a second holder does not restart it");
+        assert_eq!(
+            service_transition(1, true),
+            (2, Some("start")),
+            "a second holder refreshes the title"
+        );
         assert_eq!(service_transition(2, false), (1, None), "the first to end does not stop it");
         assert_eq!(service_transition(1, false), (0, Some("stop")));
     }
@@ -525,13 +573,13 @@ mod service_tests {
             users = after;
             calls.extend(method);
         }
-        assert_eq!(calls, ["start", "stop"]);
+        assert_eq!(calls, ["start", "start", "stop"]);
         assert_eq!(users, 0);
     }
 
     #[test]
     fn an_unpaired_end_never_stops_a_service_and_never_underflows() {
         assert_eq!(service_transition(0, false), (0, None));
-        assert_eq!(service_transition(usize::MAX, true), (usize::MAX, None));
+        assert_eq!(service_transition(usize::MAX, true), (usize::MAX, Some("start")));
     }
 }

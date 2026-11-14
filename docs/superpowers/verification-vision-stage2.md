@@ -522,3 +522,87 @@ One line per task, from the SDD ledger, plus Task 6's.
 - **From the plan:** the share-sheet target (ACTION_SEND) and a Tauri mobile plugin for
   capture (v0.2); a LaTeX renderer in the confirm modal (v0.1 shows monospace source);
   desktop drag-and-drop and paste, after the phone.
+
+## Copy pass (2026-11-13, branch vision/copy-pass)
+
+Three tasks plus the wrap-up closed the copy items deferred from Stage 2 (Task 4 copy items, the notification
+title, and the final review's M8 strings). Reviewed on the branch at 484e58c and 813beba; the final review covered 58ff0c6..2b5c31e.
+
+### What changed
+
+**Task 1 (484e58c), the strings the checklist did not cite.**
+
+| String | Text | Lives in |
+|---|---|---|
+| `OPENING_TEXT` | `Opening the photo…` (one ellipsis character) | `src/vision-confirm.js`, shown in `#cropOpening` by `app.js` |
+| `DOWNLOAD_LABEL` | `Download` | `src/vision-download.js` |
+| `DOWNLOADING_LABEL` | `Downloading…` | `src/vision-download.js` |
+| `NO_SIZE_TEXT` | the former no-size literal, byte-identical | `src/vision-download.js` (thrown by `visionDownloadPlan`) |
+| photo-reader download label | `Downloading the photo reader — N%` | `src/engine-state.js`, keyed on a progress event whose `modelId` starts with `vision/`; a `models/` path still says `Downloading your model — N%` |
+
+Also in Task 1: `#cropOpening` in `index.html` (hidden, no text in markup, shown while the crop
+pane decodes the photo and hidden when the frame appears); `visionTypeIt` no longer acts on a
+disabled input (the Type-it guard); `phone-journey.test.mjs` resolves `visionDownload`; the V1
+step 5 and V2 pins in `phone-journey.md` cite the constants.
+
+**Task 2 (813beba), the foreground notification.** `TITLE_VISION = "Reading an image"` in
+`InferenceService.kt`, chosen through `start(context, title)` and an intent extra that defaults
+to `TITLE_REPLY`. `mobile_native.rs` gains `ServiceKind { Reply, Vision }` with `title()`;
+`inference_service(running, kind)` passes it over JNI (`(Context;String)V`). `chat_cmds.rs` calls
+with Reply, `vision_cmds.rs` with Vision. `phone-journey.md` V5 keeps the `Writing a reply` pin and
+adds a `Reading an image` pin. Both pins cite `mobile_native.rs`: Rust owns the title strings in `ServiceKind::title()` and passes them over JNI, so Kotlin's `TITLE_REPLY` and `TITLE_VISION` are only a mirror (M1, deferred).
+
+### Gates (verbatim from the task reports)
+
+- `npm test` at 2b5c31e: 1286 tests, 0 failures.
+- `npm test` (Task 1): `# pass 1286`, `# fail 0`. Task 2 re-run: tests 1286, pass 1286, fail 0.
+- Android (Task 2): `RUSTFLAGS='-D warnings' cargo ndk -t arm64-v8a -P 24 check -p cleophis --all-targets --release` finished the `release` profile in 11m 04s, exit 0, zero warnings.
+- Windows desktop on 813beba (Task 2): `test result: ok. 460 passed; 0 failed; 10 ignored`, exit 0.
+- Fix wave (09a96e3, the title follows the latest holder): Android `-D warnings` check `Finished` with zero warnings on 09a96e3. Windows desktop 460 passed, 0 failed on 09a96e3 after one rerun. The first run's single failure was `cloud::session::tests::restore_refresh_400_purges_everything`, a real-credential-store test that collided with another branch's concurrent run.
+- `npm test` on 8402ff7: `# tests 1286`, `# pass 1286`, `# fail 0`.
+
+### The debug APK of record (tutor variant, built from 09a96e3)
+
+Install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk`. The two commits after 09a96e3 (8402ff7, 10ef9fa) are docs-only; the code in the APK is HEAD's.
+
+| Fact | Value |
+|---|---|
+| Commit | `09a96e37b5f82a7dbf6f700d59f632e409b6304f`, tree clean at PRE and POST |
+| Build log | `~/cleophis-mobile-logs/apk-debug-20261113-232020.log` |
+| Provenance | `~/cleophis-mobile-logs/apk-debug-20261113-232020.provenance`, `tauri_exit 0` |
+| Built path | `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` |
+| Archived | `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk` |
+| sha256 | `227e3eb35b801fc7a0f4a8c4c0d265c805f5c8fd51dbe4b0c4ba1472b7df5fa4` (rechecked on both copies) |
+| Size | 380,267,262 bytes (362.65 MiB) |
+| `verify-apk.py` | `VERDICT: PASS`; entries 970; unaccounted 178,268 (0.05%); largest `lib/arm64-v8a/libcleophis_lib.so` (370,638,712), `classes.dex` (10,260,852), `classes9.dex` (4,164,264) |
+| `libcleophis_lib.so` sha256 | `ea45baf4426514dca82bf5953bf2477434a9b6f2edc37421af15d347c6289adb` |
+| Arch audit | `audit-arch-floor.sh` PASS: nothing above the floor outside 8 outline-atomics helper(s) |
+| Dex check | `Reading an image` occurs once in `classes8.dex` (the dex that holds `InferenceService`) and in no other dex. |
+| Frontend strings | Not greppable from the APK: the frontend is embedded in the `.so`. The JS strings are covered by the 1286 tests, not by the APK. |
+
+**Superseded: the 813beba build.** `~/cleophis-artifacts/cleophis-vision-copy-813beba.apk`
+(sha256 `538291a40eea262d0306115fa9522927c6f0631a8cb313b48df7c51d4692b421`, 380,322,318 bytes,
+log `apk-debug-20261113-214724.log`) lacks the title-refresh fix. Do not install it. Its checks
+at the time were `verify-apk.py` PASS, the arch audit PASS with 8 helpers, and `Reading an image`
+once in `classes8.dex`.
+
+### What the founder re-checks on this APK
+
+- **V1, the Download button and the photo-reader row.** The menu button reads `Download` (pin `visionDownload.DOWNLOAD_LABEL`), then `Downloading…` (pin `visionDownload.DOWNLOADING_LABEL`). With the modal closed, the bar above the composer reads `Downloading the photo reader — N%`; the row shows only with the modal closed. Preparation: the A22 still holds both vision files from the Stage 2 run, and `adb install -r` keeps app data, so the menu would go straight to Take a photo. First force-stop the app and remove the two files (a 269 MB re-download):
+
+  ```text
+  adb shell am force-stop ${PKG:-com.cleophis.app}
+  adb shell run-as ${PKG:-com.cleophis.app} rm models/granite-docling-258M-Q8_0.gguf models/mmproj-granite-docling-258M-Q8_0.preproc512.gguf
+  ```
+
+  Relaunch: `vision_state` should report `installed: false` and the menu shows the 269 MB line and `Download`.
+- **V2, the opening text.** After the camera returns, the crop pane says `Opening the photo…` until the frame appears. Pin: `visionConfirm.OPENING_TEXT`.
+- **V5, the notification title.** During a reading, the shade shows `Reading an image`; a chat reply still shows `Writing a reply`. Pin: `expect-source` on `mobile_native.rs`. After a cancelled reading the title follows the latest holder (see Deferred and open).
+
+### Deferred and open
+
+- **Explicit hide on the error path: DONE in 2b5c31e.** `startCrop`'s error path now hides `#cropOpening` explicitly. The commit is JS-only and postdates the 813beba APK, it is inside the 09a96e3 APK of record (the refuse pane replaces the crop pane either way, so it is not visible on the device). It cannot be seen on the device, because the refuse pane replaces the crop pane either way.
+- **The title follows the latest holder: fixed after the final review (I3).** Before the fix the counted service called Kotlin only on 0 to 1, so a reply sent while a cancelled reading was still finishing was titled "Reading an image"; `service_transition` now returns `start` on every begin and the shade names the latest holder. The 813beba APK predates this fix; the APK of record (09a96e3) carries it.
+- **Minor items deferred (final review).** M1: the `ServiceKind` test cannot catch Rust/Kotlin drift and `TITLE_VISION` is unread; delete it with the next Kotlin change or add a comparing probe. M2: the notification channel name "Writing replies" and its description also cover readings. M3: during the photo-reader download the `requesting` phase still says "Asking for your copy of the model." and the percentage runs twice from 0%. M4: the picture moves up one line when `#cropOpening` hides. M5: the Kotlin comment about a null intent names a case `START_NOT_STICKY` all but rules out. `NO_SIZE_TEXT` is an error the pinned catalog cannot produce, so only its unit test pins it.
+- **Kotlin first compiled in this build (Task 2 note).** The Android `cargo check` covers Rust only. The `InferenceService.kt` change compiled for the first time in the 813beba build (and again in 09a96e3), which passed with `tauri_exit 0`, and the dex check confirms the title string is present.
+- **The concurrent Windows run (Task 2 concern).** Task 2's red run checked out a branch in the shared Windows worktree while another branch's run may have been mid-compile; that run finished ok, so treat its result as probably unaffected.

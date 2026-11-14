@@ -238,7 +238,7 @@ mod imp {
         let cancel = app.state::<crate::chat_cmds::ChatCancels>().begin(&request_id);
         // Foreground service for the duration, as for a chat turn, so Android
         // does not kill a multi-second transcription under memory pressure.
-        crate::mobile_native::inference_service(true);
+        crate::mobile_native::inference_service(true, crate::mobile_native::ServiceKind::Vision);
         let engine = app.state::<Arc<Engine>>().inner().clone();
         let (reply_tx, reply_rx) = mpsc::channel();
         let sent = crate::engine_inproc::send_command(
@@ -260,7 +260,7 @@ mod imp {
             }
         };
         app.state::<crate::chat_cmds::ChatCancels>().end(&request_id);
-        crate::mobile_native::inference_service(false);
+        crate::mobile_native::inference_service(false, crate::mobile_native::ServiceKind::Vision);
         crate::mobile_native::sweep_capture_files();
         in_flight.end();
         let (model_id, family) = crate::inference::hero_vision(&app)

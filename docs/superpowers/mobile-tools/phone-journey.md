@@ -781,6 +781,7 @@ left behind. The build is recorded in
 |---|---|
 | commit | `3cd142d230f1731958a09deef7be32b60f31d046` (`mobile/vision-p2`) |
 | APK file | `~/cleophis-artifacts/cleophis-vision-s2-debug-3cd142d.apk` (tutor variant, debug) |
+| Newer build | for the copy-pass re-checks (V1 Download, V2 opening text, V5 the notification titles) install `~/cleophis-artifacts/cleophis-vision-copy-09a96e3.apk` instead — see the Stage 2 record's "Copy pass" section |
 | APK sha256 | `cc4f6386ba91187394811d161e1c9d827ba83e5a0b42e7d8fa4882126e124f6d` |
 | APK size (bytes) | 380,312,110 |
 
@@ -817,7 +818,7 @@ Before you start:
 | V2 | "Take a photo" opens the system camera | `AndroidManifest.xml`, `app.js`, `vision-confirm.js` | screenshots |
 | V3 | "Choose an image" picks a screenshot | `vision-confirm.js` | screenshot |
 | V4 | a photo stored sideways reads upright | `vision-confirm.js` `READING_TEXT` | screenshots |
-| V5 | Cancel mid-reading closes the modal, the notification goes | `app.js`, `InferenceService.kt` | screenshots |
+| V5 | Cancel mid-reading closes the modal, the notification goes | `app.js`, `InferenceService.kt`, `mobile_native.rs` | screenshots |
 | V6 | the confirmation gate, then the handoff | `vision-confirm.js` | screenshots |
 | V7 | no captured photo is left on the phone | `CaptureHygiene.kt`, `mobile_native.rs` | `adb` listings |
 
@@ -864,7 +865,27 @@ is not in the signed catalog
 
 5. Only with the size line and the Download button: with the catalog this
    build pins, the line reads "Photo input needs a one-time 269 MB download."
-   Tap Download, wait for it to finish, and go to step 7.
+   The button reads:
+
+<!-- expect: visionDownload.DOWNLOAD_LABEL -->
+```text
+Download
+```
+
+   Tap Download. The button then reads the downloading label, and with the
+   menu closed the bar above the composer reads the photo-reader label:
+
+<!-- expect: visionDownload.DOWNLOADING_LABEL -->
+```text
+Downloading…
+```
+
+<!-- expect-source: src/engine-state.js -->
+```text
+Downloading the photo reader
+```
+
+   Wait for it to finish, and go to step 7.
 6. Only with the "is not in the signed catalog" message: load the two files
    by hand, and write "sideloaded" in the note. The projector must be the
    `preproc512` file: the unpatched one has the same size and a different
@@ -921,7 +942,14 @@ android.media.action.IMAGE_CAPTURE
 1. Tap the camera button, then Take a photo. The phone's own camera app
    opens. A file picker or a list of apps is a FAIL.
 2. Photograph the printed problem, one line of maths across about a third of
-   the frame, and accept the photo in the camera app.
+   the frame, and accept the photo in the camera app. While the photo
+   decodes, the crop pane says:
+
+<!-- expect: visionConfirm.OPENING_TEXT -->
+```text
+Opening the photo…
+```
+
 3. The app shows the photo with a selection frame over its middle, and two
    buttons:
 
@@ -1024,11 +1052,18 @@ Reading the image…
 1. Start a reading: the camera button, Choose an image, any problem, Use
    selection.
 2. While "Reading the image…" shows, pull down the notification shade. The
-   app's notification is there; a reading uses the same one a reply does:
+   app's notification is there. A chat reply titles it:
 
-<!-- expect-source: src-tauri/gen/android/app/src/main/java/com/cleophis/app/InferenceService.kt -->
+<!-- expect-source: src-tauri/src/mobile_native.rs -->
 ```text
 Writing a reply
+```
+
+During a reading the notification's title is this string instead:
+
+<!-- expect-source: src-tauri/src/mobile_native.rs -->
+```text
+Reading an image
 ```
 
 3. Back in the app, tap:

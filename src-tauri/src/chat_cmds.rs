@@ -320,7 +320,7 @@ mod imp {
         // firing just after the user backgrounds the app — which is exactly
         // when Android 12+ forbids starting a foreground service. A crash there
         // would trade a real restriction for a title nobody is waiting for.
-        crate::mobile_native::inference_service(true);
+        crate::mobile_native::inference_service(true, crate::mobile_native::ServiceKind::Reply);
 
         // Checkpointing needs a signed-in account and a chat to write into.
         // Without both, generation still streams — it just is not recoverable,
@@ -377,7 +377,7 @@ mod imp {
         // (`mobile_native::service_transition`), so an unpaired `true` would
         // hold it for the life of the process: hence the join error is only
         // turned into an early return BELOW this line.
-        crate::mobile_native::inference_service(false);
+        crate::mobile_native::inference_service(false, crate::mobile_native::ServiceKind::Reply);
         let result = result.map_err(|_| "The generation task failed to run.".to_string())?;
 
         match result {

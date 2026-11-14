@@ -4,6 +4,7 @@
 // until the user has either accepted a confident reading or looked at, and
 // edited or overridden, an uncertain one. Pure state + copy; app.js renders it.
 
+export const OPENING_TEXT = 'Opening the photo…';
 export const READING_TEXT = 'Reading the image…';
 export const TAKE_PHOTO_LABEL = 'Take a photo';
 export const CHOOSE_IMAGE_LABEL = 'Choose an image';
