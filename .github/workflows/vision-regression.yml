@@ -1,5 +1,5 @@
-# Vision regression: runs the pinned probe set (probes/vision/fixtures/v1, 18
-# items) through the engine's vision bench with granite-docling-258M on x86_64
+# Vision regression: runs the pinned probe set (probes/vision/fixtures/v1,
+# 22 items) through the engine's vision bench with granite-docling-258M on x86_64
 # and arm64 Linux, then scores the transcriptions.
 # Gates: transcription regression only. The exact-match thresholds live in
 # probes/vision/score.mjs (GATES); this workflow reports that verdict as is.
@@ -122,8 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           N=$(wc -l < "$RUNNER_TEMP/vision-v1.jsonl")
-          if [ "$N" -ne 18 ]; then
-            echo "FAIL: expected 18 records, got $N"; exit 1
+          WANT=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("probes/vision/fixtures/v1/items.json","utf8")).items.length)')
+          if [ "$N" -ne "$WANT" ]; then
+            echo "FAIL: expected $WANT records (one per item in items.json), got $N"; exit 1
           fi
 
       # The scorer's exit code is the verdict: 0 pass, 1 gate miss, 2 missing
