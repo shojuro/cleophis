@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 18,
+  "count": 22,
   "files": {
     "q01-linear.png": "798c68aeccf002f2f4cd7f2862150c508057480ebca13dfd7f45c4f1d4737c1b",
     "q02-fraction.png": "2c42c408a1114ca03cdd836a37d11cf353993120c79dd93e090d6dc0231eebcb",
@@ -19,6 +19,10 @@
     "q15-text-and-formula.png": "46b18dfd54e19f88cf675d5843fd8cb4cd1e71360e1bdb743c689854849aa753",
     "q16-cubic.png": "093cf400272605da88cf164fb5bc506d19b16fcb4fa7b64cc24d1f525d27ba26",
     "q17-diagram-only.png": "c98942b50bfb3a65ddd29517d3ebbad5f2211ea8068fd0febe12de99164714d6",
-    "q18-prose.png": "355888406c9e70946c81a6d25c843cc92ba1ca845a3f83623c8065a2b3f5c4e9"
+    "q18-prose.png": "355888406c9e70946c81a6d25c843cc92ba1ca845a3f83623c8065a2b3f5c4e9",
+    "photos/q19-photo-upright.jpg": "4e7a1b9a9d166c4f46821aad9ae8f280c20fe2c5fa236b18154a66b5d3410ec6",
+    "photos/q20-photo-rotated.jpg": "1d4d2d82a0504bcd06140d81ec31d098d21d61bea29516c900a9b138355b8310",
+    "q21-diagram-345.png": "3d90be1d6b5cac74b62c9e5e5489ed3742e5ef54b468c3cc0f46ce949a668970",
+    "q22-dated-prose.png": "338753c065626b53bb5097222b91aa09e9d4e2c849ec85ffb45d386f20147acf"
   }
 }

@@ -14,7 +14,9 @@ const exactRule = (total) => (total >= 20 ? 'total - 2 (20 or more items)' : 'to
 export const GATES = {
   exactMin: (total) => (total >= 20 ? total - 2 : total - 1),
   acceptedSignErrorsMax: 0,
-  refusalsMin: 2,
+  // Every refuse item in the set must be refused: 2 with the typeset 18, 4 with the 22
+  // (q21 and q22 are the held-out refusal probes). Computed, so it cannot drift.
+  refusalsMin: (items) => items.filter((it) => it.verdict === 'refuse').length,
   // A regression guard, not the spec's gate (S3-P12, S3-P16). The spec's floor
   // gate is 8 s p50. Stage 0's GO took lever 6, which ships 8-12 s on the A22
   // behind a staged progress state; it measured 8.9 s, and Stage 2's four device
@@ -195,13 +197,14 @@ export function scoreRun(items, records, { device = false } = {}) {
   const refusalsOk = rows.filter((r) => refuseIds.has(r.id) && r.verdictOk).length;
   const survivesToTutor = rows.filter((r) => r.survivesToTutor).length;
   const exactRequired = GATES.exactMin(total);
+  const refusalsRequired = GATES.refusalsMin(items);
 
   const failures = [];
   if (exact < exactRequired) failures.push(`exact ${exact}/${total} is below the gate of ${exactRequired}/${total}`);
   if (survivesToTutor > GATES.acceptedSignErrorsMax) {
     failures.push(`${survivesToTutor} accepted transcription(s) with a sign, operator or symbol error reach the tutor (max ${GATES.acceptedSignErrorsMax})`);
   }
-  if (refusalsOk < GATES.refusalsMin) failures.push(`refusals ${refusalsOk} is below the gate of ${GATES.refusalsMin}`);
+  if (refusalsOk < refusalsRequired) failures.push(`refusals ${refusalsOk} is below the gate of ${refusalsRequired}`);
 
   let latency = null;
   let vmHwmKbMax = null;
@@ -218,7 +221,7 @@ export function scoreRun(items, records, { device = false } = {}) {
       if (vmHwmKbMax > GATES.floorVmHwmKb) failures.push(`VmHWM ${vmHwmKbMax} KiB is above the floor of ${GATES.floorVmHwmKb} KiB`);
     }
   }
-  return { rows, exact, total, exactRequired, exactRule: exactRule(total), refusalsOk, survivesToTutor, pass: failures.length === 0, latency, vmHwmKbMax, failures };
+  return { rows, exact, total, exactRequired, exactRule: exactRule(total), refusalsOk, refusalsRequired, survivesToTutor, pass: failures.length === 0, latency, vmHwmKbMax, failures };
 }
 
 export function toMarkdown(result) {
@@ -227,7 +230,7 @@ export function toMarkdown(result) {
   L.push('| Gate | Value | Requirement |', '|---|---|---|');
   L.push(`| exact | ${result.exact}/${result.total} | >= ${result.exactRequired}: ${result.exactRule} |`);
   L.push(`| accepted sign, operator or symbol errors | ${result.survivesToTutor} | <= ${GATES.acceptedSignErrorsMax} |`);
-  L.push(`| refusals correct | ${result.refusalsOk} | >= ${GATES.refusalsMin} |`);
+  L.push(`| refusals correct | ${result.refusalsOk} | >= ${result.refusalsRequired} (every refuse item) |`);
   if (result.latency) {
     L.push(`| p50 total_ms | ${result.latency.p50} | <= ${GATES.floorP50Ms} |`);
     L.push(`| p95 total_ms | ${result.latency.p95} | <= ${GATES.floorP95Ms} |`);

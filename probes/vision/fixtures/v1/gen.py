@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Generates the vision probe set v1: 16 typeset maths problems, one diagram, one page of prose.
+"""Generates the vision probe set v1: 16 typeset maths problems, two photographs of the printed sheet
+(q19, q20: registered and hashed, never rendered), and four typeset refusal probes (two diagrams, two prose).
 
-  python3 gen.py          write the 18 PNGs, items.json, manifest.json next to this file
-  python3 gen.py --check  re-render to a temp dir and compare sha256s with the committed files (exit 1 on any difference)
+  python3 gen.py          write the 20 PNGs, items.json, manifest.json next to this file (22 items, photos hashed)
+  python3 gen.py --check  re-render the 20 PNGs to a temp dir and compare sha256s with the committed files, and
+                          check the photos' hashes against the manifest (exit 1 on any difference)
   python3 gen.py --out DIR [--fontset NAME]
-                          scratch render: the 18 PNGs + items.json into DIR (no manifest); DIR may not be inside the
+                          scratch render: the 20 PNGs + items.json into DIR (no manifest); DIR may not be inside the
                           fixture directory; NAME is any matplotlib mathtext.fontset (default cm)
   python3 gen.py --self-test  scratch-render dejavusans to a temp dir, and check the default render still matches the committed set
 
@@ -48,6 +50,18 @@ PRINTED = [
     ("q14-percent", [r"$15\% \times 80 = x$"], r"15\% \times 80 = x", "fifteen percent times eighty equals x", "percent sign"),
     ("q15-text-and-formula", [r"Solve for x: $5x = 35$"], r"5x = 35", "solve for x: five x equals thirty-five", "prose outside the maths; expected latex is the formula only"),
     ("q16-cubic", [r"$x^3 - x = 0$"], r"x^3 - x = 0", "x cubed minus x equals zero", "cubic"),
+]
+
+
+# The founder's photographs of the printed sheet (CC0). Crops, one per orientation; EXIF holds only the
+# Orientation tag. Registered here, hashed into manifest.json, never rendered or rewritten.
+# (id, file, latex, plain, notes)
+PHOTOS = [
+    ("q19", "photos/q19-photo-upright.jpg", r"x^2 - 5x + 6 = 0", "x squared minus five x plus six equals zero",
+     "crop of the founder's photograph of the printed sheet (q03's formula); CC0; EXIF orientation 1"),
+    ("q20", "photos/q20-photo-rotated.jpg", r"x^2 - 5x + 6 = 0", "x squared minus five x plus six equals zero",
+     "crop of the founder's photograph of the printed sheet (q03's formula); CC0; raw pixels sideways, EXIF orientation 6, "
+     "upright only once the orientation is applied"),
 ]
 
 
@@ -111,6 +125,28 @@ def render_prose(path):
     save(fig, path)
 
 
+def render_diagram_345(path):
+    fig = new_fig()
+    ax = fig.add_axes([0.3, 0.1, 0.4, 0.8])
+    A, B, C = (0, 0), (4, 0), (0, 3)
+    xs, ys = zip(A, B, C, A)
+    ax.plot(xs, ys, color="black", linewidth=2)
+    ax.plot([0, 0.3, 0.3], [0.3, 0.3, 0], color="black", linewidth=1.5)
+    ax.text(2, -0.45, "4", fontsize=22, ha="center", va="center")
+    ax.text(-0.4, 1.5, "3", fontsize=22, ha="center", va="center")
+    ax.text(2.3, 1.8, "5", fontsize=22, ha="center", va="center")
+    ax.set_xlim(-1.0, 4.6)
+    ax.set_ylim(-1.0, 3.5)
+    ax.axis("off")
+    save(fig, path)
+
+
+def render_dated_prose(path):
+    fig = new_fig()
+    fig.text(0.5, 0.5, "Dentist on 14 November 2026 at 3 pm", fontsize=17, ha="center", va="center")
+    save(fig, path)
+
+
 def build(outdir: Path):
     items = []
     for slug, lines, latex, plain, notes in PRINTED:
@@ -125,7 +161,22 @@ def build(outdir: Path):
     items.append({"id": "q18", "file": "q18-prose.png", "kind": "prose", "latex": None,
                   "plain": "three lines of plain English: a shopping list", "verdict": "refuse",
                   "notes": "prose only; no mathematics"})
+    for id_, file, latex, plain, notes in PHOTOS:
+        items.append({"id": id_, "file": file, "kind": "photo", "latex": latex, "plain": plain, "verdict": "accept", "notes": notes})
+    render_diagram_345(outdir / "q21-diagram-345.png")
+    items.append({"id": "q21", "file": "q21-diagram-345.png", "kind": "diagram", "latex": None,
+                  "plain": "a right triangle drawn with lines, its sides labelled 3, 4 and 5; no equation", "verdict": "refuse",
+                  "notes": "held-out refusal probe: a diagram with numbers, nothing to transcribe"})
+    render_dated_prose(outdir / "q22-dated-prose.png")
+    items.append({"id": "q22", "file": "q22-dated-prose.png", "kind": "prose", "latex": None,
+                  "plain": "one line of plain English holding a date and a time", "verdict": "refuse",
+                  "notes": "held-out refusal probe: prose with digits, no mathematics"})
+    items.sort(key=lambda it: it["id"])
     return items
+
+
+def rendered(items):
+    return [it for it in items if it["kind"] != "photo"]
 
 
 def sha(p: Path):
@@ -150,11 +201,18 @@ def check():
         items = build(Path(td))
         bad = []
         manifest = json.loads((HERE / "manifest.json").read_text())
-        for it in items:
+        for it in rendered(items):
             got = sha(Path(td) / it["file"])
             committed = HERE / it["file"]
             if not committed.exists() or sha(committed) != got or manifest["files"].get(it["file"]) != got:
                 bad.append(it["file"])
+        for it in items:
+            if it["kind"] == "photo":
+                committed = HERE / it["file"]
+                if not committed.exists() or manifest["files"].get(it["file"]) != sha(committed):
+                    bad.append(it["file"])
+        if manifest.get("count") != len(items):
+            bad.append("manifest count")
         if (HERE / "items.json").read_text() != dump({"version": 1, "items": items}):
             bad.append("items.json")
     return bad
@@ -165,11 +223,11 @@ def self_test():
         matplotlib.rcParams["mathtext.fontset"] = "dejavusans"
         items = build(Path(td))
         (Path(td) / "items.json").write_text(dump({"version": 1, "items": items}))
-        assert len(list(Path(td).glob("*.png"))) == 18 and (Path(td) / "items.json").exists(), "scratch render incomplete"
+        assert len(list(Path(td).glob("*.png"))) == 20 and (Path(td) / "items.json").exists(), "scratch render incomplete"
     matplotlib.rcParams["mathtext.fontset"] = "cm"
     bad = check()
     assert not bad, f"default render no longer matches the committed set: {bad}"
-    print("ok: dejavusans scratch render has 18 PNGs + items.json; default render matches the committed hashes")
+    print("ok: dejavusans scratch render has 20 PNGs + items.json; default render matches the committed hashes")
 
 
 def main():
@@ -184,7 +242,7 @@ def main():
         if bad:
             print("DIFFERENT:", ", ".join(bad))
             sys.exit(1)
-        print("ok: 18 PNGs and items.json reproduce byte-for-byte")
+        print("ok: 20 PNGs and items.json reproduce byte-for-byte, 2 photos match the manifest")
         return
     if fontset and not out:
         sys.exit("--fontset only makes sense with --out; the committed set is Computer Modern")
@@ -197,13 +255,16 @@ def main():
         dest.mkdir(parents=True, exist_ok=True)
         items = build(dest)
         (dest / "items.json").write_text(dump({"version": 1, "items": items}))
-        print(f"wrote {len(items)} PNGs and items.json to {dest} (fontset {fontset or 'cm'}; no manifest)")
+        print(f"wrote {len(rendered(items))} PNGs and items.json ({len(items)} items) to {dest} (fontset {fontset or 'cm'}; no manifest)")
         return
+    missing = [file for _, file, *_ in PHOTOS if not (HERE / file).exists()]
+    if missing:  # before anything is written: the photographs are never rendered
+        sys.exit(f"missing photograph(s) {', '.join(missing)}: nothing was rewritten")
     items = build(HERE)
     (HERE / "items.json").write_text(dump({"version": 1, "items": items}))
     files = {it["file"]: sha(HERE / it["file"]) for it in items}
     (HERE / "manifest.json").write_text(dump({"version": 1, "count": len(files), "files": files}))
-    print(f"wrote {len(files)} PNGs, items.json, manifest.json")
+    print(f"wrote {len(files)} files (20 PNGs, 2 photos), items.json, manifest.json")
 
 
 if __name__ == "__main__":

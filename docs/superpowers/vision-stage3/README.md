@@ -2,8 +2,9 @@
 
 The JSONL files behind `docs/superpowers/verification-vision-stage3.md` (ruling S3-P13), one record
 per probe item, written by `vision_bench --via-engine --json`. Every run is on one x86-64 WSL2 host,
-one repeat, the committed items (`probes/vision/fixtures/v1/items.json`, 18 items) or a render of
-the same 18 items. Host timings are not a gate: other builds ran on the box throughout.
+one repeat, the committed items (`probes/vision/fixtures/v1/items.json`) or a render of the same 18 typeset
+items. The `host-v1-*` and `device-a22-s3-v1` runs are over the 18 items that existed then; the
+`host-v2-*` runs are over the 22 items of the photo-join round. Host timings are not a gate: other builds ran on the box throughout.
 
 Common flags: `--family docling --max-side 512 --threads 4 --one-pass`, base
 `granite-docling-258M-Q8_0.gguf` (sha256 `b687245c…`) and projector
@@ -22,6 +23,8 @@ pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged
 | `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | yes, until round 3 |
 | `host-v1-cm-product-r4.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `dccd85e` | `dccd85e` (S3-P16, the operator guard sees the Unicode operators) | `b4b4131` | **yes** |
 | `device-a22-s3-v1.jsonl` (+ `.md`, `.json`, `.meminfo.txt`, `.log`) | formula, 96 (the script's runner) | Computer Modern, committed | `vision_bench-aarch64-715b129` (engine `dccd85e`) on the Galaxy A22 | `dccd85e` | `score.mjs --device` at `b4b4131`+ | **yes: the device run — PASS 18/18, refusals 2/2, p50 8,791 ms, p95 10,604 ms, VmHWM 389,292 KiB** |
+| `host-v2-cm-product.jsonl` (+ `.md`, `.json`) | formula, 96, both flags explicit | Computer Modern committed, 22 items: the 18 typeset, photographs q19/q20, refusals q21/q22 | `512fc75` | `512fc75` | the photo-join tree | **yes, the first held-out scoreboard: PASS 22/22, refusals 4/4** |
+| `host-v2-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, both flags explicit | Computer Modern committed, 22 items | `4844f10` | `4844f10` (S3-P17, a digit no longer makes a block maths) | the photo-join tree | **yes: PASS 22/22, refusals 4/4; raws identical to `host-v2-cm-product`, q21 now refuses by `no_math_found`** |
 | `host-v1-dejavu-fill-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling, byte-identical to the earlier render | `b4b4131` | `83b8929` | `b4b4131` | no |
 
 Round 3's `host-v1-cm-product-r4` scores PASS, and its 18 raws, its records apart from the

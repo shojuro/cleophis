@@ -162,6 +162,42 @@
       "plain": "three lines of plain English: a shopping list",
       "verdict": "refuse",
       "notes": "prose only; no mathematics"
+    },
+    {
+      "id": "q19",
+      "file": "photos/q19-photo-upright.jpg",
+      "kind": "photo",
+      "latex": "x^2 - 5x + 6 = 0",
+      "plain": "x squared minus five x plus six equals zero",
+      "verdict": "accept",
+      "notes": "crop of the founder's photograph of the printed sheet (q03's formula); CC0; EXIF orientation 1"
+    },
+    {
+      "id": "q20",
+      "file": "photos/q20-photo-rotated.jpg",
+      "kind": "photo",
+      "latex": "x^2 - 5x + 6 = 0",
+      "plain": "x squared minus five x plus six equals zero",
+      "verdict": "accept",
+      "notes": "crop of the founder's photograph of the printed sheet (q03's formula); CC0; raw pixels sideways, EXIF orientation 6, upright only once the orientation is applied"
+    },
+    {
+      "id": "q21",
+      "file": "q21-diagram-345.png",
+      "kind": "diagram",
+      "latex": null,
+      "plain": "a right triangle drawn with lines, its sides labelled 3, 4 and 5; no equation",
+      "verdict": "refuse",
+      "notes": "held-out refusal probe: a diagram with numbers, nothing to transcribe"
+    },
+    {
+      "id": "q22",
+      "file": "q22-dated-prose.png",
+      "kind": "prose",
+      "latex": null,
+      "plain": "one line of plain English holding a date and a time",
+      "verdict": "refuse",
+      "notes": "held-out refusal probe: prose with digits, no mathematics"
     }
   ]
 }

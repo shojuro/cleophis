@@ -40,7 +40,11 @@ test('GATES are pinned', () => {
   assert.equal(GATES.exactMin(19), 18);
   assert.equal(GATES.exactMin(22), 20);
   assert.equal(GATES.acceptedSignErrorsMax, 0);
-  assert.equal(GATES.refusalsMin, 2);
+  // The refusal gate is every refuse item in the set (computed, never a constant).
+  const set = (n) => Array.from({ length: n }, (_, i) => item(`r${i}`, null, 'refuse'));
+  assert.equal(GATES.refusalsMin([...set(2), item('a', 'x')]), 2);
+  assert.equal(GATES.refusalsMin([...set(4), item('a', 'x'), item('b', 'y')]), 4);
+  assert.equal(GATES.refusalsMin([item('a', 'x')]), 0);
   // The accepted floor regime (S3-P12).
   assert.equal(GATES.floorP50Ms, 10_000);
   assert.equal(GATES.floorP95Ms, 12_000);
@@ -215,6 +219,8 @@ test('a clean run passes', () => {
   assert.equal(r.total, 18);
   assert.equal(r.exact, 18);
   assert.equal(r.refusalsOk, 2);
+  assert.equal(r.refusalsRequired, 2);
+  assert.match(toMarkdown(r), /refusals correct \| 2 \| >= 2 \(every/);
   assert.equal(r.survivesToTutor, 0);
   assert.equal(r.pass, true);
   assert.deepEqual(r.failures, []);
@@ -276,6 +282,30 @@ test('the exact gate scales by the spec: 18 of 20 with the photographs, 17 of 18
   const eighteen = scoreRun(...Object.values(fixture()));
   assert.equal(eighteen.exactRequired, 17);
   assert.match(toMarkdown(eighteen), /total - 1/);
+});
+
+test('the refusal gate scales with the refuse items: all four of 22 items', () => {
+  const { items, records } = fixture();
+  for (const id of ['q19', 'q20']) {
+    items.push(item(id, 'x+1=2', 'accept', 'photo'));
+    records.push(rec(id, 'x+1=2'));
+  }
+  items.push(item('q21', null, 'refuse', 'diagram'), item('q22', null, 'refuse', 'prose'));
+  records.push(rec('q21', null, 'refuse'), rec('q22', null, 'refuse'));
+  const ok = scoreRun(items, records);
+  assert.equal(ok.total, 22);
+  assert.equal(ok.exactRequired, 20);
+  assert.equal(ok.refusalsRequired, 4);
+  assert.equal(ok.refusalsOk, 4);
+  assert.equal(ok.pass, true);
+  assert.match(toMarkdown(ok), /refusals correct \| 4 \| >= 4 \(every/);
+  // One held-out refusal missed: 3 of 4 fails the refusal gate although exact is 21/22.
+  records[21] = rec('q22', 'x+1=2', 'accept');
+  const miss = scoreRun(items, records);
+  assert.equal(miss.exact, 21);
+  assert.equal(miss.refusalsOk, 3);
+  assert.equal(miss.pass, false);
+  assert.match(miss.failures.join('\n'), /refusals 3 is below the gate of 4/);
 });
 
 test('device mode: latency percentiles over the last repeat, nearest rank', () => {

@@ -20,13 +20,14 @@ marked.
 
 - **After the fix wave the gate run passes: exact 18/18, refusals 2/2, no accepted sign, operator
   or symbol error** (`docs/superpowers/vision-stage3/host-v1-cm-product-r4.md`, on `dccd85e`). The
-  parser now refuses a LaTeX block with no digit and no operator (S3-P9). Round 2 widened the
-  operators to the commands and Unicode signs that letters-only maths is written with (S3-P15).
+  parser now refuses a LaTeX block that carries no operator, relation or structural token (S3-P9,
+  tightened by S3-P17, which dropped the digit clause). Round 2 widened the operators to the commands and Unicode signs that letters-only maths is written with (S3-P15).
   Round 3 taught the operator guard those signs (S3-P16). The diagram and the prose come back
   `refuse` with `no_math_found`. The r2, r3 and r4 raws are byte-identical to Task 6's CM run, and
-  only q17's and q18's verdicts changed (Fix wave). **The refusal gate is in-sample:** the parser
-  rule was derived from these two images. A diagram labelled with numbers, or prose holding a
-  digit, is untested and may still come back review.
+  only q17's and q18's verdicts changed (Fix wave). **The refusal gate was in-sample** when
+  the rule was derived from these two images. The photo-join round tested it on two held-out probes: q21
+  (a diagram labelled 3, 4, 5) and q22 (prose holding a date) both refuse, q21 by rule since S3-P17.
+  What is still untested is prose or a diagram holding an operator-bearing fragment (What Stage 4 inherits).
 - **The scorer now counts look-alike swaps.** `x`/`X`, `1`/`l`, `0`/`O`, `5`/`S` and `2`/`Z` weigh ×5
   and fail the tutor gate when accepted (S3-P10). The crop-filling DejaVu run's two accepted `X`
   readings now fail it. The exact gate is total − 2 from 20 items and total − 1 below (S3-P11). The
@@ -98,10 +99,14 @@ wave's own concerns, and round 3 (S3-P16) the whole-branch review:
 | `dccd85e` | S3-P16 | Round 3: the operator guard sees the Unicode operators (final review I1), and the r4 re-run. |
 | this commit | S3-P16 | Round 3's docs: the floor gate's reason (I2), the in-sample refusal gate and the held-out probes (I3), the review's docs minors. |
 
-### The parser: no digit and no operator is not maths (S3-P9)
+### The parser: no operator is not maths (S3-P9)
 
-`classify` (`crates/kpack-engine/src/vision_parse.rs`) now also asks an element to hold maths. It
-needs a digit, one of `= < > + - ^ _`, a Unicode operator, or a maths command as a whole token:
+*Superseded in part by S3-P17 (photo-join round 2): the digit clause below is gone. A digit no longer
+makes a block maths. The text of this section is the S3-P9 history, with the current rule stated where it differs.*
+
+`classify` (`crates/kpack-engine/src/vision_parse.rs`) also asks an element to hold maths. Since
+S3-P17 it needs one of `= < > + - ^ _`, a Unicode operator, or a maths command as a whole token
+(S3-P9 also accepted a digit):
 
 - **S3-P9 (`83b8929`):** `\le \leq \ge \geq \ne \neq \times \cdot \div \frac \sqrt`.
 - **S3-P15 (`f5bd4d3`, round 2):** `\pm \mp \dfrac \tfrac \int \sum \prod \lim \log \ln \sin \cos
@@ -113,7 +118,7 @@ A command is the backslash and its full letter run, compared whole. `\left` is n
 is not `\ne`, `\intertext` is not `\int` or `\in`, and `\toprule` is not `\to`. The array syntax
 `&` and `\\` and the label's `\colon` are not operators. A Unicode operator also marks an element
 as maths the way `\` and `=` do. Without that, `a ≤ b` would still be text by `classify`'s older
-test, which needs a strong marker or a digit. An element
+test, which needs a strong marker (and, for the digit-and-sign form, a digit). An element
 without one is a text block. A result with no other LaTeX block then takes the existing no-LaTeX
 path: `NoMathFound` and `refuse`. A text block was already on the wire and is never handed to the
 tutor, so `vision_cmds.rs` and `src/vision-confirm.js` are unchanged.
@@ -139,18 +144,18 @@ LaTeX; a formula beside an array of letters keeps the formula and its `accept`, 
 
 What the rule does not do:
 
-- **It refuses letters, not prose.** A diagram labelled with numbers ("5 cm", the sides 3, 4 and
-  5) or prose holding a digit, a hyphen or a dash still classifies by the word count alone. It
-  would come back `review`, as q17 and q18 did before. q17 and q18 refuse because their text
-  happens to hold neither.
+- **It refuses letters and bare numbers, not prose.** Since S3-P17 a diagram labelled with plain
+  numbers (the sides 3, 4 and 5: q21) or prose holding a digit (q22) refuses, because nothing in it
+  is an operator. Prose or a diagram with an operator-bearing fragment (a hyphen or a dash beside a
+  digit, `3 + 4`) still classifies by the word count alone and could come back `review`.
 - **Letters-only maths outside the widened set still refuses.** After S3-P15, `a \pm b`,
   `\dfrac{a}{b}`, `\int f(x)\,dx`, `\angle A \cong \angle B`, `x \in A`, `a ≤ b` and
   `\lim_{x \to \infty} f(x)` are maths (`f5bd4d3`'s test). Still outside: Greek letters alone
   (`\alpha \beta`), the hyperbolic functions (`\sinh`), `\vec`, `\overline`, `\triangle`, `\mid`.
   These fail closed: the student sees "I could not find any maths" and types it.
 - **A bare `x + y` or `a < b` is text,** as it was before this rule, because `classify` needs a
-  strong marker (`\ = ^ _` or a Unicode operator) or a digit. The ruling's example holds with a
-  marker: `x+y=1` stays LaTeX.
+  strong marker (`\ = ^ _` or a Unicode operator) or a digit with a sign. The ruling's example holds
+  with a marker: `x+y=1` stays LaTeX.
 
 ### The scorer (S3-P10, S3-P11, S3-P12)
 
@@ -735,9 +740,9 @@ flags explicit since `166ab9e`. It guards the record count, scores without `--de
 the report. Before the fix wave the host runs of that regime failed the scorer's refusal gate
 (Calibration, last section). Since `b4b4131` the host gate run passes (Fix wave), so the job is
 expected to pass on x86-64. Whether arm64 reads the same tokens is what its first run shows. The
-refusal gate is in-sample: the parser rule was derived from these two images. A diagram labelled
-with numbers, or prose holding a digit, is untested and may still come back review. The two held-out
-refusal probes join with the photographs (What Stage 4 inherits).
+refusal gate was in-sample: the parser rule was derived from these two images. The photo-join round's
+two held-out probes (q21 a diagram labelled with numbers, q22 prose holding a date) both refuse, so
+the gate is now tested on images the rule was not derived from. The device run is still owed.
 
 First run: on the PR.
 
@@ -1040,8 +1045,7 @@ exact readings that would come out of review (0.9152, 0.9193) and those that sta
 below) is wide. The page-DejaVu wrong reading that sets the floor sits only 0.029 below it.
 
 **The sample.** 18 typeset items, one x86-64 host, one repeat per run, three renders, two prompts.
-No photograph, no device run. The founder's two photographs and the A22 run are still owed, and
-the device run should use the product's prompt and cap.
+No photograph, no device run. (The photo-join round later added the photographs; the A22 run is still owed.) The device run should use the product's prompt and cap.
 
 ### Outside the rule: the refusals fail in the product's regime
 
@@ -1064,10 +1068,86 @@ founder:
 The Stage 2 device run refused one non-maths frame (15:33:38, `Refuse [NoMathFound]`), so the
 failure depends on the image.
 
-**Resolved by the parser (S3-P9).** The controller took the second direction: a LaTeX block with no
-digit and no operator is text. The refuse floor stays 0.70. On the re-run both items refuse with
+**Resolved by the parser (S3-P9, tightened by S3-P17).** The controller took the second direction: a
+LaTeX block with no operator is text (S3-P9 also let a digit rescue it; S3-P17 removed that). The refuse floor stays 0.70. On the re-run both items refuse with
 `no_math_found` (Fix wave). The parser check is wider than "an array of single letters". It
-refuses any block that lacks a digit and an operator token, whatever its layout.
+refuses any block that lacks an operator token, whatever its layout.
+
+## Photo-join round (2026-11-14)
+
+**What joined.** Four items, taking the set from 18 to 22 (`c5b3908`, branch `vision/stage3-photos`):
+
+- `q19-photo-upright` and `q20-photo-rotated`, kind `photo`, expected `accept`, the formula of q03
+  (`x^2 - 5x + 6 = 0`). Each is a crop of one of the founder's two photographs of the sheet printed
+  from our own typeset items, one photograph per orientation. q19 is 480x140 with EXIF orientation 1.
+  q20 is 170x520 raw pixels with EXIF orientation 6, so it is upright only after the orientation is
+  applied, which is the point of the probe. The EXIF holds only the orientation tag. The full
+  photographs stay outside the repo. The crops are CC0 and are never re-encoded: `gen.py` hashes them
+  into `manifest.json` and lists them in `items.json`, and its `--check` compares both.
+- `q21-diagram-345` (a right triangle drawn with lines, its sides labelled 3, 4 and 5, no equation)
+  and `q22-dated-prose` (one line, "Dentist on 14 November 2026 at 3 pm"), typeset like q17 and q18,
+  expected `refuse`. They are held-out: the refusal rule was derived from q17 and q18 only.
+
+**The counts that moved.** 22 items: 16 printed, 2 photographs, 4 refusals. The exact gate is
+`GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is now a function of the items, the number whose
+expected verdict is `refuse`, so 4 here, and the Markdown prints the applied value. The manifest test
+counts 22 files and 22 items, adds `photo` to the kind domain and pins the id, verdict and kind order.
+The CI guard reads the record count from `items.json` instead of a constant. Thresholds, parser and
+scorer logic are unchanged.
+
+**The run.** The host bench in the product's regime (`host-v2-cm-product.jsonl`, engine and parser
+at `512fc75`, formula prompt, cap 96, the explicit `--via-engine` flags, one pass). Scorer at the
+round's tree. Timings are host timings and not a gate.
+
+**Scoreboard: PASS.**
+
+| Gate | Value | Requirement |
+|---|---|---|
+| exact | 22/22 | >= 20: total - 2 (20 or more items) |
+| accepted sign, operator or symbol errors | 0 | <= 0 |
+| refusals correct | 4 | >= 4 (every refuse item) |
+
+Items q01 to q18 read as in round 4: all exact, verdicts unchanged (accept for q02, q05, q07 to q09,
+q11 to q13, q15, q16, and review for q01, q03, q04, q06, q10, q14; q17 and q18 refuse).
+
+| Item | Verdict | Block, confidence, min operator prob | Raw head |
+|---|---|---|---|
+| q19 photo upright | accept (expected accept), exact | 1 latex block `x^{2}-5x+6=0`, 0.9999, 0.9988 | `<formula>...x ^ { 2 } - 5 x + 6 = 0</formula>` |
+| q20 photo rotated | accept (expected accept), exact | 1 latex block `x^{2}-5x+6=0`, 0.9983, 0.9980 | `<formula>...x ^ { 2 } - 5 x + 6 = 0</formula>` |
+| q21 diagram 3-4-5 | refuse (expected refuse) | 1 latex block `3`, 0.6945, none; warning `low_confidence` | `<formula>...\begin{array} { l } { 3 } \end{array}</formula>` |
+| q22 dated prose | refuse (expected refuse) | 1 text block (the array-wrapped words), 0.8869, none; warning `no_math_found` | `<formula>...\begin{array} { l } { D e n t i s t o n \, 1 4 \, November \, 2 0 2 6 \, a t \, 3 \, p m } \end{array}</formula>` |
+
+**Reading it.** Every gate passes and nothing was changed to make it so. Three observations:
+
+- The photographs were read better than their typeset source. q03 sits in review on this run
+  (operator probability 0.548, `operator_uncertain`), while q19 and q20 are accepted with a minimum
+  operator probability above 0.99. The orientation tag is applied: q20 reads the same as q19.
+  Two photographs of one formula are a thin sample, not a claim about photographs in general.
+- q21 is refused only by the confidence floor. Its block confidence is 0.6945 and the review floor
+  (`REVIEW_MIN_CONFIDENCE`) is 0.70, a margin of 0.006. The model emitted a one-cell array holding
+  `3`, not nothing. A re-render with a different label size could land on the other side. The refusal
+  gate is still in-sample for the parser's wording, and q21 is the weakest of the four.
+- q22 is refused through `no_math_found`: the words came back as a text block inside a formula tag,
+  which the parser's prose guard catches. The date digits did not turn it into maths.
+
+**Round 2 (S3-P17): q21 refuses by rule.** The first run exposed a gap. The model wrote q21's triangle
+as a one-cell array holding `3`, and the S3-P9 rule ("no digit and no operator is not maths") let it
+through because of the digit. Only the 0.70 confidence floor refused it, by 0.006. A bare number is not
+a problem to teach, so `4844f10` drops the digit clause: a block is maths only if it holds an operator,
+a relation or a structural token (`= < > + - ^ _`, the maths commands, the Unicode operators). `3`,
+`42` and `3x` are text; `x^2`, `a_1`, `\frac{1}{2}`, `3x-7=2x+5` and `a ≤ b` stay maths, and a formula
+beside a bare `3` keeps the formula. The digit had also been carrying `x \leqslant 2`, which the
+operator guard already watched but the maths list lacked, so `\leqslant \geqslant \lt \gt` joined the list.
+`cargo test -p kpack-engine` passes (177) and the Android `-D warnings` check finishes clean.
+
+Re-run on the same 22 items (`host-v2-cm-product-r2`, same command and models): **PASS, exact 22/22,
+refusals 4/4, no accepted sign or operator error.** All 22 raws are byte-identical to the first run.
+Only q21 changed: it is still `refuse`, but now with `no_math_found` and a text block (confidence
+0.6945, unchanged) instead of `low_confidence` and a latex block. Every other record's verdict, blocks and
+warnings are unchanged. The refusal no longer depends on the confidence floor for q21.
+
+**Still owed.** The device run with the 22 items (no Rust change in the first run, so no Android or Windows
+run was made here).
 
 ## Rulings
 
@@ -1122,8 +1202,8 @@ From the SDD ledger and the reviews, per task.
   timeout is unverified, and `BINDGEN_EXTRA_CLANG_ARGS` is not set, which the host build needed.
 - **Task 6:** the record has no per-piece operator probabilities. The five JSONL files are now
   committed (S3-P13).
-- **Fix wave:** the S3-P9 rule reads the element's raw text, so an array column spec holding a
-  digit (`p{2cm}`) would count as maths and fall back to the old behaviour. The symbol pairs are
+- **Fix wave:** the S3-P9 rule reads the element's raw text, so an array column spec such as
+  `p{2cm}` is read with the rest. Since S3-P17 its digit no longer counts as maths; only an operator does. The symbol pairs are
   the five the ruling names. Other case swaps (`a`/`A`, `n`/`N`) and look-alikes (`1`/`I`, `0`/`o`)
   are still plain edits. Round 2 corrected the plan's Task 2 interface line to the code's `GATES`.
 - **Final review, deferred** (`final-review-report.md`, Minor list):
@@ -1139,13 +1219,12 @@ From the SDD ledger and the reviews, per task.
 
 ## What Stage 4 inherits
 
-- **A prose-likeness heuristic.** The parser rule (S3-P9) refuses an array of letters. Prose with a
-  digit, a hyphen or a dash, or a diagram labelled with numbers, still classifies by the word count
-  alone and lands in `review`, with "Use anyway" offered. Worse is possible and unmeasured: a
-  confident array of digits has no operator piece, so no operator probability, and could come back
-  `accept`. The Unicode markers (S3-P15) also promote short prose to LaTeX: `pages 3−5`,
+- **A prose-likeness heuristic.** The parser rule (S3-P9, tightened by S3-P17) refuses an array of
+  letters and a block with no operator, so a bare number or a diagram labelled with plain numbers
+  refuses (q21). Prose or a diagram holding an operator-bearing fragment (a hyphen or a dash, a Unicode
+  sign) still classifies by the word count alone and lands in `review`, with "Use anyway" offered. The Unicode markers (S3-P15) also promote short prose to LaTeX: `pages 3−5`,
   `Temperature −5 °C`, `→ next page` and `Total × 2 items` were text on `main` and are LaTeX now.
-  The refusal gate is in-sample, and the two held-out probes in the photo-join checklist test it.
+  The refusal gate was in-sample; the photo-join round's held-out probes q21 and q22 tested it (both refuse).
 - **Drop re-kinded junk rather than show it.** A block the rule re-kinds keeps its raw text, for
   example `\begin{array} { c c c } C & & …`, because text blocks are shown trimmed, not normalised.
   The app shows no block on a refusal, so this appears only when a real formula sits beside the
@@ -1156,7 +1235,7 @@ From the SDD ledger and the reviews, per task.
   `\iff`, `\setminus`, `\lfloor`, `\overrightarrow`, `\pi r` (review M1, deferred). Each is one name
   in `MATHS_CMDS` (`vision_parse.rs`) if it should count. The handwriting stage will meet them.
 - **Letters-only expressions with only `+` or `−` are text,** on `main` and here: `(a+b)(a-b)`,
-  `ab+ac`, `xy - xz`, `a+b+c`. `classify` needs `\ = ^ _`, a Unicode glyph or a digit. "Expand
+  `ab+ac`, `xy - xz`, `a+b+c`. `classify` needs `\ = ^ _` or a Unicode glyph (or a digit with a sign). "Expand
   (a+b)(a−b)" is a staple printed exercise (review M2).
 - **Confident misreadings that reach the tutor.** The crop-filling DejaVu render's `x` read as `X`
   was accepted twice, above every threshold. The confirmation step, where the student reads the
@@ -1169,26 +1248,35 @@ From the SDD ledger and the reviews, per task.
 - **Which operator piece is weak.** The record keeps only the minimum, and `^` and `_` count as
   operators. A per-piece field in the bench's record would let the sign guard be calibrated against
   signs.
-- **The founder's photographs: the join checklist.** They join as `q19-photo-upright` and
-  `q20-photo-rotated` (S3-P11; the plan is corrected).
-  - [ ] The photographs go under `probes/vision/fixtures/v1/photos/`, CC0, a sheet printed from our
+- **The founder's photographs: the join checklist.** They joined on 2026-11-14 as `q19-photo-upright` and
+  `q20-photo-rotated` (S3-P11; see the Photo-join round).
+  - [x] The photographs go under `probes/vision/fixtures/v1/photos/`, CC0, a sheet printed from our
     own typeset items, never a textbook page. Keep the camera JPEG if q20's rotation is its EXIF
     Orientation tag (`vision_prep.rs` applies it; a PNG drops it). Strip GPS and device EXIF and
     keep Orientation, because the repo is public.
-  - [ ] `gen.py` owns `items.json` and `manifest.json`: a plain run rewrites both without the
+  - [x] `gen.py` owns `items.json` and `manifest.json`: a plain run rewrites both without the
     photos, and `gen.py --check` compares `items.json` with its own items. It needs a list of
     photos that it hashes but does not render.
-  - [ ] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
+  - [x] `probes/vision/manifest.test.mjs`: its counts (`manifest.count`, the file count and the
     `items.length` of 18) move, and so do its ordered verdict and kind arrays (16 accepts, then two
     refusals). A photo's kind is `printed` or a new `photo`.
-  - [ ] `.github/workflows/vision-regression.yml`: the 18-record guard moves.
-  - [ ] **Two held-out refusal probes join as q21 and q22** (review I3): a triangle labelled 3, 4
+  - [x] `.github/workflows/vision-regression.yml`: the 18-record guard moves.
+  - [x] **Two held-out refusal probes join as q21 and q22** (review I3): a triangle labelled 3, 4
     and 5, and a prose line holding a date. Both expect `refuse`, and `gen.py` typesets them like
     q17 and q18. They test the refusal rule on images it was not derived from.
-  - [ ] **The counts with all four:** 22 items, of which 16 printed, 2 photographs and 4 refusals.
+  - [x] **The counts with all four:** 22 items, of which 16 printed, 2 photographs and 4 refusals.
     The exact gate is `GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is a fixed 2, so it moves
     to 4, all four refusal items. The manifest test and the CI guard count 22.
-  - [ ] Re-run the host gate run and the device run with the 22 items.
+  - [x] The host gate run with the 22 items: PASS, 22/22 and 4 of 4 (Photo-join round, 2026-11-14).
+  - [ ] The device run with the 22 items is still owed.
+- **Operator-free formulas now refuse (S3-P17).** A printed formula with no operator, relation or
+  structural token is text: a numeric matrix with positive entries (`&` and `\\` are not operators),
+  `\binom{n}{k}`, `5!`, `f(x)`, a lone Greek letter (`\pi`). They fail closed ("I could not find any
+  maths"). If matrices matter for the product, `pmatrix`, `bmatrix` and `binom` are `MATHS_CMDS` candidates.
+- **The remaining refusal gap (S3-P17).** A bare number now refuses by rule. What still reaches the
+  gate is prose or a diagram that contains an operator-bearing fragment, such as a date written
+  `2026-11-14`, a diagram label `3 + 4`, or a caption with a hyphen and a digit. None of the four
+  refusal probes has one, so the gate is unmeasured there.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the

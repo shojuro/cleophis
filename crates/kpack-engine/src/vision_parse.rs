@@ -29,7 +29,7 @@
 //! `classify`'s word count, which reduces prose in the tutor-bound blocks but
 //! cannot exclude it. The confirmation gate is the check on top.
 //!
-//! `classify` also asks an element to hold maths: a digit, or an operator or
+//! `classify` also asks an element to hold maths: an operator or
 //! relation token (`= < > + - ^ _`, one of the Unicode operators `≤ ≥ ≠ × ÷ ±
 //! − → ∞ ∈`, or one of [`MATHS_CMDS`] as a whole command: the relations and
 //! operators, `\frac` and `\sqrt`, and the commands letters-only maths is
@@ -39,8 +39,9 @@
 //! and `=` do, so `a ≤ b` is maths while `a < b` is not. The formula prompt writes a
 //! diagram's labels and a page of letter-spaced prose as LaTeX arrays of
 //! letters, and a result with no other LaTeX block then refuses with
-//! `NoMathFound`. The rule refuses letters; prose holding a digit or a hyphen
-//! still classifies by the word count alone.
+//! `NoMathFound`. The rule refuses letters, and since S3-P17 bare numbers (a
+//! lone `3` is a diagram's label); prose holding a hyphen still classifies by
+//! the word count alone.
 //!
 //! Confidence is `exp(mean log-probability)` over the block's tracked tokens
 //! (a logprob that is not finite or is positive counts as untracked; a block
@@ -379,6 +380,8 @@ const MATHS_CMDS: &[&str] = &[
     "pm", "mp", "dfrac", "tfrac", "int", "sum", "prod", "lim", "log", "ln", "sin", "cos", "tan", "in", "notin",
     "cup", "cap", "subset", "subseteq", "to", "rightarrow", "infty", "equiv", "approx", "sim", "propto", "cong",
     "angle", "perp", "parallel", "circ", "ldots", "cdots", // S3-P15
+    // The operator guard already watches these (S3-P16); a digit used to carry `x \leqslant 2`, and S3-P17 dropped it.
+    "leqslant", "geqslant", "lt", "gt",
 ];
 
 /// Unicode operators the transcriber can write instead of a command (the
@@ -394,14 +397,15 @@ fn is_maths_glyph(c: char) -> bool {
     OPERATOR_GLYPHS.contains(&c) || OTHER_MATHS_GLYPHS.contains(&c)
 }
 
-/// A digit, one of `= < > + - ^ _`, a Unicode maths glyph, or one of
-/// [`MATHS_CMDS`] as a whole command (S3-P9, S3-P15). Without one, a
-/// "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
+/// One of `= < > + - ^ _`, a Unicode maths glyph, or one of [`MATHS_CMDS`] as a
+/// whole command (S3-P9, S3-P15). A digit does not count (S3-P17): a bare
+/// number or a bare term like `3x` has no operator, so it is not a problem to
+/// teach. Without one, a "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
 /// labels (`C & & \\ A & & \\ B`) and a page of letter-spaced prose as arrays,
 /// and neither is a problem the tutor could teach. The array syntax `&` and
 /// `\\` and the label's `\colon` are not operators. Linear in `s`.
 fn holds_maths(s: &str) -> bool {
-    s.chars().any(|c| c.is_ascii_digit() || matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_') || is_maths_glyph(c))
+    s.chars().any(|c| matches!(c, '=' | '<' | '>' | '+' | '-' | '^' | '_') || is_maths_glyph(c))
         || holds_command(s, MATHS_CMDS)
 }
 
@@ -1377,6 +1381,66 @@ mod tests {
         for body in [r"\frac{\alpha}{\beta}", r"\sqrt{\alpha}", r"\alpha^\beta", r"\alpha_\beta", "a_n", "x^y", "a = b"] {
             assert_eq!(kinds_of(body), vec![BlockKind::Latex], "{body}");
         }
+    }
+
+    // ---- S3-P17: a digit no longer makes a block maths ----
+
+    /// q21's raw from `host-v2-cm-product.jsonl`, verbatim: the 3-4-5 triangle's labels read as one cell.
+    const Q21_RAW: &str = r"<formula><loc_0><loc_0><loc_500><loc_500>\begin{array} { l } { 3 } \end{array}</formula>";
+    const Q22_RAW: &str = r"<formula><loc_0><loc_0><loc_500><loc_500>\begin{array} { l } { D e n t i s t o n \, 1 4 \, November \, 2 0 2 6 \, a t \, 3 \, p m } \end{array}</formula>";
+
+    #[test]
+    fn a_bare_number_or_term_is_not_maths() {
+        // No operator, relation or structural token: a number, or a bare term like `3x`, is not
+        // a problem the tutor could teach, so it is text and never reaches the gate.
+        for body in ["3", "42", "3x", "3.5", "x"] {
+            assert_eq!(kinds_of(body), vec![BlockKind::Text], "{body}");
+            assert!(!holds_maths(body), "{body}");
+        }
+        // The shape the formula prompt writes a lone label in: strong by its `\`, so only
+        // `holds_maths` can keep it out.
+        for body in [r"\begin{array} { l } { 3 } \end{array}", r"\begin{array} { l } { 42 } \end{array}", r"\begin{array} { l } { 3 x } \end{array}"] {
+            assert_eq!(kinds_of(body), vec![BlockKind::Text], "{body}");
+        }
+        for body in ["3", "42", "3x", r"\begin{array} { l } { 3 } \end{array}"] {
+            let a = assess(&toks(&format!("<formula>{LOC} {body}</formula>"), -0.01), false);
+            assert!(latex_of(&a).is_empty(), "{body}: {a:?}");
+            assert!(a.warnings.contains(&Warning::NoMathFound), "{body}: {a:?}");
+            assert_eq!(a.verdict, Verdict::Refuse, "{body}");
+        }
+    }
+
+    #[test]
+    fn an_operator_still_makes_a_block_maths() {
+        for body in ["x^2", "a_1", r"\frac{1}{2}", "3x-7=2x+5", "x+y=1", "a ≤ b"] {
+            assert_eq!(kinds_of(body), vec![BlockKind::Latex], "{body}");
+        }
+        for body in [r"x \leqslant 2", r"x \geqslant 2", r"x \lt 2", r"x \gt 2"] {
+            assert!(holds_maths(body), "{body}");
+        }
+        // A bare sum holds maths; classify alone keeps it text (no `=`, `\`, `^`, `_`, no digit).
+        assert!(holds_maths("x+y"));
+    }
+
+    #[test]
+    fn the_held_out_refusal_raws_refuse() {
+        // q21 refused only by the 0.70 confidence floor (0.6945) before S3-P17. A confident `3` refuses too.
+        for (raw, conf) in [(Q21_RAW, 0.6945f32), (Q21_RAW, 0.99), (Q22_RAW, 0.8869), (Q17_RAW, 0.7543), (Q18_RAW, 0.8497)] {
+            let a = assess(&toks(raw, conf.ln()), false);
+            assert!(latex_of(&a).is_empty(), "{raw}: {a:?}");
+            assert!(a.warnings.contains(&Warning::NoMathFound), "{raw}: {a:?}");
+            assert_eq!(a.verdict, Verdict::Refuse, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_formula_beside_a_bare_number_keeps_the_formula() {
+        let raw = format!("<formula>{LOC} x + 1 = 2</formula><formula>{LOC} 3</formula>");
+        let a = assess(&toks(&raw, -0.01), false);
+        assert_eq!(latex_of(&a).len(), 1, "{a:?}");
+        assert!(latex_of(&a)[0].contains('='), "{a:?}");
+        assert_ne!(a.verdict, Verdict::Refuse, "{a:?}");
+        assert!(!a.warnings.contains(&Warning::NoMathFound), "{a:?}");
     }
 
     // ---- S3-P15: letters-only maths with a command or a Unicode operator ----
