@@ -82,6 +82,7 @@ verdict and its counts. The one change is that the DejaVu crop-filling run also 
 gate on q08 and q13, two accepted symbol substitutions.
 
 - **The device run passed (2026-11-14, A22):** 18/18 exact, refusals 2/2, p50 8,791 ms, p95 10,604 ms, VmHWM 389 MB; six exact readings held in review by the operator threshold, as on the host; thresholds kept (The device run).
+- **The 22-item device run passed (2026-11-14, A22, bench from `f998395`):** 22/22 exact, refusals 4/4, p50 8,733 ms, p95 9,870 ms, VmHWM 389,188 KiB. The 18 typeset raws are byte-identical to the first device run, the photographs are accepted at 0.9999 and 0.9985 with the orientation tag applied, q21 and q22 refuse by rule (Photo-join round, The 22-item device run).
 
 ## Fix wave (S3-P9 to S3-P16)
 
@@ -662,7 +663,9 @@ log line and the raw shape do.
 **Run by the founder on 2026-11-14 on the Galaxy A22 (serial R9WR50C0W1J) with the archived bench
 `vision_bench-aarch64-715b129` (engine at `dccd85e`), the committed Computer Modern set, the product
 regime (the script passes the formula prompt and the 96-token cap), one encoder pass (64 image tokens
-on every record). Evidence: `docs/superpowers/vision-stage3/device-a22-s3-v1.{jsonl,md,json,meminfo.txt,log}`.**
+on every record). Evidence: `docs/superpowers/vision-stage3/device-a22-s3-v1.{jsonl,md,json,meminfo.txt}`; the device log stays beside
+the run under `~/cleophis-artifacts/vision/runs/`, since `*.log` is gitignored (an earlier version of this
+sentence listed it among the committed files; it never was).**
 
 | Gate | Device value | Requirement | Result |
 |---|---|---|---|
@@ -742,7 +745,8 @@ the report. Before the fix wave the host runs of that regime failed the scorer's
 expected to pass on x86-64. Whether arm64 reads the same tokens is what its first run shows. The
 refusal gate was in-sample: the parser rule was derived from these two images. The photo-join round's
 two held-out probes (q21 a diagram labelled with numbers, q22 prose holding a date) both refuse, so
-the gate is now tested on images the rule was not derived from. The device run is still owed.
+the gate is now tested on images the rule was not derived from. The 22-item device run passed on
+2026-11-14 (Photo-join round, The 22-item device run).
 
 First run: on the PR.
 
@@ -1045,7 +1049,7 @@ exact readings that would come out of review (0.9152, 0.9193) and those that sta
 below) is wide. The page-DejaVu wrong reading that sets the floor sits only 0.029 below it.
 
 **The sample.** 18 typeset items, one x86-64 host, one repeat per run, three renders, two prompts.
-No photograph, no device run. (The photo-join round later added the photographs; the A22 run is still owed.) The device run should use the product's prompt and cap.
+No photograph, no device run. (The photo-join round later added the photographs and ran the A22 with all 22 items; both passed.) The device run should use the product's prompt and cap.
 
 ### Outside the rule: the refusals fail in the product's regime
 
@@ -1146,8 +1150,68 @@ Only q21 changed: it is still `refuse`, but now with `no_math_found` and a text 
 0.6945, unchanged) instead of `low_confidence` and a latex block. Every other record's verdict, blocks and
 warnings are unchanged. The refusal no longer depends on the confidence floor for q21.
 
-**Still owed.** The device run with the 22 items (no Rust change in the first run, so no Android or Windows
-run was made here).
+**The 22-item device run (2026-11-14, 12:53–12:56 +07:00).** Run from this branch on the Galaxy A22
+(serial R9WR50C0W1J) with `run-vision-probes.sh`, the bench rebuilt from `f998395` (archived as
+`~/cleophis-artifacts/vision/vision_bench-aarch64-f998395`, sha256 `c6d274ce…`), the committed 22 items,
+the product regime (the script passes the formula prompt and the 96-token cap), one encoder pass (64
+image tokens on every record). Scorer at `f998395` with `--device`. Evidence:
+`docs/superpowers/vision-stage3/device-a22-s3-v2.{jsonl,md,json,meminfo.txt}`; the device log stays
+beside the run under `~/cleophis-artifacts/vision/runs/`, since `*.log` is gitignored.
+
+**Scoreboard: PASS**, exit 0.
+
+| Gate | Device value | Requirement | Result |
+|---|---|---|---|
+| exact | 22/22 | ≥ 20 | pass |
+| accepted sign, operator or symbol errors | 0 | ≤ 0 | pass |
+| refusals correct | 4/4 | ≥ 4 | pass |
+| p50 total | 8,733 ms | ≤ 10,000 | pass |
+| p95 total | 9,870 ms | ≤ 12,000 | pass |
+| VmHWM max | 389,188 KiB | ≤ 1,258,291 | pass |
+
+What the records show:
+
+- The 18 typeset items read exactly as in the first device run: all 18 raws are byte-identical to
+  `device-a22-s3-v1`, with the same verdicts (accept for q02, q05, q07–q09, q11–q13, q15, q16; review
+  for q01, q03, q04, q06, q10, q14, held by the operator threshold at minimum operator probabilities
+  0.881, 0.541, 0.913, 0.739, 0.544, 0.916; refuse for q17 and q18). Over all 22: 12 accept, 6 review,
+  4 refuse.
+- The photographs are accepted on the phone as on the host: q19 at confidence 0.9999 and minimum
+  operator probability 0.999; q20, the EXIF-orientation-6 crop, at 0.9985 and 0.9981, and its raw
+  equals q19's. The phone applies the orientation tag as the host does.
+- q21 and q22 refuse with `no_math_found`: q21 by the S3-P17 rule (a text block at 0.6949, so the 0.70
+  floor would still have caught it), q22 through the prose guard (a text block at 0.883). Confidences
+  differ from the host's in the third decimal (host 0.6945 and 0.8869); the verdicts and warnings match.
+- Timings: prefill 7,580–7,625 ms (the encoder pass), decode 865–2,942 ms, total 8,510–10,613 ms. The
+  slowest item is again q18, the only one to run to the 96-token cap (10,613 ms). Over 22 records the
+  nearest-rank p95 is the 21st value, q22 at 9,870 ms, so q18 no longer sets p95 as it did over 18.
+  p50 8,733 ms is 58 ms under the first run's 8,791 and 0.73 s over the spec's strict 8 s floor; lever 4
+  (runtime kernel dispatch) is unchanged as the path to it.
+- Memory: VmHWM 389,100–389,188 KiB across the records (the first run: 389,292). `dumpsys meminfo` at
+  ~20 s shows PSS 383 MB (native heap 206 MB, mmap 175 MB): the bench alone, without a WebView.
+- Across architectures: 21 of 22 raws are byte-identical to the host r2 run. The one that differs is
+  q18, the page of prose, where greedy decoding diverges before the 96-token cap (the phone emits a
+  two-column array of letters, the host the shopping-list words). Both refuse with `no_math_found`; the
+  two device runs agree with each other and the two host runs with each other, and the first device run
+  differed from `host-v1-cm-product-r4` on q18 alone in the same way. The scorer never compares raws
+  between runs and a refuse item has no expected LaTeX, so this costs nothing today. A per-architecture
+  expectation would be needed only if a raw were ever pinned; the CI section's arm64 question ("whether
+  arm64 reads the same tokens") is answered: the same tokens on 21 of 22 items, and never on the gate's terms.
+- The 0.86 operator proposal gains no evidence: the 22 device readings add no wrong reading with a
+  measured operator probability, so a floor still cannot be set and 0.97 stays (The device run).
+
+The command, from the `s3-photos` checkout at `f998395` (the bench was built from the same tree with
+`cargo ndk -t arm64-v8a -P 24 build -p kpack-engine --features vision --release --example vision_bench`):
+
+```
+ADB=adbw SERIAL=R9WR50C0W1J docs/superpowers/mobile-tools/run-vision-probes.sh \
+  --model ~/cleophis-artifacts/vision/granite-docling-258M-Q8_0.gguf \
+  --mmproj ~/cleophis-artifacts/vision/mmproj-granite-docling-258M-Q8_0.preproc512.gguf \
+  --bench ~/cleophis-artifacts/vision/vision_bench-aarch64-f998395 \
+  --out ~/cleophis-artifacts/vision/runs/a22-s3-v2.jsonl
+```
+
+No Rust changed in this round, so no Android or Windows run was made.
 
 ## Rulings
 
@@ -1268,7 +1332,8 @@ From the SDD ledger and the reviews, per task.
     The exact gate is `GATES.exactMin(22)`, 20 of 22. `GATES.refusalsMin` is a fixed 2, so it moves
     to 4, all four refusal items. The manifest test and the CI guard count 22.
   - [x] The host gate run with the 22 items: PASS, 22/22 and 4 of 4 (Photo-join round, 2026-11-14).
-  - [ ] The device run with the 22 items is still owed.
+  - [x] The device run with the 22 items: PASS, 22/22, 4 of 4, p50 8,733 ms, p95 9,870 ms, VmHWM 389,188 KiB
+    (Photo-join round, The 22-item device run, 2026-11-14).
 - **Operator-free formulas now refuse (S3-P17).** A printed formula with no operator, relation or
   structural token is text: a numeric matrix with positive entries (`&` and `\\` are not operators),
   `\binom{n}{k}`, `5!`, `f(x)`, a lone Greek letter (`\pi`). They fail closed ("I could not find any
