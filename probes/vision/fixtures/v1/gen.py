@@ -257,11 +257,11 @@ def main():
         (dest / "items.json").write_text(dump({"version": 1, "items": items}))
         print(f"wrote {len(rendered(items))} PNGs and items.json ({len(items)} items) to {dest} (fontset {fontset or 'cm'}; no manifest)")
         return
+    missing = [file for _, file, *_ in PHOTOS if not (HERE / file).exists()]
+    if missing:  # before anything is written: the photographs are never rendered
+        sys.exit(f"missing photograph(s) {', '.join(missing)}: nothing was rewritten")
     items = build(HERE)
     (HERE / "items.json").write_text(dump({"version": 1, "items": items}))
-    for it in items:
-        if it["kind"] == "photo" and not (HERE / it["file"]).exists():
-            sys.exit(f"missing photograph {it['file']}: it is never rendered")
     files = {it["file"]: sha(HERE / it["file"]) for it in items}
     (HERE / "manifest.json").write_text(dump({"version": 1, "count": len(files), "files": files}))
     print(f"wrote {len(files)} files (20 PNGs, 2 photos), items.json, manifest.json")

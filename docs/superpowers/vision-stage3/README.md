@@ -2,8 +2,9 @@
 
 The JSONL files behind `docs/superpowers/verification-vision-stage3.md` (ruling S3-P13), one record
 per probe item, written by `vision_bench --via-engine --json`. Every run is on one x86-64 WSL2 host,
-one repeat, the committed items (`probes/vision/fixtures/v1/items.json`, 18 items, 22 for `host-v2-*`) or a render of
-the same 18 items. Host timings are not a gate: other builds ran on the box throughout.
+one repeat, the committed items (`probes/vision/fixtures/v1/items.json`) or a render of the same 18 typeset
+items. The `host-v1-*` and `device-a22-s3-v1` runs are over the 18 items that existed then; the
+`host-v2-*` runs are over the 22 items of the photo-join round. Host timings are not a gate: other builds ran on the box throughout.
 
 Common flags: `--family docling --max-side 512 --threads 4 --one-pass`, base
 `granite-docling-258M-Q8_0.gguf` (sha256 `b687245c…`) and projector

@@ -398,9 +398,9 @@ fn is_maths_glyph(c: char) -> bool {
 }
 
 /// One of `= < > + - ^ _`, a Unicode maths glyph, or one of [`MATHS_CMDS`] as a
-/// whole command (S3-P9, S3-P15). A digit does not count (S3-P17): a bare number
-/// or a bare term like `3x` has no operator, so it is not a problem to teach. Without one, a
-/// "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
+/// whole command (S3-P9, S3-P15). A digit does not count (S3-P17): a bare
+/// number or a bare term like `3x` has no operator, so it is not a problem to
+/// teach. Without one, a "formula" is letters in LaTeX dress: the formula prompt writes a diagram's
 /// labels (`C & & \\ A & & \\ B`) and a page of letter-spaced prose as arrays,
 /// and neither is a problem the tutor could teach. The array syntax `&` and
 /// `\\` and the label's `\colon` are not operators. Linear in `s`.
