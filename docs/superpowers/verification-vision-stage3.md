@@ -1125,7 +1125,23 @@ q11 to q13, q15, q16, and review for q01, q03, q04, q06, q10, q14; q17 and q18 r
 - q22 is refused through `no_math_found`: the words came back as a text block inside a formula tag,
   which the parser's prose guard catches. The date digits did not turn it into maths.
 
-**Still owed.** The device run with the 22 items (no Rust change this round, so no Android or Windows
+**Round 2 (S3-P17): q21 refuses by rule.** The first run exposed a gap. The model wrote q21's triangle
+as a one-cell array holding `3`, and the S3-P9 rule ("no digit and no operator is not maths") let it
+through because of the digit. Only the 0.70 confidence floor refused it, by 0.006. A bare number is not
+a problem to teach, so `4844f10` drops the digit clause: a block is maths only if it holds an operator,
+a relation or a structural token (`= < > + - ^ _`, the maths commands, the Unicode operators). `3`,
+`42` and `3x` are text; `x^2`, `a_1`, `\frac{1}{2}`, `3x-7=2x+5` and `a ≤ b` stay maths, and a formula
+beside a bare `3` keeps the formula. The digit had also been carrying `x \leqslant 2`, which the
+operator guard already watched but the maths list lacked, so `\leqslant \geqslant \lt \gt` joined the list.
+`cargo test -p kpack-engine` passes (177) and the Android `-D warnings` check finishes clean.
+
+Re-run on the same 22 items (`host-v2-cm-product-r2`, same command and models): **PASS, exact 22/22,
+refusals 4/4, no accepted sign or operator error.** All 22 raws are byte-identical to the first run.
+Only q21 changed: it is still `refuse`, but now with `no_math_found` and a text block (confidence
+0.6945, unchanged) instead of `low_confidence` and a latex block. Every other record's verdict, blocks and
+warnings are unchanged. The refusal no longer depends on the confidence floor for q21.
+
+**Still owed.** The device run with the 22 items (no Rust change in the first run, so no Android or Windows
 run was made here).
 
 ## Rulings
@@ -1249,6 +1265,10 @@ From the SDD ledger and the reviews, per task.
     to 4, all four refusal items. The manifest test and the CI guard count 22.
   - [x] The host gate run with the 22 items: PASS, 22/22 and 4 of 4 (Photo-join round, 2026-11-14).
   - [ ] The device run with the 22 items is still owed.
+- **The remaining refusal gap (S3-P17).** A bare number now refuses by rule. What still reaches the
+  gate is prose or a diagram that contains an operator-bearing fragment, such as a date written
+  `2026-11-14`, a diagram label `3 + 4`, or a caption with a hyphen and a digit. None of the four
+  refusal probes has one, so the gate is unmeasured there.
 - **Mixed prose-and-formula lines (q15).** They pass in the product's regime through the parser's
   label split. They are still unproven on photographs, where the prose and the maths share a font.
 - **The page regime's parser questions.** None reaches the product's crop flow today; all come from the
