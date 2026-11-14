@@ -21,6 +21,7 @@ pins. "Parser" is the `vision_parse.rs` that judged the tokens. It was unchanged
 | `host-v1-cm-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `b4b4131` | `83b8929` | `b4b4131` | yes, until round 2 |
 | `host-v1-cm-product-r3.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `f5bd4d3` | `f5bd4d3` (S3-P15) | `b4b4131` | yes, until round 3 |
 | `host-v1-cm-product-r4.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | Computer Modern, committed | `dccd85e` | `dccd85e` (S3-P16, the operator guard sees the Unicode operators) | `b4b4131` | **yes** |
+| `device-a22-s3-v1.jsonl` (+ `.md`, `.json`, `.meminfo.txt`, `.log`) | formula, 96 (the script's runner) | Computer Modern, committed | `vision_bench-aarch64-715b129` (engine `dccd85e`) on the Galaxy A22 | `dccd85e` | `score.mjs --device` at `b4b4131`+ | **yes: the device run — PASS 18/18, refusals 2/2, p50 8,791 ms, p95 10,604 ms, VmHWM 389,292 KiB** |
 | `host-v1-dejavu-fill-product-r2.jsonl` (+ `.md`, `.json`) | formula, 96, the `--via-engine` defaults | DejaVu Sans, crop-filling, byte-identical to the earlier render | `b4b4131` | `83b8929` | `b4b4131` | no |
 
 Round 3's `host-v1-cm-product-r4` scores PASS, and its 18 raws, its records apart from the

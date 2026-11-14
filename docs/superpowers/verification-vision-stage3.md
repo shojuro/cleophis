@@ -80,6 +80,8 @@ rows were scored before the fix wave. Re-scored with the scorer at `b4b4131`, ea
 verdict and its counts. The one change is that the DejaVu crop-filling run also fails the tutor
 gate on q08 and q13, two accepted symbol substitutions.
 
+- **The device run passed (2026-11-14, A22):** 18/18 exact, refusals 2/2, p50 8,791 ms, p95 10,604 ms, VmHWM 389 MB; six exact readings held in review by the operator threshold, as on the host; thresholds kept (The device run).
+
 ## Fix wave (S3-P9 to S3-P16)
 
 Task 6's product-regime evidence found one parser gap and four scorer and gate corrections. The
@@ -652,8 +654,43 @@ log line and the raw shape do.
 
 ## The device run
 
-**Not run yet.** The founder has not run `run-vision-probes.sh`. Until then, the latency and memory
-numbers are Stage 0's and Stage 2's.
+**Run by the founder on 2026-11-14 on the Galaxy A22 (serial R9WR50C0W1J) with the archived bench
+`vision_bench-aarch64-715b129` (engine at `dccd85e`), the committed Computer Modern set, the product
+regime (the script passes the formula prompt and the 96-token cap), one encoder pass (64 image tokens
+on every record). Evidence: `docs/superpowers/vision-stage3/device-a22-s3-v1.{jsonl,md,json,meminfo.txt,log}`.**
+
+| Gate | Device value | Requirement | Result |
+|---|---|---|---|
+| exact | 18/18 | ≥ 17 | pass |
+| accepted sign, operator or symbol errors | 0 | ≤ 0 | pass |
+| refusals correct | 2/2 | ≥ 2 | pass |
+| p50 total | 8,791 ms | ≤ 10,000 | pass |
+| p95 total | 10,604 ms | ≤ 12,000 | pass |
+| VmHWM max | 389,292 KiB | ≤ 1,258,291 | pass |
+
+**Scorer verdict: PASS**, exit 0. What the records show:
+
+- Every item: prefill 7,558–7,654 ms (the encoder pass; Stage 0 measured 7,609–7,653 ms for the same
+  regime), decode 851–2,959 ms, total 8,508–10,604 ms. The slowest item is q18, the page of prose,
+  which runs to the 96-token cap before the parser refuses it (decode 2,959 ms); every other item
+  stopped at `Eos`.
+- Memory: `dumpsys meminfo` of the bench at ~20 s shows PSS 383 MB (native heap 206 MB, mmap 175 MB);
+  VmHWM 389 MB on every record — Stage 0's number, and the number without a WebView.
+- Verdicts: 10 accept, 6 review, 2 refuse. The six reviews are exact readings held by the operator
+  threshold, the same six items as on the host: q01 (0.881), q03 (0.541), q04 (0.913), q06 (0.739),
+  q10 (0.544), q14 (0.916). No exact reading's confidence fell below 0.915, so the 0.90 confidence
+  threshold never fired on a correct reading. q17 and q18 refused through the parser rule (S3-P9).
+- The spec's strict floor gate (8 s p50) is missed by 0.79 s, as Stage 0 (8.9 s) and Stage 2's four
+  readings (8,991–9,403 ms) missed it; lever 4 (runtime kernel dispatch) remains the path to it.
+
+**The 0.86 operator proposal, read against the device run.** Lowering to 0.86 would move q01, q04 and
+q14 to accept and leave q03, q06 and q10 (an `=` or `-` token at 0.54–0.74) in review — three fewer
+"Use anyway" taps in sixteen. The floor still cannot be set: across 108 readings (90 host, 18 device)
+no sign or operator error was ever accepted, so there is no wrong reading to keep 0.02 below. Decision
+unchanged: **keep 0.97**; revisit when the photographs (q19/q20) and the handwriting work produce
+wrong readings with measured operator probabilities.
+
+The Stage 0 and Stage 2 numbers this run is compared with:
 
 - Stage 0, floor build, formula crop, one pass, A22: p50 8.9 s, p95 9.4 s, VmHWM 389 MB, 15/15 exact
   (`verification-vision-spike.md`).
